@@ -1,6 +1,12 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
+type CookieToSet = {
+  name: string
+  value: string
+  options?: Record<string, any>
+}
+
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request })
 
@@ -10,10 +16,12 @@ export async function middleware(request: NextRequest) {
     {
       cookies: {
         getAll: () => request.cookies.getAll(),
-        setAll: (toSet) => {
+        setAll: (toSet: CookieToSet[]) => {
           toSet.forEach(({ name, value }) => request.cookies.set(name, value))
           response = NextResponse.next({ request })
-          toSet.forEach(({ name, value, options }) => response.cookies.set(name, value, options))
+          toSet.forEach(({ name, value, options }) =>
+            response.cookies.set(name, value, options)
+          )
         },
       },
     }
@@ -28,12 +36,22 @@ export async function middleware(request: NextRequest) {
   }
 
   if (path.startsWith('/admin') && user) {
-    const { data: profile } = await supabase.from('profiles').select('role, is_suspended').eq('id', user.id).single()
-    if (profile?.role !== 'admin') return NextResponse.redirect(new URL('/dashboard', request.url))
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('role, is_suspended')
+      .eq('id', user.id)
+      .single()
+    if (profile?.role !== 'admin') {
+      return NextResponse.redirect(new URL('/dashboard', request.url))
+    }
   }
 
   if (user) {
-    const { data: profile } = await supabase.from('profiles').select('is_suspended').eq('id', user.id).single()
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('is_suspended')
+      .eq('id', user.id)
+      .single()
     if (profile?.is_suspended && !path.startsWith('/auth')) {
       await supabase.auth.signOut()
       return NextResponse.redirect(new URL('/auth/login?suspended=1', request.url))
