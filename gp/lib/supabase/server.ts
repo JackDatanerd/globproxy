@@ -1,6 +1,12 @@
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 
+type CookieToSet = {
+  name: string
+  value: string
+  options?: Record<string, any> // you can replace `any` with a stricter type if available
+}
+
 export async function createClient() {
   const cookieStore = await cookies()
   return createServerClient(
@@ -9,9 +15,14 @@ export async function createClient() {
     {
       cookies: {
         getAll: () => cookieStore.getAll(),
-        setAll: (toSet) => {
-          try { toSet.forEach(({ name, value, options }) => cookieStore.set(name, value, options)) }
-          catch { /* server component — safe to ignore */ }
+        setAll: (toSet: CookieToSet[]) => {
+          try {
+            toSet.forEach(({ name, value, options }) =>
+              cookieStore.set(name, value, options)
+            )
+          } catch {
+            /* server component — safe to ignore */
+          }
         },
       },
     }
@@ -26,7 +37,9 @@ export async function createAdminClient() {
     {
       cookies: {
         getAll: () => cookieStore.getAll(),
-        setAll: () => {},
+        setAll: (_toSet: CookieToSet[]) => {
+          // Admin client doesn’t need to set cookies
+        },
       },
     }
   )
