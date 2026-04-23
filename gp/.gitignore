@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Next.js build output
+.next/
+out/
+
+# Supabase local configs
+supabase/.temp/
+supabase/functions/.env
+
+# Build artifacts
+dist/
+build/
+
+# Environment files
+.env
+.env.*.local
+
+# Logs
+logs
+*.log
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# IDE/editor
+.vscode/
+.idea/
+
+# Testing coverage
+coverage/

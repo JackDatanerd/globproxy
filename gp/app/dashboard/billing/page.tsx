@@ -1,0 +1,53 @@
+import { createClient } from '@/lib/supabase/server'
+import Link from 'next/link'
+
+export default async function BillingPage() {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  const { data: orders } = await supabase.from('orders').select('*').eq('user_id',user!.id).order('created_at',{ascending:false})
+  const paid = orders?.filter(o=>o.payment_status==='paid') ?? []
+  const totalSpent = paid.reduce((s,o)=>s+o.amount_usd,0)
+  const totalGb = paid.reduce((s,o)=>s+o.gb_amount,0)
+
+  return (
+    <div className="max-w-4xl">
+      <div className="mb-8">
+        <h1 className="font-display font-bold text-2xl text-ink">Billing</h1>
+        <p className="text-muted text-sm mt-1">Your order history and spend</p>
+      </div>
+      <div className="grid grid-cols-3 gap-4 mb-8">
+        {[['Total spent',`$${totalSpent.toFixed(2)}`],['Total GB purchased',`${totalGb.toFixed(1)} GB`],['Total orders',String(paid.length)]].map(([l,v])=>(
+          <div key={l} className="bg-white border border-border rounded-xl p-5">
+            <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-2">{l}</div>
+            <div className="font-display text-3xl font-bold text-ink">{v}</div>
+          </div>
+        ))}
+      </div>
+      <div className="bg-white border border-border rounded-xl overflow-hidden">
+        <div className="px-6 py-4 border-b border-border"><h2 className="font-display font-bold text-base text-ink">Order history</h2></div>
+        {orders && orders.length > 0 ? (
+          <table className="w-full">
+            <thead><tr className="border-b border-border bg-surface">{['Date','Bandwidth','Amount','Status'].map(h=><th key={h} className="text-left px-6 py-3 text-[10px] font-mono text-muted uppercase tracking-widest">{h}</th>)}</tr></thead>
+            <tbody>
+              {orders.map((o,i)=>(
+                <tr key={o.id} className={`${i<orders.length-1?'border-b border-border':''} hover:bg-surface`}>
+                  <td className="px-6 py-4 text-xs font-mono text-muted">{new Date(o.created_at).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'})}</td>
+                  <td className="px-6 py-4 text-sm font-medium text-ink">{o.gb_amount} GB</td>
+                  <td className="px-6 py-4 text-sm font-mono text-ink">${o.amount_usd}</td>
+                  <td className="px-6 py-4">
+                    <span className={`text-[10px] font-mono px-2.5 py-1 rounded-full ${o.payment_status==='paid'?'bg-accent2-light text-accent2':o.payment_status==='pending'?'bg-yellow-50 text-yellow-600':'bg-red-50 text-red-400'}`}>{o.payment_status}</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <div className="text-center py-14">
+            <p className="text-muted text-sm font-light">No orders yet.</p>
+            <Link href="/dashboard/buy" className="text-accent text-sm hover:underline mt-1 block">Buy your first bandwidth →</Link>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}

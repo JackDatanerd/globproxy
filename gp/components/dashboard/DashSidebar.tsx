@@ -1,0 +1,55 @@
+'use client'
+import Link from 'next/link'
+import { usePathname } from 'next/navigation'
+import clsx from 'clsx'
+
+const userNav = [
+  { label: 'Overview',      href: '/dashboard' },
+  { label: 'My Proxies',    href: '/dashboard/proxies' },
+  { label: 'Buy Bandwidth', href: '/dashboard/buy' },
+  { label: 'Usage',         href: '/dashboard/usage' },
+  { label: 'Billing',       href: '/dashboard/billing' },
+  { label: 'Settings',      href: '/dashboard/settings' },
+]
+const resellerNav = [
+  { label: 'Overview',      href: '/dashboard' },
+  { label: 'My Stock',      href: '/dashboard/proxies' },
+  { label: 'Sub-users',     href: '/reseller/users' },
+  { label: 'Transfers',     href: '/reseller/transfers' },
+  { label: 'Buy Wholesale', href: '/dashboard/buy' },
+  { label: 'Earnings',      href: '/reseller/earnings' },
+  { label: 'API Keys',      href: '/dashboard/api-keys' },
+  { label: 'Billing',       href: '/dashboard/billing' },
+  { label: 'Settings',      href: '/dashboard/settings' },
+]
+const adminNav = [
+  { label: 'Overview',    href: '/admin' },
+  { label: 'All Users',   href: '/admin/users' },
+  { label: 'Orders',      href: '/admin/orders' },
+  { label: 'Resellers',   href: '/admin/resellers' },
+  { label: 'Credentials', href: '/admin/credentials' },
+  { label: 'Settings',    href: '/admin/settings' },
+]
+
+export default function DashSidebar({ role }: { role: string }) {
+  const path = usePathname()
+  const nav = role === 'admin' ? adminNav : role === 'reseller' ? resellerNav : userNav
+  const label = role === 'admin' ? 'Admin Panel' : role === 'reseller' ? 'Reseller Panel' : 'My Account'
+  return (
+    <aside className="w-56 bg-white border-r border-border flex-shrink-0 flex flex-col py-6">
+      <nav className="flex flex-col gap-0.5 px-3 flex-1">
+        <div className="text-[10px] font-mono text-muted uppercase tracking-widest px-3 pb-3">{label}</div>
+        {nav.map(item => (
+          <Link key={item.href} href={item.href}
+            className={clsx('flex items-center px-3 py-2.5 rounded-xl text-sm transition-all',
+              path === item.href ? 'bg-accent-light text-accent font-medium' : 'text-ink2 hover:bg-surface hover:text-ink')}>
+            {item.label}
+          </Link>
+        ))}
+      </nav>
+      <div className="px-3 pt-4 border-t border-border mx-3">
+        <a href="mailto:support@globproxy.com" className="flex items-center px-3 py-2.5 rounded-xl text-sm text-muted hover:text-ink hover:bg-surface transition-all">Support</a>
+      </div>
+    </aside>
+  )
+}
