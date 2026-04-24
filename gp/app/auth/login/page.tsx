@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
@@ -13,6 +13,12 @@ function LoginForm() {
   const router = useRouter()
   const params = useSearchParams()
   const suspended = params.get('suspended')
+
+  useEffect(() => {
+    createClient().auth.getSession().then(({ data: { session } }) => {
+      if (session) router.replace('/dashboard')
+    })
+  }, [router])
 
   async function handle(e: React.FormEvent) {
     e.preventDefault()

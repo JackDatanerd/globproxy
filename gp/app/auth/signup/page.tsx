@@ -27,11 +27,28 @@ function SignupForm() {
     const { valid, error } = validateEmail(email)
     if (!valid) { setEmailErr(error ?? ''); return }
     setLoading(true)
+
     const { error: err } = await createClient().auth.signUp({
       email, password,
-      options: { data: { full_name: name, intended_role: isReseller ? 'reseller' : 'user' }, emailRedirectTo: `${location.origin}/auth/callback` }
+      options: {
+        data: { full_name: name, intended_role: isReseller ? 'reseller' : 'user' },
+        emailRedirectTo: `${location.origin}/auth/callback`
+      }
     })
-    if (err) { toast.error(err.message); setLoading(false); return }
+
+    if (err) {
+      // Supabase returns this for already-registered emails
+      if (err.message.toLowerCase().includes('already registered') ||
+          err.message.toLowerCase().includes('user already exists')) {
+        toast.error('An account with this email already exists.')
+        setEmailErr('Already registered — try signing in instead.')
+      } else {
+        toast.error(err.message)
+      }
+      setLoading(false)
+      return
+    }
+
     toast.success('Check your email to confirm your account!')
     router.push('/auth/verify')
   }
@@ -54,7 +71,14 @@ function SignupForm() {
               onChange={e => { setEmail(e.target.value); if (emailErr) setEmailErr('') }}
               onBlur={onEmailBlur} placeholder="you@yourcompany.com"
               className={`w-full bg-surface border text-ink placeholder-muted px-4 py-3 rounded-xl text-sm focus:outline-none transition-colors ${emailErr ? 'border-red-300 focus:border-red-400' : 'border-border focus:border-accent'}`} />
-            {emailErr && <p className="text-xs text-red-500 mt-1.5">{emailErr}</p>}
+            {emailErr && (
+              <p className="text-xs text-red-500 mt-1.5">
+                {emailErr}{' '}
+                {emailErr.includes('signing in') && (
+                  <Link href="/auth/login" className="underline font-medium">Sign in →</Link>
+                )}
+              </p>
+            )}
           </div>
           <div>
             <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">Password</label>
