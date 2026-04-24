@@ -1,10 +1,11 @@
 import { createServerClient } from '@supabase/ssr'
+import { createClient as createSupabaseClient } from '@supabase/supabase-js'
 import { cookies } from 'next/headers'
 
 type CookieToSet = {
   name: string
   value: string
-  options?: Record<string, any> // you can replace `any` with a stricter type if available
+  options?: Record<string, any>
 }
 
 export async function createClient() {
@@ -30,16 +31,13 @@ export async function createClient() {
 }
 
 export async function createAdminClient() {
-  const cookieStore = await cookies()
-  return createServerClient(
+  return createSupabaseClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
     {
-      cookies: {
-        getAll: () => cookieStore.getAll(),
-        setAll: (_toSet: CookieToSet[]) => {
-          // Admin client doesn’t need to set cookies
-        },
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
       },
     }
   )
