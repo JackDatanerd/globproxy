@@ -3,8 +3,13 @@ import Navbar from '@/components/Navbar'
 import HeroCard from '@/components/HeroCard'
 import PricingPlans from '@/components/PricingPlans'
 import ResellerCalc from '@/components/ResellerCalc'
+import { createClient } from '@/lib/supabase/server'
 
-export default function Home() {
+export default async function Home() {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  const buyHref = user ? '/dashboard/buy' : '/auth/signup'
+
   return (
     <>
       <Navbar />
@@ -27,7 +32,7 @@ export default function Home() {
                 Buy residential bandwidth once. Use it across 195 countries at city-level precision — on your schedule, not ours. No monthly bills, no wasted GB.
               </p>
               <div className="flex gap-3 flex-wrap">
-                <Link href="#pricing" className="inline-flex items-center gap-2 bg-accent text-white px-7 py-3.5 rounded-xl font-medium shadow-[0_2px_12px_rgba(0,87,255,.3)] hover:-translate-y-0.5 transition-all">Start from $35 →</Link>
+                <Link href={buyHref} className="inline-flex items-center gap-2 bg-accent text-white px-7 py-3.5 rounded-xl font-medium shadow-[0_2px_12px_rgba(0,87,255,.3)] hover:-translate-y-0.5 transition-all">Start from $35 →</Link>
                 <Link href="#compare" className="inline-flex items-center gap-2 border border-border text-ink2 px-7 py-3.5 rounded-xl font-medium hover:border-ink2 transition-all">See comparison</Link>
               </div>
               <div className="flex items-center gap-3 mt-6 text-xs text-muted">
@@ -135,7 +140,7 @@ export default function Home() {
             <h2 className="font-display text-4xl font-bold tracking-tight text-ink mb-3">Simple. Transparent.<br />Yours to keep.</h2>
             <p className="text-ink2 font-light max-w-lg mx-auto leading-relaxed">No subscriptions. No monthly bills. Every GB stays on your account indefinitely.</p>
           </div>
-          <PricingPlans />
+          <PricingPlans buyHref={buyHref} />
           <p className="text-center text-xs font-mono text-muted mt-6">All plans include non-expiring bandwidth · No hidden fees · No contracts</p>
         </div>
       </section>
@@ -170,7 +175,7 @@ export default function Home() {
           <h2 className="font-display text-5xl font-black text-white tracking-tight leading-tight mb-4">Your bandwidth.<br />Your pace. <em className="not-italic text-accent2/80">Forever.</em></h2>
           <p className="text-white/40 font-light mb-10">Join 1,400+ operators who stopped paying for bandwidth they don&apos;t use.</p>
           <div className="flex gap-3 justify-center flex-wrap">
-            <Link href="/auth/signup" className="inline-flex items-center gap-2 bg-white text-ink px-7 py-3.5 rounded-xl font-medium hover:-translate-y-0.5 transition-all">Start from $35 →</Link>
+            <Link href={buyHref} className="inline-flex items-center gap-2 bg-white text-ink px-7 py-3.5 rounded-xl font-medium hover:-translate-y-0.5 transition-all">Start from $35 →</Link>
             <Link href="#reseller" className="inline-flex items-center gap-2 border border-white/20 text-white px-7 py-3.5 rounded-xl font-medium hover:border-white/50 transition-all">Become a reseller</Link>
           </div>
         </div>
