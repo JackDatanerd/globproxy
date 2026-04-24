@@ -8,8 +8,6 @@ export async function initializeTransaction(params: {
   metadata: Record<string, string>
   callback_url: string
 }) {
-  const amount_kobo = Math.round(params.amount_usd * 100 * 1550) // USD → KES (approx) → kobo, or use USD directly
-  // Paystack supports USD natively with currency param
   const res = await fetch(`${BASE}/transaction/initialize`, {
     method: 'POST',
     headers: {
@@ -18,11 +16,11 @@ export async function initializeTransaction(params: {
     },
     body: JSON.stringify({
       email: params.email,
-      amount: Math.round(params.amount_usd * 100), // in cents (USD)
+      amount: Math.round(params.amount_usd * 100), // cents (USD)
       currency: 'USD',
       reference: params.reference,
       callback_url: params.callback_url,
-      metadata: { custom_fields: Object.entries(params.metadata).map(([k, v]) => ({ display_name: k, variable_name: k, value: v })) },
+      metadata: params.metadata, // flat object — matches how webhook reads it
     }),
   })
   const data = await res.json()
@@ -37,16 +35,17 @@ export async function verifyTransaction(reference: string) {
   const data = await res.json()
   if (!data.status) throw new Error(data.message ?? 'Verification failed')
   return data.data as {
-    status: string // 'success' | 'failed' | 'pending'
+    status: string
     reference: string
     amount: number
-    metadata: { custom_fields: Array<{ variable_name: string; value: string }> }
+    metadata: Record<string, string>
   }
 }
 
 export function verifyWebhookSignature(body: string, signature: string): boolean {
   const crypto = require('crypto')
-  const hash = crypto.createHmac('sha512', process.env.PAYSTACK_WEBHOOK_SECRET!).update(body).digest('hex')
+  // Paystack signs with your secret key — there is no separate webhook secret
+  const hash = crypto.createHmac('sha512', SECRET).update(body).digest('hex')
   return hash === signature
 }
 
