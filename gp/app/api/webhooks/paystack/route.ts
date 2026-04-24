@@ -15,22 +15,29 @@ export async function POST(req: Request) {
 
   if (event.event === 'charge.success') {
     const { reference, metadata } = event.data
-    const fields = metadata?.custom_fields as Array<{ variable_name: string; value: string }> ?? []
-    const get = (k: string) => fields.find(f => f.variable_name === k)?.value ?? ''
 
-    const order_id = get('order_id')
-    const user_id = get('user_id')
-    const gb_amount = Number(get('gb_amount'))
+    // Metadata is a flat object — match how checkout sends it
+    const order_id  = metadata?.order_id  ?? ''
+    const user_id   = metadata?.user_id   ?? ''
+    const gb_amount = Number(metadata?.gb_amount ?? 0)
 
     if (!order_id || !user_id || !gb_amount) {
       console.error('Missing metadata in Paystack webhook', { order_id, user_id, gb_amount })
       return NextResponse.json({ received: true })
     }
 
-    // Verify not already processed
     const supabase = await createAdminClient()
-    const { data: order } = await supabase.from('orders').select('payment_status').eq('id', order_id).single()
-    if (order?.payment_status === 'paid') return NextResponse.json({ received: true })
+
+    // Idempotency — don't process twice
+    const { data: order } = await supabase
+      .from('orders')
+      .select('payment_status')
+      .eq('id', order_id)
+      .single()
+
+    if (order?.payment_status === 'paid') {
+      return NextResponse.json({ received: true })
+    }
 
     await activateBandwidth({ order_id, user_id, gb_amount, paystack_reference: reference })
   }

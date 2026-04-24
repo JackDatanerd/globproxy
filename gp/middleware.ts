@@ -29,36 +29,42 @@ export async function middleware(request: NextRequest) {
 
   const { data: { user } } = await supabase.auth.getUser()
   const path = request.nextUrl.pathname
+
   const isProtected = ['/dashboard', '/reseller', '/admin'].some(p => path.startsWith(p))
 
+  // Not logged in — redirect to login
   if (isProtected && !user) {
     return NextResponse.redirect(new URL('/auth/login', request.url))
   }
 
-  if (path.startsWith('/admin') && user) {
+  if (user) {
+    // Single profile fetch covers both admin check and suspension check
     const { data: profile } = await supabase
       .from('profiles')
       .select('role, is_suspended')
       .eq('id', user.id)
       .single()
-    if (profile?.role !== 'admin') {
-      return NextResponse.redirect(new URL('/dashboard', request.url))
-    }
-  }
 
-  if (user) {
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('is_suspended')
-      .eq('id', user.id)
-      .single()
+    // Suspended — sign out and redirect
     if (profile?.is_suspended && !path.startsWith('/auth')) {
       await supabase.auth.signOut()
       return NextResponse.redirect(new URL('/auth/login?suspended=1', request.url))
+    }
+
+    // Non-admin hitting /admin — send to dashboard
+    if (path.startsWith('/admin') && profile?.role !== 'admin') {
+      return NextResponse.redirect(new URL('/dashboard', request.url))
+    }
+
+    // Reseller-only routes
+    if (path.startsWith('/reseller') && !['reseller', 'admin'].includes(profile?.role ?? '')) {
+      return NextResponse.redirect(new URL('/dashboard', request.url))
     }
   }
 
   return response
 }
 
-export const config = { matcher: ['/dashboard/:path*', '/reseller/:path*', '/admin/:path*'] }
+export const config = {
+  matcher: ['/dashboard/:path*', '/reseller/:path*', '/admin/:path*'],
+}

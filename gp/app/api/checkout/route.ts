@@ -2,10 +2,10 @@ import { createAdminClient } from '@/lib/supabase/server'
 import { initializeTransaction, generateReference } from '@/lib/paystack'
 import { NextResponse } from 'next/server'
 
-const PLANS: Record<string, { gb: number; price: number }> = {
-  micro:   { gb: 1,   price: 4.50 },
-  starter: { gb: 10,  price: 3.50 },
-  growth:  { gb: 100, price: 2.80 },
+const PLANS: Record<string, { gb: number; price: number; total: number }> = {
+  micro:   { gb: 1,   price: 4.50, total: 4.50  },
+  starter: { gb: 10,  price: 3.50, total: 35.00 },
+  growth:  { gb: 100, price: 2.80, total: 280.00 },
 }
 
 export async function POST(req: Request) {
@@ -21,14 +21,19 @@ export async function POST(req: Request) {
     const planData = PLANS[plan]
     if (!planData) return NextResponse.json({ error: 'Invalid plan' }, { status: 400 })
 
-    const total = planData.price * planData.gb
+    // Cancel any existing pending orders to prevent duplicates
+    await supabase
+      .from('orders')
+      .update({ payment_status: 'cancelled' })
+      .eq('user_id', user.id)
+      .eq('payment_status', 'pending')
+
     const reference = generateReference()
 
-    // Create pending order
     const { data: order, error } = await supabase.from('orders').insert({
       user_id: user.id,
       gb_amount: planData.gb,
-      amount_usd: total,
+      amount_usd: planData.total,
       payment_method: 'paystack',
       payment_status: 'pending',
       paystack_reference: reference,
@@ -38,9 +43,13 @@ export async function POST(req: Request) {
 
     const txn = await initializeTransaction({
       email: user.email!,
-      amount_usd: total,
+      amount_usd: planData.total,
       reference,
-      metadata: { order_id: order.id, user_id: user.id, gb_amount: String(planData.gb) },
+      metadata: {
+        order_id: order.id,
+        user_id: user.id,
+        gb_amount: String(planData.gb),
+      },
       callback_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard?payment=success`,
     })
 
