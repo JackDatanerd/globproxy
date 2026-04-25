@@ -1,3 +1,4 @@
+cat > "gp/app/api/admin/delete-user/route.ts" << 'ENDOFFILE'
 import { createAdminClient } from '@/lib/supabase/server'
 import { sendEmail } from '@/lib/email'
 import { NextResponse } from 'next/server'
@@ -35,7 +36,7 @@ export async function POST(req: Request) {
             style="display:block;margin:0 auto 32px auto;border-radius:12px;"/>
           <h2 style="text-align:center;color:#111;">Account permanently deleted</h2>
           <p style="color:#444;text-align:center;">
-            Hi ${tp.full_name ?? 'there'}, your GlobProxy account has been permanently deleted
+            Hi there, your GlobProxy account has been permanently deleted
             by an administrator. All your data has been removed from our systems.
           </p>
           <p style="color:#444;text-align:center;">
@@ -44,11 +45,11 @@ export async function POST(req: Request) {
           <div style="text-align:center;margin:32px 0;">
             <a href="mailto:support@globproxy.com"
                style="background:#dc2626;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">
-              Contact support →
+              Contact support
             </a>
           </div>
           <p style="color:#bbb;font-size:12px;text-align:center;margin-top:32px;">
-            © 2026 GlobProxy · Residential Proxies That Never Expire
+            2026 GlobProxy. Residential Proxies That Never Expire
           </p>
         </div>
       `,
@@ -66,3 +67,4 @@ export async function POST(req: Request) {
 
   return NextResponse.json({ success: true })
 }
+ENDOFFILE
