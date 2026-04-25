@@ -1,4 +1,3 @@
-cat > "gp/app/api/admin/delete-user/route.ts" << 'ENDOFFILE'
 import { createAdminClient } from '@/lib/supabase/server'
 import { sendEmail } from '@/lib/email'
 import { NextResponse } from 'next/server'
@@ -30,29 +29,7 @@ export async function POST(req: Request) {
     await sendEmail({
       to: tp.email,
       subject: 'Your GlobProxy account has been permanently deleted',
-      html: `
-        <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
-          <img src="https://globproxy.com/og-image.png" alt="GlobProxy" width="200"
-            style="display:block;margin:0 auto 32px auto;border-radius:12px;"/>
-          <h2 style="text-align:center;color:#111;">Account permanently deleted</h2>
-          <p style="color:#444;text-align:center;">
-            Hi there, your GlobProxy account has been permanently deleted
-            by an administrator. All your data has been removed from our systems.
-          </p>
-          <p style="color:#444;text-align:center;">
-            If you believe this was a mistake, contact us immediately.
-          </p>
-          <div style="text-align:center;margin:32px 0;">
-            <a href="mailto:support@globproxy.com"
-               style="background:#dc2626;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">
-              Contact support
-            </a>
-          </div>
-          <p style="color:#bbb;font-size:12px;text-align:center;margin-top:32px;">
-            2026 GlobProxy. Residential Proxies That Never Expire
-          </p>
-        </div>
-      `,
+      html: '<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;"><h2>Account permanently deleted</h2><p>Your GlobProxy account has been permanently deleted by an administrator.</p><p>If you believe this was a mistake, contact support@globproxy.com</p></div>',
     })
 
     await supabase.from('banned_emails').upsert({
@@ -67,4 +44,3 @@ export async function POST(req: Request) {
 
   return NextResponse.json({ success: true })
 }
-ENDOFFILE
