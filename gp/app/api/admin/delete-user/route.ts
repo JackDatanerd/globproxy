@@ -22,10 +22,11 @@ export async function POST(req: Request) {
     .eq('id', user_id)
     .single()
 
-  if (tp?.role === 'admin') return NextResponse.json({ error: 'Cannot delete admin accounts' }, { status: 403 })
+  if (!tp) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+  if (tp.role === 'admin') return NextResponse.json({ error: 'Cannot delete admin accounts' }, { status: 403 })
 
-  // Send deletion email BEFORE deleting so we still have their info
-  if (tp?.email) {
+  // Send deletion email BEFORE deleting
+  if (tp.email) {
     await sendEmail({
       to: tp.email,
       subject: 'Your GlobProxy account has been permanently deleted',
@@ -35,7 +36,7 @@ export async function POST(req: Request) {
             style="display:block;margin:0 auto 32px auto;border-radius:12px;"/>
           <h2 style="text-align:center;color:#111;">Account permanently deleted</h2>
           <p style="color:#444;text-align:center;">
-            Hi ${tp.full_name ?? 'there'}, your GlobProxy account has been permanently deleted 
+            Hi ${tp.full_name ?? 'there'}, your GlobProxy account has been permanently deleted
             by an administrator. All your data has been removed from our systems.
           </p>
           <p style="color:#444;text-align:center;">
@@ -53,16 +54,14 @@ export async function POST(req: Request) {
         </div>
       `,
     })
-  }
 
-// Ban the email so they can't re-register
-if (tp?.email) {
-  await supabase.from('banned_emails').upsert({
-    email: tp.email.toLowerCase(),
-    reason: 'Account deleted by admin',
-    banned_by: caller.id,
-  }, { onConflict: 'email' })
-}
+    // Ban the email so they can't re-register
+    await supabase.from('banned_emails').upsert({
+      email: tp.email.toLowerCase(),
+      reason: 'Account deleted by admin',
+      banned_by: caller.id,
+    }, { onConflict: 'email' })
+  }
 
   // Delete the auth user
   const { error } = await supabase.auth.admin.deleteUser(user_id)
