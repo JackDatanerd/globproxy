@@ -1,5 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import Link from 'next/link'
+import { Suspense } from 'react'
+import PaymentVerifier from '@/components/PaymentVerifier'
 
 export default async function DashboardPage() {
   const supabase = await createClient()
@@ -20,6 +22,11 @@ export default async function DashboardPage() {
 
   return (
     <div className="max-w-5xl">
+      {/* Payment verifier — runs client side, detects ?payment=success&reference=xxx */}
+      <Suspense fallback={null}>
+        <PaymentVerifier />
+      </Suspense>
+
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="font-display font-bold text-2xl text-ink">Good day, {firstName} 👋</h1>

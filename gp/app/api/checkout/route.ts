@@ -50,7 +50,7 @@ export async function POST(req: Request) {
         user_id: user.id,
         gb_amount: String(planData.gb),
       },
-      callback_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard?payment=success`,
+      callback_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard?payment=success&reference=${reference}`,
     })
 
     return NextResponse.json({ url: txn.authorization_url })
