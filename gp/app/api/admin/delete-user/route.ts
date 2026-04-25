@@ -56,11 +56,13 @@ export async function POST(req: Request) {
   }
 
 // Ban the email so they can't re-register
-await supabase.from('banned_emails').upsert({
-  email: tp.email.toLowerCase(),
-  reason: 'Account deleted by admin',
-  banned_by: caller.id,
-}, { onConflict: 'email' })
+if (tp?.email) {
+  await supabase.from('banned_emails').upsert({
+    email: tp.email.toLowerCase(),
+    reason: 'Account deleted by admin',
+    banned_by: caller.id,
+  }, { onConflict: 'email' })
+}
 
   // Delete the auth user
   const { error } = await supabase.auth.admin.deleteUser(user_id)
