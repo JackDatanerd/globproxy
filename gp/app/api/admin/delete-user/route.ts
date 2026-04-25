@@ -25,7 +25,6 @@ export async function POST(req: Request) {
   if (!tp) return NextResponse.json({ error: 'User not found' }, { status: 404 })
   if (tp.role === 'admin') return NextResponse.json({ error: 'Cannot delete admin accounts' }, { status: 403 })
 
-  // Send deletion email BEFORE deleting
   if (tp.email) {
     await sendEmail({
       to: tp.email,
@@ -55,15 +54,12 @@ export async function POST(req: Request) {
       `,
     })
 
-    // Ban the email so they can't re-register
     await supabase.from('banned_emails').upsert({
       email: tp.email.toLowerCase(),
       reason: 'Account deleted by admin',
       banned_by: caller.id,
     }, { onConflict: 'email' })
   }
-
-  // Delete the auth user
 
   const { error } = await supabase.auth.admin.deleteUser(user_id)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
