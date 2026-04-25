@@ -1,7 +1,6 @@
 'use client'
 import { useState } from 'react'
 import Link from 'next/link'
-import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
 
 export default function ResetPage() {
@@ -12,8 +11,24 @@ export default function ResetPage() {
   async function handle(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
-    const { error } = await createClient().auth.resetPasswordForEmail(email, { redirectTo: `${location.origin}/auth/update-password` })
-    if (error) { toast.error(error.message); setLoading(false); return }
+
+    const res = await fetch('/api/auth/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email,
+        redirectTo: `${location.origin}/auth/callback?type=recovery`,
+      }),
+    })
+
+    const data = await res.json()
+
+    if (!res.ok) {
+      toast.error(data.error)
+      setLoading(false)
+      return
+    }
+
     setSent(true)
   }
 
@@ -37,7 +52,8 @@ export default function ResetPage() {
                 <input type="email" required value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com"
                   className="w-full bg-surface border border-border text-ink placeholder-muted px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-accent transition-colors" />
               </div>
-              <button type="submit" disabled={loading} className="w-full bg-accent text-white py-3 rounded-xl font-medium text-sm hover:opacity-90 disabled:opacity-60 transition-opacity">
+              <button type="submit" disabled={loading}
+                className="w-full bg-accent text-white py-3 rounded-xl font-medium text-sm hover:opacity-90 disabled:opacity-60 transition-opacity">
                 {loading ? 'Sending...' : 'Send reset link →'}
               </button>
             </form>

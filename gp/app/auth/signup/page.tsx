@@ -2,7 +2,6 @@
 import { useState, Suspense } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
 import { validateEmail } from '@/lib/email-validation'
 import toast from 'react-hot-toast'
 
@@ -28,22 +27,29 @@ function SignupForm() {
     if (!valid) { setEmailErr(error ?? ''); return }
     setLoading(true)
 
-    const { error: err } = await createClient().auth.signUp({
-      email, password,
-      options: {
-        data: { full_name: name, intended_role: isReseller ? 'reseller' : 'user' },
-        emailRedirectTo: `${location.origin}/auth/callback`
-      }
+    const res = await fetch('/api/auth/signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email,
+        password,
+        full_name: name,
+        intended_role: isReseller ? 'reseller' : 'user',
+        emailRedirectTo: `${location.origin}/auth/callback`,
+      }),
     })
 
-    if (err) {
-      // Supabase returns this for already-registered emails
-      if (err.message.toLowerCase().includes('already registered') ||
-          err.message.toLowerCase().includes('user already exists')) {
-        toast.error('An account with this email already exists.')
+    const data = await res.json()
+
+    if (!res.ok) {
+      if (data.existing) {
         setEmailErr('Already registered — try signing in instead.')
+        toast.error('An account with this email already exists.')
       } else {
-        toast.error(err.message)
+        toast.error(data.error)
+        if (data.error?.toLowerCase().includes('suspended')) {
+          setEmailErr(data.error)
+        }
       }
       setLoading(false)
       return
