@@ -30,7 +30,7 @@ export default async function AdminUsersPage() {
               return (
                 <tr key={u.id} className={`${i < users.length - 1 ? 'border-b border-border' : ''} hover:bg-surface`}>
                   <td className="px-5 py-3.5">
-                    <div className="text-sm font-medium text-ink">{u.full_name || '—'}</div>
+                    <div className="text-sm font-medium text-ink">{u.full_name || '-'}</div>
                     <div className="text-xs font-mono text-muted">{u.email}</div>
                   </td>
                   <td className="px-5 py-3.5">
