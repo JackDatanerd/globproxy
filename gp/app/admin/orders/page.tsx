@@ -47,7 +47,7 @@ export default async function AdminOrdersPage() {
                 </td>
                 <td className="px-6 py-4">
                   <div className="text-sm text-ink">{o.profiles?.full_name || 'Deleted user'}</div>
-                  <div className="text-xs font-mono text-muted">{o.profiles?.email || '—'}</div>
+                  <div className="text-xs font-mono text-muted">{o.profiles?.email || '-'}</div>
                 </td>
                 <td className="px-6 py-4 font-mono text-sm font-medium text-ink">{o.gb_amount} GB</td>
                 <td className="px-6 py-4 font-mono text-sm text-ink">${o.amount_usd}</td>
