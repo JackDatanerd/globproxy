@@ -4,9 +4,15 @@ import AdminResellerActions from '@/components/admin/AdminResellerActions'
 export default async function AdminResellersPage() {
   const supabase = await createAdminClient()
   const [{ data: resellers }, { data: applicants }] = await Promise.all([
-    supabase.from('profiles').select('*, bandwidth_accounts(total_gb, used_gb)').eq('role', 'reseller').order('created_at', { ascending: false }),
+    supabase.from('profiles').select('*').eq('role', 'reseller').order('created_at', { ascending: false }),
     supabase.from('profiles').select('*').eq('role', 'user').eq('reseller_status', 'pending').order('created_at', { ascending: false }),
   ])
+
+  const resellerIds = resellers?.map(r => r.id) ?? []
+  const { data: bwAccounts } = resellerIds.length > 0
+    ? await supabase.from('bandwidth_accounts').select('user_id, total_gb, used_gb').in('user_id', resellerIds)
+    : { data: [] }
+  const bwMap = Object.fromEntries((bwAccounts ?? []).map(b => [b.user_id, b]))
 
   return (
     <div className="max-w-5xl">
@@ -45,10 +51,10 @@ export default async function AdminResellersPage() {
             </thead>
             <tbody>
               {resellers.map((r, i) => {
-                const bw = Array.isArray(r.bandwidth_accounts) ? r.bandwidth_accounts[0] : r.bandwidth_accounts
+                const bw = bwMap[r.id]
                 const available = (bw?.total_gb ?? 0) - (bw?.used_gb ?? 0)
                 return (
-                  <tr key={r.id} className={`${i < resellers.length - 1 ? 'border-b border-border' : ''} hover:bg-surface`}>
+                  <tr key={r.id} className="border-b border-border hover:bg-surface">
                     <td className="px-6 py-4">
                       <div className="text-sm font-medium text-ink">{r.full_name || '-'}</div>
                       <div className="text-xs font-mono text-muted">{r.email}</div>

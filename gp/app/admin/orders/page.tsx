@@ -2,23 +2,27 @@ import { createAdminClient } from '@/lib/supabase/server'
 
 export default async function AdminOrdersPage() {
   const supabase = await createAdminClient()
-  const { data: orders, error } = await supabase
+  const { data: orders } = await supabase
     .from('orders')
     .select('*')
     .order('created_at', { ascending: false })
     .limit(200)
 
-  console.log('orders', orders?.length, error)
-
   const paid = orders?.filter(o => o.payment_status === 'paid') ?? []
   const totalRevenue = paid.reduce((s, o) => s + Number(o.amount_usd), 0)
   const totalGb = paid.reduce((s, o) => s + Number(o.gb_amount), 0)
+
+  const userIds = [...new Set(orders?.map(o => o.user_id).filter(Boolean) ?? [])]
+  const { data: profiles } = userIds.length > 0
+    ? await supabase.from('profiles').select('id, email, full_name').in('id', userIds)
+    : { data: [] }
+  const profileMap = Object.fromEntries((profiles ?? []).map(p => [p.id, p]))
 
   return (
     <div className="max-w-6xl">
       <div className="mb-8">
         <h1 className="font-display font-bold text-2xl text-ink">Orders</h1>
-        <p className="text-muted text-sm mt-1">{orders?.length ?? 0} orders found</p>
+        <p className="text-muted text-sm mt-1">All purchase activity across the platform</p>
       </div>
       <div className="grid grid-cols-3 gap-4 mb-8">
         <div className="bg-white border border-border rounded-xl p-5">
@@ -38,20 +42,31 @@ export default async function AdminOrdersPage() {
         <table className="w-full">
           <thead>
             <tr className="border-b border-border bg-surface">
-              {['Date', 'GB', 'Amount', 'Status'].map(h => (
+              {['Date', 'User', 'GB', 'Amount', 'Status'].map(h => (
                 <th key={h} className="text-left px-6 py-3 text-[10px] font-mono text-muted uppercase tracking-widest">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {orders?.map((o, i) => (
-              <tr key={o.id} className="border-b border-border hover:bg-surface">
-                <td className="px-6 py-4 text-xs font-mono text-muted">{new Date(o.created_at).toLocaleDateString()}</td>
-                <td className="px-6 py-4 font-mono text-sm">{o.gb_amount} GB</td>
-                <td className="px-6 py-4 font-mono text-sm">${o.amount_usd}</td>
-                <td className="px-6 py-4 text-xs font-mono">{o.payment_status}</td>
-              </tr>
-            ))}
+            {orders?.map((o, i) => {
+              const profile = o.user_id ? profileMap[o.user_id] : null
+              return (
+                <tr key={o.id} className="border-b border-border hover:bg-surface">
+                  <td className="px-6 py-4 text-xs font-mono text-muted">{new Date(o.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
+                  <td className="px-6 py-4">
+                    <div className="text-sm text-ink">{profile?.full_name || 'Deleted user'}</div>
+                    <div className="text-xs font-mono text-muted">{profile?.email || '-'}</div>
+                  </td>
+                  <td className="px-6 py-4 font-mono text-sm font-medium text-ink">{o.gb_amount} GB</td>
+                  <td className="px-6 py-4 font-mono text-sm text-ink">${o.amount_usd}</td>
+                  <td className="px-6 py-4">
+                    <span className={`text-[10px] font-mono px-2.5 py-1 rounded-full ${o.payment_status === 'paid' ? 'bg-accent2-light text-accent2' : o.payment_status === 'pending' ? 'bg-yellow-50 text-yellow-600' : 'bg-red-50 text-red-400'}`}>
+                      {o.payment_status}
+                    </span>
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
