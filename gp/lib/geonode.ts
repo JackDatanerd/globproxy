@@ -2,24 +2,52 @@ const BASE = 'https://api.geonode.com/v1'
 const KEY = process.env.GEONODE_API_KEY!
 
 function headers() {
-  return { 'Authorization': `Bearer ${KEY}`, 'Content-Type': 'application/json' }
+  return {
+    Authorization: `Bearer ${KEY}`,
+    'Content-Type': 'application/json',
+  }
 }
 
 function genPassword(): string {
-  const c = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#'
-  return Array.from({ length: 16 }, () => c[Math.floor(Math.random() * c.length)]).join('')
+  const chars = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#'
+  return Array.from({ length: 16 }, () => chars[Math.floor(Math.random() * chars.length)]).join('')
 }
 
-export interface GCred { username: string; password: string; host: string; port: number }
+export interface GCred {
+  username: string
+  password: string
+  host: string
+  port: number
+}
 
-export async function createSubUser(p: { label: string; gb_limit: number; country?: string; city?: string }): Promise<GCred> {
+export async function createSubUser(p: {
+  label: string
+  gb_limit: number
+  country?: string
+  state?: string
+  city?: string
+  protocol?: 'http' | 'socks5'
+}): Promise<GCred> {
   const res = await fetch(`${BASE}/sub-users`, {
     method: 'POST',
     headers: headers(),
-    body: JSON.stringify({ username: `gp_${Date.now()}`, password: genPassword(), bandwidth_limit_gb: p.gb_limit, country: p.country ?? null, city: p.city ?? null }),
+    body: JSON.stringify({
+      username: `gp_${Date.now()}`,
+      password: genPassword(),
+      bandwidth_limit_gb: p.gb_limit,
+      country: p.country ?? null,
+      state: p.state ?? null,
+      city: p.city ?? null,
+    }),
   })
   const d = await res.json()
-  return { username: d.username, password: d.password, host: 'residential.geonode.com', port: 9000 }
+  const port = p.protocol === 'socks5' ? 7000 : 9000
+  return {
+    username: d.username,
+    password: d.password,
+    host: 'proxy.globproxy.com',
+    port,
+  }
 }
 
 export async function getSubUserUsage(username: string): Promise<number> {
