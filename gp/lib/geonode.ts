@@ -1,15 +1,19 @@
 const BASE = 'https://app-api.geonode.com/api/reseller/v2'
 const KEY  = process.env.GEONODE_API_KEY!
-const AUTH = process.env.GEONODE_API_AUTH ?? 'Token' // 'Token' or 'Bearer'
 
 // White-label host — always expose this to users, never residential.geonode.com
 export const PROXY_HOST = 'proxy.globproxy.com'
 
 function headers() {
   return {
-    'Authorization': `${AUTH} ${KEY}`,
+    'r-api-key': KEY,
     'Content-Type': 'application/json',
   }
+}
+
+function unwrap(d: any) {
+  // Geonode API wraps all responses in { data: ... }
+  return d?.data ?? d
 }
 
 function genPassword(): string {
@@ -53,22 +57,22 @@ export async function createSubUser(p: CreateSubUserParams): Promise<GCred> {
       city: p.city ?? null,
       protocol: p.protocol ?? 'http',
       session_type: p.session_type ?? 'rotating',
-      ...(p.sticky_duration ? { sticky_duration: p.sticky_duration * 60 } : {}), // convert to seconds
+      ...(p.sticky_duration ? { sticky_duration: p.sticky_duration * 60 } : {}),
     }),
   })
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    // If API call fails, return pending credentials so dashboard still works
     console.error('Geonode createSubUser failed:', res.status, err)
     return { username, password, host: PROXY_HOST, port, protocol: p.protocol ?? 'http' }
   }
 
-  const d = await res.json()
+  const raw = await res.json()
+  const d = unwrap(raw)
   return {
     username: d.username ?? username,
     password: d.password ?? password,
-    host: PROXY_HOST, // always white-label — never expose residential.geonode.com
+    host: PROXY_HOST,
     port,
     protocol: p.protocol ?? 'http',
   }
@@ -77,23 +81,34 @@ export async function createSubUser(p: CreateSubUserParams): Promise<GCred> {
 export async function getSubUserUsage(username: string): Promise<number> {
   const res = await fetch(`${BASE}/sub-users/${username}/usage`, { headers: headers() })
   if (!res.ok) return 0
-  const d = await res.json()
-  return d.used_gb ?? 0
+  const raw = await res.json()
+  const d = unwrap(raw)
+  return d.used_gb ?? d.usedGb ?? 0
 }
 
 export async function getAccountBalance(): Promise<{ available_gb: number; total_gb: number }> {
   const res = await fetch(`${BASE}/account/balance`, { headers: headers() })
-  if (!res.ok) return { available_gb: 0, total_gb: 0 }
-  const d = await res.json()
-  return { available_gb: d.available_gb ?? 0, total_gb: d.total_gb ?? 0 }
+  if (!res.ok) {
+    console.error('Geonode getAccountBalance failed:', res.status, await res.text().catch(() => ''))
+    return { available_gb: 0, total_gb: 0 }
+  }
+  const raw = await res.json()
+  const d = unwrap(raw)
+  return {
+    available_gb: d.available_gb ?? d.availableGb ?? d.available ?? 0,
+    total_gb: d.total_gb ?? d.totalGb ?? d.total ?? 0,
+  }
 }
 
 export async function purchaseBandwidth(gb: number): Promise<void> {
-  await fetch(`${BASE}/account/purchase`, {
+  const res = await fetch(`${BASE}/account/purchase`, {
     method: 'POST',
     headers: headers(),
     body: JSON.stringify({ gb_amount: gb }),
   })
+  if (!res.ok) {
+    console.error('Geonode purchaseBandwidth failed:', res.status, await res.text().catch(() => ''))
+  }
 }
 
 export async function deleteSubUser(username: string): Promise<void> {

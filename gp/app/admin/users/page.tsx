@@ -3,10 +3,20 @@ import AdminUserControls from '@/components/admin/AdminUserControls'
 
 export default async function AdminUsersPage() {
   const supabase = await createAdminClient()
-  const { data: users } = await supabase
+
+  const { data: users, error } = await supabase
     .from('profiles')
-    .select('*, bandwidth_accounts(available_gb, total_gb)')
+    .select('*')
     .order('created_at', { ascending: false })
+
+  // Fetch bandwidth separately to avoid join failures
+  const { data: bwRows } = await supabase
+    .from('bandwidth_accounts')
+    .select('user_id, available_gb, total_gb')
+
+  const bwMap = Object.fromEntries((bwRows ?? []).map(b => [b.user_id, b]))
+
+  if (error) console.error('AdminUsersPage query error:', error)
 
   return (
     <div className="max-w-6xl">
@@ -14,7 +24,6 @@ export default async function AdminUsersPage() {
         <h1 className="font-display font-bold text-2xl text-ink">All Users</h1>
         <p className="text-muted text-sm mt-1">{users?.length ?? 0} registered accounts</p>
       </div>
-
       <div className="bg-white border border-border rounded-xl overflow-hidden">
         <table className="w-full">
           <thead>
@@ -25,10 +34,10 @@ export default async function AdminUsersPage() {
             </tr>
           </thead>
           <tbody>
-            {users?.map((u, i) => {
-              const bw = Array.isArray(u.bandwidth_accounts) ? u.bandwidth_accounts[0] : u.bandwidth_accounts
+            {(users ?? []).map((u, i) => {
+              const bw = bwMap[u.id]
               return (
-                <tr key={u.id} className={`${i < users.length - 1 ? 'border-b border-border' : ''} hover:bg-surface transition-colors`}>
+                <tr key={u.id} className={`${i < (users?.length ?? 0) - 1 ? 'border-b border-border' : ''} hover:bg-surface transition-colors`}>
                   <td className="px-5 py-3.5">
                     <div className="text-sm font-medium text-ink">{u.full_name || '—'}</div>
                     <div className="text-xs font-mono text-muted">{u.email}</div>
