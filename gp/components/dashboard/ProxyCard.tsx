@@ -145,7 +145,7 @@ console.log(await res.json()); // shows proxy IP and location`
 
       {cred.status === 'pending' ? (
         <div className="mx-5 mb-5 text-xs text-yellow-700 bg-yellow-50 border border-yellow-100 rounded-lg px-4 py-3 font-mono">
-          ⏳ Credentials are pending — your Geonode API is being configured. Check back shortly or contact support.
+          ⏳ Credentials are being provisioned. This usually takes under a minute. Refresh the page or contact support if this persists.
         </div>
       ) : cred.status === 'active' ? (
         <>
