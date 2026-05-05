@@ -11,6 +11,7 @@ const userNav = [
   { label: 'Billing',       href: '/dashboard/billing' },
   { label: 'Settings',      href: '/dashboard/settings' },
 ]
+
 const resellerNav = [
   { label: 'Overview',      href: '/dashboard' },
   { label: 'My Stock',      href: '/dashboard/proxies' },
@@ -18,10 +19,13 @@ const resellerNav = [
   { label: 'Transfers',     href: '/reseller/transfers' },
   { label: 'Buy Wholesale', href: '/dashboard/buy' },
   { label: 'Earnings',      href: '/reseller/earnings' },
-  { label: 'API Keys',      href: '/dashboard/api-keys' },
   { label: 'Billing',       href: '/dashboard/billing' },
   { label: 'Settings',      href: '/dashboard/settings' },
 ]
+
+// API Keys only injected if api_access is true (handled below)
+const apiKeyItem = { label: 'API Keys', href: '/dashboard/api-keys' }
+
 const adminNav = [
   { label: 'Overview',    href: '/admin' },
   { label: 'All Users',   href: '/admin/users' },
@@ -31,24 +35,51 @@ const adminNav = [
   { label: 'Settings',    href: '/admin/settings' },
 ]
 
-export default function DashSidebar({ role }: { role: string }) {
+interface Props {
+  role: string
+  apiAccess?: boolean
+}
+
+export default function DashSidebar({ role, apiAccess = false }: Props) {
   const path = usePathname()
-  const nav = role === 'admin' ? adminNav : role === 'reseller' ? resellerNav : userNav
+
+  let nav = role === 'admin' ? adminNav : role === 'reseller' ? resellerNav : userNav
+
+  // Inject API Keys item for resellers with api_access, or always for admin
+  if (role === 'reseller' && apiAccess) {
+    nav = [
+      ...resellerNav.slice(0, 6), // up to Earnings
+      apiKeyItem,
+      ...resellerNav.slice(6),    // Billing, Settings
+    ]
+  }
+  if (role === 'admin') {
+    nav = adminNav // admin always sees everything
+  }
+
   const label = role === 'admin' ? 'Admin Panel' : role === 'reseller' ? 'Reseller Panel' : 'My Account'
+
   return (
     <aside className="w-56 bg-white border-r border-border flex-shrink-0 flex flex-col py-6">
       <nav className="flex flex-col gap-0.5 px-3 flex-1">
         <div className="text-[10px] font-mono text-muted uppercase tracking-widest px-3 pb-3">{label}</div>
         {nav.map(item => (
           <Link key={item.href} href={item.href}
-            className={clsx('flex items-center px-3 py-2.5 rounded-xl text-sm transition-all',
-              path === item.href ? 'bg-accent-light text-accent font-medium' : 'text-ink2 hover:bg-surface hover:text-ink')}>
+            className={clsx(
+              'flex items-center px-3 py-2.5 rounded-xl text-sm transition-all',
+              path === item.href
+                ? 'bg-accent-light text-accent font-medium'
+                : 'text-ink2 hover:bg-surface hover:text-ink'
+            )}>
             {item.label}
           </Link>
         ))}
       </nav>
       <div className="px-3 pt-4 border-t border-border mx-3">
-        <a href="mailto:support@globproxy.com" className="flex items-center px-3 py-2.5 rounded-xl text-sm text-muted hover:text-ink hover:bg-surface transition-all">Support</a>
+        <a href="mailto:support@globproxy.com"
+          className="flex items-center px-3 py-2.5 rounded-xl text-sm text-muted hover:text-ink hover:bg-surface transition-all">
+          Support
+        </a>
       </div>
     </aside>
   )

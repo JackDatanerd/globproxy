@@ -2,7 +2,12 @@ import { createAdminClient } from '@/lib/supabase/server'
 import { createSubUser } from '@/lib/geonode'
 import { sendEmail } from '@/lib/email'
 
-export async function activateBandwidth(p: { order_id: string; user_id: string; gb_amount: number; paystack_reference: string }) {
+export async function activateBandwidth(p: {
+  order_id: string
+  user_id: string
+  gb_amount: number
+  paystack_reference: string
+}) {
   const supabase = await createAdminClient()
 
   // 1. Mark order paid
@@ -10,50 +15,55 @@ export async function activateBandwidth(p: { order_id: string; user_id: string; 
     payment_status: 'paid',
     paystack_reference: p.paystack_reference,
     bandwidth_credited: true,
-    paid_at: new Date().toISOString()
+    paid_at: new Date().toISOString(),
   }).eq('id', p.order_id)
 
-  // 2. Credit GB — upsert in case row doesn't exist yet
+  // 2. Credit GB to bandwidth account
   const { data: bw } = await supabase
     .from('bandwidth_accounts')
     .select('total_gb')
     .eq('user_id', p.user_id)
     .single()
 
-  await supabase.from('bandwidth_accounts').upsert({
-    user_id: p.user_id,
-    total_gb: (bw?.total_gb ?? 0) + p.gb_amount,
-  }, { onConflict: 'user_id' })
+  await supabase.from('bandwidth_accounts')
+    .update({ total_gb: (bw?.total_gb ?? 0) + p.gb_amount })
+    .eq('user_id', p.user_id)
 
-  // 3. Activate pending proxy credentials
+  // 3. Activate any pending proxy credentials for this user
   const { data: pending } = await supabase
     .from('proxy_credentials')
     .select('*')
     .eq('user_id', p.user_id)
     .eq('status', 'pending')
+    .is('created_by', null) // only direct user credentials, not reseller allocations
 
   for (const cred of pending ?? []) {
     try {
-      const g = await createSubUser({
+      const gcred = await createSubUser({
         label: cred.label ?? `gp_${p.user_id.slice(0, 8)}`,
         gb_limit: cred.gb_allocated,
-        country: cred.country,
-        city: cred.city
+        country: cred.country ?? undefined,
+        state: cred.state ?? undefined,
+        city: cred.city ?? undefined,
+        protocol: cred.protocol ?? 'http',
+        session_type: cred.session_type ?? 'rotating',
+        sticky_duration: cred.sticky_duration ?? undefined,
       })
       await supabase.from('proxy_credentials').update({
         status: 'active',
-        geonode_username: g.username,
-        geonode_password: g.password,
-        host: g.host,
-        port: g.port,
-        activated_at: new Date().toISOString()
+        geonode_username: gcred.username,
+        geonode_password: gcred.password,
+        host: gcred.host,
+        port: gcred.port,
+        activated_at: new Date().toISOString(),
       }).eq('id', cred.id)
     } catch (e) {
-      console.error('Cred activation failed', cred.id, e)
+      console.error('Failed to activate credential', cred.id, e)
     }
   }
 
-  // 4. Activate pending reseller transfers
+  // 4. Activate pending reseller transfers for this user
+  // Reseller allocations: created_by is set and != user_id
   const { data: transfers } = await supabase
     .from('reseller_transfers')
     .select('*, proxy_credentials(*)')
@@ -64,30 +74,34 @@ export async function activateBandwidth(p: { order_id: string; user_id: string; 
     const cred = t.proxy_credentials as any
     if (!cred) continue
     try {
-      const g = await createSubUser({
+      const gcred = await createSubUser({
         label: cred.label ?? `reseller_sub`,
         gb_limit: t.gb_amount,
-        country: cred.country,
-        city: cred.city
+        country: cred.country ?? undefined,
+        state: cred.state ?? undefined,
+        city: cred.city ?? undefined,
+        protocol: cred.protocol ?? 'http',
+        session_type: cred.session_type ?? 'rotating',
       })
       await supabase.from('proxy_credentials').update({
         status: 'active',
-        geonode_username: g.username,
-        geonode_password: g.password,
-        host: g.host,
-        port: g.port,
-        activated_at: new Date().toISOString()
+        geonode_username: gcred.username,
+        geonode_password: gcred.password,
+        host: gcred.host,
+        port: gcred.port,
+        activated_at: new Date().toISOString(),
       }).eq('id', cred.id)
+
       await supabase.from('reseller_transfers').update({
         status: 'active',
-        activated_at: new Date().toISOString()
+        activated_at: new Date().toISOString(),
       }).eq('id', t.id)
     } catch (e) {
-      console.error('Transfer activation failed', t.id, e)
+      console.error('Failed to activate reseller transfer', t.id, e)
     }
   }
 
-  // 5. Confirmation email
+  // 5. Send confirmation email
   const { data: profile } = await supabase
     .from('profiles')
     .select('email, full_name')
@@ -97,28 +111,19 @@ export async function activateBandwidth(p: { order_id: string; user_id: string; 
   if (profile?.email) {
     await sendEmail({
       to: profile.email,
-      subject: `Your ${p.gb_amount} GB is ready — GlobProxy`,
+      subject: `Your ${p.gb_amount}GB is ready — GlobProxy`,
       html: `
-        <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
-          <img src="https://globproxy.com/og-image.png" alt="GlobProxy" width="200"
-            style="display:block;margin:0 auto 32px auto;border-radius:12px;"/>
-          <h2 style="text-align:center;color:#111;">Your bandwidth is ready 🎉</h2>
-          <p style="color:#444;text-align:center;">
-            Hi ${profile.full_name ?? 'there'}, your <strong>${p.gb_amount} GB</strong> of
-            residential proxy bandwidth is now in your account. It never expires.
-          </p>
-          <div style="text-align:center;margin:32px 0;">
-            <a href="${process.env.NEXT_PUBLIC_APP_URL}/dashboard"
-               style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">
-              Go to dashboard →
-            </a>
-          </div>
-          <p style="color:#888;font-size:13px;text-align:center;">
-            Questions? Reply to this email or contact support@globproxy.com
-          </p>
-          <p style="color:#bbb;font-size:12px;text-align:center;margin-top:32px;">
-            © 2026 GlobProxy · Residential Proxies That Never Expire
-          </p>
+        <div style="font-family:sans-serif;max-width:520px">
+          <h2 style="color:#0057ff">Bandwidth activated</h2>
+          <p>Hi ${profile.full_name?.split(' ')[0] ?? 'there'},</p>
+          <p>Your <strong>${p.gb_amount} GB</strong> of residential proxy bandwidth
+             is now in your account. It never expires — use it at your own pace.</p>
+          <a href="${process.env.NEXT_PUBLIC_APP_URL}/dashboard/proxies"
+             style="display:inline-block;background:#0057ff;color:#fff;padding:10px 20px;
+                    border-radius:8px;text-decoration:none;font-weight:500;margin-top:8px">
+            Create your first proxy session →
+          </a>
+          <p style="color:#8892a0;font-size:12px;margin-top:20px">— GlobProxy</p>
         </div>
       `,
     })

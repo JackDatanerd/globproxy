@@ -1,0 +1,186 @@
+import { createAdminClient } from '@/lib/supabase/server'
+import { getAccountBalance } from '@/lib/geonode'
+import { getSubUserUsage } from '@/lib/geonode'
+import { sendEmail } from '@/lib/email'
+import { NextResponse } from 'next/server'
+
+// Secured with CRON_SECRET env var
+// Set this in Cloudflare Workers env vars and wrangler.jsonc
+function validateCron(req: Request): boolean {
+  const secret = req.headers.get('x-cron-secret')
+  return secret === process.env.CRON_SECRET
+}
+
+// ── Stock check ──────────────────────────────────────────────────
+async function runStockCheck() {
+  const supabase = await createAdminClient()
+  const balance = await getAccountBalance()
+  const stock = {
+    available_gb: balance.available_gb,
+    total_gb: balance.total_gb,
+    last_synced: new Date().toISOString(),
+  }
+  await supabase.from('platform_settings')
+    .upsert({ key: 'geonode_stock', value: JSON.stringify(stock) }, { onConflict: 'key' })
+
+  if (balance.available_gb <= Number(process.env.STOCK_ALERT_THRESHOLD ?? 10)) {
+    await sendEmail({
+      to: process.env.ADMIN_EMAIL!,
+      subject: `[LOW STOCK] Geonode bandwidth: ${balance.available_gb.toFixed(1)}GB remaining`,
+      html: `<p>Your Geonode stock is low: <strong>${balance.available_gb.toFixed(1)}GB</strong> remaining of ${balance.total_gb.toFixed(1)}GB total.</p>
+             <p><a href="${process.env.NEXT_PUBLIC_APP_URL}/admin/settings">Go to Admin Panel →</a></p>`,
+    })
+    return { action: 'alert_sent', available_gb: balance.available_gb }
+  }
+  return { action: 'ok', available_gb: balance.available_gb }
+}
+
+// ── Usage sync ───────────────────────────────────────────────────
+async function runUsageSync() {
+  const supabase = await createAdminClient()
+  const { data: creds } = await supabase
+    .from('proxy_credentials')
+    .select('id, geonode_username, gb_used, user_id')
+    .eq('status', 'active')
+    .not('geonode_username', 'is', null)
+
+  let updated = 0
+  for (const cred of creds ?? []) {
+    try {
+      const newUsed = await getSubUserUsage(cred.geonode_username)
+      if (Math.abs(newUsed - (cred.gb_used ?? 0)) > 0.001) {
+        await supabase.from('proxy_credentials').update({ gb_used: newUsed }).eq('id', cred.id)
+        updated++
+      }
+    } catch {}
+  }
+
+  // Recalculate bandwidth_accounts per user
+  const { data: accounts } = await supabase.from('bandwidth_accounts').select('user_id')
+  for (const acc of accounts ?? []) {
+    const { data: userCreds } = await supabase
+      .from('proxy_credentials')
+      .select('gb_used')
+      .eq('user_id', acc.user_id)
+      .eq('status', 'active')
+    const totalUsed = userCreds?.reduce((s, c) => s + (c.gb_used ?? 0), 0) ?? 0
+    await supabase.from('bandwidth_accounts').update({ used_gb: totalUsed }).eq('user_id', acc.user_id)
+  }
+
+  return { updated_credentials: updated }
+}
+
+// ── User bandwidth alerts ─────────────────────────────────────────
+async function runBandwidthAlerts() {
+  const supabase = await createAdminClient()
+  const { data: accounts } = await supabase
+    .from('bandwidth_accounts')
+    .select('user_id, total_gb, used_gb, available_gb')
+    .gt('total_gb', 0)
+
+  let sent = 0
+  for (const acc of accounts ?? []) {
+    if (!acc.total_gb) continue
+    const pct = (acc.used_gb / acc.total_gb) * 100
+    const { data: profile } = await supabase
+      .from('profiles').select('email, full_name').eq('id', acc.user_id).single()
+    if (!profile?.email) continue
+
+    const firstName = profile.full_name?.split(' ')[0] ?? 'there'
+    const avail = acc.available_gb
+
+    if (pct >= 95) {
+      await sendEmail({
+        to: profile.email,
+        subject: `🚨 Only ${avail.toFixed(1)}GB remaining — GlobProxy`,
+        html: `<p>Hi ${firstName}, you've used ${pct.toFixed(0)}% of your bandwidth. Only ${avail.toFixed(1)}GB remains.</p>
+               <a href="${process.env.NEXT_PUBLIC_APP_URL}/dashboard/buy">Top up now →</a>`,
+      })
+      sent++
+    } else if (pct >= 80) {
+      await sendEmail({
+        to: profile.email,
+        subject: `Heads up: ${avail.toFixed(1)}GB bandwidth remaining`,
+        html: `<p>Hi ${firstName}, you've used ${pct.toFixed(0)}% of your bandwidth. ${avail.toFixed(1)}GB remains.</p>
+               <a href="${process.env.NEXT_PUBLIC_APP_URL}/dashboard/buy">Buy more →</a>`,
+      })
+      sent++
+    }
+  }
+  return { alerts_sent: sent }
+}
+
+// ── Daily summary ─────────────────────────────────────────────────
+async function runDailySummary() {
+  const supabase = await createAdminClient()
+  const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0]
+  const today = new Date().toISOString().split('T')[0]
+
+  const { data: orders } = await supabase.from('orders')
+    .select('amount_usd, gb_amount')
+    .eq('payment_status', 'paid')
+    .gte('created_at', `${yesterday}T00:00:00Z`)
+    .lt('created_at', `${today}T00:00:00Z`)
+
+  const rev = orders?.reduce((s, o) => s + o.amount_usd, 0) ?? 0
+  const gb = orders?.reduce((s, o) => s + o.gb_amount, 0) ?? 0
+
+  const { count: newUsers } = await supabase.from('profiles')
+    .select('*', { count: 'exact', head: true })
+    .gte('created_at', `${yesterday}T00:00:00Z`)
+
+  await sendEmail({
+    to: process.env.ADMIN_EMAIL!,
+    subject: `GlobProxy Daily Summary — ${yesterday}`,
+    html: `<div style="font-family:sans-serif">
+      <h2 style="color:#0057ff">Daily Summary — ${yesterday}</h2>
+      <p><strong>Revenue:</strong> $${rev.toFixed(2)}</p>
+      <p><strong>GB sold:</strong> ${gb.toFixed(1)} GB</p>
+      <p><strong>Orders:</strong> ${orders?.length ?? 0}</p>
+      <p><strong>New users:</strong> ${newUsers ?? 0}</p>
+      <a href="${process.env.NEXT_PUBLIC_APP_URL}/admin">Open admin panel →</a>
+    </div>`,
+  })
+  return { revenue: rev, gb_sold: gb, new_users: newUsers }
+}
+
+// ── Cleanup stale orders ──────────────────────────────────────────
+async function runCleanup() {
+  const supabase = await createAdminClient()
+  const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+  const { data: stale } = await supabase.from('orders')
+    .select('id').eq('payment_status', 'pending').lt('created_at', cutoff)
+
+  for (const o of stale ?? []) {
+    await supabase.from('orders').update({ payment_status: 'failed' }).eq('id', o.id)
+  }
+  return { cleaned: stale?.length ?? 0 }
+}
+
+// ── Route handler ─────────────────────────────────────────────────
+export async function POST(req: Request, context: { params: Promise<{ task: string }> }) {
+  if (!validateCron(req)) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+  const { task } = await context.params
+  try {
+    let result
+    switch (task) {
+      case 'stock':   result = await runStockCheck();       break
+      case 'usage':   result = await runUsageSync();        break
+      case 'alerts':  result = await runBandwidthAlerts();  break
+      case 'summary': result = await runDailySummary();     break
+      case 'cleanup': result = await runCleanup();          break
+      default: return NextResponse.json({ error: `Unknown task: ${task}` }, { status: 400 })
+    }
+    return NextResponse.json({ task, result, timestamp: new Date().toISOString() })
+  } catch (err: any) {
+    console.error(`Cron task ${task} failed:`, err)
+    return NextResponse.json({ error: err.message }, { status: 500 })
+  }
+}
+
+// Also support GET for manual triggering from browser (admin only)
+export async function GET(req: Request, context: { params: Promise<{ task: string }> }) {
+  return POST(req, context)
+}

@@ -1,6 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
-import NewProxyForm from '@/components/dashboard/NewProxyForm'
+import NewProxyForm from './NewProxyForm'
 
 export default async function NewProxyPage() {
   const supabase = await createClient()
@@ -9,9 +9,15 @@ export default async function NewProxyPage() {
 
   const { data: bw } = await supabase
     .from('bandwidth_accounts')
-    .select('available_gb')
+    .select('available_gb, total_gb, used_gb')
     .eq('user_id', user.id)
     .single()
 
-  return <NewProxyForm availableGb={bw?.available_gb ?? 0} />
+  const available = bw?.available_gb ?? 0
+
+  if (available <= 0) {
+    redirect('/dashboard/buy?reason=no_bandwidth')
+  }
+
+  return <NewProxyForm availableGb={available} />
 }

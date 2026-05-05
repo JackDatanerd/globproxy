@@ -7,12 +7,18 @@ export default async function DashboardLayout({ children }: { children: React.Re
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/auth/login')
-  const { data: profile } = await supabase.from('profiles').select('*').eq('id', user.id).single()
+
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('*')
+    .eq('id', user.id)
+    .single()
+
   return (
     <div className="min-h-screen bg-surface flex flex-col">
       <DashTopbar profile={profile} />
       <div className="flex flex-1 overflow-hidden">
-        <DashSidebar role={profile?.role ?? 'user'} />
+        <DashSidebar role={profile?.role ?? 'user'} apiAccess={profile?.api_access ?? false} />
         <main className="flex-1 p-8 overflow-y-auto">{children}</main>
       </div>
     </div>

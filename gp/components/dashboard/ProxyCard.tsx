@@ -1,310 +1,270 @@
 'use client'
-
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { createClient } from '@/lib/supabase/client'
+import toast from 'react-hot-toast'
+import clsx from 'clsx'
 
-interface Cred {
-  id: string
-  label: string | null
-  status: string
-  session_type: string
-  sticky_duration: number | null
-  endpoint_count: number | null
-  protocol: string | null
-  country: string | null
-  state: string | null
-  city: string | null
-  host: string | null
-  port: number | null
-  geonode_username: string | null
-  geonode_password: string | null
-  gb_allocated: number
-  gb_used: number | null
-  activated_at: string | null
-  created_at: string
-}
+interface Props { cred: any; index: number }
 
-function CopyButton({ text, label }: { text: string; label: string }) {
-  const [copied, setCopied] = useState(false)
-  async function copy() {
-    await navigator.clipboard.writeText(text)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
-  }
-  return (
-    <button
-      onClick={copy}
-      className="text-[10px] font-mono px-2 py-0.5 rounded border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors"
-    >
-      {copied ? '✓ copied' : `copy ${label}`}
-    </button>
-  )
-}
-
-function buildEndpoints(cred: Cred): string[] {
-  if (!cred.geonode_username || !cred.geonode_password || !cred.host || !cred.port) return []
-  const count = cred.endpoint_count ?? 1
-  const lines: string[] = []
-  for (let i = 1; i <= count; i++) {
-    let user = cred.geonode_username
-    if (cred.session_type === 'sticky') {
-      user = `${user}-session-${i}`
-    }
-    lines.push(`${cred.host}:${cred.port}:${user}:${cred.geonode_password}`)
-  }
-  return lines
-}
-
-function buildCurlCommand(cred: Cred): string {
-  if (!cred.geonode_username || !cred.geonode_password || !cred.host || !cred.port) return ''
-  const proto = cred.protocol === 'socks5' ? 'socks5h' : 'http'
-  return `curl -x ${proto}://${cred.geonode_username}:${cred.geonode_password}@${cred.host}:${cred.port} https://ipinfo.io/json`
-}
-
-export default function ProxyCard({ cred }: { cred: Cred }) {
+export default function ProxyCard({ cred, index }: Props) {
   const router = useRouter()
-  const [showPassword, setShowPassword] = useState(false)
+  const [showPass, setShowPass] = useState(false)
   const [showSnippets, setShowSnippets] = useState(false)
   const [deleting, setDeleting] = useState(false)
-  const [expanded, setExpanded] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
 
-  const endpoints = buildEndpoints(cred)
-  const curlCmd = buildCurlCommand(cred)
-  const locationLabel = [cred.country?.toUpperCase(), cred.state, cred.city].filter(Boolean).join(' · ')
-  const gbPct = cred.gb_allocated > 0 ? ((cred.gb_used ?? 0) / cred.gb_allocated) * 100 : 0
+  const host = cred.host || 'proxy.globproxy.com'
+  const port = cred.port || (cred.protocol === 'socks5' ? 7000 : 9000)
+  const user = cred.geonode_username || '—'
+  const pass = cred.geonode_password || '—'
+  const pct  = cred.gb_allocated > 0 ? (cred.gb_used / cred.gb_allocated) * 100 : 0
+
+  // Build endpoint strings
+  const count = cred.endpoint_count || 1
+  const endpoints: string[] = []
+  for (let i = 1; i <= count; i++) {
+    const u = count > 1 || cred.session_type === 'sticky'
+      ? `${user}-session-${i}`
+      : user
+    endpoints.push(`${host}:${port}:${u}:${pass}`)
+  }
+
+  function copy(text: string, label = 'Copied') {
+    navigator.clipboard.writeText(text)
+    toast.success(label)
+  }
+
+  function copyAll() {
+    copy(endpoints.join('\n'), `${endpoints.length} endpoint${endpoints.length > 1 ? 's' : ''} copied`)
+  }
+
+  function downloadTxt() {
+    const name = cred.label || `proxy-session-${index + 1}`
+    const blob = new Blob([endpoints.join('\n')], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = `${name.toLowerCase().replace(/\s+/g, '-')}.txt`
+    a.click(); URL.revokeObjectURL(url)
+    toast.success('Downloaded')
+  }
 
   async function handleDelete() {
-    if (!confirm(`Delete "${cred.label ?? 'this session'}"? Allocated GB will be returned to your account.`)) return
+    if (!confirmDelete) { setConfirmDelete(true); return }
     setDeleting(true)
     try {
-      const res = await fetch(`/api/dashboard/proxies/${cred.id}`, { method: 'DELETE' })
-      if (res.ok) {
-        router.refresh()
-      } else {
-        const d = await res.json()
-        alert(d.error ?? 'Delete failed')
-      }
-    } catch {
-      alert('Network error. Please try again.')
+      const { data: { session } } = await createClient().auth.getSession()
+      const res = await fetch(`/api/dashboard/proxies/${cred.id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${session?.access_token}` },
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error)
+      toast.success(`Session deleted — ${data.gb_returned}GB returned to your account`)
+      router.refresh()
+    } catch (err: any) {
+      toast.error(err.message)
     } finally {
-      setDeleting(false)
+      setDeleting(false); setConfirmDelete(false)
     }
   }
 
-  function downloadEndpoints() {
-    const content = endpoints.join('\n')
-    const blob = new Blob([content], { type: 'text/plain' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${cred.label ?? 'proxies'}.txt`
-    a.click()
-    URL.revokeObjectURL(url)
-  }
+  // IP verify curl command
+  const verifyCurl = `curl -x ${cred.protocol === 'socks5' ? 'socks5' : 'http'}://${user}:${pass}@${host}:${port} https://ipinfo.io/json`
 
-  const pythonSnippet = cred.geonode_username && cred.geonode_password
-    ? `import requests
+  // Integration snippets
+  const pySnippet = `import requests
 
 proxies = {
-    "http":  "http://${cred.geonode_username}:${cred.geonode_password}@${cred.host}:${cred.port}",
-    "https": "http://${cred.geonode_username}:${cred.geonode_password}@${cred.host}:${cred.port}",
+    "http":  "http://${user}:${pass}@${host}:${port}",
+    "https": "http://${user}:${pass}@${host}:${port}",
 }
 
-r = requests.get("https://ipinfo.io/json", proxies=proxies)
-print(r.json())`
-    : ''
+response = requests.get("https://ipinfo.io/json", proxies=proxies)
+print(response.json())  # shows your proxy IP and location`
 
-  const nodeSnippet = cred.geonode_username && cred.geonode_password
-    ? `const { HttpsProxyAgent } = require('https-proxy-agent')
-const fetch = require('node-fetch')
+  const nodeSnippet = `const { HttpsProxyAgent } = require("https-proxy-agent");
+const fetch = require("node-fetch");
 
 const agent = new HttpsProxyAgent(
-  'http://${cred.geonode_username}:${cred.geonode_password}@${cred.host}:${cred.port}'
-)
+  "http://${user}:${pass}@${host}:${port}"
+);
 
-fetch('https://ipinfo.io/json', { agent })
-  .then(r => r.json())
-  .then(console.log)`
-    : ''
+const res = await fetch("https://ipinfo.io/json", { agent });
+console.log(await res.json()); // shows proxy IP and location`
+
+  const browserSnippet = `// Chrome / Firefox extension settings:
+// 
+// Host:     ${host}
+// Port:     ${port}
+// Protocol: ${cred.protocol === 'socks5' ? 'SOCKS5' : 'HTTP'}
+// Username: ${user}
+// Password: ${pass}
+//
+// Recommended extension: Proxy SwitchyOmega (Chrome/Firefox)`
+
+  const statusColor = cred.status === 'active' ? 'text-accent2 bg-accent2-light' : cred.status === 'pending' ? 'text-yellow-600 bg-yellow-50' : 'text-muted bg-surface border border-border'
 
   return (
     <div className="bg-white border border-border rounded-xl overflow-hidden">
       {/* Header */}
-      <div className="p-5">
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 flex-wrap mb-1">
-              <span className="font-medium text-ink">{cred.label ?? 'Unnamed session'}</span>
-              <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full ${
-                cred.status === 'active' ? 'bg-accent2-light text-accent2'
-                : cred.status === 'pending' ? 'bg-yellow-50 text-yellow-600'
-                : 'bg-red-50 text-red-400'
-              }`}>{cred.status}</span>
-              <span className="text-[10px] font-mono bg-surface text-muted px-2 py-0.5 rounded-full">{cred.session_type}</span>
-              {cred.protocol && (
-                <span className="text-[10px] font-mono bg-surface text-muted px-2 py-0.5 rounded-full">{cred.protocol.toUpperCase()}</span>
-              )}
-            </div>
-            {locationLabel && (
-              <div className="text-xs text-muted">{locationLabel}</div>
+      <div className="flex items-start justify-between p-5 pb-4">
+        <div className="flex-1">
+          <div className="flex items-center gap-2 flex-wrap mb-1">
+            <span className="font-medium text-ink">{cred.label || `Session #${index + 1}`}</span>
+            <span className={clsx('text-[10px] font-mono px-2 py-0.5 rounded-full', statusColor)}>{cred.status}</span>
+            <span className="text-[10px] font-mono bg-surface text-muted border border-border px-2 py-0.5 rounded-full">{cred.session_type}</span>
+            <span className="text-[10px] font-mono bg-surface text-muted border border-border px-2 py-0.5 rounded-full">{(cred.protocol || 'http').toUpperCase()}</span>
+            {cred.sticky_duration && (
+              <span className="text-[10px] font-mono bg-accent-light text-accent px-2 py-0.5 rounded-full">{cred.sticky_duration}min sticky</span>
             )}
           </div>
-          <div className="text-right flex-shrink-0">
-            <div className="text-sm font-mono text-ink">{cred.gb_allocated} GB</div>
-            <div className="text-xs text-muted">allocated</div>
+          <div className="flex items-center gap-2 text-xs text-muted">
+            {cred.country && <span className="font-mono">{cred.country}</span>}
+            {cred.state && <><span>·</span><span className="font-mono">{cred.state}</span></>}
+            {cred.city && <><span>·</span><span className="font-mono">{cred.city}</span></>}
           </div>
         </div>
-
-        {/* GB usage mini bar */}
-        {cred.gb_allocated > 0 && (
-          <div className="mt-3">
-            <div className="bg-surface rounded-full h-1.5 overflow-hidden">
-              <div
-                className="h-full rounded-full bg-gradient-to-r from-accent to-sky-400"
-                style={{ width: `${Math.min(gbPct, 100)}%` }}
-              />
-            </div>
-            <div className="text-[10px] font-mono text-muted mt-1">
-              {(cred.gb_used ?? 0).toFixed(2)} / {cred.gb_allocated} GB used
-            </div>
-          </div>
-        )}
+        <div className="text-right flex-shrink-0 ml-4">
+          <div className="font-mono text-sm font-medium text-ink">{cred.gb_allocated} GB</div>
+          <div className="text-xs text-muted">allocated</div>
+        </div>
       </div>
 
-      {/* Active credential block */}
-      {cred.status === 'active' && cred.geonode_username && (
-        <div className="border-t border-border px-5 py-4">
-          {/* Credential fields */}
-          <div className="bg-surface rounded-lg p-3 mb-3">
-            <div className="grid grid-cols-1 gap-2">
-              {[
-                { label: 'Host', value: cred.host ?? '', copyLabel: 'host' },
-                { label: 'Port', value: String(cred.port ?? ''), copyLabel: 'port' },
-                { label: 'Username', value: cred.geonode_username ?? '', copyLabel: 'user' },
-                {
-                  label: 'Password',
-                  value: showPassword ? (cred.geonode_password ?? '') : '••••••••••••••••',
-                  copyLabel: 'pass',
-                  rawValue: cred.geonode_password ?? '',
-                },
-              ].map(({ label, value, copyLabel, rawValue }) => (
-                <div key={label} className="flex items-center gap-2">
-                  <span className="text-[10px] font-mono text-muted w-16 flex-shrink-0">{label}</span>
-                  <span className="text-xs font-mono text-ink flex-1 truncate">{value}</span>
-                  <CopyButton text={rawValue ?? value} label={copyLabel} />
-                </div>
-              ))}
-            </div>
-            <button
-              onClick={() => setShowPassword(p => !p)}
-              className="text-[10px] font-mono text-muted hover:text-accent mt-2 transition-colors"
-            >
-              {showPassword ? 'hide password' : 'show password'}
-            </button>
-          </div>
+      {/* GB usage bar */}
+      <div className="px-5 pb-4">
+        <div className="flex justify-between text-[11px] font-mono text-muted mb-1">
+          <span>{(cred.gb_used || 0).toFixed(3)} GB used</span>
+          <span>{Math.max(0, cred.gb_allocated - (cred.gb_used || 0)).toFixed(3)} GB left</span>
+        </div>
+        <div className="bg-surface rounded-full h-1.5 overflow-hidden">
+          <div className={clsx('h-full rounded-full transition-all', pct > 80 ? 'bg-red-400' : pct > 50 ? 'bg-amber-400' : 'bg-accent2')}
+            style={{ width: `${Math.min(pct, 100)}%` }} />
+        </div>
+      </div>
 
-          {/* Endpoint strings */}
-          <div className="mb-3">
-            <div className="flex items-center justify-between mb-1.5">
-              <span className="text-xs font-medium text-ink">
-                Endpoint string{endpoints.length > 1 ? 's' : ''}
-              </span>
-              <div className="flex gap-2">
-                <CopyButton text={endpoints.join('\n')} label="all" />
-                <button
-                  onClick={downloadEndpoints}
-                  className="text-[10px] font-mono px-2 py-0.5 rounded border border-border text-muted hover:text-accent hover:border-accent/40 transition-colors"
-                >
-                  download .txt
+      {cred.status === 'pending' ? (
+        <div className="mx-5 mb-5 text-xs text-yellow-700 bg-yellow-50 border border-yellow-100 rounded-lg px-4 py-3 font-mono">
+          ⏳ Credentials are pending — your Geonode API is being configured. Check back shortly or contact support.
+        </div>
+      ) : cred.status === 'active' ? (
+        <>
+          {/* Credential fields */}
+          <div className="mx-5 mb-4 bg-surface border border-border rounded-lg overflow-hidden">
+            {[
+              ['Host', host, host],
+              ['Port', String(port), String(port)],
+              ['Username', user, user],
+              ['Password', showPass ? pass : '••••••••••••••••', pass],
+            ].map(([label, display, copyVal]) => (
+              <div key={label} className="flex items-center border-b border-border last:border-none px-3 py-2">
+                <span className="text-[10px] font-mono text-muted w-20 flex-shrink-0">{label}</span>
+                <span className="text-xs font-mono text-ink flex-1 truncate">{display}</span>
+                {label === 'Password' && (
+                  <button onClick={() => setShowPass(!showPass)}
+                    className="text-[10px] font-mono text-muted hover:text-ink border border-border px-2 py-0.5 rounded mr-1.5 transition-colors">
+                    {showPass ? 'hide' : 'show'}
+                  </button>
+                )}
+                <button onClick={() => copy(copyVal, `${label} copied`)}
+                  className="text-[10px] font-mono text-accent hover:opacity-70 border border-accent/30 px-2 py-0.5 rounded transition-colors">
+                  copy
                 </button>
               </div>
-            </div>
-            <div className="bg-[#0f1117] rounded-lg p-3 max-h-40 overflow-y-auto">
-              {endpoints.map((ep, i) => (
-                <div key={i} className="text-[11px] font-mono text-green-400 leading-5 break-all">{ep}</div>
-              ))}
+            ))}
+          </div>
+
+          {/* Endpoint strings — dark terminal block */}
+          <div className="mx-5 mb-4">
+            <div className="bg-ink rounded-lg overflow-hidden">
+              <div className="flex items-center justify-between px-3 py-2 border-b border-white/10">
+                <span className="text-[10px] font-mono text-white/40 uppercase tracking-widest">
+                  Endpoint strings — host:port:user:pass
+                  {count > 1 ? ` (${count} endpoints)` : ''}
+                </span>
+                <div className="flex gap-2">
+                  <button onClick={copyAll}
+                    className="text-[10px] font-mono text-accent hover:opacity-70 border border-accent/30 px-2.5 py-1 rounded transition-colors">
+                    copy all
+                  </button>
+                  <button onClick={downloadTxt}
+                    className="text-[10px] font-mono text-white/50 hover:text-white border border-white/10 px-2.5 py-1 rounded transition-colors">
+                    .txt
+                  </button>
+                </div>
+              </div>
+              <div className="px-3 py-3 max-h-36 overflow-y-auto">
+                {endpoints.map((ep, i) => (
+                  <div key={i} className="font-mono text-[11px] text-white/70 leading-5 break-all">{ep}</div>
+                ))}
+              </div>
             </div>
           </div>
 
-          {/* IP verify command */}
-          {curlCmd && (
-            <div className="mb-3">
-              <div className="flex items-center justify-between mb-1.5">
-                <span className="text-xs font-medium text-ink">Verify IP (run in terminal)</span>
-                <CopyButton text={curlCmd} label="command" />
+          {/* IP verify */}
+          <div className="mx-5 mb-4">
+            <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-1.5">Verify exit IP</div>
+            <div className="bg-ink rounded-lg overflow-hidden">
+              <div className="flex items-center justify-between px-3 py-2 border-b border-white/10">
+                <span className="text-[10px] font-mono text-white/40">Run in your terminal</span>
+                <button onClick={() => copy(verifyCurl, 'Command copied')}
+                  className="text-[10px] font-mono text-accent hover:opacity-70 border border-accent/30 px-2.5 py-1 rounded transition-colors">
+                  copy
+                </button>
               </div>
-              <div className="bg-[#0f1117] rounded-lg p-3">
-                <div className="text-[11px] font-mono text-yellow-300 break-all leading-5">{curlCmd}</div>
-              </div>
+              <div className="px-3 py-2.5 font-mono text-[11px] text-white/70 break-all leading-5">{verifyCurl}</div>
             </div>
-          )}
+          </div>
 
-          {/* Integration snippets toggle */}
-          <button
-            onClick={() => setShowSnippets(s => !s)}
-            className="text-xs text-accent hover:underline font-mono"
-          >
-            {showSnippets ? '▲ hide snippets' : '▼ integration snippets'}
+          {/* Integration snippets */}
+          <div className="mx-5 mb-5">
+            <button onClick={() => setShowSnippets(!showSnippets)}
+              className="flex items-center gap-2 text-xs text-muted hover:text-ink transition-colors">
+              <span className={`transition-transform ${showSnippets ? 'rotate-90' : ''}`}>▶</span>
+              Integration snippets (Python, Node.js, Browser)
+            </button>
+            {showSnippets && (
+              <div className="mt-3 flex flex-col gap-3">
+                {[
+                  ['Python / requests', pySnippet, 'python'],
+                  ['Node.js / node-fetch', nodeSnippet, 'javascript'],
+                  ['Browser extension', browserSnippet, 'bash'],
+                ].map(([title, code, lang]) => (
+                  <div key={title} className="bg-ink rounded-lg overflow-hidden">
+                    <div className="flex items-center justify-between px-3 py-2 border-b border-white/10">
+                      <span className="text-[10px] font-mono text-white/40">{title}</span>
+                      <button onClick={() => copy(code as string, 'Snippet copied')}
+                        className="text-[10px] font-mono text-accent hover:opacity-70 border border-accent/30 px-2.5 py-1 rounded transition-colors">
+                        copy
+                      </button>
+                    </div>
+                    <pre className="px-3 py-3 text-[11px] font-mono text-white/70 overflow-x-auto whitespace-pre-wrap leading-5">{code}</pre>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      ) : null}
+
+      {/* Delete */}
+      <div className="px-5 pb-5 flex items-center justify-between">
+        <div className="text-xs text-muted font-mono">
+          {cred.created_by && cred.created_by !== cred.user_id
+            ? '⚠ Allocated by reseller — cannot delete'
+            : 'Deleting returns allocated GB to your account'}
+        </div>
+        {(!cred.created_by || cred.created_by === cred.user_id) && (
+          <button onClick={handleDelete} disabled={deleting}
+            className={clsx(
+              'text-xs font-mono px-3 py-1.5 rounded-lg border transition-all disabled:opacity-50',
+              confirmDelete
+                ? 'bg-red-500 text-white border-red-500 hover:opacity-90'
+                : 'border-border text-muted hover:border-red-300 hover:text-red-500'
+            )}>
+            {deleting ? 'Deleting...' : confirmDelete ? 'Confirm delete' : 'Delete session'}
           </button>
-
-          {showSnippets && (
-            <div className="mt-3 flex flex-col gap-3">
-              {/* Python */}
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-[10px] font-mono text-muted uppercase tracking-wider">Python · requests</span>
-                  <CopyButton text={pythonSnippet} label="python" />
-                </div>
-                <div className="bg-[#0f1117] rounded-lg p-3 overflow-x-auto">
-                  <pre className="text-[11px] font-mono text-blue-300 leading-5">{pythonSnippet}</pre>
-                </div>
-              </div>
-              {/* Node */}
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-[10px] font-mono text-muted uppercase tracking-wider">Node.js · node-fetch</span>
-                  <CopyButton text={nodeSnippet} label="node" />
-                </div>
-                <div className="bg-[#0f1117] rounded-lg p-3 overflow-x-auto">
-                  <pre className="text-[11px] font-mono text-blue-300 leading-5">{nodeSnippet}</pre>
-                </div>
-              </div>
-              {/* Chrome */}
-              <div className="bg-surface rounded-lg p-3">
-                <div className="text-[10px] font-mono text-muted uppercase tracking-wider mb-2">Chrome / Browser</div>
-                <div className="text-xs text-ink leading-5">
-                  Use a proxy extension like <strong>Proxy SwitchyOmega</strong> or <strong>FoxyProxy</strong>.<br />
-                  Set type to <strong>{cred.protocol?.toUpperCase() ?? 'HTTP'}</strong>, server to <strong>{cred.host}</strong>, port to <strong>{cred.port}</strong>, then enter your username and password when prompted.
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Pending state */}
-      {cred.status === 'pending' && (
-        <div className="border-t border-border px-5 py-4">
-          <div className="text-xs text-yellow-600 bg-yellow-50 px-3 py-2 rounded-lg font-mono">
-            ⏳ Activates upon payment confirmation
-          </div>
-        </div>
-      )}
-
-      {/* Footer actions */}
-      <div className="border-t border-border px-5 py-3 flex items-center justify-between bg-surface/50">
-        <span className="text-[10px] font-mono text-muted">
-          Created {new Date(cred.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
-          {cred.sticky_duration ? ` · ${cred.sticky_duration}min sticky` : ''}
-          {cred.endpoint_count && cred.endpoint_count > 1 ? ` · ${cred.endpoint_count} endpoints` : ''}
-        </span>
-        <button
-          onClick={handleDelete}
-          disabled={deleting}
-          className="text-xs font-mono text-red-400 hover:text-red-600 transition-colors disabled:opacity-50"
-        >
-          {deleting ? 'deleting…' : 'delete session'}
-        </button>
+        )}
       </div>
     </div>
   )
