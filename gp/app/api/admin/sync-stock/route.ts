@@ -1,20 +1,43 @@
 import { createAdminClient } from '@/lib/supabase/server'
-import { getAccountBalance } from '@/lib/geonode'
 import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
   const supabase = await createAdminClient()
+
+  const resellerId = process.env.GEONODE_RESELLER_ID
+  const apiKey = process.env.GEONODE_API_KEY
+  const url = `https://app-api.geonode.com/api/reseller/v2/${resellerId}/services/RESIDENTIAL-PREMIUM/traffic/summary`
+
+  let rawStatus: number | null = null
+  let rawBody: string | null = null
+
   try {
-    const balance = await getAccountBalance()
-    const stock = {
-      available_gb: balance.available_gb,
-      total_gb: balance.total_gb,
-      last_synced: new Date().toISOString(),
-    }
-    await supabase.from('platform_settings')
-      .upsert({ key: 'geonode_stock', value: JSON.stringify(stock) }, { onConflict: 'key' })
-    return NextResponse.json({ stock })
+    const res = await fetch(url, {
+      headers: {
+        'Reseller-Api-Key': apiKey ?? '',
+        'Content-Type': 'application/json',
+      },
+    })
+    rawStatus = res.status
+    rawBody = await res.text()
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 })
+    return NextResponse.json({
+      debug: true,
+      reseller_id: resellerId ?? 'MISSING',
+      api_key_present: !!apiKey,
+      api_key_prefix: apiKey ? apiKey.slice(0, 8) + '...' : 'MISSING',
+      url,
+      fetch_error: err.message,
+    })
   }
+
+  return NextResponse.json({
+    debug: true,
+    reseller_id: resellerId ?? 'MISSING',
+    api_key_present: !!apiKey,
+    api_key_prefix: apiKey ? apiKey.slice(0, 8) + '...' : 'MISSING',
+    url,
+    geonode_status: rawStatus,
+    geonode_body: rawBody,
+  })
 }
