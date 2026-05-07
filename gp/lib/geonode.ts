@@ -1,19 +1,20 @@
 const BASE = 'https://app-api.geonode.com/api/reseller/v2'
 const KEY  = process.env.GEONODE_API_KEY!
+const RESELLER_ID = process.env.GEONODE_RESELLER_ID!
+const SERVICE_TYPE = 'RESIDENTIAL-PREMIUM'
 
 // White-label host — always expose this to users, never residential.geonode.com
 export const PROXY_HOST = 'proxy.globproxy.com'
 
 function headers() {
   return {
-    'r-api-key': KEY,
+    'Reseller-Api-Key': KEY,
     'Content-Type': 'application/json',
   }
 }
 
-function unwrap(d: any) {
-  // Geonode API wraps all responses in { data: ... }
-  return d?.data ?? d
+function mbToGb(mb: number): number {
+  return Math.round((mb / 1024) * 100) / 100
 }
 
 function genPassword(): string {
@@ -24,8 +25,8 @@ function genPassword(): string {
 export interface GCred {
   username: string
   password: string
-  host: string       // always proxy.globproxy.com
-  port: number       // 9000 (http) or 7000 (socks5)
+  host: string
+  port: number
   protocol: string
 }
 
@@ -45,13 +46,13 @@ export async function createSubUser(p: CreateSubUserParams): Promise<GCred> {
   const password = genPassword()
   const port = p.protocol === 'socks5' ? 7000 : 9000
 
-  const res = await fetch(`${BASE}/sub-users`, {
+  const res = await fetch(`${BASE}/${RESELLER_ID}/sub-users`, {
     method: 'POST',
     headers: headers(),
     body: JSON.stringify({
       username,
       password,
-      bandwidth_limit_gb: p.gb_limit,
+      bandwidth_limit_mb: Math.round(p.gb_limit * 1024),
       country: p.country ?? null,
       state: p.state ?? null,
       city: p.city ?? null,
@@ -67,11 +68,11 @@ export async function createSubUser(p: CreateSubUserParams): Promise<GCred> {
     return { username, password, host: PROXY_HOST, port, protocol: p.protocol ?? 'http' }
   }
 
-  const raw = await res.json()
-  const d = unwrap(raw)
+  const d = await res.json()
+  const result = d.result ?? d
   return {
-    username: d.username ?? username,
-    password: d.password ?? password,
+    username: result.username ?? username,
+    password: result.password ?? password,
     host: PROXY_HOST,
     port,
     protocol: p.protocol ?? 'http',
@@ -79,32 +80,38 @@ export async function createSubUser(p: CreateSubUserParams): Promise<GCred> {
 }
 
 export async function getSubUserUsage(username: string): Promise<number> {
-  const res = await fetch(`${BASE}/sub-users/${username}/usage`, { headers: headers() })
+  const res = await fetch(`${BASE}/${RESELLER_ID}/sub-users/${username}/usage`, { headers: headers() })
   if (!res.ok) return 0
-  const raw = await res.json()
-  const d = unwrap(raw)
-  return d.used_gb ?? d.usedGb ?? 0
+  const d = await res.json()
+  const result = d.result ?? d
+  const usedMb = result.usedMB ?? result.used_mb ?? 0
+  return mbToGb(usedMb)
 }
 
 export async function getAccountBalance(): Promise<{ available_gb: number; total_gb: number }> {
-  const res = await fetch(`${BASE}/account/balance`, { headers: headers() })
+  const res = await fetch(
+    `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/traffic/summary`,
+    { headers: headers() }
+  )
+
   if (!res.ok) {
     console.error('Geonode getAccountBalance failed:', res.status, await res.text().catch(() => ''))
     return { available_gb: 0, total_gb: 0 }
   }
-  const raw = await res.json()
-  const d = unwrap(raw)
+
+  const d = await res.json()
+  const result = d.result ?? d
   return {
-    available_gb: d.available_gb ?? d.availableGb ?? d.available ?? 0,
-    total_gb: d.total_gb ?? d.totalGb ?? d.total ?? 0,
+    available_gb: mbToGb(result.remainingMB ?? 0),
+    total_gb: mbToGb(result.totalMB ?? 0),
   }
 }
 
 export async function purchaseBandwidth(gb: number): Promise<void> {
-  const res = await fetch(`${BASE}/account/purchase`, {
+  const res = await fetch(`${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/purchase`, {
     method: 'POST',
     headers: headers(),
-    body: JSON.stringify({ gb_amount: gb }),
+    body: JSON.stringify({ mb_amount: Math.round(gb * 1024) }),
   })
   if (!res.ok) {
     console.error('Geonode purchaseBandwidth failed:', res.status, await res.text().catch(() => ''))
@@ -112,7 +119,7 @@ export async function purchaseBandwidth(gb: number): Promise<void> {
 }
 
 export async function deleteSubUser(username: string): Promise<void> {
-  await fetch(`${BASE}/sub-users/${username}`, {
+  await fetch(`${BASE}/${RESELLER_ID}/sub-users/${username}`, {
     method: 'DELETE',
     headers: headers(),
   })
