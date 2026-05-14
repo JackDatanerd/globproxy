@@ -3,10 +3,20 @@ import AdminUserControls from '@/components/admin/AdminUserControls'
 
 export default async function AdminUsersPage() {
   const supabase = await createAdminClient()
+  
+  // 1. Fetch users without the join
   const { data: users } = await supabase
     .from('profiles')
-    .select('*, bandwidth_accounts(available_gb, total_gb)')
+    .select('*')
     .order('created_at', { ascending: false })
+
+  // 2. Fetch bandwidth separately
+  const userIds = users?.map(u => u.id) ?? []
+  const { data: bwAccounts } = userIds.length > 0
+    ? await supabase.from('bandwidth_accounts').select('user_id, available_gb, total_gb').in('user_id', userIds)
+    : { data: [] }
+    
+  const bwMap = Object.fromEntries((bwAccounts ?? []).map(b => [b.user_id, b]))
 
   return (
     <div className="max-w-6xl">
@@ -18,6 +28,7 @@ export default async function AdminUsersPage() {
       <div className="bg-white border border-border rounded-xl overflow-hidden">
         <table className="w-full">
           <thead>
+            {/* ... Keep your existing thead ... */}
             <tr className="border-b border-border bg-surface">
               {['User', 'Role', 'Stock', 'Status', 'API', 'Joined', 'Actions'].map(h => (
                 <th key={h} className="text-left px-5 py-3 text-[10px] font-mono text-muted uppercase tracking-widest">{h}</th>
@@ -26,7 +37,8 @@ export default async function AdminUsersPage() {
           </thead>
           <tbody>
             {users?.map((u, i) => {
-              const bw = Array.isArray(u.bandwidth_accounts) ? u.bandwidth_accounts[0] : u.bandwidth_accounts
+              // 3. Use the mapped bandwidth data
+              const bw = bwMap[u.id]
               return (
                 <tr key={u.id} className={`${i < users.length - 1 ? 'border-b border-border' : ''} hover:bg-surface transition-colors`}>
                   <td className="px-5 py-3.5">
@@ -41,22 +53,15 @@ export default async function AdminUsersPage() {
                     }`}>{u.role}</span>
                   </td>
                   <td className="px-5 py-3.5 font-mono text-sm text-ink">
+                    {/* Fixed to use 'bw' instead of array index */}
                     {(bw?.available_gb ?? 0).toFixed(1)} GB
                   </td>
+                  {/* ... Keep the rest of your existing td elements ... */}
                   <td className="px-5 py-3.5">
-                    {u.is_suspended
-                      ? <span className="text-[10px] font-mono bg-red-50 text-red-500 px-2.5 py-1 rounded-full">Suspended</span>
-                      : <span className="text-[10px] font-mono bg-accent2-light text-accent2 px-2.5 py-1 rounded-full">Active</span>
-                    }
+                    {u.is_suspended ? <span className="text-[10px] font-mono bg-red-50 text-red-500 px-2.5 py-1 rounded-full">Suspended</span> : <span className="text-[10px] font-mono bg-accent2-light text-accent2 px-2.5 py-1 rounded-full">Active</span>}
                   </td>
                   <td className="px-5 py-3.5">
-                    {u.role === 'reseller' ? (
-                      u.api_access
-                        ? <span className="text-[10px] font-mono bg-accent-light text-accent px-2.5 py-1 rounded-full">Enabled</span>
-                        : <span className="text-[10px] font-mono bg-surface text-muted border border-border px-2.5 py-1 rounded-full">Off</span>
-                    ) : (
-                      <span className="text-[10px] text-muted">—</span>
-                    )}
+                    {u.role === 'reseller' ? (u.api_access ? <span className="text-[10px] font-mono bg-accent-light text-accent px-2.5 py-1 rounded-full">Enabled</span> : <span className="text-[10px] font-mono bg-surface text-muted border border-border px-2.5 py-1 rounded-full">Off</span>) : <span className="text-[10px] text-muted">—</span>}
                   </td>
                   <td className="px-5 py-3.5 text-xs font-mono text-muted">
                     {new Date(u.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}

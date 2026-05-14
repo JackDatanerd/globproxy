@@ -14,8 +14,20 @@ export default function UpdatePasswordPage() {
     e.preventDefault()
     if (pw !== confirm) { toast.error('Passwords do not match'); return }
     setLoading(true)
-    const { error } = await createClient().auth.updateUser({ password: pw })
+
+    // Explicitly grab the session to ensure it's active after redirect
+    const sb = createClient()
+    const { data: { session } } = await sb.auth.getSession()
+
+    if (!session) {
+      toast.error('Auth session missing or expired. Please click the reset link in your email again.')
+      setLoading(false)
+      return
+    }
+
+    const { error } = await sb.auth.updateUser({ password: pw })
     if (error) { toast.error(error.message); setLoading(false); return }
+
     toast.success('Password updated!')
     router.push('/dashboard')
   }

@@ -20,9 +20,12 @@ export default async function AdminResellersPage() {
         <h1 className="font-display font-bold text-2xl text-ink">Resellers</h1>
         <p className="text-muted text-sm mt-1">Manage reseller accounts and applications</p>
       </div>
+
       {applicants && applicants.length > 0 && (
         <div className="bg-yellow-50 border border-yellow-100 rounded-xl p-5 mb-6">
-          <div className="font-medium text-yellow-800 text-sm mb-3">{applicants.length} pending application{applicants.length > 1 ? 's' : ''}</div>
+          <div className="font-medium text-yellow-800 text-sm mb-3">
+            {applicants.length} pending application{applicants.length > 1 ? 's' : ''}
+          </div>
           <div className="flex flex-col gap-2">
             {applicants.map(a => (
               <div key={a.id} className="flex items-center justify-between bg-white border border-yellow-100 rounded-lg px-4 py-3">
@@ -30,12 +33,16 @@ export default async function AdminResellersPage() {
                   <div className="text-sm font-medium text-ink">{a.full_name || '-'}</div>
                   <div className="text-xs font-mono text-muted">{a.email}</div>
                 </div>
-                <AdminResellerActions userId={a.id} action="approve" />
+                <div className="flex gap-2">
+                  <AdminResellerActions userId={a.id} action="approve" />
+                  <AdminResellerActions userId={a.id} action="reject" />
+                </div>
               </div>
             ))}
           </div>
         </div>
       )}
+
       <div className="bg-white border border-border rounded-xl overflow-hidden">
         <div className="px-6 py-4 border-b border-border">
           <h2 className="font-display font-bold text-base text-ink">Active resellers ({resellers?.length ?? 0})</h2>
@@ -61,15 +68,19 @@ export default async function AdminResellersPage() {
                     </td>
                     <td className="px-6 py-4 font-mono text-sm text-accent">{available.toFixed(1)} GB</td>
                     <td className="px-6 py-4 font-mono text-sm text-ink">{(bw?.total_gb ?? 0).toFixed(1)} GB</td>
-                    <td className="px-6 py-4 text-xs font-mono text-muted">{new Date(r.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
-                    <td className="px-6 py-4"><AdminResellerActions userId={r.id} action="suspend" /></td>
+                    <td className="px-6 py-4 text-xs font-mono text-muted">
+                      {new Date(r.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
+                    </td>
+                    <td className="px-6 py-4">
+                      <AdminResellerActions userId={r.id} action="suspend" />
+                    </td>
                   </tr>
                 )
               })}
             </tbody>
           </table>
         ) : (
-          <div className="text-center py-14 text-muted text-sm font-light">No resellers yet.</div>
+          <div className="text-center py-14 text-muted text-sm font-light">No active resellers yet.</div>
         )}
       </div>
     </div>

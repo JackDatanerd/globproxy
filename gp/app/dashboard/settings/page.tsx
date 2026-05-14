@@ -9,6 +9,9 @@ export default function SettingsPage() {
   const [form, setForm] = useState({ full_name:'', company_name:'' })
   const [pw, setPw] = useState({ next:'', confirm:'' })
   const [loading, setLoading] = useState(false)
+  
+  // New states for the new APIs
+  const [applying, setApplying] = useState(false)
 
   useEffect(() => {
     const sb = createClient()
@@ -36,6 +39,39 @@ export default function SettingsPage() {
     if (error) toast.error(error.message)
     else { toast.success('Password updated'); setPw({ next:'', confirm:'' }) }
     setLoading(false)
+  }
+
+  // --- NEW: Reseller application API call ---
+  async function applyReseller() {
+    setApplying(true)
+    try {
+      const res = await fetch('/api/auth/apply-reseller', { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to apply')
+      
+      toast.success('Application submitted for review!')
+      setProfile({ ...profile, reseller_status: 'pending' })
+    } catch (err: any) {
+      toast.error(err.message)
+    }
+    setApplying(false)
+  }
+
+  // --- NEW: Delete Account API call ---
+  async function deleteAccount() {
+    if (!confirm('Are you absolutely sure you want to permanently delete your account? This cannot be undone.')) return;
+    
+    try {
+        const res = await fetch('/api/user/delete-account', { method: 'DELETE' })
+        const data = await res.json()
+        if (!res.ok) throw new Error(data.error || 'Failed to delete account')
+        
+        toast.success('Account deleted successfully')
+        // Force a full refresh to clear cached session data & redirect to login
+        window.location.href = '/'
+    } catch(err: any) {
+        toast.error(err.message)
+    }
   }
 
   return (
@@ -81,13 +117,39 @@ export default function SettingsPage() {
         </form>
       </div>
 
-      {profile?.role === 'user' && (
-        <div className="bg-accent2-light border border-accent2/20 rounded-xl p-6">
+      {/* NEW: Updated Reseller Section */}
+      {profile?.role === 'user' && profile?.reseller_status !== 'pending' && (
+        <div className="bg-accent2-light border border-accent2/20 rounded-xl p-6 mb-5">
           <h2 className="font-display font-bold text-base text-accent2 mb-2">Become a reseller</h2>
           <p className="text-sm text-ink2 font-light mb-4">Buy wholesale bandwidth and resell under your own brand. No minimum commitment.</p>
-          <Link href="/auth/signup?role=reseller" className="inline-flex items-center gap-2 bg-accent2 text-white px-5 py-2.5 rounded-xl text-sm font-medium hover:opacity-90 transition-opacity">Apply now →</Link>
+          <button 
+            onClick={applyReseller} 
+            disabled={applying}
+            className="inline-flex items-center gap-2 bg-accent2 text-white px-5 py-2.5 rounded-xl text-sm font-medium hover:opacity-90 disabled:opacity-60 transition-opacity"
+          >
+            {applying ? 'Applying...' : 'Apply now →'}
+          </button>
         </div>
       )}
+
+      {profile?.reseller_status === 'pending' && (
+         <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-6 mb-5">
+           <h2 className="font-display font-bold text-base text-yellow-800 mb-2">Application Pending</h2>
+           <p className="text-sm text-yellow-700 font-light">Your reseller application is currently under review by our team.</p>
+         </div>
+      )}
+
+      {/* NEW: Delete Account Section */}
+      <div className="bg-red-50 border border-red-100 rounded-xl p-6">
+        <h2 className="font-display font-bold text-base text-red-600 mb-2">Danger Zone</h2>
+        <p className="text-sm text-red-500 font-light mb-4">Permanently delete your account and all associated data. This action is irreversible.</p>
+        <button 
+          onClick={deleteAccount}
+          className="border border-red-200 bg-white text-red-600 px-5 py-2.5 rounded-xl text-sm font-medium hover:bg-red-50 transition-colors"
+        >
+          Delete Account
+        </button>
+      </div>
     </div>
   )
 }
