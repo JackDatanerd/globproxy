@@ -1,28 +1,33 @@
 import { NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-// import { sendAccountDeletionEmail } from '@/lib/email' // Uncomment if you have your resend emailer ready
 
 export async function DELETE(req: Request) {
   try {
     const supabase = await createClient()
 
-    // 1. Verify it's actually the user requesting their own deletion via cookies
+    // 1. Verify user requesting deletion
     const { data: { user }, error: authError } = await supabase.auth.getUser()
     
     if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    // You NEED the admin service role to delete a user from the entire auth system
     const adminSupabase = await createAdminClient()
 
-    // 2. Fire the goodbye email (Uncomment if needed)
-    // if (user.email) {
-    //   await sendAccountDeletionEmail(user.email)
-    // }
+    // 2. Forcibly delete connected records that usually cause foreign key violations
+    // (If these throw errors, it's fine, we try to clear them out regardless)
+    await adminSupabase.from('bandwidth_accounts').delete().eq('user_id', user.id)
+    await adminSupabase.from('proxy_credentials').delete().eq('user_id', user.id)
+    
+    // Wipe history of reseller transfers involving this user
+    await adminSupabase.from('reseller_transfers')
+      .delete()
+      .or(`reseller_id.eq.${user.id},recipient_id.eq.${user.id}`)
 
-    // 3. Terminate user. This automatically cascades and deletes their `profiles` row 
-    // IF your Supabase foreign keys are setup with ON DELETE CASCADE.
+    // Finally delete profile row manually (often fails to cascade purely through auth delete)
+    await adminSupabase.from('profiles').delete().eq('id', user.id)
+
+    // 3. Terminate Auth account permanently
     const { error: deleteError } = await adminSupabase.auth.admin.deleteUser(user.id)
 
     if (deleteError) {

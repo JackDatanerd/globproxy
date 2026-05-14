@@ -1,5 +1,6 @@
 'use client'
-import { useState } from 'react'
+
+import { useState, useMemo } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
@@ -7,176 +8,158 @@ import clsx from 'clsx'
 export default function ResellerUsersList({
   subUsers, availableGb, resellerId
 }: { subUsers: any[]; availableGb: number; resellerId: string }) {
+  
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
-  const [form, setForm] = useState({ label: '', gb: 1, country: '', state: '', city: '', email: '' })
+  const [form, setForm] = useState({ email: '', gb: 1 })
+  const [quickGbs, setQuickGbs] = useState<Record<string, string>>({})
+  const [quickLoadings, setQuickLoadings] = useState<Record<string, boolean>>({})
 
-  async function create(e: React.FormEvent) {
-    e.preventDefault()
-    if (form.gb > availableGb) { toast.error('Not enough bandwidth in your stock'); return }
-    setLoading(true)
+  // Compute unique clients from the raw transfer history
+  const uniqueClients = useMemo(() => {
+    const map = new Map()
+    for (const transfer of subUsers) {
+       if (transfer.profiles) {
+         const pid = transfer.recipient_id
+         if (!map.has(pid)) {
+           map.set(pid, {
+              id: pid,
+              email: transfer.profiles.email,
+              total_received_gb: 0,
+              last_transfer_date: null
+           })
+         }
+         const client = map.get(pid)
+         client.total_received_gb += (transfer.gb_amount || 0)
+         
+         const transferDate = new Date(transfer.created_at)
+         if (!client.last_transfer_date || transferDate > new Date(client.last_transfer_date)) {
+            client.last_transfer_date = transfer.created_at
+         }
+       }
+    }
+    return Array.from(map.values())
+  }, [subUsers])
+
+  async function handleAllocate(email: string, gb: number, recipientId?: string) {
+    if (gb > availableGb) { toast.error('Not enough bandwidth in your stock'); return }
+    
+    const isQuick = !!recipientId;
+    if (isQuick) setQuickLoadings(prev => ({...prev, [recipientId]: true}))
+    else setLoading(true)
+
     try {
       const sb = createClient()
-      const { data: existing } = await sb.from('profiles').select('id').eq('email', form.email).single()
-      if (!existing) {
-        toast.error('User not found. They must sign up at globproxy.com first.')
-        setLoading(false); return
-      }
-
-      // Deduct from reseller stock immediately
-      const { data: resellerBw } = await sb
-        .from('bandwidth_accounts').select('used_gb').eq('user_id', resellerId).single()
-      await sb.from('bandwidth_accounts')
-        .update({ used_gb: (resellerBw?.used_gb ?? 0) + form.gb })
-        .eq('user_id', resellerId)
-
-      // Credit GB to recipient immediately
-      const { data: recipBw } = await sb
-        .from('bandwidth_accounts').select('total_gb').eq('user_id', existing.id).single()
-      await sb.from('bandwidth_accounts')
-        .update({ total_gb: (recipBw?.total_gb ?? 0) + form.gb })
-        .eq('user_id', existing.id)
-
-      // Create proxy credential via API (calls Geonode)
       const { data: { session } } = await sb.auth.getSession()
+      
       const res = await fetch('/api/reseller/allocate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-        body: JSON.stringify({
-          recipient_id: existing.id,
-          label: form.label || `${form.email.split('@')[0]} allocation`,
-          gb_allocated: form.gb,
-          country: form.country || null,
-          state: form.state || null,
-          city: form.city || null,
-        }),
+        body: JSON.stringify({ recipient_email: email, gb_allocated: gb }),
       })
+
       const data = await res.json()
       if (!res.ok) throw new Error(data.error)
 
-      toast.success(`${form.gb}GB allocated and active for ${form.email}`)
-      setOpen(false)
-      setForm({ label: '', gb: 1, country: '', state: '', city: '', email: '' })
+      toast.success(`${gb}GB successfully added to ${email}'s account`)
+      
+      if (!isQuick) {
+        setOpen(false)
+        setForm({ email: '', gb: 1 })
+      }
+      
       window.location.reload()
     } catch (err: any) {
       toast.error(err.message)
-    } finally { setLoading(false) }
+    } finally { 
+      if (isQuick) setQuickLoadings(prev => ({...prev, [recipientId as string]: false}))
+      else setLoading(false) 
+    }
   }
 
   return (
     <div>
-      <div className="bg-white border border-border rounded-xl mb-5">
+      {/* Primary Allocation Form */}
+      <div className="bg-white border border-border rounded-xl mb-6 shadow-sm">
         <button onClick={() => setOpen(!open)}
-          className="w-full flex items-center justify-between p-5 text-left">
+          className="w-full flex items-center justify-between p-5 text-left transition-colors hover:bg-zinc-50 rounded-xl">
           <div>
-            <div className="font-medium text-ink text-sm">Allocate bandwidth to a client</div>
-            <div className="text-xs text-muted mt-0.5">Activates immediately. Collect payment from your client first.</div>
+            <div className="font-medium text-ink text-sm">Send bandwidth to a client</div>
+            <div className="text-xs text-muted mt-0.5">Activates immediately. The balance will be deposited in their dashboard.</div>
           </div>
-          <span className={`text-xl text-muted transition-transform ${open ? 'rotate-45' : ''}`}>+</span>
+          <span className={`text-xl text-muted font-light transition-transform ${open ? 'rotate-45' : ''}`}>+</span>
         </button>
 
         {open && (
-          <form onSubmit={create} className="px-5 pb-5 border-t border-border pt-5">
-            <div className="grid grid-cols-2 gap-4 mb-4">
-              {[
-                ['Client email *', 'email', 'email', 'client@example.com'],
-                ['Session label', 'label', 'text', 'e.g. Client A'],
-              ].map(([l, k, t, p]) => (
-                <div key={k as string}>
-                  <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">{l}</label>
-                  <input required={k === 'email'} type={t as string} value={(form as any)[k as string]}
-                    onChange={e => setForm({ ...form, [k as string]: e.target.value })} placeholder={p as string}
-                    className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent" />
-                </div>
-              ))}
+           <form onSubmit={(e) => { e.preventDefault(); handleAllocate(form.email, form.gb); }} className="px-5 pb-5 border-t border-border pt-5">
+            <div className="grid grid-cols-2 gap-4 mb-5">
               <div>
-                <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">GB to allocate *</label>
+                <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">Client Email *</label>
+                <input required type="email" value={form.email}
+                  onChange={e => setForm({ ...form, email: e.target.value })} placeholder="client@example.com"
+                  className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent" />
+              </div>
+              
+              <div>
+                <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">GB to send *</label>
                 <input required type="number" min={0.1} step={0.1} max={availableGb} value={form.gb}
                   onChange={e => setForm({ ...form, gb: +e.target.value })}
                   className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent" />
                 <div className="text-[10px] font-mono text-muted mt-1">{availableGb.toFixed(2)} GB available</div>
               </div>
-              <div>
-                <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">Country</label>
-                <input value={form.country} onChange={e => setForm({ ...form, country: e.target.value })}
-                  placeholder="e.g. US, KE, GB"
-                  className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent" />
-              </div>
-              <div>
-                <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">State</label>
-                <input value={form.state} onChange={e => setForm({ ...form, state: e.target.value })}
-                  placeholder="e.g. california"
-                  className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent" />
-              </div>
-              <div>
-                <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">City</label>
-                <input value={form.city} onChange={e => setForm({ ...form, city: e.target.value })}
-                  placeholder="e.g. nairobi"
-                  className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent" />
-              </div>
-            </div>
-
-            <div className="bg-accent2-light border border-accent2/20 rounded-lg px-4 py-3 mb-4">
-              <p className="text-xs text-accent2 font-mono">
-                ✓ Bandwidth activates immediately and is irreversible. Collect payment from your client before allocating.
-              </p>
             </div>
 
             <div className="flex gap-3">
               <button type="submit" disabled={loading}
                 className="bg-accent text-white px-5 py-2.5 rounded-xl text-sm font-medium hover:opacity-90 disabled:opacity-60 transition-opacity">
-                {loading ? 'Allocating...' : `Allocate ${form.gb}GB →`}
-              </button>
-              <button type="button" onClick={() => setOpen(false)}
-                className="border border-border text-muted px-5 py-2.5 rounded-xl text-sm hover:text-ink transition-colors">
-                Cancel
+                {loading ? 'Sending...' : `Send ${form.gb} GB →`}
               </button>
             </div>
-          </form>
+           </form>
         )}
       </div>
 
-      {subUsers.length > 0 ? (
+      {/* Roster of active clients (from transfers instead of proxy sessions) */}
+      <h3 className="text-sm font-display font-bold text-ink mb-3 pl-1">Your Clients</h3>
+      {uniqueClients.length > 0 ? (
         <div className="flex flex-col gap-3">
-          {subUsers.map(u => (
-            <div key={u.id} className="bg-white border border-border rounded-xl p-5">
-              <div className="flex items-start justify-between">
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="font-medium text-ink text-sm">{u.label || 'Unnamed'}</span>
-                    <span className={clsx(
-                      'text-[10px] font-mono px-2 py-0.5 rounded-full',
-                      u.status === 'active' ? 'bg-accent2-light text-accent2' :
-                      u.status === 'pending' ? 'bg-yellow-50 text-yellow-600' :
-                      'bg-red-50 text-red-400'
-                    )}>{u.status}</span>
+          {uniqueClients.map(u => (
+            <div key={u.id} className="bg-white border border-border rounded-xl p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm">
+                <div>
+                  <div className="font-medium text-ink text-sm mb-1">{u.email}</div>
+                  <div className="text-[11px] text-muted">
+                    Total transferred: <strong className="text-ink font-mono">{u.total_received_gb} GB</strong> 
                   </div>
-                  <div className="text-xs text-muted">
-                    {u.profiles?.email}
-                    {u.country && ` · ${u.country}`}
-                    {u.state && `/${u.state}`}
-                    {u.city && `/${u.city}`}
+                  <div className="text-[10px] text-muted tracking-wide mt-1 uppercase">
+                    Last activity: {u.last_transfer_date ? new Date(u.last_transfer_date).toLocaleDateString() : 'N/A'}
                   </div>
-                  {u.status === 'active' && u.geonode_username && (
-                    <div className="mt-1.5 text-xs font-mono text-muted">{u.host}:{u.port} · {u.geonode_username}</div>
-                  )}
-                  {u.status === 'pending' && (
-                    <div className="mt-2 text-xs font-mono text-yellow-600 bg-yellow-50 px-3 py-1.5 rounded-lg inline-block">
-                      Provisioning credentials...
-                    </div>
-                  )}
                 </div>
-                <div className="text-right ml-4">
-                  <div className="font-mono text-sm font-medium text-ink">{u.gb_allocated} GB</div>
-                  <div className="text-xs text-muted">allocated</div>
+
+                {/* Quick Add Form specific to this recipient */}
+                <div className="flex items-center gap-2 pt-2 md:pt-0 border-t md:border-t-0 border-border md:w-auto w-full">
+                  <span className="text-[10px] font-mono text-muted uppercase mr-1 hidden md:block">Quick Top-Up</span>
+                  <input
+                    type="number"
+                    min="0.1" step="0.1"
+                    value={quickGbs[u.id] ?? '1'}
+                    onChange={(e) => setQuickGbs(prev => ({...prev, [u.id]: e.target.value}))}
+                    className="w-20 text-sm bg-surface border border-border rounded-lg px-2 py-2 focus:outline-none focus:border-accent"
+                    placeholder="GB"
+                  />
+                  <button
+                    onClick={() => handleAllocate(u.email, parseFloat(quickGbs[u.id] ?? '1') || 1, u.id)}
+                    disabled={quickLoadings[u.id]}
+                    className="bg-accent2 text-white px-4 py-2 rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-60 transition-opacity whitespace-nowrap"
+                  >
+                    {quickLoadings[u.id] ? 'Sending...' : 'Add +'}
+                  </button>
                 </div>
-              </div>
             </div>
           ))}
         </div>
       ) : (
-        <div className="bg-white border border-border rounded-xl p-14 text-center">
-          <p className="text-muted text-sm font-light">No sub-users yet. Allocate bandwidth to your first client above.</p>
+        <div className="bg-white border border-border rounded-xl p-14 text-center shadow-sm">
+          <p className="text-muted text-sm font-light">No clients yet. Transfer bandwidth above to build your roster.</p>
         </div>
       )}
     </div>
