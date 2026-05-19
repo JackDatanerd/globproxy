@@ -8,7 +8,7 @@
     "build:cf": "opennextjs-cloudflare build",
     "start": "next start",
     "preview": "opennextjs-cloudflare preview",
-    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy"
+    "deploy": "opennextjs-cloudflare build && npx wrangler deploy .open-next/worker.js"
   },
   "dependencies": {
     "@supabase/ssr": "^0.6.1",
@@ -29,6 +29,6 @@
     "postcss": "^8.5.3",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.8.3",
-    "wrangler": "^4.13.2"
+    "wrangler": "^3.114.17"
   }
 }
