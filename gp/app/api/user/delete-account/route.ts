@@ -4,7 +4,7 @@ import { sendEmail } from '@/lib/email'
 
 export async function DELETE(req: Request) {
   try {
-    // ── 1. Verify requesting user ─────────────────────────────────────────
+    // Step 1: Verify requesting user
     const supabase = await createClient()
     const { data: { user }, error: authError } = await supabase.auth.getUser()
     if (authError || !user) {
@@ -13,7 +13,7 @@ export async function DELETE(req: Request) {
 
     const adminSupabase = await createAdminClient()
 
-    // ── 2. Fetch profile before we wipe it (need email for the goodbye mail) ──
+    // Step 2: Fetch profile before wiping it
     const { data: profile } = await adminSupabase
       .from('profiles')
       .select('email, full_name, is_deleted')
@@ -24,9 +24,7 @@ export async function DELETE(req: Request) {
       return NextResponse.json({ error: 'Account already deleted.' }, { status: 400 })
     }
 
-    // ── 3. Anonymise profile — DO NOT delete it ───────────────────────────
-    // The row must stay as an anchor so orders, bandwidth_accounts, and
-    // reseller_transfers remain intact for auditing and dispute resolution.
+    // Step 3: Anonymise — only columns confirmed to exist in profiles
     const { error: profileError } = await adminSupabase
       .from('profiles')
       .update({
@@ -34,7 +32,6 @@ export async function DELETE(req: Request) {
         email: '[deleted]',
         is_deleted: true,
         deleted_at: new Date().toISOString(),
-        avatar_url: null,
         is_suspended: false,
         suspended_at: null,
         suspension_reason: null,
@@ -45,27 +42,21 @@ export async function DELETE(req: Request) {
       return NextResponse.json({ error: profileError.message }, { status: 500 })
     }
 
-    // ── 4. Delete auth user ───────────────────────────────────────────────
-    // proxy_credentials cascade automatically (per migration).
-    // bandwidth_accounts, orders, reseller_transfers are intentionally kept.
+    // Step 4: Delete auth user — cascades proxy_credentials only
     const { error: deleteError } = await adminSupabase.auth.admin.deleteUser(user.id)
 
     if (deleteError) {
-      // Roll back anonymisation so account isn't stuck in a broken state
-      await adminSupabase
-        .from('profiles')
-        .update({
-          full_name: profile?.full_name ?? null,
-          email: profile?.email ?? null,
-          is_deleted: false,
-          deleted_at: null,
-        })
-        .eq('id', user.id)
-
+      // Rollback anonymisation
+      await adminSupabase.from('profiles').update({
+        full_name: profile?.full_name ?? null,
+        email: profile?.email ?? null,
+        is_deleted: false,
+        deleted_at: null,
+      }).eq('id', user.id)
       return NextResponse.json({ error: deleteError.message }, { status: 500 })
     }
 
-    // ── 5. Send goodbye email (best-effort — non-fatal) ───────────────────
+    // Step 5: Email — best-effort, non-fatal
     if (profile?.email && profile.email !== '[deleted]') {
       await sendEmail({
         to: profile.email,
@@ -76,8 +67,8 @@ export async function DELETE(req: Request) {
               style="display:block;margin:0 auto 32px auto;border-radius:12px;"/>
             <h2 style="text-align:center;color:#111;">Account deleted</h2>
             <p style="color:#444;text-align:center;">
-              Hi ${profile.full_name ?? 'there'}, your GlobProxy account has been permanently deleted
-              as requested. Your personal data has been removed from our system.
+              Hi ${profile.full_name ?? 'there'}, your GlobProxy account has been permanently
+              deleted as requested. Your personal data has been removed from our system.
             </p>
             <p style="color:#444;text-align:center;">
               If you did not request this, please contact us immediately.
@@ -93,9 +84,7 @@ export async function DELETE(req: Request) {
             </p>
           </div>
         `,
-      }).catch(() => {
-        // Email failure is non-fatal — deletion already succeeded
-      })
+      }).catch(() => {})
     }
 
     return NextResponse.json({ success: true, message: 'Account deleted' })

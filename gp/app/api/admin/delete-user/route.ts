@@ -3,7 +3,6 @@ import { sendEmail } from '@/lib/email'
 import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
-  // ── Auth: must be a logged-in admin ──────────────────────────────────────
   const token = req.headers.get('authorization')?.replace('Bearer ', '')
   if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
@@ -15,11 +14,9 @@ export async function POST(req: Request) {
     .from('profiles').select('role').eq('id', caller.id).single()
   if (cp?.role !== 'admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
-  // ── Payload ───────────────────────────────────────────────────────────────
   const { user_id } = await req.json()
   if (!user_id) return NextResponse.json({ error: 'Missing user_id' }, { status: 400 })
 
-  // ── Guard: cannot delete another admin ───────────────────────────────────
   const { data: tp } = await supabase
     .from('profiles')
     .select('role, email, full_name, is_deleted')
@@ -30,8 +27,7 @@ export async function POST(req: Request) {
   if (tp.role === 'admin') return NextResponse.json({ error: 'Cannot delete an admin account' }, { status: 403 })
   if (tp.is_deleted) return NextResponse.json({ error: 'User is already deleted' }, { status: 400 })
 
-  // ── Step 1: Anonymise profile — preserve row for FK integrity ────────────
-  // Orders, bandwidth_accounts, reseller_transfers all remain intact for auditing.
+  // Step 1: Anonymise — only columns confirmed to exist in profiles
   const { error: profileError } = await supabase
     .from('profiles')
     .update({
@@ -39,8 +35,6 @@ export async function POST(req: Request) {
       email: '[deleted]',
       is_deleted: true,
       deleted_at: new Date().toISOString(),
-      // Clear any sensitive fields your profiles table holds
-      avatar_url: null,
       is_suspended: false,
       suspended_at: null,
       suspension_reason: null,
@@ -51,25 +45,21 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: profileError.message }, { status: 500 })
   }
 
-  // ── Step 2: Delete auth user ─────────────────────────────────────────────
-  // This cascades to proxy_credentials only (per migration).
-  // Everything else (orders, bandwidth, transfers) stays — linked to the
-  // now-anonymised profile row above.
+  // Step 2: Delete auth user — cascades proxy_credentials only
   const { error: authError } = await supabase.auth.admin.deleteUser(user_id)
 
   if (authError) {
-    // Roll back the profile anonymisation so the record is not in a broken state
+    // Rollback anonymisation
     await supabase.from('profiles').update({
       full_name: tp.full_name,
       email: tp.email,
       is_deleted: false,
       deleted_at: null,
     }).eq('id', user_id)
-
     return NextResponse.json({ error: authError.message }, { status: 500 })
   }
 
-  // ── Step 3: Send deletion email (best-effort — don't fail the request) ───
+  // Step 3: Email — best-effort, non-fatal
   if (tp.email && tp.email !== '[deleted]') {
     await sendEmail({
       to: tp.email,
@@ -95,9 +85,7 @@ export async function POST(req: Request) {
           </p>
         </div>
       `,
-    }).catch(() => {
-      // Email failure is non-fatal — deletion already succeeded
-    })
+    }).catch(() => {})
   }
 
   return NextResponse.json({ success: true })
