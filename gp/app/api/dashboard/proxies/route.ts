@@ -2,6 +2,13 @@ import { createClient } from '@/lib/supabase/server'
 import { createSubUser } from '@/lib/geonode'
 import { NextResponse } from 'next/server'
 
+function providerConfigured(): boolean {
+  return !!(
+    process.env.GEONODE_API_KEY &&
+    process.env.GEONODE_RESELLER_ID
+  )
+}
+
 export async function POST(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -28,7 +35,6 @@ export async function POST(req: Request) {
   if (bwErr || !bw) {
     return NextResponse.json({ error: 'Could not fetch bandwidth account' }, { status: 500 })
   }
-
   if (bw.available_gb < gb_allocated) {
     return NextResponse.json({
       error: `Insufficient bandwidth. You have ${bw.available_gb.toFixed(2)}GB available, requested ${gb_allocated}GB.`,
@@ -36,7 +42,7 @@ export async function POST(req: Request) {
     }, { status: 402 })
   }
 
-  // 2. Increment used_gb immediately (available_gb is generated — never write it)
+  // 2. Deduct bandwidth immediately
   const { error: deductErr } = await supabase
     .from('bandwidth_accounts')
     .update({ used_gb: bw.used_gb + gb_allocated })
@@ -46,39 +52,41 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Failed to deduct bandwidth' }, { status: 500 })
   }
 
-  // 3. Call Geonode — if it fails, insert as pending (not an error for the user)
-  let gcred: { username: string; password: string; host: string; port: number; protocol: string }
-  let status: 'active' | 'pending' = 'active'
+  // 3. Attempt Geonode — only when provider is configured
+  // If no provider: insert as pending with null credentials (no fake data)
+  // If provider call fails: rollback bandwidth, return error — don't silently create fake creds
+  let gcred: { username: string; password: string; host: string; port: number } | null = null
+  let status: 'active' | 'pending' = 'pending'
 
-  try {
-    gcred = await createSubUser({
-      label: label ?? `gp_${Date.now()}`,
-      gb_limit: gb_allocated,
-      country, state, city, protocol, session_type, sticky_duration,
-    })
-  } catch (e) {
-    console.error('Geonode createSubUser error:', e)
-    // Fallback — credential will be pending until manually activated
-    gcred = {
-      username: `gp_${Date.now()}`,
-      password: Math.random().toString(36).slice(2, 18),
-      host: 'proxy.globproxy.com',
-      port: protocol === 'socks5' ? 7000 : 9000,
-      protocol,
+  if (providerConfigured()) {
+    try {
+      gcred = await createSubUser({
+        label: label ?? `gp_${Date.now()}`,
+        gb_limit: gb_allocated,
+        country, state, city, protocol, session_type, sticky_duration,
+      })
+      status = 'active'
+    } catch (e) {
+      console.error('Geonode createSubUser error:', e)
+      // Rollback bandwidth — don't create fake credentials
+      await supabase.from('bandwidth_accounts')
+        .update({ used_gb: bw.used_gb })
+        .eq('user_id', user.id)
+      return NextResponse.json({ error: 'Failed to provision proxy session. Your bandwidth has not been deducted. Please try again.' }, { status: 500 })
     }
-    status = 'pending'
   }
 
   // 4. Insert credential row
+  // gcred is null when no provider — fields stay null until provider activates them
   const { data: cred, error: insertErr } = await supabase
     .from('proxy_credentials')
     .insert({
       user_id: user.id,
       label: label || null,
-      geonode_username: gcred.username,
-      geonode_password: gcred.password,
-      host: gcred.host,
-      port: gcred.port,
+      geonode_username: gcred?.username ?? null,
+      geonode_password: gcred?.password ?? null,
+      host: gcred?.host ?? null,
+      port: gcred?.port ?? null,
       protocol,
       session_type,
       sticky_duration: sticky_duration ?? null,
@@ -91,11 +99,11 @@ export async function POST(req: Request) {
       status,
       activated_at: status === 'active' ? new Date().toISOString() : null,
     })
-    .select('id, status, geonode_username, host, port, protocol')
+    .select('id, status')
     .single()
 
   if (insertErr) {
-    // Rollback the bandwidth deduction
+    // Rollback bandwidth deduction
     await supabase.from('bandwidth_accounts')
       .update({ used_gb: bw.used_gb })
       .eq('user_id', user.id)
