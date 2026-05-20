@@ -21,28 +21,69 @@ export default async function AdminResellersPage() {
         <p className="text-muted text-sm mt-1">Manage reseller accounts and applications</p>
       </div>
 
+      {/* Pending applications */}
       {applicants && applicants.length > 0 && (
-        <div className="bg-yellow-50 border border-yellow-100 rounded-xl p-5 mb-6">
-          <div className="font-medium text-yellow-800 text-sm mb-3">
-            {applicants.length} pending application{applicants.length > 1 ? 's' : ''}
-          </div>
-          <div className="flex flex-col gap-2">
-            {applicants.map(a => (
-              <div key={a.id} className="flex items-center justify-between bg-white border border-yellow-100 rounded-lg px-4 py-3">
-                <div>
-                  <div className="text-sm font-medium text-ink">{a.full_name || '-'}</div>
-                  <div className="text-xs font-mono text-muted">{a.email}</div>
+        <div className="mb-8">
+          <h2 className="font-display font-bold text-base text-ink mb-3">
+            Pending applications
+            <span className="ml-2 text-xs font-mono bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full">
+              {applicants.length}
+            </span>
+          </h2>
+          <div className="flex flex-col gap-3">
+            {applicants.map(a => {
+              const app = a.reseller_application as any
+              return (
+                <div key={a.id} className="bg-white border border-border rounded-xl p-5">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1">
+                      {/* Identity */}
+                      <div className="flex items-center gap-2 mb-3">
+                        <div className="text-sm font-medium text-ink">{app?.full_name || a.full_name || '—'}</div>
+                        <span className="text-[10px] font-mono bg-yellow-50 text-yellow-600 px-2 py-0.5 rounded-full">pending</span>
+                      </div>
+                      {/* Application details grid */}
+                      <div className="grid grid-cols-2 gap-x-8 gap-y-1.5">
+                        <div className="flex gap-2">
+                          <span className="text-[10px] font-mono text-muted uppercase tracking-wider w-20 flex-shrink-0">Email</span>
+                          <span className="text-xs text-ink">{a.email}</span>
+                        </div>
+                        <div className="flex gap-2">
+                          <span className="text-[10px] font-mono text-muted uppercase tracking-wider w-20 flex-shrink-0">Country</span>
+                          <span className="text-xs text-ink">{app?.country || '—'}</span>
+                        </div>
+                        <div className="flex gap-2">
+                          <span className="text-[10px] font-mono text-muted uppercase tracking-wider w-20 flex-shrink-0">Phone</span>
+                          <span className="text-xs text-ink">{app?.phone || '—'}</span>
+                        </div>
+                        <div className="flex gap-2">
+                          <span className="text-[10px] font-mono text-muted uppercase tracking-wider w-20 flex-shrink-0">Volume</span>
+                          <span className="text-xs text-ink">{app?.monthly_volume || '—'}</span>
+                        </div>
+                        {app?.applied_at && (
+                          <div className="flex gap-2">
+                            <span className="text-[10px] font-mono text-muted uppercase tracking-wider w-20 flex-shrink-0">Applied</span>
+                            <span className="text-xs text-muted">
+                              {new Date(app.applied_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    {/* Actions */}
+                    <div className="flex gap-2 flex-shrink-0">
+                      <AdminResellerActions userId={a.id} action="approve" />
+                      <AdminResellerActions userId={a.id} action="reject" />
+                    </div>
+                  </div>
                 </div>
-                <div className="flex gap-2">
-                  <AdminResellerActions userId={a.id} action="approve" />
-                  <AdminResellerActions userId={a.id} action="reject" />
-                </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         </div>
       )}
 
+      {/* Active resellers */}
       <div className="bg-white border border-border rounded-xl overflow-hidden">
         <div className="px-6 py-4 border-b border-border">
           <h2 className="font-display font-bold text-base text-ink">Active resellers ({resellers?.length ?? 0})</h2>
@@ -61,12 +102,12 @@ export default async function AdminResellersPage() {
                 const bw = bwMap[r.id]
                 const available = (bw?.total_gb ?? 0) - (bw?.used_gb ?? 0)
                 return (
-                  <tr key={r.id} className="border-b border-border hover:bg-surface">
+                  <tr key={r.id} className={`${i < (resellers?.length ?? 0) - 1 ? 'border-b border-border' : ''} hover:bg-surface`}>
                     <td className="px-6 py-4">
-                      <div className="text-sm font-medium text-ink">{r.full_name || '-'}</div>
+                      <div className="text-sm font-medium text-ink">{r.full_name || '—'}</div>
                       <div className="text-xs font-mono text-muted">{r.email}</div>
                     </td>
-                    <td className="px-6 py-4 font-mono text-sm text-accent">{available.toFixed(1)} GB</td>
+                    <td className="px-6 py-4 font-mono text-sm text-accent">{Math.max(0, available).toFixed(1)} GB</td>
                     <td className="px-6 py-4 font-mono text-sm text-ink">{(bw?.total_gb ?? 0).toFixed(1)} GB</td>
                     <td className="px-6 py-4 text-xs font-mono text-muted">
                       {new Date(r.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
