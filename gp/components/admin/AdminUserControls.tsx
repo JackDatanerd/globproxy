@@ -15,22 +15,6 @@ export default function AdminUserControls({ user }: { user: any }) {
     setLoading(false); setOpen(false)
   }
 
-  async function deleteUser() {
-    if (!confirm(`PERMANENTLY DELETE ${user.email}?`)) return
-    if (!confirm('This cannot be undone. All their data will be lost.')) return
-    setLoading(true)
-    const { data: { session } } = await createClient().auth.getSession()
-    const res = await fetch('/api/admin/delete-user', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-      body: JSON.stringify({ user_id: user.id }),
-    })
-    const data = await res.json()
-    if (data.error) toast.error(data.error)
-    else { toast.success('User deleted'); window.location.reload() }
-    setLoading(false); setOpen(false)
-  }
-
   if (user.role === 'admin') return <span className="text-xs text-muted font-mono">Protected</span>
 
   return (
@@ -75,25 +59,20 @@ export default function AdminUserControls({ user }: { user: any }) {
               </button>
             )}
 
-            <div className="h-px bg-border mx-3 my-1" />
-
             {/* API access toggle — resellers only */}
             {user.role === 'reseller' && (
-              <button onClick={() => update(
-                { api_access: !user.api_access },
-                user.api_access ? 'API access revoked' : 'API access granted'
-              )}
-                className={`w-full text-left px-4 py-2.5 text-sm transition-colors ${user.api_access ? 'text-amber-600 hover:bg-amber-50' : 'text-accent hover:bg-accent-light'}`}>
-                {user.api_access ? '⊘ Revoke API access' : '⌘ Grant API access'}
-              </button>
+              <>
+                <div className="h-px bg-border mx-3 my-1" />
+                <button onClick={() => update(
+                  { api_access: !user.api_access },
+                  user.api_access ? 'API access revoked' : 'API access granted'
+                )}
+                  className={`w-full text-left px-4 py-2.5 text-sm transition-colors ${user.api_access ? 'text-amber-600 hover:bg-amber-50' : 'text-accent hover:bg-accent-light'}`}>
+                  {user.api_access ? '⊘ Revoke API access' : '⌘ Grant API access'}
+                </button>
+              </>
             )}
 
-            <div className="h-px bg-border mx-3 my-1" />
-
-            <button onClick={deleteUser}
-              className="w-full text-left px-4 py-2.5 text-sm text-red-500 hover:bg-red-50 transition-colors">
-              ✗ Delete account
-            </button>
           </div>
         </>
       )}
