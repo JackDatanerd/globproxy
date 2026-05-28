@@ -37,7 +37,6 @@ export async function activateBandwidth(p: {
     .eq('user_id', p.user_id)
 
   // 3. Activate pending proxy credentials — only when provider is configured
-  // 4. Activate pending reseller transfers — only when provider is configured
   if (providerConfigured()) {
     const { data: pending } = await supabase
       .from('proxy_credentials')
@@ -58,8 +57,13 @@ export async function activateBandwidth(p: {
           session_type: cred.session_type ?? 'rotating',
           sticky_duration: cred.sticky_duration ?? undefined,
         })
+
         await supabase.from('proxy_credentials').update({
           status: 'active',
+          // FIXED: geonode_sub_user_id was being dropped here.
+          // Without it, getSubUserUsage() and deleteSubUser() can never
+          // be called — they require Geonode's numeric ID, not the username.
+          geonode_sub_user_id: gcred.geonode_sub_user_id,
           geonode_username: gcred.username,
           geonode_password: gcred.password,
           host: gcred.host,
@@ -71,6 +75,7 @@ export async function activateBandwidth(p: {
       }
     }
 
+    // 4. Activate pending reseller transfers
     const { data: transfers } = await supabase
       .from('reseller_transfers')
       .select('*, proxy_credentials(*)')
@@ -90,8 +95,12 @@ export async function activateBandwidth(p: {
           protocol: cred.protocol ?? 'http',
           session_type: cred.session_type ?? 'rotating',
         })
+
         await supabase.from('proxy_credentials').update({
           status: 'active',
+          // FIXED: same geonode_sub_user_id omission as above — both activation
+          // paths need this stored for future usage/delete operations.
+          geonode_sub_user_id: gcred.geonode_sub_user_id,
           geonode_username: gcred.username,
           geonode_password: gcred.password,
           host: gcred.host,
