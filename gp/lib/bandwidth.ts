@@ -57,13 +57,9 @@ export async function activateBandwidth(p: {
           session_type: cred.session_type ?? 'rotating',
           sticky_duration: cred.sticky_duration ?? undefined,
         })
-
         await supabase.from('proxy_credentials').update({
           status: 'active',
-          // FIXED: geonode_sub_user_id was being dropped here.
-          // Without it, getSubUserUsage() and deleteSubUser() can never
-          // be called — they require Geonode's numeric ID, not the username.
-          geonode_sub_user_id: gcred.geonode_sub_user_id,
+          geonode_sub_user_id: gcred.geonode_sub_user_id, // required for usage/delete lookups
           geonode_username: gcred.username,
           geonode_password: gcred.password,
           host: gcred.host,
@@ -95,11 +91,8 @@ export async function activateBandwidth(p: {
           protocol: cred.protocol ?? 'http',
           session_type: cred.session_type ?? 'rotating',
         })
-
         await supabase.from('proxy_credentials').update({
           status: 'active',
-          // FIXED: same geonode_sub_user_id omission as above — both activation
-          // paths need this stored for future usage/delete operations.
           geonode_sub_user_id: gcred.geonode_sub_user_id,
           geonode_username: gcred.username,
           geonode_password: gcred.password,

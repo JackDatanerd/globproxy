@@ -52,9 +52,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Failed to deduct bandwidth' }, { status: 500 })
   }
 
-  // 3. Attempt Geonode sub-user creation — only when provider is configured.
-  // If no provider: insert as pending with null credentials.
-  // If provider call fails: rollback bandwidth, return error.
+  // 3. Attempt Geonode — only when provider is configured
   let gcred: Awaited<ReturnType<typeof createSubUser>> | null = null
   let status: 'active' | 'pending' = 'pending'
 
@@ -68,7 +66,7 @@ export async function POST(req: Request) {
       status = 'active'
     } catch (e) {
       console.error('Geonode createSubUser error:', e)
-      // Rollback bandwidth — don't create a credential row with null creds
+      // Rollback bandwidth — don't create fake credentials
       await supabase.from('bandwidth_accounts')
         .update({ used_gb: bw.used_gb })
         .eq('user_id', user.id)
@@ -84,10 +82,7 @@ export async function POST(req: Request) {
     .insert({
       user_id: user.id,
       label: label || null,
-      // FIXED: geonode_sub_user_id was missing from the insert.
-      // Required for getSubUserUsage() and deleteSubUser() — both use
-      // Geonode's numeric ID, not the username string.
-      geonode_sub_user_id: gcred?.geonode_sub_user_id ?? null,
+      geonode_sub_user_id: gcred?.geonode_sub_user_id ?? null, // required for usage/delete
       geonode_username: gcred?.username ?? null,
       geonode_password: gcred?.password ?? null,
       host: gcred?.host ?? null,
