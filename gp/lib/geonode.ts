@@ -127,3 +127,86 @@ export async function deleteSubUser(geonodeSubUserId: string): Promise<void> {
     headers: headers(),
   })
 }
+
+// ─── Debug only — admin diagnostic endpoint ──────────────────────────────────
+// Creates a 10 MB test sub-user, captures the full raw Geonode response,
+// then immediately deletes it. Used by /api/admin/debug-geonode to verify:
+//   1. API key and reseller ID are valid
+//   2. Exact field names Geonode returns (id vs sub_user_id, etc.)
+//   3. bandwidth_limit_mb is the correct request field name
+export async function debugCreateSubUser(): Promise<{
+  raw_request: object
+  raw_response: object | null
+  http_status: number | null
+  parsed_gcred: GCred | null
+  cleanup_deleted: boolean
+  error: string | null
+}> {
+  const username = `gp_debug_${Date.now()}`
+  const password = genPassword()
+
+  const requestBody = {
+    username,
+    password,
+    bandwidth_limit_mb: 10, // 10 MB — smallest testable amount
+    country: null,
+    state: null,
+    city: null,
+    protocol: 'http',
+    session_type: 'rotating',
+  }
+
+  let httpStatus: number | null = null
+  let rawResponse: object | null = null
+  let parsedGcred: GCred | null = null
+  let cleanupDeleted = false
+  let error: string | null = null
+
+  try {
+    const res = await fetch(`${BASE}/${RESELLER_ID}/sub-users`, {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify(requestBody),
+    })
+    httpStatus = res.status
+    const text = await res.text()
+    try { rawResponse = JSON.parse(text) } catch { rawResponse = { raw_text: text } }
+
+    if (res.ok && rawResponse) {
+      const d = rawResponse as any
+      const result = d.data ?? d
+      parsedGcred = {
+        geonode_sub_user_id: String(result.id ?? result.sub_user_id ?? username),
+        username: result.username ?? username,
+        password: result.password ?? password,
+        host: PROXY_HOST,
+        port: 9000,
+        protocol: 'http',
+      }
+
+      // Immediately clean up — don't leave test sub-users in Geonode
+      try {
+        const delRes = await fetch(
+          `${BASE}/${RESELLER_ID}/sub-users/${parsedGcred.geonode_sub_user_id}`,
+          { method: 'DELETE', headers: headers() }
+        )
+        cleanupDeleted = delRes.ok
+      } catch {
+        cleanupDeleted = false
+      }
+    } else {
+      error = `HTTP ${httpStatus} — see raw_response`
+    }
+  } catch (e: any) {
+    error = e.message
+  }
+
+  return {
+    raw_request: requestBody,
+    raw_response: rawResponse,
+    http_status: httpStatus,
+    parsed_gcred: parsedGcred,
+    cleanup_deleted: cleanupDeleted,
+    error,
+  }
+}
