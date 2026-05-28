@@ -3,9 +3,9 @@ import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
   const supabase = await createAdminClient()
-
   const resellerId = process.env.GEONODE_RESELLER_ID
   const apiKey = process.env.GEONODE_API_KEY
+
   const url = `https://app-api.geonode.com/api/reseller/v2/${resellerId}/services/RESIDENTIAL-PREMIUM/traffic/summary`
 
   let rawStatus: number | null = null
@@ -14,7 +14,7 @@ export async function POST(req: Request) {
   try {
     const res = await fetch(url, {
       headers: {
-        'Reseller-Api-Key': apiKey ?? '',
+        'r-api-key': apiKey ?? '', // ✅ FIXED: was 'Reseller-Api-Key', correct header is 'r-api-key'
         'Content-Type': 'application/json',
       },
     })

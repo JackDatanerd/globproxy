@@ -1,5 +1,5 @@
 const BASE = 'https://app-api.geonode.com/api/reseller/v2'
-const KEY  = process.env.GEONODE_API_KEY!
+const KEY = process.env.GEONODE_API_KEY!
 const RESELLER_ID = process.env.GEONODE_RESELLER_ID!
 const SERVICE_TYPE = 'RESIDENTIAL-PREMIUM'
 
@@ -8,7 +8,7 @@ export const PROXY_HOST = 'proxy.globproxy.com'
 
 function headers() {
   return {
-    'Reseller-Api-Key': KEY,
+    'r-api-key': KEY, // ✅ FIXED: was 'Reseller-Api-Key', correct header is 'r-api-key'
     'Content-Type': 'application/json',
   }
 }
@@ -23,6 +23,7 @@ function genPassword(): string {
 }
 
 export interface GCred {
+  geonode_sub_user_id: string // ✅ ADDED: Geonode's own numeric ID — required for usage/delete lookups
   username: string
   password: string
   host: string
@@ -64,13 +65,16 @@ export async function createSubUser(p: CreateSubUserParams): Promise<GCred> {
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    console.error('Geonode createSubUser failed:', res.status, err)
-    return { username, password, host: PROXY_HOST, port, protocol: p.protocol ?? 'http' }
+    // ✅ FIXED: was silently returning fake credentials on failure, masking broken sub-user creation.
+    // Now throws so the caller can surface the error and not persist dead credentials.
+    throw new Error(`Geonode createSubUser failed: ${res.status} ${JSON.stringify(err)}`)
   }
 
   const d = await res.json()
-  const result = d.result ?? d
+  const result = d.data ?? d // ✅ FIXED: was d.result — Geonode envelope key is 'data'
+
   return {
+    geonode_sub_user_id: String(result.id ?? result.sub_user_id ?? username),
     username: result.username ?? username,
     password: result.password ?? password,
     host: PROXY_HOST,
@@ -79,12 +83,19 @@ export async function createSubUser(p: CreateSubUserParams): Promise<GCred> {
   }
 }
 
-export async function getSubUserUsage(username: string): Promise<number> {
-  const res = await fetch(`${BASE}/${RESELLER_ID}/sub-users/${username}/usage`, { headers: headers() })
+// ✅ FIXED: param renamed from `username` to `geonodeSubUserId`.
+// The usage endpoint path requires Geonode's own numeric sub-user ID,
+// not the username string. Store geonode_sub_user_id from GCred in your
+// Supabase row and pass that column here.
+export async function getSubUserUsage(geonodeSubUserId: string): Promise<number> {
+  const res = await fetch(
+    `${BASE}/${RESELLER_ID}/sub-users/${geonodeSubUserId}/usage`,
+    { headers: headers() }
+  )
   if (!res.ok) return 0
   const d = await res.json()
-  const result = d.result ?? d
-  const usedMb = result.usedMB ?? result.used_mb ?? 0
+  const result = d.data ?? d // ✅ FIXED: was d.result
+  const usedMb = result.usedMB ?? result.used_mb ?? result.bandwidth_used_mb ?? 0
   return mbToGb(usedMb)
 }
 
@@ -93,14 +104,12 @@ export async function getAccountBalance(): Promise<{ available_gb: number; total
     `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/traffic/summary`,
     { headers: headers() }
   )
-
   if (!res.ok) {
     console.error('Geonode getAccountBalance failed:', res.status, await res.text().catch(() => ''))
     return { available_gb: 0, total_gb: 0 }
   }
-
   const d = await res.json()
-  const result = d.result ?? d
+  const result = d.data ?? d // ✅ FIXED: was d.result
   return {
     available_gb: mbToGb(result.remainingMB ?? 0),
     total_gb: mbToGb(result.totalMB ?? 0),
@@ -118,8 +127,10 @@ export async function purchaseBandwidth(gb: number): Promise<void> {
   }
 }
 
-export async function deleteSubUser(username: string): Promise<void> {
-  await fetch(`${BASE}/${RESELLER_ID}/sub-users/${username}`, {
+// ✅ FIXED: param renamed from `username` to `geonodeSubUserId` — same reason as getSubUserUsage.
+// Pass the stored geonode_sub_user_id from your Supabase row, not the username string.
+export async function deleteSubUser(geonodeSubUserId: string): Promise<void> {
+  await fetch(`${BASE}/${RESELLER_ID}/sub-users/${geonodeSubUserId}`, {
     method: 'DELETE',
     headers: headers(),
   })
