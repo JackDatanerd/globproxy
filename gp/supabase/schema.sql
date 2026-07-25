@@ -94,23 +94,27 @@ create table public.orders (
 
 -- ── PROXY CREDENTIALS ─────────────────────────────────────────
 create table public.proxy_credentials (
-  id                uuid default uuid_generate_v4() primary key,
-  user_id           uuid references public.profiles(id) on delete cascade not null,
-  created_by        uuid references public.profiles(id),
-  label             text,
-  geonode_username  text,
-  geonode_password  text,
-  host              text default 'residential.geonode.com',
-  port              integer default 9000,
-  status            text not null default 'pending' check (status in ('pending','active','suspended')),
-  gb_allocated      numeric not null default 0,
-  gb_used           numeric default 0,
-  country           text,
-  state             text,
-  city              text,
-  session_type      text default 'rotating' check (session_type in ('rotating','sticky')),
-  activated_at      timestamp with time zone,
-  created_at        timestamp with time zone default now()
+  id                   uuid default uuid_generate_v4() primary key,
+  user_id              uuid references public.profiles(id) on delete cascade not null,
+  created_by           uuid references public.profiles(id),
+  label                text,
+  geonode_sub_user_id  text, -- Geonode's numeric sub-user ID; required for usage/delete calls, NOT geonode_username
+  geonode_username     text,
+  geonode_password     text,
+  host                 text default 'residential.geonode.com',
+  port                 integer default 9000,
+  protocol             text default 'http' check (protocol in ('http','socks5')),
+  sticky_duration      integer,
+  endpoint_count       integer default 1,
+  status               text not null default 'pending' check (status in ('pending','active','suspended')),
+  gb_allocated         numeric not null default 0,
+  gb_used              numeric default 0,
+  country              text,
+  state                text,
+  city                 text,
+  session_type         text default 'rotating' check (session_type in ('rotating','sticky')),
+  activated_at         timestamp with time zone,
+  created_at           timestamp with time zone default now()
 );
 
 -- ── RESELLER TRANSFERS ────────────────────────────────────────

@@ -40,14 +40,16 @@ async function runUsageSync() {
   const supabase = await createAdminClient()
   const { data: creds } = await supabase
     .from('proxy_credentials')
-    .select('id, geonode_username, gb_used, user_id')
+    .select('id, geonode_sub_user_id, gb_used, user_id')
     .eq('status', 'active')
-    .not('geonode_username', 'is', null)
+    .not('geonode_sub_user_id', 'is', null)
 
   let updated = 0
   for (const cred of creds ?? []) {
     try {
-      const newUsed = await getSubUserUsage(cred.geonode_username)
+      // Geonode's usage endpoint takes the sub-user ID, not the username —
+      // this was passing geonode_username before, which never matched.
+      const newUsed = await getSubUserUsage(cred.geonode_sub_user_id)
       if (Math.abs(newUsed - (cred.gb_used ?? 0)) > 0.001) {
         await supabase.from('proxy_credentials').update({ gb_used: newUsed }).eq('id', cred.id)
         updated++

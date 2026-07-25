@@ -1,5 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/server'
-import { createSubUser } from '@/lib/geonode'
+import { createSubUser, deleteSubUser } from '@/lib/geonode'
 import { sendEmail } from '@/lib/email'
 
 function providerConfigured(): boolean {
@@ -57,7 +57,7 @@ export async function activateBandwidth(p: {
           session_type: cred.session_type ?? 'rotating',
           sticky_duration: cred.sticky_duration ?? undefined,
         })
-        await supabase.from('proxy_credentials').update({
+        const { error: updateErr } = await supabase.from('proxy_credentials').update({
           status: 'active',
           geonode_sub_user_id: gcred.geonode_sub_user_id, // required for usage/delete lookups
           geonode_username: gcred.username,
@@ -66,6 +66,13 @@ export async function activateBandwidth(p: {
           port: gcred.port,
           activated_at: new Date().toISOString(),
         }).eq('id', cred.id)
+
+        if (updateErr) {
+          // Supabase doesn't throw on this — it was failing silently before,
+          // leaving a real Geonode sub-user orphaned with no local record.
+          console.error('Failed to persist activated credential', cred.id, updateErr)
+          await deleteSubUser(gcred.geonode_sub_user_id).catch(() => {})
+        }
       } catch (e) {
         console.error('Failed to activate credential', cred.id, e)
       }
@@ -91,7 +98,7 @@ export async function activateBandwidth(p: {
           protocol: cred.protocol ?? 'http',
           session_type: cred.session_type ?? 'rotating',
         })
-        await supabase.from('proxy_credentials').update({
+        const { error: updateErr } = await supabase.from('proxy_credentials').update({
           status: 'active',
           geonode_sub_user_id: gcred.geonode_sub_user_id,
           geonode_username: gcred.username,
@@ -100,6 +107,12 @@ export async function activateBandwidth(p: {
           port: gcred.port,
           activated_at: new Date().toISOString(),
         }).eq('id', cred.id)
+
+        if (updateErr) {
+          console.error('Failed to persist activated transfer credential', cred.id, updateErr)
+          await deleteSubUser(gcred.geonode_sub_user_id).catch(() => {})
+          continue // don't mark the transfer active if the credential update failed
+        }
 
         await supabase.from('reseller_transfers').update({
           status: 'active',

@@ -1,5 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
-import { createSubUser } from '@/lib/geonode'
+import { createSubUser, deleteSubUser } from '@/lib/geonode'
 import { NextResponse } from 'next/server'
 
 function providerConfigured(): boolean {
@@ -107,6 +107,13 @@ export async function POST(req: Request) {
     await supabase.from('bandwidth_accounts')
       .update({ used_gb: bw.used_gb })
       .eq('user_id', user.id)
+    // Clean up the real Geonode sub-user we just created — otherwise it's
+    // orphaned on Geonode's side with no local record and no way to find it.
+    if (gcred) {
+      await deleteSubUser(gcred.geonode_sub_user_id).catch((e) =>
+        console.error('Failed to clean up orphaned Geonode sub-user', gcred?.geonode_sub_user_id, e)
+      )
+    }
     return NextResponse.json({ error: insertErr.message }, { status: 500 })
   }
 

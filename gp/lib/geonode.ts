@@ -99,14 +99,24 @@ export async function getAccountBalance(): Promise<{ available_gb: number; total
     { headers: headers() }
   )
   if (!res.ok) {
-    console.error('Geonode getAccountBalance failed:', res.status, await res.text().catch(() => ''))
-    return { available_gb: 0, total_gb: 0 }
+    const errText = await res.text().catch(() => '')
+    console.error('Geonode getAccountBalance failed:', res.status, errText)
+    // Throw instead of returning zeros — a 0GB balance that's actually an
+    // auth/endpoint failure is indistinguishable from a genuinely empty
+    // account otherwise, which is how this stayed hidden before.
+    throw new Error(`Geonode getAccountBalance failed: ${res.status} ${errText}`)
   }
   const d = await res.json()
   const result = d.data ?? d
+  // NOTE: remainingMB/totalMB are our best guess at Geonode's field names —
+  // unverified against a live response. If balance still reads 0 after this
+  // fix, hit GET /api/admin/debug-geonode and check raw_response for the
+  // actual field names, then update the two lines below.
+  const remainingMb = result.remainingMB ?? result.remaining_mb ?? result.available_mb ?? 0
+  const totalMb = result.totalMB ?? result.total_mb ?? 0
   return {
-    available_gb: mbToGb(result.remainingMB ?? 0),
-    total_gb: mbToGb(result.totalMB ?? 0),
+    available_gb: mbToGb(remainingMb),
+    total_gb: mbToGb(totalMb),
   }
 }
 
@@ -117,7 +127,11 @@ export async function purchaseBandwidth(gb: number): Promise<void> {
     body: JSON.stringify({ mb_amount: Math.round(gb * 1024) }),
   })
   if (!res.ok) {
-    console.error('Geonode purchaseBandwidth failed:', res.status, await res.text().catch(() => ''))
+    const errText = await res.text().catch(() => '')
+    console.error('Geonode purchaseBandwidth failed:', res.status, errText)
+    // Previously swallowed — reload-stock/route.ts would report success and
+    // email you a confirmation even when this call failed outright.
+    throw new Error(`Geonode purchaseBandwidth failed: ${res.status} ${errText}`)
   }
 }
 

@@ -1,5 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/server'
-import { createSubUser } from '@/lib/geonode'
+import { createSubUser, deleteSubUser } from '@/lib/geonode'
 import { NextResponse } from 'next/server'
 
 async function getAuthedUser(req: Request) {
@@ -88,6 +88,7 @@ export async function POST(req: Request) {
     state: state ?? null, city: city ?? null, session_type, protocol,
     endpoint_count: endpoint_count ?? 1,
     status: credStatus,
+    geonode_sub_user_id: gcred?.geonode_sub_user_id ?? null,
     geonode_username: gcred?.username ?? null,
     geonode_password: gcred?.password ?? null,
     host: gcred?.host ?? 'proxy.globproxy.com',
@@ -98,6 +99,11 @@ export async function POST(req: Request) {
   if (error) {
     // Rollback
     await supabase.from('bandwidth_accounts').update({ used_gb: bw?.used_gb ?? 0 }).eq('user_id', user.id)
+    if (gcred) {
+      await deleteSubUser(gcred.geonode_sub_user_id).catch((e) =>
+        console.error('Failed to clean up orphaned Geonode sub-user', gcred?.geonode_sub_user_id, e)
+      )
+    }
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 
