@@ -6,13 +6,13 @@ const SERVICE_TYPE = 'RESIDENTIAL-PREMIUM'
 // White-label host — always expose this to users, never residential.geonode.com
 export const PROXY_HOST = 'proxy.globproxy.com'
 
+// Confirmed against the live OpenAPI spec (app-api.geonode.com/api/docs/reseller-api):
+// the header is a literal custom header, NOT "r-api-key" and NOT "Authorization: Bearer".
+// Both of those were tried and failed (401 "Authorization is not provided" /
+// "Invalid or expired JWT token") before this was confirmed from the real spec.
 function headers() {
-  // Confirmed via live 401 "Authorization is not provided" — the reseller
-  // API wants a standard Authorization header, not r-api-key. GEONODE_API_AUTH
-  // holds the scheme ("Bearer") and was sitting unused in .env.local before this.
-  const scheme = process.env.GEONODE_API_AUTH || 'Bearer'
   return {
-    'Authorization': `${scheme} ${KEY}`,
+    'Reseller-Api-Key': KEY,
     'Content-Type': 'application/json',
   }
 }
@@ -21,9 +21,10 @@ function mbToGb(mb: number): number {
   return Math.round((mb / 1024) * 100) / 100
 }
 
+// Spec requires password to be uuid-formatted, not an arbitrary string —
+// the previous genPassword() (16 random chars) would 400 once auth worked.
 function genPassword(): string {
-  const c = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789'
-  return Array.from({ length: 16 }, () => c[Math.floor(Math.random() * c.length)]).join('')
+  return crypto.randomUUID()
 }
 
 export interface GCred {
@@ -38,6 +39,18 @@ export interface GCred {
 export interface CreateSubUserParams {
   label: string
   gb_limit: number
+  // NOTE: Geonode's sub-user creation endpoint does not accept country, state,
+  // city, protocol, or session_type — confirmed from the live spec, which only
+  // takes username/password/trafficLimitMB/activeUntil/email. Geonode applies
+  // geo-targeting and session control by suffixing options onto the username
+  // at connection time (e.g. "user-country-us-session-abc123"), not at
+  // creation time. These fields are accepted here so calling code doesn't
+  // need to change yet, but they are currently NOT sent to Geonode and NOT
+  // applied anywhere. If GlobProxy needs per-credential targeting to actually
+  // work, the connection-string builder (wherever proxy.globproxy.com
+  // credentials are displayed/exported to the customer) needs to encode these
+  // into the username instead — that's a product decision, flagging rather
+  // than guessing at it here.
   country?: string
   state?: string
   city?: string
@@ -51,19 +64,14 @@ export async function createSubUser(p: CreateSubUserParams): Promise<GCred> {
   const password = genPassword()
   const port = p.protocol === 'socks5' ? 7000 : 9000
 
-  const res = await fetch(`${BASE}/${RESELLER_ID}/sub-users`, {
+  const res = await fetch(`${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users`, {
     method: 'POST',
     headers: headers(),
     body: JSON.stringify({
       username,
       password,
-      bandwidth_limit_mb: Math.round(p.gb_limit * 1024),
-      country: p.country ?? null,
-      state: p.state ?? null,
-      city: p.city ?? null,
-      protocol: p.protocol ?? 'http',
-      session_type: p.session_type ?? 'rotating',
-      ...(p.sticky_duration ? { sticky_duration: p.sticky_duration * 60 } : {}),
+      trafficLimitMB: Math.round(p.gb_limit * 1024),
+      // activeUntil / email omitted — both optional per spec
     }),
   })
 
@@ -73,10 +81,10 @@ export async function createSubUser(p: CreateSubUserParams): Promise<GCred> {
   }
 
   const d = await res.json()
-  const result = d.data ?? d
+  const result = d.result ?? d.data ?? d
 
   return {
-    geonode_sub_user_id: String(result.id ?? result.sub_user_id ?? username),
+    geonode_sub_user_id: String(result.id ?? username),
     username: result.username ?? username,
     password: result.password ?? password,
     host: PROXY_HOST,
@@ -85,62 +93,53 @@ export async function createSubUser(p: CreateSubUserParams): Promise<GCred> {
   }
 }
 
+// Per spec there is no separate "/usage" endpoint — usage comes back as
+// trafficUsedMB on the same "get sub-user" call.
 export async function getSubUserUsage(geonodeSubUserId: string): Promise<number> {
   const res = await fetch(
-    `${BASE}/${RESELLER_ID}/sub-users/${geonodeSubUserId}/usage`,
+    `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${geonodeSubUserId}`,
     { headers: headers() }
   )
   if (!res.ok) return 0
   const d = await res.json()
-  const result = d.data ?? d
-  const usedMb = result.usedMB ?? result.used_mb ?? result.bandwidth_used_mb ?? 0
-  return mbToGb(usedMb)
+  const result = d.result ?? d.data ?? d
+  return mbToGb(result.trafficUsedMB ?? 0)
 }
 
 export async function getAccountBalance(): Promise<{ available_gb: number; total_gb: number }> {
   const res = await fetch(
-    `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/traffic/summary`,
+    `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/traffic`,
     { headers: headers() }
   )
   if (!res.ok) {
     const errText = await res.text().catch(() => '')
     console.error('Geonode getAccountBalance failed:', res.status, errText)
-    // Throw instead of returning zeros — a 0GB balance that's actually an
-    // auth/endpoint failure is indistinguishable from a genuinely empty
-    // account otherwise, which is how this stayed hidden before.
     throw new Error(`Geonode getAccountBalance failed: ${res.status} ${errText}`)
   }
   const d = await res.json()
-  const result = d.data ?? d
-  // NOTE: remainingMB/totalMB are our best guess at Geonode's field names —
-  // unverified against a live response. If balance still reads 0 after this
-  // fix, hit GET /api/admin/debug-geonode and check raw_response for the
-  // actual field names, then update the two lines below.
-  const remainingMb = result.remainingMB ?? result.remaining_mb ?? result.available_mb ?? 0
-  const totalMb = result.totalMB ?? result.total_mb ?? 0
+  const result = d.result ?? d.data ?? d
   return {
-    available_gb: mbToGb(remainingMb),
-    total_gb: mbToGb(totalMb),
+    available_gb: mbToGb(result.remainingMB ?? 0),
+    total_gb: mbToGb(result.totalMB ?? 0),
   }
 }
 
+// IMPORTANT: the live OpenAPI spec for this API has no purchase/reload
+// endpoint at all — only Traffic (read), Sub-users (CRUD), Whitelisted IPs,
+// and Usage Statistics. This function is now disabled rather than calling a
+// made-up URL. Reloading reseller stock may require Geonode's dashboard/
+// billing directly rather than the API — confirm with Geonode support before
+// re-enabling this, and update the real endpoint here once known.
 export async function purchaseBandwidth(gb: number): Promise<void> {
-  const res = await fetch(`${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/purchase`, {
-    method: 'POST',
-    headers: headers(),
-    body: JSON.stringify({ mb_amount: Math.round(gb * 1024) }),
-  })
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '')
-    console.error('Geonode purchaseBandwidth failed:', res.status, errText)
-    // Previously swallowed — reload-stock/route.ts would report success and
-    // email you a confirmation even when this call failed outright.
-    throw new Error(`Geonode purchaseBandwidth failed: ${res.status} ${errText}`)
-  }
+  throw new Error(
+    'Geonode reseller API has no documented purchase/reload endpoint. ' +
+    'This call has been disabled rather than hitting a nonexistent URL — ' +
+    'confirm the correct mechanism with Geonode support before re-enabling.'
+  )
 }
 
 export async function deleteSubUser(geonodeSubUserId: string): Promise<void> {
-  await fetch(`${BASE}/${RESELLER_ID}/sub-users/${geonodeSubUserId}`, {
+  await fetch(`${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${geonodeSubUserId}`, {
     method: 'DELETE',
     headers: headers(),
   })
@@ -150,8 +149,8 @@ export async function deleteSubUser(geonodeSubUserId: string): Promise<void> {
 // Creates a 10 MB test sub-user, captures the full raw Geonode response,
 // then immediately deletes it. Used by /api/admin/debug-geonode to verify:
 //   1. API key and reseller ID are valid
-//   2. Exact field names Geonode returns (id vs sub_user_id, etc.)
-//   3. bandwidth_limit_mb is the correct request field name
+//   2. Exact field names Geonode returns
+//   3. trafficLimitMB is the correct request field name
 export async function debugCreateSubUser(): Promise<{
   raw_request: object
   raw_response: object | null
@@ -166,12 +165,7 @@ export async function debugCreateSubUser(): Promise<{
   const requestBody = {
     username,
     password,
-    bandwidth_limit_mb: 10, // 10 MB — smallest testable amount
-    country: null,
-    state: null,
-    city: null,
-    protocol: 'http',
-    session_type: 'rotating',
+    trafficLimitMB: 10, // 10 MB — smallest testable amount
   }
 
   let httpStatus: number | null = null
@@ -181,7 +175,7 @@ export async function debugCreateSubUser(): Promise<{
   let error: string | null = null
 
   try {
-    const res = await fetch(`${BASE}/${RESELLER_ID}/sub-users`, {
+    const res = await fetch(`${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users`, {
       method: 'POST',
       headers: headers(),
       body: JSON.stringify(requestBody),
@@ -192,9 +186,9 @@ export async function debugCreateSubUser(): Promise<{
 
     if (res.ok && rawResponse) {
       const d = rawResponse as any
-      const result = d.data ?? d
+      const result = d.result ?? d.data ?? d
       parsedGcred = {
-        geonode_sub_user_id: String(result.id ?? result.sub_user_id ?? username),
+        geonode_sub_user_id: String(result.id ?? username),
         username: result.username ?? username,
         password: result.password ?? password,
         host: PROXY_HOST,
@@ -205,7 +199,7 @@ export async function debugCreateSubUser(): Promise<{
       // Immediately clean up — don't leave test sub-users in Geonode
       try {
         const delRes = await fetch(
-          `${BASE}/${RESELLER_ID}/sub-users/${parsedGcred.geonode_sub_user_id}`,
+          `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${parsedGcred.geonode_sub_user_id}`,
           { method: 'DELETE', headers: headers() }
         )
         cleanupDeleted = delRes.ok

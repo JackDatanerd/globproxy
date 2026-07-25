@@ -17,6 +17,8 @@ export async function POST(req: Request) {
     })
     return NextResponse.json({ success: true, gb_amount })
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 })
+    // purchaseBandwidth is currently disabled — Geonode's reseller API has no
+    // documented purchase endpoint. See lib/geonode.ts for details.
+    return NextResponse.json({ error: err.message }, { status: 501 })
   }
 }

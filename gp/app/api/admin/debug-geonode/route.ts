@@ -10,9 +10,10 @@ import { NextResponse } from 'next/server'
 //          2. The exact field names Geonode uses in the response (id vs sub_user_id, etc.)
 //          3. That bandwidth_limit_mb is the correct request field name
 //        Check `raw_response` in the returned JSON if `parsed_gcred` fields look wrong.
-// NOTE: auth header confirmed 2026 via live 401 to be "Authorization: Bearer <key>",
-// not "r-api-key" — see lib/geonode.ts headers(). If this endpoint starts 401ing
-// again, check that first.
+// NOTE: auth header confirmed from the live OpenAPI spec to be the custom
+// header "Reseller-Api-Key: <key>" — not "r-api-key", not "Authorization:
+// Bearer". Both of those were tried against production and failed first.
+// See lib/geonode.ts headers().
 
 async function verifyAdmin(req: Request) {
   const token = req.headers.get('authorization')?.replace('Bearer ', '')
