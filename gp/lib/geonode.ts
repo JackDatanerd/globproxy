@@ -7,8 +7,12 @@ const SERVICE_TYPE = 'RESIDENTIAL-PREMIUM'
 export const PROXY_HOST = 'proxy.globproxy.com'
 
 function headers() {
+  // Confirmed via live 401 "Authorization is not provided" — the reseller
+  // API wants a standard Authorization header, not r-api-key. GEONODE_API_AUTH
+  // holds the scheme ("Bearer") and was sitting unused in .env.local before this.
+  const scheme = process.env.GEONODE_API_AUTH || 'Bearer'
   return {
-    'r-api-key': KEY,
+    'Authorization': `${scheme} ${KEY}`,
     'Content-Type': 'application/json',
   }
 }
