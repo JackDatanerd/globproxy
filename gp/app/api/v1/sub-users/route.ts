@@ -33,7 +33,7 @@ export async function GET(req: Request) {
 
   const { data } = await supabase
     .from('proxy_credentials')
-    .select('id,label,status,gb_allocated,gb_used,country,state,city,session_type,protocol,host,port,geonode_username,activated_at,created_at')
+    .select('id,label,status,gb_allocated,gb_used,country,state,city,asn,session_type,protocol,host,port,geonode_username,activated_at,created_at')
     .eq('user_id', user.id)
     .order('created_at', { ascending: false })
 
@@ -55,7 +55,7 @@ export async function POST(req: Request) {
   if (!profile?.api_access && profile?.role !== 'admin') return API_BLOCKED
 
   const body = await req.json()
-  const { label, gb_allocated, country, state, city, session_type = 'rotating', protocol = 'http', endpoint_count = 1 } = body
+  const { label, gb_allocated, country, state, city, asn, session_type = 'rotating', protocol = 'http', endpoint_count = 1 } = body
 
   if (!gb_allocated || gb_allocated <= 0) {
     return NextResponse.json({ error: 'gb_allocated is required and must be > 0' }, { status: 400 })
@@ -86,7 +86,7 @@ export async function POST(req: Request) {
 
   const { data: cred, error } = await supabase.from('proxy_credentials').insert({
     user_id: user.id, label, gb_allocated, country: country ?? null,
-    state: state ?? null, city: city ?? null, session_type, protocol,
+    state: state ?? null, city: city ?? null, asn: asn ?? null, session_type, protocol,
     endpoint_count: endpoint_count ?? 1,
     status: credStatus,
     geonode_sub_user_id: gcred?.geonode_sub_user_id ?? null,

@@ -16,9 +16,10 @@ export interface TargetingOptions {
   country?: string | null
   state?: string | null
   city?: string | null
+  asn?: string | number | null
   protocol?: string | null
   session_type?: string | null
-  sticky_duration?: number | null // minutes
+  sticky_duration?: number | null // minutes — sent as-is, Geonode's lifetime is in minutes, not seconds
 }
 
 const PORTS = {
@@ -39,8 +40,11 @@ function slug(v: string): string {
   return v.trim().toLowerCase().replace(/\s+/g, '')
 }
 
+// Geonode's own dashboard generates mixed-case alphanumeric session IDs
+// (e.g. "mBXMRo") — likely just an opaque token, but matching their own
+// pattern rather than the lowercase-only guess from generic docs.
 export function genSessionId(): string {
-  const c = 'abcdefghijklmnopqrstuvwxyz0123456789'
+  const c = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
   return Array.from({ length: 8 }, () => c[Math.floor(Math.random() * c.length)]).join('')
 }
 
@@ -48,10 +52,8 @@ export function genSessionId(): string {
 // distinct id per endpoint (each gets its own stable peer IP under sticky).
 export function buildProxyUsername(baseUsername: string, opts: TargetingOptions, sessionId?: string): string {
   // Confirmed from a live Geonode dashboard export (2026-07):
-  // geonode_xxx-type-residential-country-gb-state-england-city-manchester-asn-2856-...
-  // "-type-residential" was missing entirely before this — GlobProxy is
-  // residential-only (SERVICE_TYPE is hardcoded to RESIDENTIAL-PREMIUM), so
-  // this is safe to always include rather than make configurable.
+  // geonode_xxx-type-residential-country-us-state-southcarolina-city-fountaininn-asn-13868-lifetime-1440-session-mBXMRo
+  // Order: type, country, state|city, asn, then (sticky only) lifetime, session.
   let u = `${baseUsername}-type-residential`
 
   if (opts.country) {
@@ -64,10 +66,19 @@ export function buildProxyUsername(baseUsername: string, opts: TargetingOptions,
     }
   }
 
+  if (opts.asn) {
+    u += `-asn-${String(opts.asn).trim()}`
+  }
+
   if (opts.session_type === 'sticky') {
+    // CORRECTED: previously had session before lifetime, and converted
+    // sticky_duration (minutes) to seconds. Real format is lifetime in raw
+    // MINUTES, then session — e.g. -lifetime-1440-session-mBXMRo for a
+    // 24-hour (1440 min) sticky session. Confirmed directly from a live
+    // credential string, not from third-party docs (which said seconds).
+    const lifetimeMinutes = Math.max(1, Math.round(opts.sticky_duration ?? 10))
     const id = sessionId ?? genSessionId()
-    const lifetimeSeconds = Math.max(1, Math.round((opts.sticky_duration ?? 10) * 60))
-    u += `-session-${id}-lifetime-${lifetimeSeconds}`
+    u += `-lifetime-${lifetimeMinutes}-session-${id}`
   }
 
   return u

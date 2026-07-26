@@ -1,5 +1,5 @@
 // Full ISO 3166-1 country list — all countries Geonode supports
-export const COUNTRIES: { code: string; name: string }[] = [
+export const COUNTRIES: { code: string; name: string; popular?: boolean }[] = [
   { code: 'AF', name: 'Afghanistan' },
   { code: 'AL', name: 'Albania' },
   { code: 'DZ', name: 'Algeria' },
@@ -8,7 +8,7 @@ export const COUNTRIES: { code: string; name: string }[] = [
   { code: 'AG', name: 'Antigua and Barbuda' },
   { code: 'AR', name: 'Argentina' },
   { code: 'AM', name: 'Armenia' },
-  { code: 'AU', name: 'Australia' },
+  { code: 'AU', name: 'Australia' , popular: true },
   { code: 'AT', name: 'Austria' },
   { code: 'AZ', name: 'Azerbaijan' },
   { code: 'BS', name: 'Bahamas' },
@@ -30,7 +30,7 @@ export const COUNTRIES: { code: string; name: string }[] = [
   { code: 'BI', name: 'Burundi' },
   { code: 'KH', name: 'Cambodia' },
   { code: 'CM', name: 'Cameroon' },
-  { code: 'CA', name: 'Canada' },
+  { code: 'CA', name: 'Canada' , popular: true },
   { code: 'CV', name: 'Cape Verde' },
   { code: 'CF', name: 'Central African Republic' },
   { code: 'TD', name: 'Chad' },
@@ -58,11 +58,11 @@ export const COUNTRIES: { code: string; name: string }[] = [
   { code: 'ET', name: 'Ethiopia' },
   { code: 'FJ', name: 'Fiji' },
   { code: 'FI', name: 'Finland' },
-  { code: 'FR', name: 'France' },
+  { code: 'FR', name: 'France' , popular: true },
   { code: 'GA', name: 'Gabon' },
   { code: 'GM', name: 'Gambia' },
   { code: 'GE', name: 'Georgia' },
-  { code: 'DE', name: 'Germany' },
+  { code: 'DE', name: 'Germany' , popular: true },
   { code: 'GH', name: 'Ghana' },
   { code: 'GR', name: 'Greece' },
   { code: 'GT', name: 'Guatemala' },
@@ -81,7 +81,7 @@ export const COUNTRIES: { code: string; name: string }[] = [
   { code: 'IL', name: 'Israel' },
   { code: 'IT', name: 'Italy' },
   { code: 'JM', name: 'Jamaica' },
-  { code: 'JP', name: 'Japan' },
+  { code: 'JP', name: 'Japan' , popular: true },
   { code: 'JO', name: 'Jordan' },
   { code: 'KZ', name: 'Kazakhstan' },
   { code: 'KE', name: 'Kenya' },
@@ -115,7 +115,7 @@ export const COUNTRIES: { code: string; name: string }[] = [
   { code: 'MM', name: 'Myanmar' },
   { code: 'NA', name: 'Namibia' },
   { code: 'NP', name: 'Nepal' },
-  { code: 'NL', name: 'Netherlands' },
+  { code: 'NL', name: 'Netherlands' , popular: true },
   { code: 'NZ', name: 'New Zealand' },
   { code: 'NI', name: 'Nicaragua' },
   { code: 'NE', name: 'Niger' },
@@ -165,8 +165,8 @@ export const COUNTRIES: { code: string; name: string }[] = [
   { code: 'UG', name: 'Uganda' },
   { code: 'UA', name: 'Ukraine' },
   { code: 'AE', name: 'United Arab Emirates' },
-  { code: 'GB', name: 'United Kingdom' },
-  { code: 'US', name: 'United States' },
+  { code: 'GB', name: 'United Kingdom' , popular: true },
+  { code: 'US', name: 'United States' , popular: true },
   { code: 'UY', name: 'Uruguay' },
   { code: 'UZ', name: 'Uzbekistan' },
   { code: 'VE', name: 'Venezuela' },
@@ -175,3 +175,6 @@ export const COUNTRIES: { code: string; name: string }[] = [
   { code: 'ZM', name: 'Zambia' },
   { code: 'ZW', name: 'Zimbabwe' },
 ]
+
+export const POPULAR_COUNTRIES = COUNTRIES.filter(c => c.popular)
+export const OTHER_COUNTRIES = COUNTRIES.filter(c => !c.popular)

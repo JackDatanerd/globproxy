@@ -16,7 +16,7 @@ export async function POST(req: Request) {
 
   const body = await req.json()
   const {
-    label, gb_allocated, country, state, city,
+    label, gb_allocated, country, state, city, asn,
     protocol = 'http', session_type = 'rotating',
     sticky_duration, endpoint_count = 1,
   } = body
@@ -96,6 +96,7 @@ export async function POST(req: Request) {
       country: country ?? null,
       state: state ?? null,
       city: city ?? null,
+      asn: asn ?? null,
       status,
       activated_at: status === 'active' ? new Date().toISOString() : null,
     })

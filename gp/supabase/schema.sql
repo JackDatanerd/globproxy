@@ -106,6 +106,7 @@ create table public.proxy_credentials (
   protocol             text default 'http' check (protocol in ('http','socks5')),
   sticky_duration      integer,
   endpoint_count       integer default 1,
+  asn                  text, -- Geonode ASN/ISP targeting number, e.g. '13868'
   status               text not null default 'pending' check (status in ('pending','active','suspended')),
   gb_allocated         numeric not null default 0,
   gb_used              numeric default 0,

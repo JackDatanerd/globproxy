@@ -12,7 +12,8 @@ alter table public.proxy_credentials
   add column if not exists geonode_sub_user_id text,
   add column if not exists protocol           text default 'http' check (protocol in ('http','socks5')),
   add column if not exists sticky_duration     integer,
-  add column if not exists endpoint_count      integer default 1;
+  add column if not exists endpoint_count      integer default 1,
+  add column if not exists asn                 text;
 
-comment on column public.proxy_credentials.geonode_sub_user_id is
-  'Geonode sub-user numeric ID. Required for usage lookups and deletion — do not use geonode_username for these calls.';
+comment on column public.proxy_credentials.asn is
+  'Geonode ASN/ISP targeting number (e.g. 13868) — appended to username after city, before lifetime/session. Free text since we don''t have Geonode''s full ASN-to-ISP-name mapping.';

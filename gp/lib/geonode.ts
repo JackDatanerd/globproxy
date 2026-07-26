@@ -56,6 +56,7 @@ export interface CreateSubUserParams {
   country?: string
   state?: string
   city?: string
+  asn?: string | number
   protocol?: 'http' | 'socks5'
   session_type?: 'rotating' | 'sticky'
   sticky_duration?: number // minutes
