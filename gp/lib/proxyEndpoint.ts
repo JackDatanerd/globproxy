@@ -47,7 +47,12 @@ export function genSessionId(): string {
 // sessionId is optional so callers generating multiple endpoints can pass a
 // distinct id per endpoint (each gets its own stable peer IP under sticky).
 export function buildProxyUsername(baseUsername: string, opts: TargetingOptions, sessionId?: string): string {
-  let u = baseUsername
+  // Confirmed from a live Geonode dashboard export (2026-07):
+  // geonode_xxx-type-residential-country-gb-state-england-city-manchester-asn-2856-...
+  // "-type-residential" was missing entirely before this — GlobProxy is
+  // residential-only (SERVICE_TYPE is hardcoded to RESIDENTIAL-PREMIUM), so
+  // this is safe to always include rather than make configurable.
+  let u = `${baseUsername}-type-residential`
 
   if (opts.country) {
     u += `-country-${slug(opts.country)}`

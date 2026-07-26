@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { buildProxyUsername, getProxyPort } from '@/lib/proxyEndpoint'
+import { POPULAR_US_STATES, OTHER_US_STATES } from '@/lib/usStates'
 
 const COUNTRIES = [
   { code: 'us', name: 'United States' },
@@ -178,13 +179,33 @@ export default function NewProxyForm({ availableGb }: { availableGb: number }) {
             </div>
             <div>
               <label className="block text-xs text-muted mb-1.5">State</label>
-              <input
-                type="text"
-                value={state}
-                onChange={e => setState(e.target.value)}
-                placeholder="e.g. california"
-                className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent/30 focus:border-accent"
-              />
+              {country === 'US' ? (
+                <select
+                  value={state}
+                  onChange={e => setState(e.target.value)}
+                  className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent/30 focus:border-accent bg-white"
+                >
+                  <option value="">Any</option>
+                  <optgroup label="Popular">
+                    {POPULAR_US_STATES.map(s => (
+                      <option key={s.value} value={s.value}>{s.label}</option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="All states">
+                    {OTHER_US_STATES.map(s => (
+                      <option key={s.value} value={s.value}>{s.label}</option>
+                    ))}
+                  </optgroup>
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={state}
+                  onChange={e => setState(e.target.value)}
+                  placeholder="e.g. england"
+                  className="w-full border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-accent/30 focus:border-accent"
+                />
+              )}
             </div>
             <div>
               <label className="block text-xs text-muted mb-1.5">City</label>
