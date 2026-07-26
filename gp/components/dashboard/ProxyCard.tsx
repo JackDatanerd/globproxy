@@ -3,6 +3,7 @@ import { useState, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { buildProxyUsername, getProxyPort, genSessionId } from '@/lib/proxyEndpoint'
+import SessionManager from '@/components/dashboard/SessionManager'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
@@ -23,27 +24,25 @@ export default function ProxyCard({ cred, index }: Props) {
   const pass = cred.geonode_password || '—'
   const pct  = cred.gb_allocated > 0 ? (cred.gb_used / cred.gb_allocated) * 100 : 0
 
-  // Stable per-render session IDs so repeated copies during one page view
-  // stay consistent — regenerated on refresh, same as any sticky session
-  // naturally expiring and being re-established.
+  const isSticky = cred.session_type === 'sticky'
+
+  // Stable per-render session IDs for ROTATING credentials only — sticky
+  // sessions are now real, persisted records managed via SessionManager
+  // below, not ephemeral ones regenerated on every render.
   const count = cred.endpoint_count || 1
   const sessionIds = useMemo(
     () => Array.from({ length: count }, () => genSessionId()),
     [cred.id, count, cred.session_type]
   )
 
-  // Build the ACTUAL username Geonode needs — country/state/city/session are
-  // encoded into this string, not sent to Geonode at creation time. This is
-  // the fix: previously the endpoint strings used the raw base username and
-  // ignored targeting entirely, so credentials worked but never honored the
-  // country/protocol/session settings the customer chose.
-  const endpoints: string[] = sessionIds.map((sid) =>
+  const endpoints: string[] = isSticky ? [] : sessionIds.map((sid) =>
     `${host}:${port}:${buildProxyUsername(baseUser, cred, sid)}:${pass}`
   )
-  // The single most useful "Username" to show/copy in the fields table above
-  // — first endpoint's fully-suffixed username, since that's what actually
-  // needs to be sent to authenticate with the targeting applied.
-  const user = endpoints.length ? buildProxyUsername(baseUser, cred, sessionIds[0]) : baseUser
+  // For sticky, show the targeting prefix with no session baked in — the
+  // real, usable endpoint is whatever session the user creates below.
+  const user = isSticky
+    ? buildProxyUsername(baseUser, { ...cred, session_type: 'rotating' })
+    : (endpoints.length ? buildProxyUsername(baseUser, cred, sessionIds[0]) : baseUser)
 
   function copy(text: string, label = 'Copied') {
     navigator.clipboard.writeText(text)
@@ -189,32 +188,47 @@ console.log(await res.json()); // shows proxy IP and location`
             ))}
           </div>
 
-          {/* Endpoint strings — dark terminal block */}
-          <div className="mx-5 mb-4">
-            <div className="bg-ink rounded-lg overflow-hidden">
-              <div className="flex items-center justify-between px-3 py-2 border-b border-white/10">
-                <span className="text-[10px] font-mono text-white/40 uppercase tracking-widest">
-                  Endpoint strings — host:port:user:pass
-                  {count > 1 ? ` (${count} endpoints)` : ''}
-                </span>
-                <div className="flex gap-2">
-                  <button onClick={copyAll}
-                    className="text-[10px] font-mono text-accent hover:opacity-70 border border-accent/30 px-2.5 py-1 rounded transition-colors">
-                    copy all
-                  </button>
-                  <button onClick={downloadTxt}
-                    className="text-[10px] font-mono text-white/50 hover:text-white border border-white/10 px-2.5 py-1 rounded transition-colors">
-                    .txt
-                  </button>
+          {/* Endpoint strings — rotating shows the simple block; sticky gets
+              real, persisted, manageable sessions instead of ephemeral ones */}
+          {isSticky ? (
+            <div className="mx-5 mb-4">
+              <SessionManager
+                credentialId={cred.id}
+                cred={cred}
+                host={host}
+                port={port}
+                baseUser={baseUser}
+                pass={pass}
+                onCopy={copy}
+              />
+            </div>
+          ) : (
+            <div className="mx-5 mb-4">
+              <div className="bg-ink rounded-lg overflow-hidden">
+                <div className="flex items-center justify-between px-3 py-2 border-b border-white/10">
+                  <span className="text-[10px] font-mono text-white/40 uppercase tracking-widest">
+                    Endpoint strings — host:port:user:pass
+                    {count > 1 ? ` (${count} endpoints)` : ''}
+                  </span>
+                  <div className="flex gap-2">
+                    <button onClick={copyAll}
+                      className="text-[10px] font-mono text-accent hover:opacity-70 border border-accent/30 px-2.5 py-1 rounded transition-colors">
+                      copy all
+                    </button>
+                    <button onClick={downloadTxt}
+                      className="text-[10px] font-mono text-white/50 hover:text-white border border-white/10 px-2.5 py-1 rounded transition-colors">
+                      .txt
+                    </button>
+                  </div>
+                </div>
+                <div className="px-3 py-3 max-h-36 overflow-y-auto">
+                  {endpoints.map((ep, i) => (
+                    <div key={i} className="font-mono text-[11px] text-white/70 leading-5 break-all">{ep}</div>
+                  ))}
                 </div>
               </div>
-              <div className="px-3 py-3 max-h-36 overflow-y-auto">
-                {endpoints.map((ep, i) => (
-                  <div key={i} className="font-mono text-[11px] text-white/70 leading-5 break-all">{ep}</div>
-                ))}
-              </div>
             </div>
-          </div>
+          )}
 
           {/* IP verify */}
           <div className="mx-5 mb-4">

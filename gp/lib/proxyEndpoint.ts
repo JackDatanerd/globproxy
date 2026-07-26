@@ -6,11 +6,15 @@
 // This file is the one place that builds that suffixed username, so the
 // create form, ProxyCard, and the API routes can't drift out of sync again.
 //
-// Format, in order: <base>-country-<cc>[-state-<state>|-city-<city>][-session-<id>-lifetime-<secs>]
-// Source: docs.geonode.com geo-targeting + sticky-session guides.
+// Format, in order: <base>-type-residential-country-<cc>[-state-<state>][-city-<city>][-asn-<n>][-lifetime-<min>-session-<id>]
+// Source: confirmed directly from live credential strings shared during
+// this project (Manchester, Anchorage, Crystal City, Fountain Inn) — state
+// and city are BOTH included together, not mutually exclusive as generic
+// third-party docs claimed. That wrong assumption previously caused city to
+// be silently dropped whenever state was also set.
 // - country: lowercase 2-letter ISO code
-// - state / city: lowercase, no spaces — mutually exclusive, both require country
-// - session id: 8-char lowercase alphanumeric; lifetime: seconds
+// - state / city: lowercase, no spaces
+// - session id: 8-char mixed-case alphanumeric; lifetime: raw minutes
 
 export interface TargetingOptions {
   country?: string | null
@@ -58,12 +62,10 @@ export function buildProxyUsername(baseUsername: string, opts: TargetingOptions,
 
   if (opts.country) {
     u += `-country-${slug(opts.country)}`
-    // State and city are mutually exclusive per Geonode — both require country.
-    if (opts.state) {
-      u += `-state-${slug(opts.state)}`
-    } else if (opts.city) {
-      u += `-city-${slug(opts.city)}`
-    }
+    // Confirmed from real examples: state and city are BOTH included when
+    // both are set (not mutually exclusive — that was the bug).
+    if (opts.state) u += `-state-${slug(opts.state)}`
+    if (opts.city)  u += `-city-${slug(opts.city)}`
   }
 
   if (opts.asn) {
