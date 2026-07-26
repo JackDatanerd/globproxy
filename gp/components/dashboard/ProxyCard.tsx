@@ -1,7 +1,8 @@
 'use client'
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { buildProxyUsername, getProxyPort, genSessionId } from '@/lib/proxyEndpoint'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
@@ -15,20 +16,34 @@ export default function ProxyCard({ cred, index }: Props) {
   const [confirmDelete, setConfirmDelete] = useState(false)
 
   const host = cred.host || 'proxy.globproxy.com'
-  const port = cred.port || (cred.protocol === 'socks5' ? 7000 : 9000)
-  const user = cred.geonode_username || '—'
+  // Port depends on protocol AND session type (sticky vs rotating) — not
+  // protocol alone. See lib/proxyEndpoint.ts.
+  const port = cred.port || getProxyPort(cred.protocol, cred.session_type)
+  const baseUser = cred.geonode_username || '—'
   const pass = cred.geonode_password || '—'
   const pct  = cred.gb_allocated > 0 ? (cred.gb_used / cred.gb_allocated) * 100 : 0
 
-  // Build endpoint strings
+  // Stable per-render session IDs so repeated copies during one page view
+  // stay consistent — regenerated on refresh, same as any sticky session
+  // naturally expiring and being re-established.
   const count = cred.endpoint_count || 1
-  const endpoints: string[] = []
-  for (let i = 1; i <= count; i++) {
-    const u = count > 1 || cred.session_type === 'sticky'
-      ? `${user}-session-${i}`
-      : user
-    endpoints.push(`${host}:${port}:${u}:${pass}`)
-  }
+  const sessionIds = useMemo(
+    () => Array.from({ length: count }, () => genSessionId()),
+    [cred.id, count, cred.session_type]
+  )
+
+  // Build the ACTUAL username Geonode needs — country/state/city/session are
+  // encoded into this string, not sent to Geonode at creation time. This is
+  // the fix: previously the endpoint strings used the raw base username and
+  // ignored targeting entirely, so credentials worked but never honored the
+  // country/protocol/session settings the customer chose.
+  const endpoints: string[] = sessionIds.map((sid) =>
+    `${host}:${port}:${buildProxyUsername(baseUser, cred, sid)}:${pass}`
+  )
+  // The single most useful "Username" to show/copy in the fields table above
+  // — first endpoint's fully-suffixed username, since that's what actually
+  // needs to be sent to authenticate with the targeting applied.
+  const user = endpoints.length ? buildProxyUsername(baseUser, cred, sessionIds[0]) : baseUser
 
   function copy(text: string, label = 'Copied') {
     navigator.clipboard.writeText(text)

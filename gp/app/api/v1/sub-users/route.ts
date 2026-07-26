@@ -1,5 +1,6 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { createSubUser, deleteSubUser } from '@/lib/geonode'
+import { buildProxyUsername, getProxyPort } from '@/lib/proxyEndpoint'
 import { NextResponse } from 'next/server'
 
 async function getAuthedUser(req: Request) {
@@ -92,7 +93,7 @@ export async function POST(req: Request) {
     geonode_username: gcred?.username ?? null,
     geonode_password: gcred?.password ?? null,
     host: gcred?.host ?? 'proxy.globproxy.com',
-    port: gcred?.port ?? (protocol === 'socks5' ? 7000 : 9000),
+    port: gcred?.port ?? getProxyPort(protocol, session_type),
     activated_at: credStatus === 'active' ? new Date().toISOString() : null,
   }).select().single()
 
@@ -109,7 +110,16 @@ export async function POST(req: Request) {
 
   return NextResponse.json({
     id: cred.id, label: cred.label, status: cred.status,
-    host: cred.host, port: cred.port, username: cred.geonode_username,
+    host: cred.host, port: cred.port,
+    username: cred.geonode_username, // raw Geonode sub-user account name
+    // The username to actually use in your proxy connection — includes
+    // country/state/city/session targeting encoded per Geonode's format.
+    // For sticky sessions, generate a fresh session id per connection
+    // yourself rather than reusing this one indefinitely: buildProxyUsername
+    // logic is in lib/proxyEndpoint.ts if you need to construct more.
+    connection_username: cred.geonode_username
+      ? buildProxyUsername(cred.geonode_username, cred)
+      : null,
     gb_allocated: cred.gb_allocated, country: cred.country,
   }, { status: 201 })
 }

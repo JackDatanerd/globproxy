@@ -1,3 +1,5 @@
+import { getProxyPort } from '@/lib/proxyEndpoint'
+
 const BASE = 'https://app-api.geonode.com/api/reseller/v2'
 const KEY = process.env.GEONODE_API_KEY!
 const RESELLER_ID = process.env.GEONODE_RESELLER_ID!
@@ -62,7 +64,10 @@ export interface CreateSubUserParams {
 export async function createSubUser(p: CreateSubUserParams): Promise<GCred> {
   const username = `gp_${Date.now()}`
   const password = genPassword()
-  const port = p.protocol === 'socks5' ? 7000 : 9000
+  // Previously: p.protocol === 'socks5' ? 7000 : 9000 — wrong on two counts.
+  // SOCKS5 isn't 7000 (unverified guess), and neither number accounted for
+  // sticky vs rotating at all. See lib/proxyEndpoint.ts for the confirmed values.
+  const port = getProxyPort(p.protocol, p.session_type)
 
   const res = await fetch(`${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users`, {
     method: 'POST',

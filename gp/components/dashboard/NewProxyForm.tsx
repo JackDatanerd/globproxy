@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { buildProxyUsername, getProxyPort } from '@/lib/proxyEndpoint'
 
 const COUNTRIES = [
   { code: 'us', name: 'United States' },
@@ -87,8 +88,10 @@ export default function NewProxyForm({ availableGb }: { availableGb: number }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  const port = protocol === 'socks5' ? 7000 : 9000
-  const previewUser = `gp_xxxxxxxxxxxxxxxx${country ? `-country-${country}` : ''}${state ? `-state-${state.toLowerCase().replace(/\s+/g, '')}` : ''}`
+  const port = getProxyPort(protocol, sessionType)
+  const previewUser = buildProxyUsername('gp_xxxxxxxxxxxxxxxx', {
+    country, state, city, session_type: sessionType, sticky_duration: stickyDuration,
+  }, 'xxxxxxxx')
   const previewEndpoint = `proxy.globproxy.com:${port}:${previewUser}:••••••••••••••••`
 
   async function handleSubmit() {
