@@ -42,7 +42,7 @@ export default function PrivacyPage() {
           <section>
             <h2 className="font-display font-bold text-xl text-ink mb-3">4. Third-Party Services</h2>
             <div className="bg-surface border border-border rounded-xl overflow-hidden">
-              {[['Supabase','Database and authentication','EU (Frankfurt)'],['Cloudflare','Hosting and edge network','Global'],['Paystack','Payment processing','Nigeria / Global'],['Geonode','Proxy infrastructure','Global'],['Resend','Transactional email','US']].map(([n,r,l],i,arr)=>(
+              {[['Supabase','Database and authentication','EU (Frankfurt)'],['Cloudflare','Hosting and edge network','Global'],['Paystack','Payment processing','Nigeria / Global'],['Proxy Network Partner','Proxy infrastructure','Global'],['Resend','Transactional email','US']].map(([n,r,l],i,arr)=>(
                 <div key={n} className={`grid grid-cols-3 px-5 py-3 text-sm ${i<arr.length-1?'border-b border-border':''}`}>
                   <span className="font-medium text-ink">{n}</span>
                   <span className="text-muted">{r}</span>

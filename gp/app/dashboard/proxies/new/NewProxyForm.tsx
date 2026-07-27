@@ -155,7 +155,7 @@ export default function NewProxyForm({ availableGb }: { availableGb: number }) {
               <input value={form.asn} onChange={e => set('asn', e.target.value.replace(/[^0-9]/g, ''))}
                 placeholder="e.g. 13868"
                 className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors" />
-              <p className="text-xs text-muted mt-1">Target a specific ISP by ASN number, found in Geonode's dashboard.</p>
+              <p className="text-xs text-muted mt-1">Target a specific ISP by ASN number — look yours up at a public ASN lookup tool (e.g. bgp.he.net) if you're not sure of the number.</p>
             </div>
           </div>
         </div>

@@ -90,7 +90,7 @@ export default function SessionManager({ credentialId, cred, host, port, baseUse
       const headers = await authHeaders()
       const res = await fetch(`/api/dashboard/sessions/${id}`, { method: 'PATCH', headers, body: JSON.stringify({ terminate: true }) })
       if (!res.ok) throw new Error((await res.json()).error)
-      toast.success('Session terminated — note this only stops it showing here; it naturally expires on Geonode\'s side at its lifetime')
+      toast.success('Session terminated — note this only stops it showing here; it still expires naturally on its own once its lifetime setting elapses')
     } catch (err: any) {
       toast.error(err.message)
       load()
@@ -171,7 +171,7 @@ export default function SessionManager({ credentialId, cred, host, port, baseUse
                     className="text-[10px] font-mono text-accent hover:opacity-70 border border-accent/30 px-2 py-0.5 rounded">
                     copy
                   </button>
-                  <button onClick={() => terminateSession(s.id)} title="Stop showing this session (it still expires naturally on Geonode's side)"
+                  <button onClick={() => terminateSession(s.id)} title="Stop showing this session (it still expires naturally once its lifetime elapses)"
                     className="text-[10px] font-mono text-white/40 hover:text-amber-400 px-1.5">
                     ⏻
                   </button>
