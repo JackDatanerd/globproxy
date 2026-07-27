@@ -24,6 +24,14 @@ export default function ProxyCard({ cred, index }: Props) {
   const pass = cred.geonode_password || '—'
   const pct  = cred.gb_allocated > 0 ? (cred.gb_used / cred.gb_allocated) * 100 : 0
 
+  // New credentials can 407 for a few minutes after creation — Geonode's edge
+  // gateway nodes appear to cache the sub-user list and sync periodically
+  // rather than checking a live DB on every connection, so a brand-new
+  // sub-user can exist on Geonode's side before the gateway node you connect
+  // to has picked it up. Not a bug on our end; just needs the UI to say so.
+  const isWarmingUp = cred.activated_at &&
+    (Date.now() - new Date(cred.activated_at).getTime()) < 10 * 60 * 1000
+
   const isSticky = cred.session_type === 'sticky'
 
   // Stable per-render session IDs for ROTATING credentials only — sticky
@@ -163,6 +171,11 @@ console.log(await res.json()); // shows proxy IP and location`
         </div>
       ) : cred.status === 'active' ? (
         <>
+          {isWarmingUp && (
+            <div className="mx-5 mb-4 text-xs text-blue-700 bg-blue-50 border border-blue-100 rounded-lg px-4 py-3 font-mono">
+              🌐 New credentials can take a few minutes to start working (you may see a 407 error at first) while they sync across the proxy network. If it doesn't connect immediately, wait a couple of minutes and try again.
+            </div>
+          )}
           {/* Credential fields */}
           <div className="mx-5 mb-4 bg-surface border border-border rounded-lg overflow-hidden">
             {[
