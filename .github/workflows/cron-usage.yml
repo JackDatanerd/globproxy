@@ -14,6 +14,11 @@ name: Cron — Usage Sync (every 5 min)
 #   2. GitHub repo Settings → Secrets and variables → Actions, add:
 #        CRON_SECRET = same value as above
 #        APP_URL     = https://globproxy.com   (no trailing slash)
+#
+# IMPORTANT: this file must live at .github/workflows/ at the REPO ROOT
+# (the folder containing both .git and gp/), not inside gp/.github/workflows/
+# — GitHub Actions only discovers workflows at the true repo root. That
+# misplacement is why this never showed up in the Actions tab before.
 
 on:
   schedule:
@@ -24,7 +29,15 @@ jobs:
   usage-sync:
     runs-on: ubuntu-latest
     steps:
-      - run: |
-          curl -sf -X POST "${{ secrets.APP_URL }}/api/cron/usage" \
-            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
-            -w "\nHTTP %{http_code}\n"
+      - name: Call usage sync endpoint
+        run: |
+          response=$(curl -s -w "\n%{http_code}" -X POST "${{ secrets.APP_URL }}/api/cron/usage" \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}")
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+          echo "Response body: $body"
+          echo "HTTP status: $http_code"
+          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            echo "::error::Cron usage-sync failed with HTTP $http_code — see response body above for the actual error message"
+            exit 1
+          fi

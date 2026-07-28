@@ -1,9 +1,9 @@
 name: Cron — Daily Tasks
 
 # Same secrets as cron-usage.yml — CRON_SECRET and APP_URL.
-# Runs once a day at 08:00 UTC — adjust the cron expression if you want a
-# different time (e.g. to land the summary email at your morning in Nairobi,
-# which is UTC+3, so 05:00 UTC ≈ 08:00 EAT).
+# Must live at .github/workflows/ at the repo root, not inside gp/.
+# Runs once a day at 08:00 UTC.
+
 on:
   schedule:
     - cron: '0 8 * * *'
@@ -13,25 +13,49 @@ jobs:
   bandwidth-alerts:
     runs-on: ubuntu-latest
     steps:
-      - run: |
-          curl -sf -X POST "${{ secrets.APP_URL }}/api/cron/alerts" \
-            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
-            -w "\nHTTP %{http_code}\n"
+      - name: Call alerts endpoint
+        run: |
+          response=$(curl -s -w "\n%{http_code}" -X POST "${{ secrets.APP_URL }}/api/cron/alerts" \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}")
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+          echo "Response body: $body"
+          echo "HTTP status: $http_code"
+          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            echo "::error::alerts failed with HTTP $http_code — see response body above"
+            exit 1
+          fi
 
   daily-summary:
     runs-on: ubuntu-latest
     needs: bandwidth-alerts
     steps:
-      - run: |
-          curl -sf -X POST "${{ secrets.APP_URL }}/api/cron/summary" \
-            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
-            -w "\nHTTP %{http_code}\n"
+      - name: Call summary endpoint
+        run: |
+          response=$(curl -s -w "\n%{http_code}" -X POST "${{ secrets.APP_URL }}/api/cron/summary" \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}")
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+          echo "Response body: $body"
+          echo "HTTP status: $http_code"
+          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            echo "::error::summary failed with HTTP $http_code — see response body above"
+            exit 1
+          fi
 
   cleanup-stale-orders:
     runs-on: ubuntu-latest
     needs: daily-summary
     steps:
-      - run: |
-          curl -sf -X POST "${{ secrets.APP_URL }}/api/cron/cleanup" \
-            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
-            -w "\nHTTP %{http_code}\n"
+      - name: Call cleanup endpoint
+        run: |
+          response=$(curl -s -w "\n%{http_code}" -X POST "${{ secrets.APP_URL }}/api/cron/cleanup" \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}")
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+          echo "Response body: $body"
+          echo "HTTP status: $http_code"
+          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            echo "::error::cleanup failed with HTTP $http_code — see response body above"
+            exit 1
+          fi
