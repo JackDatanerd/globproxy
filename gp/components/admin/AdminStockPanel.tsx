@@ -4,7 +4,7 @@ import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
 
 export default function AdminStockPanel() {
-  const [stock, setStock] = useState<any>({ available_gb:0, total_gb:0, last_synced:null })
+  const [stock, setStock] = useState<any>({ available_gb:0, total_gb:0, total_allocated_gb:0, total_used_gb:0, exposure_gb:0, covered:true, last_synced:null })
   const [loading, setLoading] = useState(false)
   const [reloading, setReloading] = useState(false)
   const [autoReload, setAutoReload] = useState(false)
@@ -85,6 +85,38 @@ export default function AdminStockPanel() {
           <span>Total: {total.toFixed(1)} GB</span>
         </div>
         {stock?.last_synced && <div className="text-[10px] font-mono text-muted mt-2">Synced: {new Date(stock.last_synced).toLocaleString()}</div>}
+      </div>
+
+      {/* Sold vs. stock — the number that actually matters for a usage-based
+          model. total_allocated_gb / total_used_gb / exposure_gb only exist
+          after the first sync following this deploy. */}
+      <div className={`rounded-xl p-4 mb-5 border ${stock.covered === false ? 'bg-red-50 border-red-200' : 'bg-surface border-border'}`}>
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-[10px] font-mono text-muted uppercase tracking-widest">Sold vs. stock (usage-based exposure)</div>
+          {stock.covered === false && (
+            <div className="bg-red-100 text-red-600 text-[10px] font-mono px-2.5 py-1 rounded-full">⚠ Not covered</div>
+          )}
+        </div>
+        <div className="grid grid-cols-3 gap-3 text-center">
+          <div>
+            <div className="font-display text-xl font-bold text-ink">{(stock.total_allocated_gb ?? 0).toFixed(1)}</div>
+            <div className="text-[10px] font-mono text-muted mt-0.5">Allocated (sold)</div>
+          </div>
+          <div>
+            <div className="font-display text-xl font-bold text-ink">{(stock.total_used_gb ?? 0).toFixed(1)}</div>
+            <div className="text-[10px] font-mono text-muted mt-0.5">Actually used</div>
+          </div>
+          <div>
+            <div className={`font-display text-xl font-bold ${stock.covered === false ? 'text-red-500' : 'text-ink'}`}>{(stock.exposure_gb ?? 0).toFixed(1)}</div>
+            <div className="text-[10px] font-mono text-muted mt-0.5">Exposure</div>
+          </div>
+        </div>
+        <p className="text-[10px] text-muted mt-3 font-light leading-relaxed">
+          Exposure = allocated minus used — what you'd need in hand if every customer drew their full remaining allocation right now.
+          {stock.covered === false
+            ? ' Current stock is below this — you are exposed if customers draw down at once.'
+            : ' Current stock covers this.'}
+        </p>
       </div>
 
       <div className="mb-5 p-4 bg-surface border border-border rounded-xl">

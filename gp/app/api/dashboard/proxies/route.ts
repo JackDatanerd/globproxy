@@ -25,7 +25,17 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'gb_allocated must be greater than 0' }, { status: 400 })
   }
 
-  // 1. Check available bandwidth
+  // 1. Check available bandwidth — soft gate against what they've purchased.
+  // NOTE: usage-based model — this is a sanity check, not a deduction.
+  // used_gb is updated ONLY by the cron usage-sync job pulling real usage
+  // from Geonode (app/api/cron/[task]/route.ts, runUsageSync). Because that
+  // job runs on an interval (currently every 15 min via GitHub Actions),
+  // this check can be stale by up to that window — a user creating many
+  // credentials in quick succession could pass this check repeatedly before
+  // sync catches up. Acceptable at current scale; each credential is still
+  // hard-capped at Geonode by its own trafficLimitMB (gb_allocated), so the
+  // worst case is bounded by (number of credentials × their individual caps),
+  // not unbounded. Revisit if abuse becomes a real pattern.
   const { data: bw, error: bwErr } = await supabase
     .from('bandwidth_accounts')
     .select('available_gb, used_gb, total_gb')
@@ -42,17 +52,7 @@ export async function POST(req: Request) {
     }, { status: 402 })
   }
 
-  // 2. Deduct bandwidth immediately
-  const { error: deductErr } = await supabase
-    .from('bandwidth_accounts')
-    .update({ used_gb: bw.used_gb + gb_allocated })
-    .eq('user_id', user.id)
-
-  if (deductErr) {
-    return NextResponse.json({ error: 'Failed to deduct bandwidth' }, { status: 500 })
-  }
-
-  // 3. Attempt Geonode — only when provider is configured
+  // 2. Attempt Geonode — only when provider is configured
   let gcred: Awaited<ReturnType<typeof createSubUser>> | null = null
   let status: 'active' | 'pending' = 'pending'
 
@@ -66,17 +66,13 @@ export async function POST(req: Request) {
       status = 'active'
     } catch (e) {
       console.error('Geonode createSubUser error:', e)
-      // Rollback bandwidth — don't create fake credentials
-      await supabase.from('bandwidth_accounts')
-        .update({ used_gb: bw.used_gb })
-        .eq('user_id', user.id)
       return NextResponse.json({
-        error: 'Failed to provision proxy session. Your bandwidth has not been deducted. Please try again.',
+        error: 'Failed to provision proxy session. Please try again.',
       }, { status: 500 })
     }
   }
 
-  // 4. Insert credential row
+  // 3. Insert credential row
   const { data: cred, error: insertErr } = await supabase
     .from('proxy_credentials')
     .insert({
@@ -104,10 +100,6 @@ export async function POST(req: Request) {
     .single()
 
   if (insertErr) {
-    // Rollback bandwidth deduction
-    await supabase.from('bandwidth_accounts')
-      .update({ used_gb: bw.used_gb })
-      .eq('user_id', user.id)
     // Clean up the real Geonode sub-user we just created — otherwise it's
     // orphaned on Geonode's side with no local record and no way to find it.
     if (gcred) {

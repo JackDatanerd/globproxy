@@ -1,5 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/server'
-import { getAccountBalance } from '@/lib/geonode'
+import { computeStockStatus } from '@/lib/stockStatus'
 import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
@@ -18,12 +18,7 @@ export async function POST(req: Request) {
   if (profile?.role !== 'admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   try {
-    const balance = await getAccountBalance()
-    const stock = {
-      available_gb: balance.available_gb,
-      total_gb: balance.total_gb,
-      last_synced: new Date().toISOString(),
-    }
+    const stock = await computeStockStatus(supabase)
     await supabase
       .from('platform_settings')
       .upsert({ key: 'geonode_stock', value: JSON.stringify(stock) }, { onConflict: 'key' })

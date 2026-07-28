@@ -1,0 +1,16 @@
+name: Cron — Stock Check (hourly)
+
+# Same secrets as cron-usage.yml — CRON_SECRET and APP_URL.
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  stock-check:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -sf -X POST "${{ secrets.APP_URL }}/api/cron/stock" \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            -w "\nHTTP %{http_code}\n"

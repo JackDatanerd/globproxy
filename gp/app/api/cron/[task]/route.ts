@@ -1,6 +1,6 @@
 import { createAdminClient } from '@/lib/supabase/server'
-import { getAccountBalance } from '@/lib/geonode'
 import { getSubUserUsage } from '@/lib/geonode'
+import { computeStockStatus } from '@/lib/stockStatus'
 import { sendEmail } from '@/lib/email'
 import { NextResponse } from 'next/server'
 
@@ -14,25 +14,38 @@ function validateCron(req: Request): boolean {
 // ── Stock check ──────────────────────────────────────────────────
 async function runStockCheck() {
   const supabase = await createAdminClient()
-  const balance = await getAccountBalance()
-  const stock = {
-    available_gb: balance.available_gb,
-    total_gb: balance.total_gb,
-    last_synced: new Date().toISOString(),
-  }
+  const stock = await computeStockStatus(supabase)
+
   await supabase.from('platform_settings')
     .upsert({ key: 'geonode_stock', value: JSON.stringify(stock) }, { onConflict: 'key' })
 
-  if (balance.available_gb <= Number(process.env.STOCK_ALERT_THRESHOLD ?? 10)) {
+  // Two distinct alert conditions — either can fire independently:
+  // 1. Exposure alert: stock can't cover what's currently promised to
+  //    customers if they all drew down at once. This is the one that
+  //    actually matters for a usage-based model.
+  // 2. Absolute floor alert: stock is just low in absolute terms, kept as a
+  //    simple backstop regardless of exposure math.
+  const threshold = Number(process.env.STOCK_ALERT_THRESHOLD ?? 10)
+  const exposureBreach = !stock.covered
+  const floorBreach = stock.available_gb <= threshold
+
+  if (exposureBreach || floorBreach) {
+    const subject = exposureBreach
+      ? `[EXPOSURE ALERT] Stock (${stock.available_gb.toFixed(1)}GB) can't cover what's sold (${stock.exposure_gb.toFixed(1)}GB unused-but-allocated)`
+      : `[LOW STOCK] Geonode bandwidth: ${stock.available_gb.toFixed(1)}GB remaining`
     await sendEmail({
       to: process.env.ADMIN_EMAIL!,
-      subject: `[LOW STOCK] Geonode bandwidth: ${balance.available_gb.toFixed(1)}GB remaining`,
-      html: `<p>Your Geonode stock is low: <strong>${balance.available_gb.toFixed(1)}GB</strong> remaining of ${balance.total_gb.toFixed(1)}GB total.</p>
+      subject,
+      html: `<p><strong>Available:</strong> ${stock.available_gb.toFixed(1)}GB of ${stock.total_gb.toFixed(1)}GB total</p>
+             <p><strong>Allocated to customers:</strong> ${stock.total_allocated_gb.toFixed(1)}GB</p>
+             <p><strong>Actually used so far:</strong> ${stock.total_used_gb.toFixed(1)}GB</p>
+             <p><strong>Exposure (allocated but not yet used):</strong> ${stock.exposure_gb.toFixed(1)}GB</p>
+             ${exposureBreach ? '<p style="color:#e24b4a"><strong>If customers drew down their full remaining allocation right now, you would run short.</strong></p>' : ''}
              <p><a href="${process.env.NEXT_PUBLIC_APP_URL}/admin/settings">Go to Admin Panel →</a></p>`,
     })
-    return { action: 'alert_sent', available_gb: balance.available_gb }
+    return { action: 'alert_sent', ...stock }
   }
-  return { action: 'ok', available_gb: balance.available_gb }
+  return { action: 'ok', ...stock }
 }
 
 // ── Usage sync ───────────────────────────────────────────────────

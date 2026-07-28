@@ -61,6 +61,9 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'gb_allocated is required and must be > 0' }, { status: 400 })
   }
 
+  // Soft gate against purchased total — used_gb is updated only by the cron
+  // usage-sync job now, not deducted here. See dashboard/proxies/route.ts
+  // for the full rationale.
   const { data: bw } = await supabase
     .from('bandwidth_accounts')
     .select('available_gb, used_gb')
@@ -70,11 +73,6 @@ export async function POST(req: Request) {
   if ((bw?.available_gb ?? 0) < gb_allocated) {
     return NextResponse.json({ error: 'Insufficient bandwidth. Purchase more to continue.' }, { status: 402 })
   }
-
-  // Deduct GB immediately
-  await supabase.from('bandwidth_accounts')
-    .update({ used_gb: (bw?.used_gb ?? 0) + gb_allocated })
-    .eq('user_id', user.id)
 
   let gcred: any = null
   let credStatus: 'active' | 'pending' = 'active'
@@ -98,8 +96,6 @@ export async function POST(req: Request) {
   }).select().single()
 
   if (error) {
-    // Rollback
-    await supabase.from('bandwidth_accounts').update({ used_gb: bw?.used_gb ?? 0 }).eq('user_id', user.id)
     if (gcred) {
       await deleteSubUser(gcred.geonode_sub_user_id).catch((e) =>
         console.error('Failed to clean up orphaned Geonode sub-user', gcred?.geonode_sub_user_id, e)
