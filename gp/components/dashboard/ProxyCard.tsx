@@ -82,7 +82,7 @@ export default function ProxyCard({ cred, index }: Props) {
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error)
-      toast.success(`Session deleted — ${data.gb_returned}GB returned to your account`)
+      toast.success('Proxy deleted')
       router.refresh()
     } catch (err: any) {
       toast.error(err.message)

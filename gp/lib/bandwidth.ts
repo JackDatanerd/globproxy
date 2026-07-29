@@ -17,13 +17,32 @@ export async function activateBandwidth(p: {
 }) {
   const supabase = await createAdminClient()
 
-  // 1. Mark order paid
-  await supabase.from('orders').update({
-    payment_status: 'paid',
-    paystack_reference: p.paystack_reference,
-    bandwidth_credited: true,
-    paid_at: new Date().toISOString(),
-  }).eq('id', p.order_id)
+  // 1. Atomically claim the order. The webhook and /api/verify-payment can
+  // both reach this function within moments of each other (Paystack fires
+  // the webhook around the same time the browser redirects back). A plain
+  // "check payment_status, then update" has a race window where both
+  // callers pass the check before either writes 'paid', crediting bandwidth
+  // twice. Guarding the UPDATE itself on bandwidth_credited = false makes
+  // the claim a single atomic statement — only one caller's UPDATE can
+  // match and return a row.
+  const { data: claimed } = await supabase
+    .from('orders')
+    .update({
+      payment_status: 'paid',
+      paystack_reference: p.paystack_reference,
+      bandwidth_credited: true,
+      paid_at: new Date().toISOString(),
+    })
+    .eq('id', p.order_id)
+    .eq('bandwidth_credited', false)
+    .select('id')
+    .single()
+
+  if (!claimed) {
+    // Already credited by a concurrent call (or a retry) — nothing to do.
+    console.log('[bandwidth] order already credited, skipping', p.order_id)
+    return
+  }
 
   // 2. Credit GB to bandwidth account
   const { data: bw } = await supabase

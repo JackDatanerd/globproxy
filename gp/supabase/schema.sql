@@ -15,7 +15,11 @@ create table public.profiles (
   is_suspended    boolean default false,
   suspension_reason text,
   suspended_at    timestamp with time zone,
-  reseller_status text check (reseller_status in ('pending','approved','suspended')),
+  reseller_status text check (reseller_status in ('pending','approved','suspended','rejected')),
+  is_deleted      boolean default false,
+  deleted_at      timestamp with time zone,
+  api_access      boolean default false,
+  reseller_application jsonb,
   created_at      timestamp with time zone default now(),
   updated_at      timestamp with time zone default now()
 );
@@ -40,6 +44,8 @@ create table public.bandwidth_accounts (
   total_gb     numeric default 0,
   used_gb      numeric default 0,
   available_gb numeric generated always as (total_gb - used_gb) stored,
+  alerted_80_at timestamp with time zone,
+  alerted_95_at timestamp with time zone,
   created_at   timestamp with time zone default now(),
   updated_at   timestamp with time zone default now()
 );
@@ -85,7 +91,7 @@ create table public.orders (
   gb_amount           numeric not null,
   amount_usd          numeric not null,
   payment_method      text not null default 'paystack',
-  payment_status      text not null default 'pending' check (payment_status in ('pending','paid','failed','refunded')),
+  payment_status      text not null default 'pending' check (payment_status in ('pending','paid','failed','refunded','cancelled')),
   paystack_reference  text,
   bandwidth_credited  boolean default false,
   created_at          timestamp with time zone default now(),
@@ -144,6 +150,15 @@ insert into public.platform_settings (key, value) values
   ('geonode_stock',          '{"available_gb":0,"total_gb":0,"last_synced":null}')
 on conflict (key) do nothing;
 
+-- ── BANNED EMAILS ─────────────────────────────────────────────
+create table public.banned_emails (
+  id         uuid default uuid_generate_v4() primary key,
+  email      text not null unique,
+  reason     text,
+  banned_at  timestamp with time zone default now(),
+  banned_by  uuid references public.profiles(id)
+);
+
 -- ── HELPER FUNCTIONS ──────────────────────────────────────────
 create or replace function public.reserve_reseller_gb(p_user_id uuid, p_gb numeric)
 returns void language plpgsql security definer as $$
@@ -162,20 +177,70 @@ alter table public.proxy_credentials  enable row level security;
 alter table public.reseller_transfers enable row level security;
 alter table public.platform_settings  enable row level security;
 alter table public.plans              enable row level security;
+alter table public.banned_emails      enable row level security;
 
 -- Profiles
 create policy "Own profile" on public.profiles for select using (auth.uid() = id);
 create policy "Update own profile" on public.profiles for update using (auth.uid() = id);
+
+-- Admins can update any profile (needed for suspend/reinstate,
+-- reseller approve/reject, API-access toggle done from the admin UI).
+create policy "Admins can update any profile" on public.profiles for update
+  using (exists (select 1 from public.profiles p where p.id = auth.uid() and p.role = 'admin'))
+  with check (exists (select 1 from public.profiles p where p.id = auth.uid() and p.role = 'admin'));
+
+-- Prevents a non-admin from escalating their own row (role, is_suspended,
+-- reseller_status, api_access, is_deleted) via a direct REST call, since
+-- "Update own profile" above has no column restriction on its own.
+create or replace function public.protect_privileged_profile_columns()
+returns trigger language plpgsql security definer as $$
+declare
+  caller_is_admin boolean;
+begin
+  if auth.uid() is null then
+    return new; -- service-role client; app code already gates this
+  end if;
+
+  select (role = 'admin') into caller_is_admin
+  from public.profiles where id = auth.uid();
+
+  if coalesce(caller_is_admin, false) then
+    return new;
+  end if;
+
+  new.role                  := old.role;
+  new.is_suspended          := old.is_suspended;
+  new.suspended_at          := old.suspended_at;
+  new.suspension_reason     := old.suspension_reason;
+  new.reseller_status       := old.reseller_status;
+  new.api_access            := old.api_access;
+  new.is_deleted            := old.is_deleted;
+  new.deleted_at            := old.deleted_at;
+
+  return new;
+end;
+$$;
+
+create trigger protect_privileged_profile_columns
+  before update on public.profiles
+  for each row execute procedure public.protect_privileged_profile_columns();
 
 -- Bandwidth
 create policy "Own bandwidth" on public.bandwidth_accounts for select using (auth.uid() = user_id);
 
 -- Orders
 create policy "Own orders" on public.orders for select using (auth.uid() = user_id);
+create policy "Cancel own pending order" on public.orders for update
+  using (auth.uid() = user_id and payment_status = 'pending')
+  with check (auth.uid() = user_id and payment_status = 'cancelled');
 
 -- Credentials
 create policy "Own or created credentials" on public.proxy_credentials for select
   using (auth.uid() = user_id or auth.uid() = created_by);
+create policy "Create own credentials" on public.proxy_credentials for insert
+  with check (auth.uid() = user_id and created_by is null);
+create policy "Delete own unassigned credentials" on public.proxy_credentials for delete
+  using (auth.uid() = user_id and created_by is null);
 
 -- Transfers
 create policy "Own transfers" on public.reseller_transfers for select
@@ -186,4 +251,8 @@ create policy "Public plans" on public.plans for select using (true);
 
 -- Settings - admin only
 create policy "Admin settings" on public.platform_settings
+  using (exists (select 1 from public.profiles where id = auth.uid() and role = 'admin'));
+
+-- Banned emails - admin read only
+create policy "Admin can read banned emails" on public.banned_emails for select
   using (exists (select 1 from public.profiles where id = auth.uid() and role = 'admin'));

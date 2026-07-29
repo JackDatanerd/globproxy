@@ -86,17 +86,34 @@ async function runUsageSync() {
 }
 
 // ── User bandwidth alerts ─────────────────────────────────────────
+// Each account only ever gets ONE email per threshold (80%, 95%) until
+// a top-up moves them back below that threshold, at which point the
+// corresponding alerted_*_at flag is cleared and they can be alerted
+// again on the next approach. Previously there was no de-dupe at all,
+// so any account sitting above a threshold got a fresh email on every
+// cron run (e.g. every 15 minutes) indefinitely.
 async function runBandwidthAlerts() {
   const supabase = await createAdminClient()
   const { data: accounts } = await supabase
     .from('bandwidth_accounts')
-    .select('user_id, total_gb, used_gb, available_gb')
+    .select('user_id, total_gb, used_gb, available_gb, alerted_80_at, alerted_95_at')
     .gt('total_gb', 0)
 
   let sent = 0
   for (const acc of accounts ?? []) {
     if (!acc.total_gb) continue
     const pct = (acc.used_gb / acc.total_gb) * 100
+
+    // Below 80% — clear any stale alert flags so a future approach re-alerts.
+    if (pct < 80) {
+      if (acc.alerted_80_at || acc.alerted_95_at) {
+        await supabase.from('bandwidth_accounts')
+          .update({ alerted_80_at: null, alerted_95_at: null })
+          .eq('user_id', acc.user_id)
+      }
+      continue
+    }
+
     const { data: profile } = await supabase
       .from('profiles').select('email, full_name').eq('id', acc.user_id).single()
     if (!profile?.email) continue
@@ -104,21 +121,27 @@ async function runBandwidthAlerts() {
     const firstName = profile.full_name?.split(' ')[0] ?? 'there'
     const avail = acc.available_gb
 
-    if (pct >= 95) {
+    if (pct >= 95 && !acc.alerted_95_at) {
       await sendEmail({
         to: profile.email,
         subject: `🚨 Only ${avail.toFixed(1)}GB remaining — GlobProxy`,
         html: `<p>Hi ${firstName}, you've used ${pct.toFixed(0)}% of your bandwidth. Only ${avail.toFixed(1)}GB remains.</p>
                <a href="${process.env.NEXT_PUBLIC_APP_URL}/dashboard/buy">Top up now →</a>`,
       })
+      await supabase.from('bandwidth_accounts')
+        .update({ alerted_95_at: new Date().toISOString() })
+        .eq('user_id', acc.user_id)
       sent++
-    } else if (pct >= 80) {
+    } else if (pct >= 80 && pct < 95 && !acc.alerted_80_at) {
       await sendEmail({
         to: profile.email,
         subject: `Heads up: ${avail.toFixed(1)}GB bandwidth remaining`,
         html: `<p>Hi ${firstName}, you've used ${pct.toFixed(0)}% of your bandwidth. ${avail.toFixed(1)}GB remains.</p>
                <a href="${process.env.NEXT_PUBLIC_APP_URL}/dashboard/buy">Buy more →</a>`,
       })
+      await supabase.from('bandwidth_accounts')
+        .update({ alerted_80_at: new Date().toISOString() })
+        .eq('user_id', acc.user_id)
       sent++
     }
   }
@@ -134,8 +157,8 @@ async function runDailySummary() {
   const { data: orders } = await supabase.from('orders')
     .select('amount_usd, gb_amount')
     .eq('payment_status', 'paid')
-    .gte('created_at', `${yesterday}T00:00:00Z`)
-    .lt('created_at', `${today}T00:00:00Z`)
+    .gte('paid_at', `${yesterday}T00:00:00Z`)
+    .lt('paid_at', `${today}T00:00:00Z`)
 
   const rev = orders?.reduce((s, o) => s + o.amount_usd, 0) ?? 0
   const gb = orders?.reduce((s, o) => s + o.gb_amount, 0) ?? 0

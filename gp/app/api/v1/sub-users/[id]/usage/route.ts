@@ -35,9 +35,12 @@ export async function GET(
   if (!cred) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
   let usedGb = cred.gb_used ?? 0
-  if (cred.status === 'active' && cred.geonode_username) {
+  if (cred.status === 'active' && cred.geonode_sub_user_id) {
     try {
-      usedGb = await getSubUserUsage(cred.geonode_username)
+      // Geonode's usage endpoint takes the sub-user ID, not the username —
+      // see lib/bandwidth.ts / cron usage-sync for the same fix already
+      // applied there.
+      usedGb = await getSubUserUsage(cred.geonode_sub_user_id)
       await supabase.from('proxy_credentials')
         .update({ gb_used: usedGb })
         .eq('id', cred.id)
