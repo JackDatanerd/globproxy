@@ -7,8 +7,14 @@ import { NextResponse } from 'next/server'
 // Secured with CRON_SECRET env var
 // Set this in Cloudflare Workers env vars and wrangler.jsonc
 function validateCron(req: Request): boolean {
-  const secret = req.headers.get('x-cron-secret')
-  return secret === process.env.CRON_SECRET
+  const secret = req.headers.get('x-cron-secret') ?? ''
+  const expected = process.env.CRON_SECRET ?? ''
+  if (!expected) return false
+  const crypto = require('crypto')
+  const a = Buffer.from(secret)
+  const b = Buffer.from(expected)
+  if (a.length !== b.length) return false
+  return crypto.timingSafeEqual(a, b)
 }
 
 // ── Stock check ──────────────────────────────────────────────────

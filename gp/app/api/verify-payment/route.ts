@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { verifyTransaction } from '@/lib/paystack'
+import { verifyTransaction, amountMatchesOrder } from '@/lib/paystack'
 import { activateBandwidth } from '@/lib/bandwidth'
 import { createAdminClient } from '@/lib/supabase/server'
 
@@ -28,6 +28,13 @@ export async function POST(req: Request) {
     const txn = await verifyTransaction(reference)
     if (txn.status !== 'success') {
       return NextResponse.json({ error: 'Payment not successful' }, { status: 400 })
+    }
+
+    if (!amountMatchesOrder(txn.amount, order.amount_usd)) {
+      console.error('[verify-payment] amount mismatch', {
+        order_id: order.id, paid_cents: txn.amount, expected_usd: order.amount_usd,
+      })
+      return NextResponse.json({ error: 'Amount mismatch' }, { status: 400 })
     }
 
     // Activate bandwidth

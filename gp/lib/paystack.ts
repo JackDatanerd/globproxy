@@ -46,9 +46,24 @@ export function verifyWebhookSignature(body: string, signature: string): boolean
   const crypto = require('crypto')
   // Paystack signs with your secret key — there is no separate webhook secret
   const hash = crypto.createHmac('sha512', SECRET).update(body).digest('hex')
-  return hash === signature
+  const a = Buffer.from(hash)
+  const b = Buffer.from(signature)
+  // Plain === leaks timing info proportional to how many leading bytes match.
+  // Guard the length check first since timingSafeEqual throws on mismatched
+  // lengths rather than returning false.
+  if (a.length !== b.length) return false
+  return crypto.timingSafeEqual(a, b)
+}
+
+// Returns true if the amount Paystack actually charged (in cents) matches
+// what the order expects. Neither the webhook nor verify-payment checked
+// this before — both trusted `status === 'success'` plus whatever gb_amount
+// was in metadata, with nothing tying the two together.
+export function amountMatchesOrder(paidAmountCents: number, orderAmountUsd: number): boolean {
+  return paidAmountCents === Math.round(orderAmountUsd * 100)
 }
 
 export function generateReference(): string {
-  return `gp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+  const crypto = require('crypto')
+  return `gp_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`
 }

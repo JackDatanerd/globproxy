@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { verifyWebhookSignature } from '@/lib/paystack'
+import { verifyWebhookSignature, amountMatchesOrder } from '@/lib/paystack'
 import { activateBandwidth } from '@/lib/bandwidth'
 import { createAdminClient } from '@/lib/supabase/server'
 
@@ -24,7 +24,7 @@ export async function POST(req: Request) {
     console.log('[webhook] metadata:', JSON.stringify(event.data?.metadata))
 
     if (event.event === 'charge.success') {
-      const { reference, metadata } = event.data
+      const { reference, metadata, amount } = event.data
 
       const order_id  = metadata?.order_id  ?? ''
       const user_id   = metadata?.user_id   ?? ''
@@ -40,7 +40,7 @@ export async function POST(req: Request) {
       const supabase = await createAdminClient()
       const { data: order, error: orderErr } = await supabase
         .from('orders')
-        .select('payment_status')
+        .select('payment_status, amount_usd')
         .eq('id', order_id)
         .single()
 
@@ -48,6 +48,15 @@ export async function POST(req: Request) {
 
       if (order?.payment_status === 'paid') {
         console.log('[webhook] already paid, skipping')
+        return NextResponse.json({ received: true })
+      }
+
+      // Cross-check what Paystack actually charged against what the order
+      // expects, rather than trusting status:success + metadata alone.
+      if (order && !amountMatchesOrder(amount, order.amount_usd)) {
+        console.error('[webhook] amount mismatch — refusing to credit', {
+          order_id, paid_cents: amount, expected_usd: order.amount_usd,
+        })
         return NextResponse.json({ received: true })
       }
 
