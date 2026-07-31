@@ -3,43 +3,63 @@ import { NextResponse } from 'next/server'
 
 // Shared gate for every app/api/v1/* route.
 //
-// Previously each v1 route duplicated this check and none of them checked
-// is_suspended. Combined with the admin panel bypassing /api/admin/suspend-user
-// (see AdminUserControls.tsx / AdminResellerActions.tsx fix), a suspended
-// reseller's existing token kept working against the v1 API indefinitely.
-// /api/v1/account/bandwidth also had no role/api_access check at all —
-// any authenticated 'user' role account (not just resellers) could hit it.
+// This used to call supabase.auth.getUser(token) — i.e. it treated the
+// bearer token as a Supabase session JWT. That's what the "API Keys" page
+// was showing users (their live session access_token), which meant:
+//   - it expired roughly hourly, breaking any real automation built on it
+//   - it was a full session-equivalent credential, not scoped to the API
+//   - there was no way to revoke a "key" independent of signing out
+// Real API keys now live in the api_keys table (migration 0005) — this
+// looks up the SHA-256 hash of the bearer token there instead.
 export type ApiAuthResult =
   | { ok: true; user: { id: string; email?: string }; supabase: Awaited<ReturnType<typeof createAdminClient>> }
   | { ok: false; response: NextResponse }
+
+async function sha256Hex(input: string): Promise<string> {
+  const data = new TextEncoder().encode(input)
+  const digest = await crypto.subtle.digest('SHA-256', data)
+  return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+const UNAUTHORIZED = NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
 export async function requireApiAccess(req: Request): Promise<ApiAuthResult> {
   const token = req.headers.get('authorization')?.replace('Bearer ', '')
   const supabase = await createAdminClient()
 
-  if (!token) {
-    return { ok: false, response: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) }
+  if (!token || !token.startsWith('gp_live_')) {
+    return { ok: false, response: UNAUTHORIZED }
   }
 
-  const { data: { user } } = await supabase.auth.getUser(token)
-  if (!user) {
-    return { ok: false, response: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) }
+  const key_hash = await sha256Hex(token)
+  const { data: apiKey } = await supabase
+    .from('api_keys')
+    .select('id, user_id, revoked_at')
+    .eq('key_hash', key_hash)
+    .single()
+
+  if (!apiKey || apiKey.revoked_at) {
+    return { ok: false, response: UNAUTHORIZED }
   }
 
   const { data: profile } = await supabase
     .from('profiles')
-    .select('role, api_access, is_suspended')
-    .eq('id', user.id)
+    .select('id, email, role, api_access, is_suspended')
+    .eq('id', apiKey.user_id)
     .single()
 
-  if (profile?.is_suspended) {
+  if (!profile) {
+    return { ok: false, response: UNAUTHORIZED }
+  }
+
+  if (profile.is_suspended) {
     return {
       ok: false,
       response: NextResponse.json({ error: 'This account has been suspended. Contact support@globproxy.com.' }, { status: 403 }),
     }
   }
 
-  if (profile?.role === 'user') {
+  if (profile.role === 'user') {
     return {
       ok: false,
       response: NextResponse.json(
@@ -49,7 +69,7 @@ export async function requireApiAccess(req: Request): Promise<ApiAuthResult> {
     }
   }
 
-  if (!profile?.api_access && profile?.role !== 'admin') {
+  if (!profile.api_access && profile.role !== 'admin') {
     return {
       ok: false,
       response: NextResponse.json(
@@ -59,5 +79,8 @@ export async function requireApiAccess(req: Request): Promise<ApiAuthResult> {
     }
   }
 
-  return { ok: true, user, supabase }
+  // Fire-and-forget usage tracking — not worth failing the request over.
+  supabase.from('api_keys').update({ last_used_at: new Date().toISOString() }).eq('id', apiKey.id).then(() => {}, () => {})
+
+  return { ok: true, user: { id: profile.id, email: profile.email }, supabase }
 }

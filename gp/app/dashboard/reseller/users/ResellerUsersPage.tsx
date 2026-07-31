@@ -10,7 +10,7 @@ export default async function ResellerUsersPage() {
   // ── 1. Reseller's bandwidth account ────────────────────────────────────
   const { data: bw } = await supabase
     .from('bandwidth_accounts')
-    .select('total_gb, used_gb')
+    .select('total_gb, used_gb, allocated_gb, available_gb')
     .eq('user_id', user.id)
     .single()
 
@@ -62,7 +62,10 @@ export default async function ResellerUsersPage() {
   }
 
   const clientsList = Array.from(clientsMap.values())
-  const availableGb = Math.max(0, (bw?.total_gb ?? 0) - (bw?.used_gb ?? 0))
+  // Previously total_gb - used_gb, which ignored GB already committed to
+  // clients via allocated_gb (migration 0004) — this reseller-facing "stock"
+  // figure would have overstated what's actually left to allocate.
+  const availableGb = Math.max(0, bw?.available_gb ?? ((bw?.total_gb ?? 0) - (bw?.used_gb ?? 0)))
 
   return (
     <div className="max-w-5xl">

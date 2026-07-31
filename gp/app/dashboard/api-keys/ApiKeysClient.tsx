@@ -1,6 +1,5 @@
 'use client'
 import { useState, useEffect } from 'react'
-import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
 
 const ENDPOINTS = [
@@ -39,20 +38,68 @@ const ENDPOINTS = [
   },
 ]
 
-export default function ApiKeysClient() {
-  const [key, setKey] = useState<string | null>(null)
-  const [revealed, setRevealed] = useState(false)
+type ApiKeyMeta = {
+  id: string
+  key_prefix: string
+  label: string
+  created_at: string
+  last_used_at: string | null
+  revoked_at: string | null
+}
 
-  useEffect(() => {
-    createClient().auth.getSession().then(({ data: { session } }) => {
-      if (session?.access_token) setKey(session.access_token)
+export default function ApiKeysClient() {
+  const [keys, setKeys] = useState<ApiKeyMeta[]>([])
+  const [loading, setLoading] = useState(true)
+  const [creating, setCreating] = useState(false)
+  const [newLabel, setNewLabel] = useState('')
+  const [justCreated, setJustCreated] = useState<string | null>(null) // plaintext, shown once
+
+  async function loadKeys() {
+    setLoading(true)
+    const res = await fetch('/api/dashboard/api-keys')
+    const data = await res.json().catch(() => ({}))
+    if (res.ok) setKeys(data.keys ?? [])
+    setLoading(false)
+  }
+
+  useEffect(() => { loadKeys() }, [])
+
+  async function createKey() {
+    setCreating(true)
+    const res = await fetch('/api/dashboard/api-keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label: newLabel.trim() || 'Default key' }),
     })
-  }, [])
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.error) {
+      toast.error(data.error ?? 'Failed to create key')
+    } else {
+      setJustCreated(data.key)
+      setNewLabel('')
+      await loadKeys()
+    }
+    setCreating(false)
+  }
+
+  async function revokeKey(id: string) {
+    if (!confirm('Revoke this key? Anything using it will stop working immediately.')) return
+    const res = await fetch('/api/dashboard/api-keys', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.error) toast.error(data.error ?? 'Failed to revoke key')
+    else { toast.success('Key revoked'); loadKeys() }
+  }
 
   function copy(text: string, label = 'Copied') {
     navigator.clipboard.writeText(text)
     toast.success(label)
   }
+
+  const activeKeys = keys.filter(k => !k.revoked_at)
 
   return (
     <div className="max-w-3xl">
@@ -63,27 +110,72 @@ export default function ApiKeysClient() {
         </p>
       </div>
 
-      {/* Key card */}
+      {/* Just-created key — shown once, never retrievable again */}
+      {justCreated && (
+        <div className="bg-accent-light border border-accent/30 rounded-xl p-6 mb-6">
+          <h2 className="font-display font-bold text-base text-ink mb-2">Your new API key</h2>
+          <p className="text-xs text-muted mb-3">
+            Copy this now — for security we only show it once and can't display it again after you leave this page.
+          </p>
+          <div className="bg-white border border-border rounded-lg p-4 flex items-center gap-3">
+            <span className="font-mono text-xs text-ink flex-1 truncate">{justCreated}</span>
+            <button onClick={() => copy(justCreated, 'API key copied')}
+              className="text-xs font-mono text-accent border border-accent/30 px-2.5 py-1 rounded-lg transition-colors flex-shrink-0">
+              Copy
+            </button>
+          </div>
+          <button onClick={() => setJustCreated(null)}
+            className="text-xs text-muted hover:text-ink mt-3">
+            Done, I've saved it
+          </button>
+        </div>
+      )}
+
+      {/* Key list + create */}
       <div className="bg-white border border-border rounded-xl p-6 mb-6">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="font-display font-bold text-base text-ink">Your API key</h2>
-          <span className="text-[10px] font-mono bg-accent2-light text-accent2 px-2.5 py-1 rounded-full">Active</span>
-        </div>
-        <div className="bg-surface border border-border rounded-lg p-4 flex items-center gap-3 mb-3">
-          <span className="font-mono text-xs text-ink flex-1 truncate">
-            {revealed && key ? key : 'gp_••••••••••••••••••••••••••••••••••••••••'}
+          <h2 className="font-display font-bold text-base text-ink">Your keys</h2>
+          <span className="text-[10px] font-mono bg-accent2-light text-accent2 px-2.5 py-1 rounded-full">
+            {activeKeys.length} active
           </span>
-          <button onClick={() => setRevealed(!revealed)}
-            className="text-xs font-mono text-muted hover:text-ink border border-border px-2.5 py-1 rounded-lg transition-colors flex-shrink-0">
-            {revealed ? 'Hide' : 'Reveal'}
-          </button>
-          <button onClick={() => key && copy(key, 'API key copied')}
-            className="text-xs font-mono text-accent border border-accent/30 px-2.5 py-1 rounded-lg transition-colors flex-shrink-0">
-            Copy
+        </div>
+
+        {loading ? (
+          <p className="text-sm text-muted">Loading...</p>
+        ) : keys.length === 0 ? (
+          <p className="text-sm text-muted mb-4">No API keys yet.</p>
+        ) : (
+          <div className="flex flex-col gap-2 mb-4">
+            {keys.map(k => (
+              <div key={k.id} className={`flex items-center justify-between border border-border rounded-lg p-3 ${k.revoked_at ? 'opacity-50' : ''}`}>
+                <div>
+                  <div className="text-sm text-ink font-medium">{k.label}</div>
+                  <div className="text-xs font-mono text-muted">
+                    {k.key_prefix}••••••••
+                    {k.revoked_at ? ' · revoked' : k.last_used_at ? ` · last used ${new Date(k.last_used_at).toLocaleDateString()}` : ' · never used'}
+                  </div>
+                </div>
+                {!k.revoked_at && (
+                  <button onClick={() => revokeKey(k.id)}
+                    className="text-xs font-mono text-muted hover:text-red-500 border border-border hover:border-red-200 px-3 py-1 rounded-lg transition-colors">
+                    Revoke
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="flex gap-2">
+          <input value={newLabel} onChange={e => setNewLabel(e.target.value)} placeholder="Key label (optional)"
+            className="flex-1 bg-surface border border-border px-4 py-2.5 rounded-xl text-sm focus:outline-none focus:border-accent transition-colors" />
+          <button onClick={createKey} disabled={creating}
+            className="bg-accent text-white px-5 py-2.5 rounded-xl text-sm font-medium hover:opacity-90 disabled:opacity-60 transition-opacity flex-shrink-0">
+            {creating ? 'Creating...' : 'Create new key'}
           </button>
         </div>
-        <p className="text-xs text-muted font-light">
-          Keep your key private. Never expose it in client-side JavaScript or public repositories.
+        <p className="text-xs text-muted font-light mt-3">
+          Keep your keys private. Never expose them in client-side JavaScript or public repositories.
         </p>
       </div>
 

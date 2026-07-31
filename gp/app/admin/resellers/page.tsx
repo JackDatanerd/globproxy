@@ -10,7 +10,7 @@ export default async function AdminResellersPage() {
 
   const resellerIds = resellers?.map(r => r.id) ?? []
   const { data: bwAccounts } = resellerIds.length > 0
-    ? await supabase.from('bandwidth_accounts').select('user_id, total_gb, used_gb').in('user_id', resellerIds)
+    ? await supabase.from('bandwidth_accounts').select('user_id, total_gb, used_gb, allocated_gb, available_gb').in('user_id', resellerIds)
     : { data: [] }
   const bwMap = Object.fromEntries((bwAccounts ?? []).map(b => [b.user_id, b]))
 
@@ -100,7 +100,12 @@ export default async function AdminResellersPage() {
             <tbody>
               {resellers.map((r, i) => {
                 const bw = bwMap[r.id]
-                const available = (bw?.total_gb ?? 0) - (bw?.used_gb ?? 0)
+                // Previously computed as total_gb - used_gb, which ignored GB
+                // already committed to clients (allocated_gb, migration 0004) —
+                // this made a reseller's dashboard-visible "available" balance
+                // look bigger than what they can actually allocate. available_gb
+                // is the DB-computed generated column, always correct.
+                const available = bw?.available_gb ?? ((bw?.total_gb ?? 0) - (bw?.used_gb ?? 0))
                 return (
                   <tr key={r.id} className={`${i < (resellers?.length ?? 0) - 1 ? 'border-b border-border' : ''} hover:bg-surface`}>
                     <td className="px-6 py-4">

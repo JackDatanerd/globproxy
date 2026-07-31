@@ -1,90 +1,103 @@
-# GlobProxy audit fixes — round 1 (critical/high items)
+# GlobProxy audit fixes — round 2
 
-Fixes for the highest-severity items from the audit: the reseller
-allocation/usage-sync conflict, the admin panel bypassing its own server
-routes, and suspended accounts keeping working API access. Plus the smaller
-race conditions and silent-failure bugs found along the way.
+Covers the rest of the systematic pass: dashboard sessions/billing/settings,
+the reseller "Clients" page, admin resellers page, and — the big one — the
+"API Keys" page, which wasn't backed by a real API key system at all.
 
-## 1. Run the migration first
+## What's in this round
 
-In Supabase SQL Editor, run:
+**1. Real API keys (new `api_keys` table + full rewrite of key auth)**
+The API Keys dashboard page was displaying the user's live Supabase session
+`access_token` labeled as if it were a durable API key. That token:
+- expires roughly hourly (it's a session JWT, not a key), so anything built
+  against it broke silently within about an hour
+- was a full session-equivalent credential, not scoped to API use
+- had no revocation mechanism independent of signing out everywhere
+- didn't even match the `gp_••••••` prefix format shown in the masked field
 
-```
-supabase/migrations/0004_reseller_allocation_and_race_fixes.sql
-```
+This round adds:
+- `api_keys` table (migration 0005) — stores only a SHA-256 hash of each
+  key, never the plaintext
+- `POST /api/dashboard/api-keys` — generates a real `gp_live_...` key,
+  returns the plaintext exactly once
+- `GET /api/dashboard/api-keys` — lists keys (prefix/label/last-used only)
+- `DELETE /api/dashboard/api-keys` — revokes a key immediately
+- `lib/apiAuth.ts` rewritten to authenticate v1 API requests against this
+  table (hash lookup) instead of `supabase.auth.getUser(token)`
+- `ApiKeysClient.tsx` rewritten to create/list/revoke real keys instead of
+  just displaying the session token
 
-It's idempotent — safe to re-run. It:
-- adds `bandwidth_accounts.allocated_gb` and repoints the generated
-  `available_gb` column to account for it
-- adds `allocate_reseller_bandwidth()` — atomic reseller→client transfer
-- adds `credit_bandwidth()` — atomic payment credit
-- adds the unique constraint the two functions' `ON CONFLICT` clauses need
-  (already implied by the table def, this just makes sure it's actually there)
+**This is a breaking change for the API surface.** Any existing integration
+built against a copied session token will need to generate a real key from
+the dashboard and swap it in — those tokens were never going to keep working
+past their session lifetime anyway.
 
-`supabase/schema.sql` is also updated to match, so a fresh install stays in
-sync with production.
+**2. Two more "silent no-op" fixes (same pattern as round 1)**
+`DELETE /api/dashboard/sessions/[sessionId]` had the identical issue as the
+proxy-delete route from round 1 — no `.select()`, so a blocked RLS delete
+returned `{ success: true }` with nothing actually removed. Fixed the same way.
 
-## 2. Apply the code changes
+**3. Regression fix for round 1's `allocated_gb` migration**
+Two pages were computing a reseller's "available" bandwidth as
+`total_gb - used_gb` in JS — the exact formula that migration 0004 moved off
+of. After that migration these would have silently shown an inflated
+available balance (ignoring GB already committed via `allocated_gb`):
+- `app/admin/resellers/page.tsx`
+- `app/dashboard/reseller/users/ResellerUsersPage.tsx` (the "Your Clients" page)
+
+Both now read the DB's `available_gb` generated column directly, same as
+everywhere else already did.
+
+## Apply
 
 ```bash
 cd globproxy/gp
-tar -xzf globproxy-fixes.tar.gz --strip-components=1 -C .
+tar -xzf ~/Downloads/globproxy-fixes-2.tar.gz --strip-components=1 -C .
 git add .
-git commit -m "fix: reseller allocation race + admin route bypass + suspended-account API access
+git commit -m "fix: real API keys, two more silent-delete no-ops, allocated_gb display regression
 
-- separate bandwidth_accounts.allocated_gb from used_gb so the usage-sync
-  cron stops erasing reseller allocations on every run
-- make reseller bandwidth allocation atomic (allocate_reseller_bandwidth RPC)
-  instead of a racy read-then-write with a buggy rollback path
-- make payment bandwidth credit atomic (credit_bandwidth RPC)
-- wire the admin panel's approve/reject/suspend/role-change actions through
-  actual server routes instead of writing to profiles directly from the
-  browser, so session-kill and notification emails actually run
-- add is_suspended checks to all v1 API routes; add the missing
-  role/api_access gate to /api/v1/account/bandwidth
-- deleteSubUser() now checks the response instead of silently succeeding
-  on failure
-- proxy deletion now verifies a row was actually removed instead of
-  trusting a silent RLS no-op
-- fix case-sensitive email lookup in reseller allocation
-- add randomness to Geonode sub-user usernames to avoid collisions in
-  bulk-activation loops"
+- add api_keys table and real gp_live_ key generation/revocation, replacing
+  the API Keys page's display of the live session JWT as a fake 'key'
+- rewrite lib/apiAuth.ts to authenticate v1 API requests against hashed
+  api_keys instead of treating the bearer token as a Supabase session JWT
+- fix silent no-op on DELETE /api/dashboard/sessions/[sessionId] (same
+  missing .select() pattern as the round-1 proxy-delete fix)
+- fix admin/resellers and dashboard/reseller/users 'available stock' figures
+  to read available_gb from the DB instead of recomputing total_gb - used_gb,
+  which went stale the moment migration 0004 introduced allocated_gb"
 git push
 ```
 
-## 3. Deploy
+Run the SQL migration (`supabase/migrations/0005_api_keys.sql`) in Supabase
+**before** pushing this code — same reasoning as round 1: the routes assume
+`api_keys` already exists.
 
-Same as always — push triggers the GitHub Actions deploy. Don't deploy this
-one manually via `wrangler deploy` or the Cloudflare dashboard.
+## Noted but not changed
 
-## What's NOT in this round
-
-Two lower-severity items from the audit aren't fixed here — flag if you want
-them next:
-- Admin orders page (`app/admin/orders/page.tsx`) only sums the most recent
-  200 orders for its revenue/GB-sold totals, so those numbers go quietly
-  wrong past 200 orders. Needs a proper aggregate query instead of client-side
-  reduce over a limited page.
-- Email enumeration on `/api/auth/reset` and `/api/auth/signup` (distinct
-  "no account found" vs generic error). Low severity, but a deliberate
-  decision either way is better than the current default.
+- **"Cancel order" doesn't cancel the underlying Paystack charge.** It only
+  relabels the local `orders` row. If Paystack's webhook fires after a user
+  cancels (a delayed/retried webhook, or they'd already submitted payment),
+  `activateBandwidth()` will still credit it — its only guard is
+  `bandwidth_credited = false`, not `payment_status`. I didn't change this:
+  blocking credit on a "cancelled" order that was genuinely charged would
+  mean a customer paid and got nothing, which is worse. Flagging so it's a
+  deliberate decision rather than an accident — worth deciding whether
+  "Cancel" should also attempt to void the Paystack transaction, or just be
+  relabeled as "Hide" for abandoned pending orders.
+- Didn't get to: `lib/proxyEndpoint.ts` in detail, the other cron tasks
+  (stock sync, 80%/95% bandwidth alert emails), `lib/email.ts` and the full
+  event list, `admin/credentials/page.tsx`, `admin/page.tsx` overview stats,
+  RLS on `reseller_transfers`/`orders` specifically, and the static
+  terms/refunds pages. Say the word and I'll keep going.
 
 ## Files touched
 
 ```
-supabase/migrations/0004_reseller_allocation_and_race_fixes.sql   (new)
-supabase/schema.sql                                               (modified)
-lib/geonode.ts                                                    (modified)
-lib/bandwidth.ts                                                  (modified)
-lib/apiAuth.ts                                                    (new)
-app/api/dashboard/proxies/[id]/route.ts                           (modified)
-app/api/reseller/allocate/route.ts                                (modified)
-app/api/v1/sub-users/route.ts                                     (modified)
-app/api/v1/sub-users/[id]/usage/route.ts                          (modified)
-app/api/v1/account/bandwidth/route.ts                             (modified)
-app/api/admin/approve-reseller/route.ts                           (new)
-app/api/admin/reject-reseller/route.ts                            (modified — now sends the rejection email)
-app/api/admin/update-user/route.ts                                (new)
-components/admin/AdminResellerActions.tsx                         (modified)
-components/admin/AdminUserControls.tsx                            (modified)
+supabase/migrations/0005_api_keys.sql                    (new)
+lib/apiAuth.ts                                            (rewritten)
+app/api/dashboard/api-keys/route.ts                       (new)
+app/api/dashboard/sessions/[sessionId]/route.ts           (modified)
+app/admin/resellers/page.tsx                              (modified)
+app/dashboard/api-keys/ApiKeysClient.tsx                  (rewritten)
+app/dashboard/reseller/users/ResellerUsersPage.tsx         (modified)
 ```
