@@ -287,6 +287,45 @@ create policy "Cancel own pending order" on public.orders for update
   using (auth.uid() = user_id and payment_status = 'pending')
   with check (auth.uid() = user_id and payment_status = 'cancelled');
 
+-- RLS above only checks the FINAL payment_status — it doesn't stop a client
+-- from also rewriting amount_usd/gb_amount/etc. on their own pending order
+-- in the same update as long as payment_status ends up 'cancelled'. This
+-- pins every other column to its previous value for non-admin callers, same
+-- pattern as protect_privileged_profile_columns above. See migration 0006.
+create or replace function public.protect_order_columns()
+returns trigger language plpgsql security definer as $$
+declare
+  caller_is_admin boolean;
+begin
+  if auth.uid() is null then
+    return new; -- service-role client (webhook, cron, activateBandwidth)
+  end if;
+
+  select (role = 'admin') into caller_is_admin
+  from public.profiles where id = auth.uid();
+
+  if coalesce(caller_is_admin, false) then
+    return new;
+  end if;
+
+  new.user_id             := old.user_id;
+  new.plan_id              := old.plan_id;
+  new.gb_amount            := old.gb_amount;
+  new.amount_usd           := old.amount_usd;
+  new.payment_method       := old.payment_method;
+  new.paystack_reference   := old.paystack_reference;
+  new.bandwidth_credited   := old.bandwidth_credited;
+  new.paid_at              := old.paid_at;
+  new.created_at           := old.created_at;
+
+  return new;
+end;
+$$;
+
+create trigger protect_order_columns
+  before update on public.orders
+  for each row execute procedure public.protect_order_columns();
+
 -- Credentials
 create policy "Own or created credentials" on public.proxy_credentials for select
   using (auth.uid() = user_id or auth.uid() = created_by);

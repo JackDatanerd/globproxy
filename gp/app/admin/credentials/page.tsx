@@ -10,6 +10,16 @@ export default async function AdminCredentialsPage() {
     .order('created_at', { ascending: false })
     .limit(200)
 
+  // Previously these were computed from the same 200-row limited `creds`
+  // list above — past 200 total credentials, the header count and the
+  // active/pending badges would all silently undercount. Exact-count
+  // queries here are correct at any scale.
+  const [{ count: totalCount }, { count: active }, { count: pending }] = await Promise.all([
+    supabase.from('proxy_credentials').select('*', { count: 'exact', head: true }),
+    supabase.from('proxy_credentials').select('*', { count: 'exact', head: true }).eq('status', 'active'),
+    supabase.from('proxy_credentials').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
+  ])
+
   // Fetch emails separately to avoid join failures from FK renames
   const userIds = Array.from(new Set((creds ?? []).map(c => c.user_id).filter(Boolean)))
   let emailMap: Record<string, string> = {}
@@ -23,19 +33,16 @@ export default async function AdminCredentialsPage() {
     }
   }
 
-  const active = creds?.filter(c => c.status === 'active').length ?? 0
-  const pending = creds?.filter(c => c.status === 'pending').length ?? 0
-
   return (
     <div className="max-w-6xl">
       <div className="mb-8">
         <h1 className="font-display font-bold text-2xl text-ink">All Credentials</h1>
-        <p className="text-muted text-sm mt-1">{creds?.length ?? 0} total proxy sessions across all users</p>
+        <p className="text-muted text-sm mt-1">{totalCount ?? 0} total proxy sessions across all users</p>
       </div>
 
       <div className="flex gap-3 mb-6">
-        <span className="text-xs font-mono bg-accent2-light text-accent2 px-3 py-1.5 rounded-full">{active} active</span>
-        <span className="text-xs font-mono bg-yellow-50 text-yellow-600 px-3 py-1.5 rounded-full">{pending} pending</span>
+        <span className="text-xs font-mono bg-accent2-light text-accent2 px-3 py-1.5 rounded-full">{active ?? 0} active</span>
+        <span className="text-xs font-mono bg-yellow-50 text-yellow-600 px-3 py-1.5 rounded-full">{pending ?? 0} pending</span>
       </div>
 
       <div className="bg-white border border-border rounded-xl overflow-hidden">

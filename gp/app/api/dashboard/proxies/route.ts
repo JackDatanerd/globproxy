@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { createSubUser, deleteSubUser } from '@/lib/geonode'
+import { validateTargeting } from '@/lib/proxyEndpoint'
 import { NextResponse } from 'next/server'
 
 function providerConfigured(): boolean {
@@ -23,6 +24,11 @@ export async function POST(req: Request) {
 
   if (!gb_allocated || gb_allocated <= 0) {
     return NextResponse.json({ error: 'gb_allocated must be greater than 0' }, { status: 400 })
+  }
+
+  const targetingError = validateTargeting({ country, state, city })
+  if (targetingError) {
+    return NextResponse.json({ error: targetingError }, { status: 400 })
   }
 
   // 1. Check available bandwidth — soft gate against what they've purchased.

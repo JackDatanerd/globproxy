@@ -54,6 +54,13 @@ export function genSessionId(): string {
 
 // sessionId is optional so callers generating multiple endpoints can pass a
 // distinct id per endpoint (each gets its own stable peer IP under sticky).
+//
+// NOTE: this silently drops state/city below if country isn't set — that's
+// intentional here since this function also renders already-stored
+// credentials (ProxyCard, SessionManager), where throwing would crash the
+// UI for any legacy row with that data shape. The actual validation lives
+// at the write path — see validateTargeting() below — so a caller can never
+// get this combination persisted in the first place.
 export function buildProxyUsername(baseUsername: string, opts: TargetingOptions, sessionId?: string): string {
   // Confirmed from a live Geonode dashboard export (2026-07):
   // geonode_xxx-type-residential-country-us-state-southcarolina-city-fountaininn-asn-13868-lifetime-1440-session-mBXMRo
@@ -84,4 +91,20 @@ export function buildProxyUsername(baseUsername: string, opts: TargetingOptions,
   }
 
   return u
+}
+
+// Validates targeting inputs before they're ever written to a credential
+// row. Previously nothing rejected state/city with no country — the
+// dashboard form let a user pick "Any country" and still type a state, and
+// the v1 API had no check at all. buildProxyUsername() would then silently
+// drop the state/city with zero indication the request was only partially
+// honored. Callers (dashboard proxy creation, v1 sub-user creation) should
+// run this before insert and surface the error, so the bad combination can
+// never actually get persisted — buildProxyUsername's silent-drop behavior
+// stays purely as a defensive fallback for rendering pre-existing rows.
+export function validateTargeting(opts: TargetingOptions): string | null {
+  if ((opts.state || opts.city) && !opts.country) {
+    return 'A country is required when specifying a state or city.'
+  }
+  return null
 }

@@ -1,5 +1,5 @@
 import { createSubUser, deleteSubUser } from '@/lib/geonode'
-import { buildProxyUsername, getProxyPort } from '@/lib/proxyEndpoint'
+import { buildProxyUsername, getProxyPort, validateTargeting } from '@/lib/proxyEndpoint'
 import { requireApiAccess } from '@/lib/apiAuth'
 import { NextResponse } from 'next/server'
 
@@ -27,6 +27,11 @@ export async function POST(req: Request) {
 
   if (!gb_allocated || gb_allocated <= 0) {
     return NextResponse.json({ error: 'gb_allocated is required and must be > 0' }, { status: 400 })
+  }
+
+  const targetingError = validateTargeting({ country, state, city })
+  if (targetingError) {
+    return NextResponse.json({ error: targetingError }, { status: 400 })
   }
 
   // Soft gate against purchased total — used_gb is updated only by the cron

@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { POPULAR_COUNTRIES, OTHER_COUNTRIES } from '@/lib/countries'
 import { POPULAR_US_STATES, OTHER_US_STATES } from '@/lib/usStates'
-import { buildProxyUsername, getProxyPort } from '@/lib/proxyEndpoint'
+import { buildProxyUsername, getProxyPort, validateTargeting } from '@/lib/proxyEndpoint'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
@@ -36,6 +36,16 @@ export default function NewProxyForm({ availableGb }: { availableGb: number }) {
 
   function set(k: string, v: any) { setForm(f => ({ ...f, [k]: v })) }
 
+  // State/city only mean anything with a country set — buildProxyUsername
+  // silently drops them otherwise. Clearing them here means a user can
+  // never end up in that state through normal use of this form; a change
+  // partway through (pick a state, then switch back to "Any country")
+  // clears the now-meaningless value instead of leaving it to be silently
+  // ignored at submit time.
+  function setCountry(v: string) {
+    setForm(f => (v ? { ...f, country: v } : { ...f, country: '', state: '', city: '' }))
+  }
+
   // Live endpoint preview — uses the same builder as ProxyCard and the v1
   // API, so this preview can never drift out of sync with what the customer
   // actually gets again. Previously this was hand-rolled here with three
@@ -55,6 +65,11 @@ export default function NewProxyForm({ availableGb }: { availableGb: number }) {
     e.preventDefault()
     if (form.gb_allocated > availableGb) {
       toast.error(`You only have ${availableGb.toFixed(2)}GB available`)
+      return
+    }
+    const targetingError = validateTargeting(form)
+    if (targetingError) {
+      toast.error(targetingError)
       return
     }
     setLoading(true)
@@ -102,7 +117,7 @@ export default function NewProxyForm({ availableGb }: { availableGb: number }) {
           <div className="grid grid-cols-1 gap-3">
             <div>
               <label className="block text-xs text-muted mb-1">Country</label>
-              <select value={form.country} onChange={e => set('country', e.target.value)}
+              <select value={form.country} onChange={e => setCountry(e.target.value)}
                 className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors">
                 <option value="">Any country</option>
                 <optgroup label="Popular">
@@ -121,8 +136,8 @@ export default function NewProxyForm({ availableGb }: { availableGb: number }) {
               <div>
                 <label className="block text-xs text-muted mb-1">State / Region <span className="text-muted">(optional)</span></label>
                 {form.country === 'US' ? (
-                  <select value={form.state} onChange={e => set('state', e.target.value)}
-                    className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors">
+                  <select value={form.state} onChange={e => set('state', e.target.value)} disabled={!form.country}
+                    className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                     <option value="">Any</option>
                     <optgroup label="Popular">
                       {POPULAR_US_STATES.map(s => (
@@ -136,16 +151,16 @@ export default function NewProxyForm({ availableGb }: { availableGb: number }) {
                     </optgroup>
                   </select>
                 ) : (
-                  <input value={form.state} onChange={e => set('state', e.target.value)}
-                    placeholder="e.g. england"
-                    className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors" />
+                  <input value={form.state} onChange={e => set('state', e.target.value)} disabled={!form.country}
+                    placeholder={form.country ? 'e.g. england' : 'Pick a country first'}
+                    className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed" />
                 )}
               </div>
               <div>
                 <label className="block text-xs text-muted mb-1">City <span className="text-muted">(optional)</span></label>
-                <input value={form.city} onChange={e => set('city', e.target.value)}
-                  placeholder="e.g. new york"
-                  className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors" />
+                <input value={form.city} onChange={e => set('city', e.target.value)} disabled={!form.country}
+                  placeholder={form.country ? 'e.g. new york' : 'Pick a country first'}
+                  className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed" />
               </div>
             </div>
             <div>

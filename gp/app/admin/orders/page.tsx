@@ -8,9 +8,19 @@ export default async function AdminOrdersPage() {
     .order('created_at', { ascending: false })
     .limit(200)
 
-  const paid = orders?.filter(o => o.payment_status === 'paid') ?? []
-  const totalRevenue = paid.reduce((s, o) => s + Number(o.amount_usd), 0)
-  const totalGb = paid.reduce((s, o) => s + Number(o.gb_amount), 0)
+  // Stats were previously computed from the same 200-row limited list used
+  // for the table below — past 200 total orders, "Total revenue"/"Total GB
+  // sold"/"Paid orders" would silently undercount with no indication
+  // anything was truncated. Pulling just the two numeric columns, unlimited,
+  // keeps this cheap while making the headline stats always correct.
+  const { data: allPaid } = await supabase
+    .from('orders')
+    .select('amount_usd, gb_amount')
+    .eq('payment_status', 'paid')
+
+  const totalRevenue = allPaid?.reduce((s, o) => s + Number(o.amount_usd), 0) ?? 0
+  const totalGb = allPaid?.reduce((s, o) => s + Number(o.gb_amount), 0) ?? 0
+  const paidCount = allPaid?.length ?? 0
 
   const userIds = [...new Set(orders?.map(o => o.user_id).filter(Boolean) ?? [])]
   const { data: profiles } = userIds.length > 0
@@ -35,7 +45,7 @@ export default async function AdminOrdersPage() {
         </div>
         <div className="bg-white border border-border rounded-xl p-5">
           <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-2">Paid orders</div>
-          <div className="font-display text-3xl font-bold text-ink">{paid.length}</div>
+          <div className="font-display text-3xl font-bold text-ink">{paidCount}</div>
         </div>
       </div>
       <div className="bg-white border border-border rounded-xl overflow-hidden">
