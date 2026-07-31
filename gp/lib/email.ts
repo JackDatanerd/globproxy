@@ -1,3 +1,20 @@
+// Various emails across the app (reseller approval/rejection, suspension,
+// account deletion, the admin reseller-application notice) interpolate
+// user-controlled fields — full_name, company_name, country, phone, etc. —
+// directly into HTML email bodies. Any of those were previously inserted
+// unescaped, so a user could set e.g. their signup full_name to
+// `<img src=x onerror=...>` and have it render live in an email opened by
+// staff or another user. escapeHtml() should wrap every such interpolation.
+export function escapeHtml(input: unknown): string {
+  const s = input == null ? '' : String(input)
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 export async function sendEmail(p: { to: string; subject: string; html: string }) {
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
@@ -21,7 +38,7 @@ export async function sendAccountDeletionEmail(p: { to: string; name: string }) 
   await sendEmail({
     to: p.to,
     subject: 'Your GlobProxy account has been deleted',
-    html: `<p>Hi ${p.name},</p>
+    html: `<p>Hi ${escapeHtml(p.name)},</p>
 <p>Your GlobProxy account has been permanently deleted by an administrator.</p>
 <p>If you believe this was a mistake, please contact us at support@globproxy.com.</p>
 <p>— The GlobProxy Team</p>`,

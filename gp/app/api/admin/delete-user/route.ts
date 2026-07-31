@@ -1,5 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/server'
-import { sendEmail } from '@/lib/email'
+import { sendEmail, escapeHtml } from '@/lib/email'
 import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
@@ -70,7 +70,7 @@ export async function POST(req: Request) {
             style="display:block;margin:0 auto 32px auto;border-radius:12px;"/>
           <h2 style="text-align:center;color:#111;">Account deleted</h2>
           <p style="color:#444;text-align:center;">
-            Hi ${tp.full_name ?? 'there'}, your GlobProxy account has been permanently deleted.
+            Hi ${escapeHtml(tp.full_name) || 'there'}, your GlobProxy account has been permanently deleted.
             Your personal data has been removed. If you believe this was a mistake,
             please contact us as soon as possible.
           </p>

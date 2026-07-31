@@ -1,19 +1,21 @@
 import { createClient } from '@/lib/supabase/server'
+import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import ProxyCard from '@/components/dashboard/ProxyCard'
 
 export default async function ProxiesPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
+  if (!user) redirect('/auth/login')
 
   const [{ data: creds }, { data: bw }] = await Promise.all([
     supabase.from('proxy_credentials')
       .select('*')
-      .eq('user_id', user!.id)
+      .eq('user_id', user.id)
       .order('created_at', { ascending: false }),
     supabase.from('bandwidth_accounts')
       .select('total_gb, used_gb, available_gb')
-      .eq('user_id', user!.id)
+      .eq('user_id', user.id)
       .single(),
   ])
 

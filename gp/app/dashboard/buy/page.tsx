@@ -1,15 +1,9 @@
 'use client'
 import { useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { PLANS } from '@/lib/plans'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
-
-const PLANS = [
-  { name:'Micro',   gb:1,   price:4.50,  total:4.50  },
-  { name:'Starter', gb:10,  price:3.50,  total:35    },
-  { name:'Growth',  gb:100, price:2.80,  total:280   },
-  { name:'Scale',   gb:500, price:2.00,  total:1000, custom:true },
-]
 
 export default function BuyPage() {
   const [plan, setPlan] = useState(PLANS[1])
@@ -23,7 +17,7 @@ export default function BuyPage() {
       const res = await fetch('/api/checkout', {
         method: 'POST',
         headers: { 'Content-Type':'application/json', 'Authorization':`Bearer ${session?.access_token}` },
-        body: JSON.stringify({ plan: plan.name.toLowerCase() }),
+        body: JSON.stringify({ plan: plan.slug }),
       })
       const data = await res.json()
       if (data.url) window.location.href = data.url

@@ -1,12 +1,15 @@
 import { createClient } from '@/lib/supabase/server'
+import { redirect } from 'next/navigation'
 import Link from 'next/link'
 
 export default async function UsagePage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
+  if (!user) redirect('/auth/login')
+
   const [{ data: bw }, { data: creds }] = await Promise.all([
-    supabase.from('bandwidth_accounts').select('*').eq('user_id', user!.id).single(),
-    supabase.from('proxy_credentials').select('*').eq('user_id', user!.id).eq('status','active').order('gb_used',{ascending:false}),
+    supabase.from('bandwidth_accounts').select('*').eq('user_id', user.id).single(),
+    supabase.from('proxy_credentials').select('*').eq('user_id', user.id).eq('status','active').order('gb_used',{ascending:false}),
   ])
   const total = bw?.total_gb ?? 0
   const used = bw?.used_gb ?? 0

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { sendEmail } from '@/lib/email'
+import { sendEmail, escapeHtml } from '@/lib/email'
 
 export async function POST(req: Request) {
   try {
@@ -48,11 +48,11 @@ export async function POST(req: Request) {
               style="display:block;margin:0 auto 32px auto;border-radius:12px;"/>
             <h2 style="text-align:center;color:#111;">New Reseller Application</h2>
             <table style="width:100%;border-collapse:collapse;margin:24px 0;">
-              <tr><td style="padding:8px 0;color:#888;font-size:13px;">Name</td><td style="padding:8px 0;font-size:13px;font-weight:600;">${full_name}</td></tr>
-              <tr><td style="padding:8px 0;color:#888;font-size:13px;">Email</td><td style="padding:8px 0;font-size:13px;">${user.email}</td></tr>
-              <tr><td style="padding:8px 0;color:#888;font-size:13px;">Country</td><td style="padding:8px 0;font-size:13px;">${country}</td></tr>
-              <tr><td style="padding:8px 0;color:#888;font-size:13px;">Phone</td><td style="padding:8px 0;font-size:13px;">${phone}</td></tr>
-              <tr><td style="padding:8px 0;color:#888;font-size:13px;">Monthly volume</td><td style="padding:8px 0;font-size:13px;">${monthly_volume}</td></tr>
+              <tr><td style="padding:8px 0;color:#888;font-size:13px;">Name</td><td style="padding:8px 0;font-size:13px;font-weight:600;">${escapeHtml(full_name)}</td></tr>
+              <tr><td style="padding:8px 0;color:#888;font-size:13px;">Email</td><td style="padding:8px 0;font-size:13px;">${escapeHtml(user.email)}</td></tr>
+              <tr><td style="padding:8px 0;color:#888;font-size:13px;">Country</td><td style="padding:8px 0;font-size:13px;">${escapeHtml(country)}</td></tr>
+              <tr><td style="padding:8px 0;color:#888;font-size:13px;">Phone</td><td style="padding:8px 0;font-size:13px;">${escapeHtml(phone)}</td></tr>
+              <tr><td style="padding:8px 0;color:#888;font-size:13px;">Monthly volume</td><td style="padding:8px 0;font-size:13px;">${escapeHtml(monthly_volume)}</td></tr>
             </table>
             <div style="text-align:center;margin:32px 0;">
               <a href="${process.env.NEXT_PUBLIC_APP_URL}/admin/resellers"

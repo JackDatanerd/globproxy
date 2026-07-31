@@ -1,5 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/server'
-import { sendEmail } from '@/lib/email'
+import { sendEmail, escapeHtml } from '@/lib/email'
 import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
@@ -17,7 +17,12 @@ export async function POST(req: Request) {
   if (!user_id || !action) return NextResponse.json({ error: 'Missing fields' }, { status: 400 })
 
   const { data: tp } = await supabase.from('profiles').select('role, email, full_name').eq('id', user_id).single()
-  if (tp?.role === 'admin') return NextResponse.json({ error: 'Cannot suspend admin' }, { status: 403 })
+  // Previously a missing target fell through silently: `tp?.role === 'admin'`
+  // is `false` when tp is null, so this continued straight to an update that
+  // matched 0 rows (Supabase doesn't error on that) and still returned
+  // `{ success: true }`, plus signed out a non-existent user_id.
+  if (!tp) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+  if (tp.role === 'admin') return NextResponse.json({ error: 'Cannot suspend admin' }, { status: 403 })
 
   const isSuspending = action === 'suspend'
 
@@ -46,7 +51,7 @@ export async function POST(req: Request) {
             style="display:block;margin:0 auto 32px auto;border-radius:12px;"/>
           <h2 style="text-align:center;color:#111;">Account suspended</h2>
           <p style="color:#444;text-align:center;">
-            Hi ${tp.full_name ?? 'there'}, your GlobProxy account has been suspended.
+            Hi ${escapeHtml(tp.full_name) || 'there'}, your GlobProxy account has been suspended.
             If you believe this is a mistake, please contact us.
           </p>
           <div style="text-align:center;margin:32px 0;">
@@ -65,7 +70,7 @@ export async function POST(req: Request) {
             style="display:block;margin:0 auto 32px auto;border-radius:12px;"/>
           <h2 style="text-align:center;color:#111;">Account reinstated ✓</h2>
           <p style="color:#444;text-align:center;">
-            Hi ${tp.full_name ?? 'there'}, your GlobProxy account has been reinstated.
+            Hi ${escapeHtml(tp.full_name) || 'there'}, your GlobProxy account has been reinstated.
             You can now log back in and continue using our services.
           </p>
           <div style="text-align:center;margin:32px 0;">

@@ -14,6 +14,13 @@ export default async function DashboardLayout({ children }: { children: React.Re
     .eq('id', user.id)
     .single()
 
+  // middleware.ts already enforces this (and signs the session out) for every
+  // request under /dashboard — this is defense-in-depth so a suspended
+  // account can't reach dashboard data via this layout if middleware is ever
+  // bypassed or misconfigured for this route group, the same way admin/layout.tsx
+  // independently re-checks role rather than relying on middleware alone.
+  if (profile?.is_suspended) redirect('/auth/login?suspended=1')
+
   return (
     <div className="min-h-screen bg-surface flex flex-col">
       <DashTopbar profile={profile} />

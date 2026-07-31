@@ -1,12 +1,7 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { initializeTransaction, generateReference } from '@/lib/paystack'
+import { getPurchasablePlan } from '@/lib/plans'
 import { NextResponse } from 'next/server'
-
-const PLANS: Record<string, { gb: number; price: number; total: number }> = {
-  micro:   { gb: 1,   price: 4.50, total: 4.50  },
-  starter: { gb: 10,  price: 3.50, total: 35.00 },
-  growth:  { gb: 100, price: 2.80, total: 280.00 },
-}
 
 export async function POST(req: Request) {
   try {
@@ -18,7 +13,7 @@ export async function POST(req: Request) {
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
     const { plan } = await req.json()
-    const planData = PLANS[plan]
+    const planData = getPurchasablePlan(plan)
     if (!planData) return NextResponse.json({ error: 'Invalid plan' }, { status: 400 })
 
     // Cancel any existing pending orders to prevent duplicates

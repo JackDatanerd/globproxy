@@ -1,5 +1,5 @@
-import { createAdminClient, createClient } from '@/lib/supabase/server'
-import { sendEmail } from '@/lib/email'
+import { createAdminClient } from '@/lib/supabase/server'
+import { sendEmail, escapeHtml } from '@/lib/email'
 import { NextResponse } from 'next/server'
 
 // Previously "Approve" in the admin resellers panel wrote directly to
@@ -7,19 +7,27 @@ import { NextResponse } from 'next/server'
 // RLS with no dedicated server route, no audit point, and no notification
 // email to the applicant. This gives that action an actual server endpoint
 // to match reject-reseller and suspend-user.
+//
+// Auth now uses the same Bearer-token pattern as every other /api/admin/*
+// route (suspend-user, delete-user, reload-stock, etc.) instead of the
+// cookie-based session lookup this previously used — the two patterns were
+// both valid on their own, but the inconsistency meant the client
+// (AdminResellerActions.tsx) had to special-case which admin routes need a
+// token and which don't, which is easy to get wrong in a future edit.
 export async function POST(req: Request) {
   try {
-    const { userId } = await req.json()
-    if (!userId) return NextResponse.json({ error: 'User ID missing' }, { status: 400 })
+    const token = req.headers.get('authorization')?.replace('Bearer ', '')
+    if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
     const supabaseAdmin = await createAdminClient()
-
-    const supabase = await createClient()
-    const { data: { user } } = await supabase.auth.getUser()
+    const { data: { user } } = await supabaseAdmin.auth.getUser(token)
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
     const { data: adminProfile } = await supabaseAdmin.from('profiles').select('role').eq('id', user.id).single()
     if (adminProfile?.role !== 'admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+    const { userId } = await req.json()
+    if (!userId) return NextResponse.json({ error: 'User ID missing' }, { status: 400 })
 
     const { data: applicant, error: updateErr } = await supabaseAdmin
       .from('profiles')
@@ -40,7 +48,7 @@ export async function POST(req: Request) {
               style="display:block;margin:0 auto 32px auto;border-radius:12px;"/>
             <h2 style="text-align:center;color:#111;">Reseller application approved ✓</h2>
             <p style="color:#444;text-align:center;">
-              Hi ${applicant.full_name?.split(' ')[0] ?? 'there'}, your reseller application has been approved.
+              Hi ${escapeHtml(applicant.full_name?.split(' ')[0]) || 'there'}, your reseller application has been approved.
               You can now allocate bandwidth to your clients from your dashboard.
             </p>
             <div style="text-align:center;margin:32px 0;">

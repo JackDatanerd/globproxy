@@ -46,14 +46,21 @@ export async function DELETE(
     catch (e) { console.error('Geonode delete failed (non-fatal):', e) }
   }
 
-  // NOTE: we intentionally do NOT manually adjust bandwidth_accounts.used_gb
-  // here. used_gb tracks actual bytes consumed (synced from Geonode by the
-  // cron usage job), not the credential's gb_allocated cap — those are
-  // different numbers. Subtracting gb_allocated from used_gb over- or
-  // under-refunds the account depending on how much of the allocation was
-  // actually used, and the next usage-sync cron run overwrites it anyway.
-  // The account's real available balance is unaffected by deleting an
-  // unused/under-used credential's cap.
+  // NOTE: we intentionally do NOT touch bandwidth_accounts.used_gb here.
+  // used_gb tracks actual bytes consumed (synced from Geonode by the cron
+  // usage job) and is a completely separate number from gb_allocated.
+  //
+  // gb_allocated itself, however, IS now reserved out of allocated_gb at
+  // creation time (migration 0007 / reserve_credential_bandwidth) — so
+  // deleting a self-owned credential should give that reservation back.
+  // This only applies to credentials this user created for themselves
+  // (created_by is null, enforced above); reseller-allocated ones never hit
+  // this path since deletion is blocked for those a few lines up.
+  //
+  // The release happens AFTER the delete below is confirmed to have
+  // actually removed a row — releasing it first would let a failed/blocked
+  // delete free up the reservation while the credential (and its Geonode
+  // cap) still exists, letting the same GB be reserved and spent twice.
 
   // Delete the credential row. Supabase does NOT error when RLS silently
   // blocks a delete (0 rows matched) — without .select() here, a blocked
@@ -71,6 +78,12 @@ export async function DELETE(
   if (!deletedRows || deletedRows.length === 0) {
     return NextResponse.json({ error: 'Delete was blocked — nothing was removed.' }, { status: 500 })
   }
+
+  const { error: releaseErr } = await supabase.rpc('release_credential_bandwidth', {
+    p_user_id: user.id,
+    p_gb: cred.gb_allocated,
+  })
+  if (releaseErr) console.error('Failed to release bandwidth reservation on delete:', releaseErr)
 
   return NextResponse.json({ success: true })
 }

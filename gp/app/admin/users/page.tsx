@@ -4,10 +4,14 @@ import AdminUserControls from '@/components/admin/AdminUserControls'
 export default async function AdminUsersPage() {
   const supabase = await createAdminClient()
   
-  // 1. Fetch users without the join
+  // Previously this fetched every profile including soft-deleted ones
+  // (is_deleted, set by admin/delete-user and user/delete-account), which
+  // just accumulate as permanent '[deleted]'/'[deleted]' rows with no way
+  // to clear them from this view.
   const { data: users } = await supabase
     .from('profiles')
     .select('*')
+    .eq('is_deleted', false)
     .order('created_at', { ascending: false })
 
   // 2. Fetch bandwidth separately

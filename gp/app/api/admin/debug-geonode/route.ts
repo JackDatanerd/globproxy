@@ -2,7 +2,13 @@ import { createAdminClient } from '@/lib/supabase/server'
 import { debugCreateSubUser, getAccountBalance } from '@/lib/geonode'
 import { NextResponse } from 'next/server'
 
-// Permanent admin-only diagnostic endpoint.
+// Admin-only diagnostic endpoint — OFF by default. Even though it's
+// admin-gated, this makes real, live calls against production Geonode
+// (creating and deleting a real sub-user on every POST) and previously
+// echoed back partial GEONODE_API_KEY bytes, which is more than a debug
+// endpoint should expose even to admins. It now requires
+// ENABLE_DEBUG_ENDPOINTS=true to respond at all, and no longer returns any
+// part of the raw API key — only whether it's present/absent and its length.
 // GET  — tests the balance/stock endpoint (read-only, no side effects)
 // POST — creates a 10 MB test sub-user, captures the full raw Geonode response,
 //        then immediately deletes it. Use this to verify:
@@ -14,6 +20,10 @@ import { NextResponse } from 'next/server'
 // header "Reseller-Api-Key: <key>" — not "r-api-key", not "Authorization:
 // Bearer". Both of those were tried against production and failed first.
 // See lib/geonode.ts headers().
+
+function debugEndpointsEnabled() {
+  return process.env.ENABLE_DEBUG_ENDPOINTS === 'true'
+}
 
 async function verifyAdmin(req: Request) {
   const token = req.headers.get('authorization')?.replace('Bearer ', '')
@@ -34,6 +44,8 @@ async function verifyAdmin(req: Request) {
 
 // GET — balance check (safe, read-only)
 export async function GET(req: Request) {
+  if (!debugEndpointsEnabled()) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+
   const user = await verifyAdmin(req)
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
@@ -43,10 +55,7 @@ export async function GET(req: Request) {
   const env = {
     api_key_present: !!apiKey,
     api_key_length: apiKey?.length ?? 0,
-    api_key_prefix: apiKey ? apiKey.slice(0, 12) + '...' : 'MISSING',
-    api_key_suffix: apiKey ? '...' + apiKey.slice(-6) : 'MISSING',
-    // Expected: length 44, prefix "geonode.D$mz", suffix "EF2O39"
-    reseller_id: resellerId ?? 'MISSING',
+    reseller_id_present: !!resellerId,
   }
 
   try {
@@ -59,6 +68,8 @@ export async function GET(req: Request) {
 
 // POST — test sub-user creation (creates 10 MB sub-user, captures raw response, deletes it)
 export async function POST(req: Request) {
+  if (!debugEndpointsEnabled()) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+
   const user = await verifyAdmin(req)
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 

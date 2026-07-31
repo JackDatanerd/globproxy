@@ -1,11 +1,5 @@
 import Link from 'next/link'
-
-const plans = [
-  { name:'Micro',   tagline:'For testing & pay-as-you-go', gb:1,   price:4.50, total:4.50,  badge:'pay-as-you-go', features:['1 GB non-expiring bandwidth','195 countries','Rotating & sticky sessions','Dashboard access','Email support'], featured:false },
-  { name:'Starter', tagline:'For testing & small projects', gb:10,  price:3.50, total:35,    features:['10 GB non-expiring bandwidth','195 countries','Rotating & sticky sessions','Dashboard access','Email support'], featured:false },
-  { name:'Growth',  tagline:'For agencies & power users',   gb:100, price:2.80, total:280,   savings:'Save 20%', features:['100 GB non-expiring bandwidth','City-level targeting','Full API access (resellers)','Sub-user management','Priority support'], featured:true },
-  { name:'Scale',   tagline:'High-volume operations',       gb:500, price:2.00, total:1000,  savings:'Save 43%', features:['500 GB+ non-expiring bandwidth','Custom geo allocation','Dedicated account manager','White-label credentials','24/7 priority support'], featured:false },
-]
+import { PLANS as plans } from '@/lib/plans'
 
 export default function PricingPlans({ buyHref = '/auth/signup' }: { buyHref?: string }) {
   return (
@@ -24,16 +18,16 @@ export default function PricingPlans({ buyHref = '/auth/signup' }: { buyHref?: s
           {'badge' in p && p.badge && <div className="inline-block bg-accent-light text-accent text-xs font-mono px-3 py-1 rounded-full mb-5">{p.badge}</div>}
           <div className="h-px bg-border my-5" />
           <ul className="flex flex-col gap-2.5 mb-7">
-            {p.features.map(f => (
+            {(p.features ?? []).map(f => (
               <li key={f} className="flex items-start gap-2.5 text-sm text-ink2 font-light">
                 <span className="text-accent2 font-bold flex-shrink-0 mt-0.5">✓</span>{f}
               </li>
             ))}
           </ul>
           <Link
-            href={p.name === 'Scale' ? 'mailto:sales@globproxy.com' : buyHref}
+            href={p.custom ? 'mailto:sales@globproxy.com' : buyHref}
             className={`block w-full text-center py-3 rounded-xl text-sm font-medium transition-all ${p.featured ? 'bg-accent text-white hover:opacity-90' : 'border border-border text-ink2 hover:border-accent hover:text-accent'}`}>
-            {p.name === 'Scale' ? 'Contact us →' : 'Get started →'}
+            {p.custom ? 'Contact us →' : 'Get started →'}
           </Link>
         </div>
       ))}

@@ -1,11 +1,14 @@
 import { createClient } from '@/lib/supabase/server'
+import { redirect } from 'next/navigation'
 
 export default async function EarningsPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
+  if (!user) redirect('/auth/login')
+
   const [{ data: transfers }, { data: bw }] = await Promise.all([
-    supabase.from('reseller_transfers').select('*, profiles!reseller_transfers_recipient_id_fkey(email)').eq('reseller_id',user!.id).order('created_at',{ascending:false}),
-    supabase.from('bandwidth_accounts').select('*').eq('user_id',user!.id).single(),
+    supabase.from('reseller_transfers').select('*, profiles!reseller_transfers_recipient_id_fkey(email)').eq('reseller_id',user.id).order('created_at',{ascending:false}),
+    supabase.from('bandwidth_accounts').select('*').eq('user_id',user.id).single(),
   ])
   const totalAllocated = transfers?.reduce((s,t)=>s+t.gb_amount,0)??0
   const active = transfers?.filter(t=>t.status==='active')??[]

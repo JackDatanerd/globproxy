@@ -43,7 +43,7 @@ create table public.bandwidth_accounts (
   user_id      uuid references public.profiles(id) on delete cascade not null unique,
   total_gb     numeric default 0,
   used_gb      numeric default 0, -- actual bytes consumed; cron usage-sync is the only writer
-  allocated_gb numeric not null default 0, -- GB a reseller has committed to clients (see migration 0004)
+  allocated_gb numeric not null default 0, -- GB committed: reseller→client transfers (migration 0004) AND this account's own credentials (migration 0007)
   available_gb numeric generated always as (total_gb - used_gb - allocated_gb) stored,
   alerted_80_at timestamp with time zone,
   alerted_95_at timestamp with time zone,
@@ -161,14 +161,8 @@ create table public.banned_emails (
 );
 
 -- ── HELPER FUNCTIONS ──────────────────────────────────────────
-create or replace function public.reserve_reseller_gb(p_user_id uuid, p_gb numeric)
-returns void language plpgsql security definer as $$
-begin
-  update public.bandwidth_accounts
-  set used_gb = used_gb + p_gb
-  where user_id = p_user_id;
-end;
-$$;
+-- (reserve_reseller_gb was removed in migration 0008 — dead code,
+-- superseded by allocate_reseller_bandwidth below.)
 
 -- Atomic reseller-to-client bandwidth transfer. See migration 0004 for the
 -- full rationale — this replaces a JS check-then-act read/write that raced

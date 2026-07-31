@@ -10,11 +10,20 @@ export async function GET(req: Request) {
 
   const { data } = await supabase
     .from('proxy_credentials')
-    .select('id,label,status,gb_allocated,gb_used,country,state,city,asn,session_type,protocol,host,port,geonode_username,activated_at,created_at')
+    .select('id,label,status,gb_allocated,gb_used,country,state,city,asn,session_type,protocol,sticky_duration,host,port,geonode_username,activated_at,created_at')
     .eq('user_id', user.id)
     .order('created_at', { ascending: false })
 
-  return NextResponse.json({ sub_users: data ?? [] })
+  // POST already returns the built, geo-targeted connection_username —
+  // GET was previously only returning the raw geonode_username, which is
+  // not directly usable for connections that specify targeting. Consumers
+  // shouldn't have to reimplement buildProxyUsername() themselves.
+  const sub_users = (data ?? []).map(c => ({
+    ...c,
+    connection_username: c.geonode_username ? buildProxyUsername(c.geonode_username, c) : null,
+  }))
+
+  return NextResponse.json({ sub_users })
 }
 
 export async function POST(req: Request) {
@@ -34,16 +43,15 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: targetingError }, { status: 400 })
   }
 
-  // Soft gate against purchased total — used_gb is updated only by the cron
-  // usage-sync job now, not deducted here. See dashboard/proxies/route.ts
-  // for the full rationale.
-  const { data: bw } = await supabase
-    .from('bandwidth_accounts')
-    .select('available_gb, used_gb')
-    .eq('user_id', user.id)
-    .single()
-
-  if ((bw?.available_gb ?? 0) < gb_allocated) {
+  // Reserve bandwidth atomically instead of soft-checking it — see
+  // migration 0007 for the full rationale (a burst of creations could
+  // previously each pass a plain "available_gb >= requested" check before
+  // any of them actually landed).
+  const { error: reserveErr } = await supabase.rpc('reserve_credential_bandwidth', {
+    p_user_id: user.id,
+    p_gb: gb_allocated,
+  })
+  if (reserveErr) {
     return NextResponse.json({ error: 'Insufficient bandwidth. Purchase more to continue.' }, { status: 402 })
   }
 
@@ -74,6 +82,9 @@ export async function POST(req: Request) {
         console.error('Failed to clean up orphaned Geonode sub-user', gcred?.geonode_sub_user_id, e)
       )
     }
+    // Give back the reservation — nothing was actually persisted.
+    const { error: releaseErr } = await supabase.rpc('release_credential_bandwidth', { p_user_id: user.id, p_gb: gb_allocated })
+    if (releaseErr) console.error('Failed to release bandwidth reservation after insert failure:', releaseErr)
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 

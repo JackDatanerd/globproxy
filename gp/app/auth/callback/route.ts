@@ -1,11 +1,27 @@
 import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 
+// Only ever allow redirecting somewhere on our own site. A bare query param
+// like `next` must never be trusted as-is — `next=https://evil.com@x` or
+// `next=//evil.com` are both valid open-redirect payloads that would send an
+// authenticated user off-platform straight from a trusted globproxy.com link.
+// Anything that doesn't look like a single internal path falls back to
+// '/dashboard'.
+function safeNextPath(raw: string | null): string {
+  if (!raw) return '/dashboard'
+  // Must start with exactly one '/', never '//' (protocol-relative) or a
+  // backslash (some URL parsers normalise '\' to '/'), and must not contain
+  // '@' (host-confusion trick: "https://real-origin@evil.com") or a scheme.
+  if (!/^\/(?!\/)[^\s\\]*$/.test(raw)) return '/dashboard'
+  if (raw.includes('@') || raw.includes('://')) return '/dashboard'
+  return raw
+}
+
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url)
   const code = searchParams.get('code')
   const type = searchParams.get('type')
-  const next = searchParams.get('next') ?? '/dashboard'
+  const next = safeNextPath(searchParams.get('next'))
 
   if (code) {
     const s = await createClient()

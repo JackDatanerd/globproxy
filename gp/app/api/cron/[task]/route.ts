@@ -1,7 +1,7 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { getSubUserUsage } from '@/lib/geonode'
 import { computeStockStatus } from '@/lib/stockStatus'
-import { sendEmail } from '@/lib/email'
+import { sendEmail, escapeHtml } from '@/lib/email'
 import { NextResponse } from 'next/server'
 
 // Secured with CRON_SECRET env var
@@ -124,7 +124,7 @@ async function runBandwidthAlerts() {
       .from('profiles').select('email, full_name').eq('id', acc.user_id).single()
     if (!profile?.email) continue
 
-    const firstName = profile.full_name?.split(' ')[0] ?? 'there'
+    const firstName = escapeHtml(profile.full_name?.split(' ')[0]) || 'there'
     const avail = acc.available_gb
 
     if (pct >= 95 && !acc.alerted_95_at) {

@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { Suspense } from 'react'
 import PaymentVerifier from '@/components/PaymentVerifier'
@@ -6,14 +7,19 @@ import PaymentVerifier from '@/components/PaymentVerifier'
 export default async function DashboardPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
+  // middleware.ts already guards every /dashboard request, but this page
+  // (like the others under /dashboard) used a bare `user!.id` non-null
+  // assertion instead of an explicit check — matching the defensive pattern
+  // already used in app/dashboard/layout.tsx.
+  if (!user) redirect('/auth/login')
 
   const [{ data: bw }, { data: creds }, { data: orders }] = await Promise.all([
-    supabase.from('bandwidth_accounts').select('*').eq('user_id', user!.id).single(),
-    supabase.from('proxy_credentials').select('*').eq('user_id', user!.id).order('created_at', { ascending: false }).limit(5),
-    supabase.from('orders').select('*').eq('user_id', user!.id).order('created_at', { ascending: false }).limit(5),
+    supabase.from('bandwidth_accounts').select('*').eq('user_id', user.id).single(),
+    supabase.from('proxy_credentials').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(5),
+    supabase.from('orders').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(5),
   ])
 
-  const { data: profile } = await supabase.from('profiles').select('full_name').eq('id', user!.id).single()
+  const { data: profile } = await supabase.from('profiles').select('full_name').eq('id', user.id).single()
   const available = bw?.available_gb ?? 0
   const used = bw?.used_gb ?? 0
   const total = bw?.total_gb ?? 0

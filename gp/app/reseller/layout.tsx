@@ -12,6 +12,8 @@ export default async function ResellerLayout({ children }: { children: React.Rea
     .from('profiles').select('*').eq('id', user.id).single()
 
   if (profile?.role !== 'reseller' && profile?.role !== 'admin') redirect('/dashboard')
+  // Defense-in-depth — see app/dashboard/layout.tsx for rationale.
+  if (profile?.is_suspended) redirect('/auth/login?suspended=1')
 
   return (
     <div className="min-h-screen bg-surface flex flex-col">

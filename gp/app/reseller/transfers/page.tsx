@@ -1,12 +1,15 @@
 import { createClient } from '@/lib/supabase/server'
+import { redirect } from 'next/navigation'
 
 export default async function TransfersPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
+  if (!user) redirect('/auth/login')
+
   const { data: transfers } = await supabase
     .from('reseller_transfers')
     .select('*, proxy_credentials(*), profiles!reseller_transfers_recipient_id_fkey(email)')
-    .eq('reseller_id', user!.id)
+    .eq('reseller_id', user.id)
     .order('created_at', { ascending: false })
 
   return (

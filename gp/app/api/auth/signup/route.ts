@@ -1,10 +1,16 @@
 import { createAdminClient } from '@/lib/supabase/server'
+import { validateEmail } from '@/lib/email-validation'
 import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
   try {
     const { email, password, full_name, intended_role, emailRedirectTo } = await req.json()
     if (!email || !password) return NextResponse.json({ error: 'Missing fields' }, { status: 400 })
+
+    // Was previously only enforced client-side in app/auth/signup/page.tsx,
+    // which anyone posting to this endpoint directly could skip entirely.
+    const { valid, error: emailError } = validateEmail(email)
+    if (!valid) return NextResponse.json({ error: emailError }, { status: 400 })
 
     const supabase = await createAdminClient()
 

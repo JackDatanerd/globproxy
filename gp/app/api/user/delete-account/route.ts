@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { sendEmail } from '@/lib/email'
+import { sendEmail, escapeHtml } from '@/lib/email'
 
 export async function DELETE(req: Request) {
   try {
@@ -67,7 +67,7 @@ export async function DELETE(req: Request) {
               style="display:block;margin:0 auto 32px auto;border-radius:12px;"/>
             <h2 style="text-align:center;color:#111;">Account deleted</h2>
             <p style="color:#444;text-align:center;">
-              Hi ${profile.full_name ?? 'there'}, your GlobProxy account has been permanently
+              Hi ${escapeHtml(profile.full_name) || 'there'}, your GlobProxy account has been permanently
               deleted as requested. Your personal data has been removed from our system.
             </p>
             <p style="color:#444;text-align:center;">

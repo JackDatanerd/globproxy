@@ -31,34 +31,30 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: targetingError }, { status: 400 })
   }
 
-  // 1. Check available bandwidth — soft gate against what they've purchased.
-  // NOTE: usage-based model — this is a sanity check, not a deduction.
-  // used_gb is updated ONLY by the cron usage-sync job pulling real usage
-  // from Geonode (app/api/cron/[task]/route.ts, runUsageSync). Because that
-  // job runs on an interval (currently every 15 min via GitHub Actions),
-  // this check can be stale by up to that window — a user creating many
-  // credentials in quick succession could pass this check repeatedly before
-  // sync catches up. Acceptable at current scale; each credential is still
-  // hard-capped at Geonode by its own trafficLimitMB (gb_allocated), so the
-  // worst case is bounded by (number of credentials × their individual caps),
-  // not unbounded. Revisit if abuse becomes a real pattern.
-  const { data: bw, error: bwErr } = await supabase
-    .from('bandwidth_accounts')
-    .select('available_gb, used_gb, total_gb')
-    .eq('user_id', user.id)
-    .single()
-
-  if (bwErr || !bw) {
-    return NextResponse.json({ error: 'Could not fetch bandwidth account' }, { status: 500 })
-  }
-  if (bw.available_gb < gb_allocated) {
+  // 1. Reserve bandwidth atomically. Previously this only soft-checked
+  // available_gb without deducting anything, so a burst of creations could
+  // each pass the check before the next one landed — see migration 0007 for
+  // the full rationale. reserve_credential_bandwidth() does the check and
+  // the commit (via allocated_gb) as a single locked statement, so there's
+  // no window between "checked" and "reserved" for a concurrent request to
+  // slip through.
+  const { error: reserveErr } = await supabase.rpc('reserve_credential_bandwidth', {
+    p_user_id: user.id,
+    p_gb: gb_allocated,
+  })
+  if (reserveErr) {
     return NextResponse.json({
-      error: `Insufficient bandwidth. You have ${bw.available_gb.toFixed(2)}GB available, requested ${gb_allocated}GB.`,
-      available_gb: bw.available_gb,
+      error: reserveErr.message?.includes('Insufficient')
+        ? `Insufficient bandwidth. Requested ${gb_allocated}GB is more than you have available.`
+        : reserveErr.message,
     }, { status: 402 })
   }
 
-  // 2. Attempt Geonode — only when provider is configured
+  // 2. Attempt Geonode — only when provider is configured. A failure here
+  // doesn't give up the reservation — it just means the credential comes
+  // back as 'pending' rather than 'active', same as the v1 API path, and
+  // gets a real Geonode sub-user provisioned the next time this account's
+  // bandwidth is activated (see lib/bandwidth.ts).
   let gcred: Awaited<ReturnType<typeof createSubUser>> | null = null
   let status: 'active' | 'pending' = 'pending'
 
@@ -71,10 +67,7 @@ export async function POST(req: Request) {
       })
       status = 'active'
     } catch (e) {
-      console.error('Geonode createSubUser error:', e)
-      return NextResponse.json({
-        error: 'Failed to provision proxy session. Please try again.',
-      }, { status: 500 })
+      console.error('Geonode createSubUser error — leaving credential as pending:', e)
     }
   }
 
@@ -113,6 +106,9 @@ export async function POST(req: Request) {
         console.error('Failed to clean up orphaned Geonode sub-user', gcred?.geonode_sub_user_id, e)
       )
     }
+    // Give back the reservation — nothing was actually persisted.
+    const { error: releaseErr } = await supabase.rpc('release_credential_bandwidth', { p_user_id: user.id, p_gb: gb_allocated })
+    if (releaseErr) console.error('Failed to release bandwidth reservation after insert failure:', releaseErr)
     return NextResponse.json({ error: insertErr.message }, { status: 500 })
   }
 

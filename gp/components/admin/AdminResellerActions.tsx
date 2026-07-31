@@ -10,31 +10,34 @@ import toast from 'react-hot-toast'
 //  - suspend never called /api/admin/suspend-user, so it neither killed
 //    the target's active session nor sent the suspension email that
 //    route was actually built to send
-// Routing through the server endpoints fixes all three.
+// Routing through the server endpoints fixes all three. All three routes
+// now share the same Bearer-token auth pattern, so the token is fetched
+// and sent once here instead of only for the 'suspend' branch.
 export default function AdminResellerActions({ userId, action }: { userId: string; action: 'approve' | 'suspend' | 'reject' }) {
   const [loading, setLoading] = useState(false)
 
   async function handle() {
     setLoading(true)
     const { data: { session } } = await createClient().auth.getSession()
+    const authHeaders = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` }
 
     let res: Response
     if (action === 'approve') {
       res = await fetch('/api/admin/approve-reseller', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders,
         body: JSON.stringify({ userId }),
       })
     } else if (action === 'reject') {
       res = await fetch('/api/admin/reject-reseller', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders,
         body: JSON.stringify({ userId }),
       })
     } else {
       res = await fetch('/api/admin/suspend-user', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
+        headers: authHeaders,
         body: JSON.stringify({ user_id: userId, action: 'suspend' }),
       })
     }
