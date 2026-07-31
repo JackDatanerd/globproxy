@@ -63,7 +63,11 @@ export interface CreateSubUserParams {
 }
 
 export async function createSubUser(p: CreateSubUserParams): Promise<GCred> {
-  const username = `gp_${Date.now()}`
+  // Date.now() alone is millisecond-resolution — bulk activation paths
+  // (activateBandwidth looping over several pending credentials/transfers,
+  // or a burst of API calls) can generate this within the same millisecond
+  // and collide. Adding a few random hex bytes keeps it unique under load.
+  const username = `gp_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`
   const password = genPassword()
   // Previously: p.protocol === 'socks5' ? 7000 : 9000 — wrong on two counts.
   // SOCKS5 isn't 7000 (unverified guess), and neither number accounted for
@@ -145,10 +149,19 @@ export async function purchaseBandwidth(gb: number): Promise<void> {
 }
 
 export async function deleteSubUser(geonodeSubUserId: string): Promise<void> {
-  await fetch(`${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${geonodeSubUserId}`, {
+  const res = await fetch(`${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${geonodeSubUserId}`, {
     method: 'DELETE',
     headers: headers(),
   })
+  if (!res.ok) {
+    // Previously this was fire-and-forget with no status check, so every
+    // caller's `.catch(...)` around a "cleanup" deleteSubUser call never
+    // fired on failure — a failed delete looked identical to a successful
+    // one, leaving orphaned sub-users on Geonode's side with no local
+    // record and no way to find them again.
+    const err = await res.json().catch(() => ({}))
+    throw new Error(`Geonode deleteSubUser failed: ${res.status} ${JSON.stringify(err)}`)
+  }
 }
 
 // ─── Debug only — admin diagnostic endpoint ──────────────────────────────────

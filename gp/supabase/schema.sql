@@ -42,8 +42,9 @@ create table public.bandwidth_accounts (
   id           uuid default uuid_generate_v4() primary key,
   user_id      uuid references public.profiles(id) on delete cascade not null unique,
   total_gb     numeric default 0,
-  used_gb      numeric default 0,
-  available_gb numeric generated always as (total_gb - used_gb) stored,
+  used_gb      numeric default 0, -- actual bytes consumed; cron usage-sync is the only writer
+  allocated_gb numeric not null default 0, -- GB a reseller has committed to clients (see migration 0004)
+  available_gb numeric generated always as (total_gb - used_gb - allocated_gb) stored,
   alerted_80_at timestamp with time zone,
   alerted_95_at timestamp with time zone,
   created_at   timestamp with time zone default now(),
@@ -167,6 +168,58 @@ begin
   set used_gb = used_gb + p_gb
   where user_id = p_user_id;
 end;
+$$;
+
+-- Atomic reseller-to-client bandwidth transfer. See migration 0004 for the
+-- full rationale — this replaces a JS check-then-act read/write that raced
+-- and wrote to the wrong column (used_gb instead of allocated_gb).
+create or replace function public.allocate_reseller_bandwidth(
+  p_reseller_id uuid,
+  p_recipient_id uuid,
+  p_gb numeric
+)
+returns table(new_reseller_allocated_gb numeric)
+language plpgsql security definer as $$
+declare
+  v_updated_allocated numeric;
+begin
+  if p_gb is null or p_gb <= 0 then
+    raise exception 'gb_allocated must be greater than 0';
+  end if;
+  if p_reseller_id = p_recipient_id then
+    raise exception 'Cannot allocate bandwidth to yourself';
+  end if;
+
+  perform 1 from public.bandwidth_accounts where user_id = p_reseller_id for update;
+
+  update public.bandwidth_accounts
+  set allocated_gb = allocated_gb + p_gb
+  where user_id = p_reseller_id
+    and (total_gb - used_gb - allocated_gb) >= p_gb
+  returning allocated_gb into v_updated_allocated;
+
+  if v_updated_allocated is null then
+    raise exception 'Not enough bandwidth in your stock.' using errcode = 'P0001';
+  end if;
+
+  insert into public.bandwidth_accounts (user_id, total_gb, used_gb, allocated_gb)
+  values (p_recipient_id, p_gb, 0, 0)
+  on conflict (user_id) do update
+    set total_gb = public.bandwidth_accounts.total_gb + excluded.total_gb;
+
+  return query select v_updated_allocated;
+end;
+$$;
+
+-- Atomic payment credit. See migration 0004 — replaces a JS read-then-write
+-- that could lose a credit if two orders for the same user were paid at
+-- nearly the same instant.
+create or replace function public.credit_bandwidth(p_user_id uuid, p_gb numeric)
+returns void language sql security definer as $$
+  insert into public.bandwidth_accounts (user_id, total_gb, used_gb, allocated_gb)
+  values (p_user_id, p_gb, 0, 0)
+  on conflict (user_id) do update
+    set total_gb = public.bandwidth_accounts.total_gb + excluded.total_gb;
 $$;
 
 -- ── ROW LEVEL SECURITY ────────────────────────────────────────

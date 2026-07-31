@@ -55,14 +55,21 @@ export async function DELETE(
   // The account's real available balance is unaffected by deleting an
   // unused/under-used credential's cap.
 
-  // Delete the credential row
-  const { error: delErr } = await supabase
+  // Delete the credential row. Supabase does NOT error when RLS silently
+  // blocks a delete (0 rows matched) — without .select() here, a blocked
+  // delete and a real one both came back as `{ error: null }`, so this
+  // endpoint could report success while leaving the row untouched.
+  const { data: deletedRows, error: delErr } = await supabase
     .from('proxy_credentials')
     .delete()
     .eq('id', id)
+    .select('id')
 
   if (delErr) {
     return NextResponse.json({ error: delErr.message }, { status: 500 })
+  }
+  if (!deletedRows || deletedRows.length === 0) {
+    return NextResponse.json({ error: 'Delete was blocked — nothing was removed.' }, { status: 500 })
   }
 
   return NextResponse.json({ success: true })

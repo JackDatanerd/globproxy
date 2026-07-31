@@ -1,35 +1,12 @@
-import { createAdminClient } from '@/lib/supabase/server'
 import { createSubUser, deleteSubUser } from '@/lib/geonode'
 import { buildProxyUsername, getProxyPort } from '@/lib/proxyEndpoint'
+import { requireApiAccess } from '@/lib/apiAuth'
 import { NextResponse } from 'next/server'
 
-async function getAuthedUser(req: Request) {
-  const token = req.headers.get('authorization')?.replace('Bearer ', '')
-  if (!token) return null
-  const supabase = await createAdminClient()
-  const { data: { user } } = await supabase.auth.getUser(token)
-  return user
-}
-
-const API_BLOCKED = NextResponse.json(
-  { error: 'API access is not enabled for your account. Apply at globproxy.com/reseller.' },
-  { status: 403 }
-)
-
 export async function GET(req: Request) {
-  const user = await getAuthedUser(req)
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
-  const supabase = await createAdminClient()
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('role, api_access')
-    .eq('id', user.id)
-    .single()
-
-  // Must be reseller or admin AND have api_access enabled
-  if (profile?.role === 'user') return API_BLOCKED
-  if (!profile?.api_access && profile?.role !== 'admin') return API_BLOCKED
+  const auth = await requireApiAccess(req)
+  if (!auth.ok) return auth.response
+  const { user, supabase } = auth
 
   const { data } = await supabase
     .from('proxy_credentials')
@@ -41,18 +18,9 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const user = await getAuthedUser(req)
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
-  const supabase = await createAdminClient()
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('role, api_access')
-    .eq('id', user.id)
-    .single()
-
-  if (profile?.role === 'user') return API_BLOCKED
-  if (!profile?.api_access && profile?.role !== 'admin') return API_BLOCKED
+  const auth = await requireApiAccess(req)
+  if (!auth.ok) return auth.response
+  const { user, supabase } = auth
 
   const body = await req.json()
   const { label, gb_allocated, country, state, city, asn, session_type = 'rotating', protocol = 'http', endpoint_count = 1 } = body

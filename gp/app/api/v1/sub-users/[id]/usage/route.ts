@@ -1,27 +1,14 @@
-import { createAdminClient } from '@/lib/supabase/server'
 import { getSubUserUsage } from '@/lib/geonode'
+import { requireApiAccess } from '@/lib/apiAuth'
 import { NextResponse } from 'next/server'
 
 export async function GET(
   req: Request,
   context: { params: Promise<{ id: string }> }
 ) {
-  const token = req.headers.get('authorization')?.replace('Bearer ', '')
-  if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
-  const supabase = await createAdminClient()
-  const { data: { user } } = await supabase.auth.getUser(token)
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
-  // Check api_access
-  const { data: profile } = await supabase
-    .from('profiles').select('role, api_access').eq('id', user.id).single()
-  if (profile?.role === 'user' || (!profile?.api_access && profile?.role !== 'admin')) {
-    return NextResponse.json(
-      { error: 'API access is not enabled for your account. Apply at globproxy.com/reseller.' },
-      { status: 403 }
-    )
-  }
+  const auth = await requireApiAccess(req)
+  if (!auth.ok) return auth.response
+  const { user, supabase } = auth
 
   const { id } = await context.params
 

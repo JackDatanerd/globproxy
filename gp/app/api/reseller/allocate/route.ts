@@ -29,7 +29,7 @@ export async function POST(req: Request) {
     const { data: recipientProfile, error: recipientError } = await adminSupabase
       .from('profiles')
       .select('id, email, is_deleted')
-      .eq('email', recipient_email)
+      .eq('email', recipient_email.toLowerCase())
       .single()
 
     if (recipientError || !recipientProfile) {
@@ -45,70 +45,40 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Cannot allocate bandwidth to yourself.' }, { status: 400 })
     }
 
-    // ── 2. Check reseller's available bandwidth ─────────────────────────────
-    const { data: resellerBw, error: rBwError } = await adminSupabase
-      .from('bandwidth_accounts')
-      .select('id, total_gb, used_gb')
-      .eq('user_id', user.id)
-      .single()
+    // ── 2 & 3. Atomically check balance, deduct, and credit the recipient ──
+    // Previously this read total_gb/used_gb, computed the new value in JS,
+    // then wrote it back as a separate statement — a classic check-then-act
+    // race. Two concurrent allocation calls (double-click, retry, two tabs)
+    // could both pass the balance check before either write landed,
+    // over-allocating stock. The rollback path had its own bug too: on
+    // failure it reset used_gb to the value read *before* this call, which
+    // could stomp a legitimate concurrent write that happened in between.
+    //
+    // allocate_reseller_bandwidth() (migration 0004) does the balance check
+    // and both writes inside a single locked Postgres transaction, so
+    // there's no window for either problem. It also writes to the new
+    // allocated_gb column instead of used_gb — used_gb is exclusively
+    // consumption data owned by the usage-sync cron; overloading it with
+    // "GB committed to clients" meant the cron silently erased every
+    // allocation on its next run, letting resellers re-allocate the same
+    // stock repeatedly.
+    const { data: rpcResult, error: rpcError } = await adminSupabase
+      .rpc('allocate_reseller_bandwidth', {
+        p_reseller_id: user.id,
+        p_recipient_id: recipientProfile.id,
+        p_gb: gb_allocated,
+      })
 
-    if (rBwError || !resellerBw) {
-      return NextResponse.json({ error: 'Reseller bandwidth account not found.' }, { status: 404 })
+    if (rpcError) {
+      const message = rpcError.message?.includes('Not enough bandwidth')
+        ? 'Not enough bandwidth in your stock.'
+        : rpcError.message?.includes('yourself')
+        ? 'Cannot allocate bandwidth to yourself.'
+        : 'Failed to complete transfer.'
+      const status = rpcError.message?.includes('Not enough') || rpcError.message?.includes('yourself') ? 400 : 500
+      return NextResponse.json({ error: message }, { status })
     }
-
-    const available = (resellerBw.total_gb ?? 0) - (resellerBw.used_gb ?? 0)
-    if (available < gb_allocated) {
-      return NextResponse.json({ error: 'Not enough bandwidth in your stock.' }, { status: 400 })
-    }
-
-    // ── 3. Atomic transfer with rollback ────────────────────────────────────
-    // Step A: Deduct from reseller
-    const newResellerUsed = (resellerBw.used_gb ?? 0) + gb_allocated
-    const { error: deductError } = await adminSupabase
-      .from('bandwidth_accounts')
-      .update({ used_gb: newResellerUsed })
-      .eq('id', resellerBw.id)
-
-    if (deductError) {
-      return NextResponse.json({ error: 'Failed to deduct from reseller account.' }, { status: 500 })
-    }
-
-    // Step B: Credit recipient — rollback A if this fails
-    const { data: recipientBw, error: recipBwError } = await adminSupabase
-      .from('bandwidth_accounts')
-      .select('id, total_gb')
-      .eq('user_id', recipientProfile.id)
-      .single()
-
-    let creditError: any = null
-
-    if (!recipBwError && recipientBw) {
-      // Recipient already has an account — top it up
-      const { error } = await adminSupabase
-        .from('bandwidth_accounts')
-        .update({ total_gb: (recipientBw.total_gb ?? 0) + gb_allocated })
-        .eq('id', recipientBw.id)
-      creditError = error
-    } else {
-      // First allocation for this recipient — create account
-      const { error } = await adminSupabase
-        .from('bandwidth_accounts')
-        .insert({ user_id: recipientProfile.id, total_gb: gb_allocated, used_gb: 0 })
-      creditError = error
-    }
-
-    if (creditError) {
-      // ── Rollback Step A ──
-      await adminSupabase
-        .from('bandwidth_accounts')
-        .update({ used_gb: resellerBw.used_gb })
-        .eq('id', resellerBw.id)
-
-      return NextResponse.json(
-        { error: 'Failed to credit recipient. Transfer has been rolled back.' },
-        { status: 500 }
-      )
-    }
+    void rpcResult
 
     // ── 4. Record transfer history ──────────────────────────────────────────
     // Non-fatal: if this insert fails, the bandwidth transfer already succeeded.

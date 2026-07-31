@@ -44,16 +44,20 @@ export async function activateBandwidth(p: {
     return
   }
 
-  // 2. Credit GB to bandwidth account
-  const { data: bw } = await supabase
-    .from('bandwidth_accounts')
-    .select('total_gb')
-    .eq('user_id', p.user_id)
-    .single()
-
-  await supabase.from('bandwidth_accounts')
-    .update({ total_gb: (bw?.total_gb ?? 0) + p.gb_amount })
-    .eq('user_id', p.user_id)
+  // 2. Credit GB to bandwidth account.
+  // Previously this read total_gb then wrote back total_gb + gb_amount as
+  // two separate calls — a lost-update race if two orders for the same
+  // user got paid at nearly the same instant (e.g. two tabs, a retried
+  // checkout). credit_bandwidth() (migration 0004) does the increment
+  // atomically in Postgres, and creates the account row if it somehow
+  // doesn't exist yet instead of silently no-op-ing.
+  const { error: creditErr } = await supabase.rpc('credit_bandwidth', {
+    p_user_id: p.user_id,
+    p_gb: p.gb_amount,
+  })
+  if (creditErr) {
+    console.error('[bandwidth] credit_bandwidth RPC failed', p.order_id, creditErr)
+  }
 
   // 3. Activate pending proxy credentials — only when provider is configured
   if (providerConfigured()) {
