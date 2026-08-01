@@ -25,10 +25,33 @@ export async function GET(request: Request) {
 
   if (code) {
     const s = await createClient()
-    const { error } = await s.auth.exchangeCodeForSession(code)
-    
+    const { data, error } = await s.auth.exchangeCodeForSession(code)
+
     if (error) {
       return NextResponse.redirect(`${origin}/auth/login?error=link_expired`)
+    }
+
+    // signup/route.ts stores intended_role: 'reseller' in auth user_metadata
+    // for the "Apply to resell" signup variant, but nothing downstream ever
+    // read it back — the profiles row it creates always defaults to
+    // role:'user' with reseller_status:null, so that signup silently became
+    // an ordinary account with no application on file. The actual working
+    // application flow lives in app/api/auth/apply-reseller/route.ts,
+    // reachable from Settings, and needs fields (country, phone, monthly
+    // volume) the signup form never collected — so redirect there with the
+    // form pre-opened instead of trying to submit an application here with
+    // incomplete data. Only do this when the caller didn't ask for a
+    // specific `next` destination, and only if there isn't already an
+    // application/role on file (so this doesn't re-trigger on every login).
+    if (!searchParams.get('next') && data.user?.user_metadata?.intended_role === 'reseller') {
+      const { data: profile } = await s
+        .from('profiles')
+        .select('role, reseller_status')
+        .eq('id', data.user.id)
+        .single()
+      if (profile?.role === 'user' && !profile.reseller_status) {
+        return NextResponse.redirect(`${origin}/dashboard/settings?apply_reseller=1`)
+      }
     }
   }
 

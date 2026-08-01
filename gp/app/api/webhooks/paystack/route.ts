@@ -40,7 +40,7 @@ export async function POST(req: Request) {
       const supabase = await createAdminClient()
       const { data: order, error: orderErr } = await supabase
         .from('orders')
-        .select('payment_status, amount_usd')
+        .select('payment_status, amount_usd, gb_amount')
         .eq('id', order_id)
         .single()
 
@@ -73,7 +73,14 @@ export async function POST(req: Request) {
         return NextResponse.json({ received: true })
       }
 
-      await activateBandwidth({ order_id, user_id, gb_amount, paystack_reference: reference })
+      // Use the DB's own gb_amount as the source of truth for what actually
+      // gets credited, matching verify-payment/route.ts — metadata.gb_amount
+      // above is only used for the early presence check before the order is
+      // fetched. Paystack only ever echoes back what checkout set server-side
+      // (not client-mutable), so this wasn't exploitable either way, but two
+      // different sources of truth for the same value is worth collapsing
+      // into one now that the order row is already in hand.
+      await activateBandwidth({ order_id, user_id, gb_amount: Number(order.gb_amount), paystack_reference: reference })
       console.log('[webhook] activateBandwidth complete')
     }
 

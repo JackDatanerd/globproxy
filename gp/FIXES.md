@@ -1,66 +1,79 @@
-# GlobProxy — fix package 5 (includes package 4)
+# GlobProxy — fix package 6
 
-You hadn't applied package 4 yet, so this bundles both rounds. If you'd
-already run package 4's git command before this one, re-running it here is
-harmless — every file is just written to its final state either way.
+Both bugs from the Aug 1 audit confirmed against a fresh clone (HEAD
+`edf294e`) and fixed. The minor gb_amount source-of-truth item fixed too.
 
-## Round 4 (original 7-bug catalogue + 2 "worth a look" items)
+## 🔴 Bug 1 — `available_gb` double-subtracted `used_gb`
 
-1. Reseller applications silently never reached admin — `apply-reseller/route.ts`
-   now writes through the admin client (the session-client write was
-   silently reverted by `protect_privileged_profile_columns`).
-2. Account deletion cascade / orphaned Geonode sub-users — both delete
-   routes now clean up live Geonode sub-users first, then **ban** the auth
-   account instead of deleting it (deleting cascades and destroys the
-   anonymised tombstone + throws an FK error on `reseller_transfers` history).
-3. Unescaped `full_name` in the bandwidth-ready email — `lib/bandwidth.ts`
-   now applies `escapeHtml()`.
-4. `v1/sub-users` POST silently dropped `sticky_duration` — now passed
-   through and persisted.
-5. Dead auto-reload settings — the stock-check cron now reads
-   `auto_reload_enabled`/`auto_reload_threshold_gb` from `platform_settings`.
-   `auto_reload_amount_gb` is still unused — no auto-purchase pipeline exists.
-6. Dead pending-transfer activation block removed from `lib/bandwidth.ts`
-   (allocate/route.ts never writes a matching row).
-7. Bandwidth alert threshold now computed from `available_gb` to match what
-   the alert email actually reports (was `used_gb`, which diverges under
-   heavy `allocated_gb`).
-8. Paystack webhook: explicit early return on a failed order lookup instead
-   of silently falling through.
-9. Password reset: `redirectTo` now validated against `NEXT_PUBLIC_APP_URL`'s
-   origin before being passed to Supabase.
+`available_gb = total_gb - used_gb - allocated_gb`. `allocated_gb` reserves
+a credential's *full* cap at creation and only releases it in full on
+deletion; `used_gb` (cron-synced) is always a subset of that same
+reservation for active credentials. Subtracting both double-counted —
+confirmed the exact trace in the audit: buy 20GB, allocate a 10GB
+credential, use 6GB of it → `available_gb` read `4` instead of the correct
+`10`, sliding negative with more use. Verified both consequences in code:
+`app/dashboard/proxies/new/page.tsx` redirects to `/dashboard/buy` whenever
+`available <= 0`, and `app/dashboard/usage/page.tsx` displays the raw
+(possibly negative) figure.
 
-## Round 5 (this pass — new findings)
+**Fix:** `available_gb = total_gb - allocated_gb` — `allocated_gb` alone is
+the "committed" figure; `used_gb` is still tracked and reported, just not
+subtracted a second time. Requires a real migration:
+`supabase/migrations/0009_fix_available_gb_double_count.sql` — drops and
+recreates the generated column, and updates the two Postgres functions
+(`reserve_credential_bandwidth`, `allocate_reseller_bandwidth`) that inline
+the same balance-check expression so they stay consistent.
+`supabase/schema.sql` updated to match for fresh installs.
 
-10. **Dead duplicate reseller-clients page deleted** —
-    `app/dashboard/reseller/users/{ResellerUsersList,ResellerUsersPage}.tsx`
-    had no `page.tsx` and were imported nowhere. The real routed page is
-    `app/reseller/users/page.tsx`, using a *different* file,
-    `components/reseller/ResellerUsersList.tsx`. Confirmed dead, deleted.
-11. **`verify-payment/route.ts` documented** — genuinely has no auth check,
-    confirmed safe in practice (reference-scoped, server-verified with
-    Paystack directly, idempotent via `bandwidth_credited`), and now says so
-    in a comment instead of looking like an oversight. No rate limiting
-    added — nothing else in the app has any rate-limit infra, so bolting it
-    onto just this route would be inconsistent rather than genuinely safer;
-    flagged as a future defense-in-depth item if that infra ever gets built.
-12. **`auth/signup/route.ts`'s `emailRedirectTo` origin-validated** — same
-    fix pattern as the reset route in round 4, applied here for consistency.
-13. **`purchaseBandwidth`/reload-stock confirmed as an intentional stub** —
-    `lib/geonode.ts` throws a documented "not implemented" error (no
-    documented Geonode purchase endpoint exists yet), and
-    `reload-stock/route.ts` already surfaces that as a clean 501. Not a bug.
-    No code change.
+**Known follow-up, intentionally not addressed here:** deleting a
+partially-used credential still releases its full `gb_allocated` back
+regardless of `gb_used` — delete+recreate can currently let a user reclaim
+GB they already consumed. That's a separate design question (how
+consumption should be treated on deletion), left open per the audit's own
+framing rather than folded into this fix.
 
-## Files this archive deletes (not just modifies)
+## 🔴 Bug 2 — reseller signup was a dead end
 
-- `app/dashboard/reseller/users/ResellerUsersList.tsx`
-- `app/dashboard/reseller/users/ResellerUsersPage.tsx`
+Confirmed via full-repo grep: `intended_role` is written to Supabase auth
+`user_metadata` at signup and read back *nowhere* — not in
+`handle_new_user()`, not in `app/auth/callback/route.ts`, not anywhere
+else. A user who signs up via "Apply to resell" completes the flow as an
+ordinary `role: 'user'` account with no application on file, no error
+shown.
 
-These aren't in the archive at all — the git command below removes them
-with `rm -rf` before extracting, since tar has no built-in way to delete a
-file that no longer exists in the new tree.
+**Fix:** `app/auth/callback/route.ts` now checks
+`user_metadata.intended_role === 'reseller'` after a successful signup
+confirmation. If the caller didn't ask for a specific `next` destination and
+the user doesn't already have a role/application on file, it redirects to
+`/dashboard/settings?apply_reseller=1` instead of `/dashboard`.
+`app/dashboard/settings/page.tsx` now reads that query param and
+auto-opens the existing application form (the one `apply-reseller/route.ts`
+already handles correctly) instead of trying to submit an incomplete
+application from the signup form itself, since signup never collected
+country/phone/monthly-volume.
 
-## No database migration needed
+## 🟡 Minor — inconsistent gb_amount source in the webhook
 
-Everything in both rounds is application code.
+`app/api/webhooks/paystack/route.ts` now selects `gb_amount` on the same
+`orders` query it already runs for the amount-match check, and credits
+that DB value instead of the Paystack-echoed metadata value — matching
+`verify-payment/route.ts`. Not exploitable before (metadata is server-set
+at checkout, not client-mutable) but now there's one source of truth
+instead of two.
+
+## Requires a database migration this time
+
+Run `supabase/migrations/0009_fix_available_gb_double_count.sql` against
+your Supabase project (SQL Editor, or however you normally apply
+migrations) — the git command below does not touch your database.
+
+## Verify after deploying
+
+- Buy bandwidth, create a credential using part of it, confirm
+  `available_gb` (Usage page "Remaining") reflects the correct remaining
+  total-minus-committed figure, not something that dips as you use what
+  you already paid for.
+- As a reseller with some stock, allocate to a client and confirm the
+  balance check still works correctly with real numbers.
+- Sign up via `/auth/signup?role=reseller`, confirm the email, and confirm
+  you land on Settings with the application form already open.

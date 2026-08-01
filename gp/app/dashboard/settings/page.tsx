@@ -1,5 +1,6 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Suspense } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
 
@@ -25,7 +26,7 @@ const VOLUME_OPTIONS = [
   'Over 1 TB / month',
 ]
 
-export default function SettingsPage() {
+function SettingsPageInner() {
   const [profile, setProfile] = useState<any>(null)
   const [form, setForm] = useState({ full_name: '', company_name: '' })
   const [pw, setPw] = useState({ next: '', confirm: '' })
@@ -52,6 +53,11 @@ export default function SettingsPage() {
       if (data?.full_name) setAppForm(f => ({ ...f, full_name: data.full_name }))
     })
   }, [])
+
+  const searchParams = useSearchParams()
+  useEffect(() => {
+    if (searchParams.get('apply_reseller') === '1') setShowForm(true)
+  }, [searchParams])
 
   async function saveProfile(e: React.FormEvent) {
     e.preventDefault(); setLoading(true)
@@ -236,5 +242,13 @@ export default function SettingsPage() {
         </div>
       )}
     </div>
+  )
+}
+
+export default function SettingsPage() {
+  return (
+    <Suspense fallback={<div className="max-w-2xl text-sm text-muted">Loading...</div>}>
+      <SettingsPageInner />
+    </Suspense>
   )
 }

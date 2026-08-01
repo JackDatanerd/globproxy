@@ -44,7 +44,7 @@ create table public.bandwidth_accounts (
   total_gb     numeric default 0,
   used_gb      numeric default 0, -- actual bytes consumed; cron usage-sync is the only writer
   allocated_gb numeric not null default 0, -- GB committed: reseller→client transfers (migration 0004) AND this account's own credentials (migration 0007)
-  available_gb numeric generated always as (total_gb - used_gb - allocated_gb) stored,
+  available_gb numeric generated always as (total_gb - allocated_gb) stored, -- NOT total_gb - used_gb - allocated_gb: allocated_gb already reserves a credential's full cap at creation, and used_gb (cron-synced) is always a subset of that reservation for active credentials — subtracting both double-counts. See migration 0009.
   alerted_80_at timestamp with time zone,
   alerted_95_at timestamp with time zone,
   created_at   timestamp with time zone default now(),
@@ -189,7 +189,7 @@ begin
   update public.bandwidth_accounts
   set allocated_gb = allocated_gb + p_gb
   where user_id = p_reseller_id
-    and (total_gb - used_gb - allocated_gb) >= p_gb
+    and (total_gb - allocated_gb) >= p_gb
   returning allocated_gb into v_updated_allocated;
 
   if v_updated_allocated is null then
