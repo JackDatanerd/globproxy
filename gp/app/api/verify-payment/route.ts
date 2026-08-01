@@ -10,7 +10,19 @@ export async function POST(req: Request) {
 
     const supabase = await createAdminClient()
 
-    // Find the order by reference
+    // No user-auth check here, intentionally: this is the browser-redirect
+    // fallback path for verifying a payment when the webhook hasn't landed
+    // yet, so the caller isn't necessarily logged back in at the moment it
+    // fires. It's still safe without one — `reference` only unlocks the one
+    // order it belongs to, the amount is re-verified server-to-server with
+    // Paystack (not trusted from the client), and activateBandwidth()'s
+    // atomic bandwidth_credited claim makes a repeated or racing call a
+    // no-op rather than a double-credit. No rate limiting either — nothing
+    // else in this app has any (no rate-limit infra exists yet), and a
+    // valid reference here can only replay the same already-idempotent
+    // credit, so throttling wouldn't change the exposure. If real
+    // rate-limiting infra gets added for other routes, this one should get
+    // it too as a defense-in-depth measure, not because of a known gap.
     const { data: order, error } = await supabase
       .from('orders')
       .select('*')

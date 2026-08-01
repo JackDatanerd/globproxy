@@ -7,6 +7,24 @@ export async function POST(req: Request) {
     const { email, password, full_name, intended_role, emailRedirectTo } = await req.json()
     if (!email || !password) return NextResponse.json({ error: 'Missing fields' }, { status: 400 })
 
+    // emailRedirectTo is client-supplied. Supabase enforces its own
+    // project-level redirect URL allow-list, but mirror the same
+    // origin-pinning defense-in-depth used in app/api/auth/reset/route.ts
+    // rather than relying on that external config alone.
+    let safeEmailRedirectTo: string | undefined
+    if (emailRedirectTo) {
+      try {
+        const appOrigin = new URL(process.env.NEXT_PUBLIC_APP_URL ?? '').origin
+        if (new URL(emailRedirectTo).origin === appOrigin) {
+          safeEmailRedirectTo = emailRedirectTo
+        } else {
+          console.error('[auth/signup] rejected emailRedirectTo outside app origin:', emailRedirectTo)
+        }
+      } catch {
+        console.error('[auth/signup] malformed emailRedirectTo:', emailRedirectTo)
+      }
+    }
+
     // Was previously only enforced client-side in app/auth/signup/page.tsx,
     // which anyone posting to this endpoint directly could skip entirely.
     const { valid, error: emailError } = validateEmail(email)
@@ -49,7 +67,7 @@ export async function POST(req: Request) {
       password,
       options: {
         data: { full_name, intended_role },
-        emailRedirectTo,
+        emailRedirectTo: safeEmailRedirectTo,
       }
     })
 

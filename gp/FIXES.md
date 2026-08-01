@@ -1,75 +1,66 @@
-# GlobProxy — fix package 4
+# GlobProxy — fix package 5 (includes package 4)
 
-Verified and fixes all 7 catalogued bugs plus both "worth a look" items from
-the follow-up audit. Confirmed against the actual codebase (not taken on
-faith) — see the audit writeup in chat for what was checked and how.
+You hadn't applied package 4 yet, so this bundles both rounds. If you'd
+already run package 4's git command before this one, re-running it here is
+harmless — every file is just written to its final state either way.
 
-1. **Reseller applications silently never reach admin** — `app/api/auth/apply-reseller/route.ts`
-   now writes `reseller_status`/`reseller_application` via the admin client.
-   `protect_privileged_profile_columns` (schema.sql) force-resets
-   `reseller_status` on any non-admin-client write, so the previous
-   session-client update always no-opped that column with no error.
+## Round 4 (original 7-bug catalogue + 2 "worth a look" items)
 
-2. **Account deletion cascade + orphaned Geonode sub-users** — both
-   `app/api/admin/delete-user/route.ts` and `app/api/user/delete-account/route.ts`
-   now (a) call `deleteSubUser()` on every live credential *before* touching
-   any local rows, and (b) ban the auth account (`ban_duration: '876000h'`)
-   instead of calling `auth.admin.deleteUser()`. Deleting the auth user
-   cascades through `profiles -> bandwidth_accounts/orders/proxy_credentials/
-   api_keys/proxy_sessions`, wiping the anonymised tombstone you just wrote
-   and throwing a raw FK error for any account with `reseller_transfers`
-   history. Banning revokes access without any of that.
+1. Reseller applications silently never reached admin — `apply-reseller/route.ts`
+   now writes through the admin client (the session-client write was
+   silently reverted by `protect_privileged_profile_columns`).
+2. Account deletion cascade / orphaned Geonode sub-users — both delete
+   routes now clean up live Geonode sub-users first, then **ban** the auth
+   account instead of deleting it (deleting cascades and destroys the
+   anonymised tombstone + throws an FK error on `reseller_transfers` history).
+3. Unescaped `full_name` in the bandwidth-ready email — `lib/bandwidth.ts`
+   now applies `escapeHtml()`.
+4. `v1/sub-users` POST silently dropped `sticky_duration` — now passed
+   through and persisted.
+5. Dead auto-reload settings — the stock-check cron now reads
+   `auto_reload_enabled`/`auto_reload_threshold_gb` from `platform_settings`.
+   `auto_reload_amount_gb` is still unused — no auto-purchase pipeline exists.
+6. Dead pending-transfer activation block removed from `lib/bandwidth.ts`
+   (allocate/route.ts never writes a matching row).
+7. Bandwidth alert threshold now computed from `available_gb` to match what
+   the alert email actually reports (was `used_gb`, which diverges under
+   heavy `allocated_gb`).
+8. Paystack webhook: explicit early return on a failed order lookup instead
+   of silently falling through.
+9. Password reset: `redirectTo` now validated against `NEXT_PUBLIC_APP_URL`'s
+   origin before being passed to Supabase.
 
-3. **Unescaped name in bandwidth-ready email** — `lib/bandwidth.ts` now
-   imports and applies `escapeHtml()` to `full_name`, matching every other
-   email call site in the app.
+## Round 5 (this pass — new findings)
 
-4. **`v1/sub-users` POST dropped `sticky_duration`** — now destructured from
-   the body, passed to `createSubUser()`, and persisted on the row, matching
-   the dashboard route's behavior.
+10. **Dead duplicate reseller-clients page deleted** —
+    `app/dashboard/reseller/users/{ResellerUsersList,ResellerUsersPage}.tsx`
+    had no `page.tsx` and were imported nowhere. The real routed page is
+    `app/reseller/users/page.tsx`, using a *different* file,
+    `components/reseller/ResellerUsersList.tsx`. Confirmed dead, deleted.
+11. **`verify-payment/route.ts` documented** — genuinely has no auth check,
+    confirmed safe in practice (reference-scoped, server-verified with
+    Paystack directly, idempotent via `bandwidth_credited`), and now says so
+    in a comment instead of looking like an oversight. No rate limiting
+    added — nothing else in the app has any rate-limit infra, so bolting it
+    onto just this route would be inconsistent rather than genuinely safer;
+    flagged as a future defense-in-depth item if that infra ever gets built.
+12. **`auth/signup/route.ts`'s `emailRedirectTo` origin-validated** — same
+    fix pattern as the reset route in round 4, applied here for consistency.
+13. **`purchaseBandwidth`/reload-stock confirmed as an intentional stub** —
+    `lib/geonode.ts` throws a documented "not implemented" error (no
+    documented Geonode purchase endpoint exists yet), and
+    `reload-stock/route.ts` already surfaces that as a clean 501. Not a bug.
+    No code change.
 
-5. **Auto-reload settings were a dead feature** — the stock-check cron
-   (`app/api/cron/[task]/route.ts`) now reads `auto_reload_enabled` /
-   `auto_reload_threshold_gb` from `platform_settings` and uses that
-   threshold instead of `STOCK_ALERT_THRESHOLD` when enabled. Note:
-   `auto_reload_amount_gb` is still unused — there's no automatic Geonode
-   purchase pipeline in this codebase, so this only wires up the *alert*
-   half of "auto-reload," not automatic purchasing. That would be a
-   separate feature if you want it.
+## Files this archive deletes (not just modifies)
 
-6. **Dead pending-transfer activation path** — removed the step-4 block in
-   `lib/bandwidth.ts` that scanned for `reseller_transfers` rows with
-   `status: 'pending'`. `allocate/route.ts` is the only writer of that table
-   and always inserts `status: 'active'` with no `credential_id`, so the
-   block could never match a row.
+- `app/dashboard/reseller/users/ResellerUsersList.tsx`
+- `app/dashboard/reseller/users/ResellerUsersPage.tsx`
 
-7. **Bandwidth alert threshold vs. reported figure mismatch** — the percent
-   used in `runBandwidthAlerts()` (`app/api/cron/[task]/route.ts`) is now
-   computed from `available_gb` instead of `used_gb`, matching the figure
-   the email actually reports. Previously an account could sit with
-   near-zero `available_gb` (heavy `allocated_gb`) and never cross the
-   `used_gb`-based threshold.
-
-## Also fixed (from "worth a look")
-
-- **Paystack webhook** (`app/api/webhooks/paystack/route.ts`): added an
-  explicit early return when the order lookup fails, instead of silently
-  falling through to `activateBandwidth()` and relying on its atomic claim
-  as an implicit safety net.
-- **Password reset** (`app/api/auth/reset/route.ts`): `redirectTo` is now
-  checked against your app's own origin (`NEXT_PUBLIC_APP_URL`) before being
-  passed to `resetPasswordForEmail`, as defense-in-depth alongside Supabase's
-  own project-level redirect allow-list.
+These aren't in the archive at all — the git command below removes them
+with `rm -rf` before extracting, since tar has no built-in way to delete a
+file that no longer exists in the new tree.
 
 ## No database migration needed
 
-Everything here is application code — no new columns, no new tables.
-
-## Verify after deploying
-
-- Submit a reseller application from a non-admin test account and confirm
-  it actually shows up in `/admin/resellers`.
-- Delete a test account that has at least one active proxy credential and
-  confirm (a) the Geonode sub-user is gone on Geonode's side, (b) the
-  `profiles` row still exists with `is_deleted: true`, and (c) the banned
-  account can no longer log in.
+Everything in both rounds is application code.
