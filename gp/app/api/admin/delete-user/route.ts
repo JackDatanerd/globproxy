@@ -1,4 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/server'
+import { deleteSubUser } from '@/lib/geonode'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { NextResponse } from 'next/server'
 
@@ -27,7 +28,27 @@ export async function POST(req: Request) {
   if (tp.role === 'admin') return NextResponse.json({ error: 'Cannot delete an admin account' }, { status: 403 })
   if (tp.is_deleted) return NextResponse.json({ error: 'User is already deleted' }, { status: 400 })
 
-  // Step 1: Anonymise — only columns confirmed to exist in profiles
+  // Step 1: Clean up live Geonode sub-users BEFORE touching any local rows.
+  // profiles.id -> auth.users has ON DELETE CASCADE, and proxy_credentials,
+  // bandwidth_accounts, orders, api_keys, proxy_sessions all cascade from
+  // profiles in turn. Deleting the auth user first (as this route used to)
+  // wipes proxy_credentials out of the DB with no record of which Geonode
+  // sub-users existed — leaving real, billable sub-users orphaned on
+  // Geonode's side with nothing locally to find or clean them up.
+  const { data: creds } = await supabase
+    .from('proxy_credentials')
+    .select('id, geonode_sub_user_id, status')
+    .eq('user_id', user_id)
+    .not('geonode_sub_user_id', 'is', null)
+
+  for (const cred of creds ?? []) {
+    if (!cred.geonode_sub_user_id) continue
+    await deleteSubUser(cred.geonode_sub_user_id).catch((e) =>
+      console.error('Failed to clean up Geonode sub-user during account deletion', cred.id, e)
+    )
+  }
+
+  // Step 2: Anonymise the profile.
   const { error: profileError } = await supabase
     .from('profiles')
     .update({
@@ -45,10 +66,19 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: profileError.message }, { status: 500 })
   }
 
-  // Step 2: Delete auth user — cascades proxy_credentials only
-  const { error: authError } = await supabase.auth.admin.deleteUser(user_id)
+  // Step 3: Ban the auth account instead of deleting it. profiles.id
+  // references auth.users ON DELETE CASCADE, so calling
+  // auth.admin.deleteUser() here would cascade-delete the anonymised
+  // profile row we just wrote (along with bandwidth_accounts, orders,
+  // proxy_credentials, api_keys, proxy_sessions) and throw a raw FK
+  // violation for any account with reseller_transfers history, blocking
+  // deletion entirely. Banning permanently revokes login/API access while
+  // leaving the anonymised tombstone and financial/audit records intact.
+  const { error: banError } = await supabase.auth.admin.updateUserById(user_id, {
+    ban_duration: '876000h', // ~100 years — effectively permanent
+  })
 
-  if (authError) {
+  if (banError) {
     // Rollback anonymisation
     await supabase.from('profiles').update({
       full_name: tp.full_name,
@@ -56,10 +86,19 @@ export async function POST(req: Request) {
       is_deleted: false,
       deleted_at: null,
     }).eq('id', user_id)
-    return NextResponse.json({ error: authError.message }, { status: 500 })
+    return NextResponse.json({ error: banError.message }, { status: 500 })
   }
 
-  // Step 3: Email — best-effort, non-fatal
+  // Step 4: Mark any remaining credentials suspended so they read as
+  // inactive everywhere they're surfaced (no 'deleted' value exists in the
+  // status check constraint).
+  if ((creds ?? []).length) {
+    await supabase.from('proxy_credentials')
+      .update({ status: 'suspended' })
+      .eq('user_id', user_id)
+  }
+
+  // Step 5: Email — best-effort, non-fatal
   if (tp.email && tp.email !== '[deleted]') {
     await sendEmail({
       to: tp.email,

@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { sendEmail, escapeHtml } from '@/lib/email'
 
 export async function POST(req: Request) {
   try {
+    // Authenticate with the regular session client — never trust a
+    // client-asserted user id for a write like this.
     const supabase = await createClient()
     const { data: { user }, error: authError } = await supabase.auth.getUser()
     if (authError || !user) {
@@ -24,7 +26,16 @@ export async function POST(req: Request) {
       applied_at: new Date().toISOString(),
     }
 
-    const { error: updateError } = await supabase
+    // reseller_status is one of the columns protect_privileged_profile_columns
+    // (schema.sql) force-resets to its old value for any non-admin caller —
+    // so this write must go through the admin client. The user was already
+    // authenticated above via their own session; only the write itself needs
+    // elevated privileges, and it's scoped to exactly this user's row with a
+    // hardcoded value ('pending'), so there's no escalation risk in doing it
+    // this way. Using the session client here silently no-ops the status
+    // column: no error, no applicant ever shows up in /admin/resellers.
+    const adminSupabase = await createAdminClient()
+    const { error: updateError } = await adminSupabase
       .from('profiles')
       .update({
         reseller_status: 'pending',

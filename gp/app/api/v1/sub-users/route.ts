@@ -32,7 +32,7 @@ export async function POST(req: Request) {
   const { user, supabase } = auth
 
   const body = await req.json()
-  const { label, gb_allocated, country, state, city, asn, session_type = 'rotating', protocol = 'http', endpoint_count = 1 } = body
+  const { label, gb_allocated, country, state, city, asn, session_type = 'rotating', protocol = 'http', endpoint_count = 1, sticky_duration } = body
 
   if (!gb_allocated || gb_allocated <= 0) {
     return NextResponse.json({ error: 'gb_allocated is required and must be > 0' }, { status: 400 })
@@ -58,7 +58,7 @@ export async function POST(req: Request) {
   let gcred: any = null
   let credStatus: 'active' | 'pending' = 'active'
   try {
-    gcred = await createSubUser({ label: label ?? `api_${Date.now()}`, gb_limit: gb_allocated, country, state, city, protocol, session_type })
+    gcred = await createSubUser({ label: label ?? `api_${Date.now()}`, gb_limit: gb_allocated, country, state, city, protocol, session_type, sticky_duration })
   } catch {
     credStatus = 'pending'
   }
@@ -66,7 +66,7 @@ export async function POST(req: Request) {
   const { data: cred, error } = await supabase.from('proxy_credentials').insert({
     user_id: user.id, label, gb_allocated, country: country ?? null,
     state: state ?? null, city: city ?? null, asn: asn ?? null, session_type, protocol,
-    endpoint_count: endpoint_count ?? 1,
+    endpoint_count: endpoint_count ?? 1, sticky_duration: sticky_duration ?? null,
     status: credStatus,
     geonode_sub_user_id: gcred?.geonode_sub_user_id ?? null,
     geonode_username: gcred?.username ?? null,

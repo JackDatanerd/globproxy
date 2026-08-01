@@ -1,6 +1,6 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { createSubUser, deleteSubUser } from '@/lib/geonode'
-import { sendEmail } from '@/lib/email'
+import { sendEmail, escapeHtml } from '@/lib/email'
 
 function providerConfigured(): boolean {
   return !!(
@@ -101,50 +101,13 @@ export async function activateBandwidth(p: {
       }
     }
 
-    // 4. Activate pending reseller transfers
-    const { data: transfers } = await supabase
-      .from('reseller_transfers')
-      .select('*, proxy_credentials(*)')
-      .eq('recipient_id', p.user_id)
-      .eq('status', 'pending')
-
-    for (const t of transfers ?? []) {
-      const cred = t.proxy_credentials as any
-      if (!cred) continue
-      try {
-        const gcred = await createSubUser({
-          label: cred.label ?? `reseller_sub`,
-          gb_limit: t.gb_amount,
-          country: cred.country ?? undefined,
-          state: cred.state ?? undefined,
-          city: cred.city ?? undefined,
-          protocol: cred.protocol ?? 'http',
-          session_type: cred.session_type ?? 'rotating',
-        })
-        const { error: updateErr } = await supabase.from('proxy_credentials').update({
-          status: 'active',
-          geonode_sub_user_id: gcred.geonode_sub_user_id,
-          geonode_username: gcred.username,
-          geonode_password: gcred.password,
-          host: gcred.host,
-          port: gcred.port,
-          activated_at: new Date().toISOString(),
-        }).eq('id', cred.id)
-
-        if (updateErr) {
-          console.error('Failed to persist activated transfer credential', cred.id, updateErr)
-          await deleteSubUser(gcred.geonode_sub_user_id).catch(() => {})
-          continue // don't mark the transfer active if the credential update failed
-        }
-
-        await supabase.from('reseller_transfers').update({
-          status: 'active',
-          activated_at: new Date().toISOString(),
-        }).eq('id', t.id)
-      } catch (e) {
-        console.error('Failed to activate reseller transfer', t.id, e)
-      }
-    }
+    // (There used to be a step 4 here activating reseller_transfers rows
+    // with status:'pending'. allocate/route.ts is the only writer of that
+    // table and always inserts status:'active' with no credential_id — the
+    // transfer is a direct bandwidth ledger move, not a Geonode credential
+    // provisioning event, so there was never a 'pending' row for this block
+    // to find. Removed as dead code; reseller_transfers activation, if it's
+    // ever needed, belongs in allocate/route.ts where the row is created.)
   } else {
     console.log('[bandwidth] No provider configured — skipping credential activation for order', p.order_id)
   }
@@ -166,7 +129,7 @@ export async function activateBandwidth(p: {
             style="display:block;margin:0 auto 32px auto;border-radius:12px;"/>
           <h2 style="text-align:center;color:#111;">Bandwidth activated ✓</h2>
           <p style="color:#444;text-align:center;">
-            Hi ${profile.full_name?.split(' ')[0] ?? 'there'},
+            Hi ${escapeHtml(profile.full_name?.split(' ')[0]) || 'there'},
             your <strong>${p.gb_amount} GB</strong> of residential proxy bandwidth
             is now in your account. It never expires — use it at your own pace.
           </p>

@@ -1,53 +1,75 @@
-# GlobProxy — fix package
+# GlobProxy — fix package 4
 
-Addresses all 18 issues from the code audit. One file per concern where
-possible; most fixes are commented in-place with the "why", not just the
-"what". This file is a manifest — safe to delete after review, it isn't
-read by the app.
+Verified and fixes all 7 catalogued bugs plus both "worth a look" items from
+the follow-up audit. Confirmed against the actual codebase (not taken on
+faith) — see the audit writeup in chat for what was checked and how.
 
-1. **Open redirect in `/auth/callback`** — `app/auth/callback/route.ts`
-2. **Bandwidth over-allocation exploit** — `supabase/migrations/0007_reserve_credential_bandwidth.sql`,
-   `app/api/dashboard/proxies/route.ts`, `app/api/dashboard/proxies/[id]/route.ts`, `app/api/v1/sub-users/route.ts`
-3. **Broken reseller "Sub-users" roster** — `app/reseller/users/page.tsx`
-4. **Password-reset user enumeration** — `app/api/auth/reset/route.ts`
-5. **Disposable-email check bypassable via API** — `app/api/auth/signup/route.ts`
-6. **`debug-geonode` live in production** — `app/api/admin/debug-geonode/route.ts` (now requires `ENABLE_DEBUG_ENDPOINTS=true`)
-7. **Inconsistent admin auth patterns** — `app/api/admin/approve-reseller/route.ts`,
-   `app/api/admin/reject-reseller/route.ts`, `components/admin/AdminResellerActions.tsx`
-8. **`suspend-user` missing target-exists check** — `app/api/admin/suspend-user/route.ts`
-9. **`GET /api/v1/sub-users` missing `connection_username`** — `app/api/v1/sub-users/route.ts`
-10. **Divergent credential-creation failure handling** — `app/api/dashboard/proxies/route.ts` (now degrades to `pending` like `v1/sub-users`)
-11. **Unescaped user input in HTML emails** — `lib/email.ts` (new `escapeHtml()`), applied in
-    `app/api/admin/approve-reseller`, `reject-reseller`, `suspend-user`, `delete-user`,
-    `app/api/auth/apply-reseller`, `app/api/cron/[task]/route.ts`, `app/api/user/delete-account/route.ts`
-12. **Leftover `fix.mjs`** — deleted (not part of this archive — see note below)
-13. **Plan pricing duplicated 3x** — new `lib/plans.ts`, consumed by `app/api/checkout/route.ts`,
-    `app/dashboard/buy/page.tsx`, `components/PricingPlans.tsx`
-14. **Dead `reserve_reseller_gb()` function** — `supabase/migrations/0008_drop_dead_reserve_reseller_gb.sql`, `supabase/schema.sql`
-15. **Missing suspension check in layouts** — `app/dashboard/layout.tsx`, `app/reseller/layout.tsx`
-16. **Misleading "GB returned on delete" copy** — resolved as a side effect of #2 (now factually true); no text change needed
-17. **`user!.id` non-null assertions** — `app/dashboard/page.tsx`, `app/dashboard/proxies/page.tsx`,
-    `app/dashboard/usage/page.tsx`, `app/reseller/users/page.tsx`, `app/reseller/earnings/page.tsx`,
-    `app/reseller/transfers/page.tsx`
-18. **Admin user list not filtering deleted accounts** — `app/admin/users/page.tsx`
+1. **Reseller applications silently never reach admin** — `app/api/auth/apply-reseller/route.ts`
+   now writes `reseller_status`/`reseller_application` via the admin client.
+   `protect_privileged_profile_columns` (schema.sql) force-resets
+   `reseller_status` on any non-admin-client write, so the previous
+   session-client update always no-opped that column with no error.
 
-## Required manual step (not in this archive)
+2. **Account deletion cascade + orphaned Geonode sub-users** — both
+   `app/api/admin/delete-user/route.ts` and `app/api/user/delete-account/route.ts`
+   now (a) call `deleteSubUser()` on every live credential *before* touching
+   any local rows, and (b) ban the auth account (`ban_duration: '876000h'`)
+   instead of calling `auth.admin.deleteUser()`. Deleting the auth user
+   cascades through `profiles -> bandwidth_accounts/orders/proxy_credentials/
+   api_keys/proxy_sessions`, wiping the anonymised tombstone you just wrote
+   and throwing a raw FK error for any account with `reseller_transfers`
+   history. Banning revokes access without any of that.
 
-`fix.mjs` at the **repo root** (one level above `gp/`) should be deleted —
-it's a leftover script, not part of the app. `tar` can't delete files that
-aren't in the archive, so remove it separately:
+3. **Unescaped name in bandwidth-ready email** — `lib/bandwidth.ts` now
+   imports and applies `escapeHtml()` to `full_name`, matching every other
+   email call site in the app.
 
-```
-rm fix.mjs
-```
+4. **`v1/sub-users` POST dropped `sticky_duration`** — now destructured from
+   the body, passed to `createSubUser()`, and persisted on the row, matching
+   the dashboard route's behavior.
 
-## Database migrations
+5. **Auto-reload settings were a dead feature** — the stock-check cron
+   (`app/api/cron/[task]/route.ts`) now reads `auto_reload_enabled` /
+   `auto_reload_threshold_gb` from `platform_settings` and uses that
+   threshold instead of `STOCK_ALERT_THRESHOLD` when enabled. Note:
+   `auto_reload_amount_gb` is still unused — there's no automatic Geonode
+   purchase pipeline in this codebase, so this only wires up the *alert*
+   half of "auto-reload," not automatic purchasing. That would be a
+   separate feature if you want it.
 
-Two new migrations need to be applied to Supabase in order after extracting:
-`0007_reserve_credential_bandwidth.sql` then `0008_drop_dead_reserve_reseller_gb.sql`.
-Apply them the same way you've applied 0001–0006 (Supabase CLI / dashboard SQL editor).
+6. **Dead pending-transfer activation path** — removed the step-4 block in
+   `lib/bandwidth.ts` that scanned for `reseller_transfers` rows with
+   `status: 'pending'`. `allocate/route.ts` is the only writer of that table
+   and always inserts `status: 'active'` with no `credential_id`, so the
+   block could never match a row.
 
-## New environment variable
+7. **Bandwidth alert threshold vs. reported figure mismatch** — the percent
+   used in `runBandwidthAlerts()` (`app/api/cron/[task]/route.ts`) is now
+   computed from `available_gb` instead of `used_gb`, matching the figure
+   the email actually reports. Previously an account could sit with
+   near-zero `available_gb` (heavy `allocated_gb`) and never cross the
+   `used_gb`-based threshold.
 
-`ENABLE_DEBUG_ENDPOINTS` — optional, defaults to disabled. Only set to `true`
-in environments where you want `/api/admin/debug-geonode` reachable.
+## Also fixed (from "worth a look")
+
+- **Paystack webhook** (`app/api/webhooks/paystack/route.ts`): added an
+  explicit early return when the order lookup fails, instead of silently
+  falling through to `activateBandwidth()` and relying on its atomic claim
+  as an implicit safety net.
+- **Password reset** (`app/api/auth/reset/route.ts`): `redirectTo` is now
+  checked against your app's own origin (`NEXT_PUBLIC_APP_URL`) before being
+  passed to `resetPasswordForEmail`, as defense-in-depth alongside Supabase's
+  own project-level redirect allow-list.
+
+## No database migration needed
+
+Everything here is application code — no new columns, no new tables.
+
+## Verify after deploying
+
+- Submit a reseller application from a non-admin test account and confirm
+  it actually shows up in `/admin/resellers`.
+- Delete a test account that has at least one active proxy credential and
+  confirm (a) the Geonode sub-user is gone on Geonode's side, (b) the
+  `profiles` row still exists with `is_deleted: true`, and (c) the banned
+  account can no longer log in.

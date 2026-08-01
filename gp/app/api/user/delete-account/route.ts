@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
+import { deleteSubUser } from '@/lib/geonode'
 import { sendEmail, escapeHtml } from '@/lib/email'
 
 export async function DELETE(req: Request) {
@@ -24,7 +25,24 @@ export async function DELETE(req: Request) {
       return NextResponse.json({ error: 'Account already deleted.' }, { status: 400 })
     }
 
-    // Step 3: Anonymise — only columns confirmed to exist in profiles
+    // Step 3: Clean up live Geonode sub-users before touching local rows —
+    // see app/api/admin/delete-user/route.ts for the full rationale (cascade
+    // from auth.users would otherwise wipe proxy_credentials with no record
+    // of which Geonode sub-users need cleanup).
+    const { data: creds } = await adminSupabase
+      .from('proxy_credentials')
+      .select('id, geonode_sub_user_id')
+      .eq('user_id', user.id)
+      .not('geonode_sub_user_id', 'is', null)
+
+    for (const cred of creds ?? []) {
+      if (!cred.geonode_sub_user_id) continue
+      await deleteSubUser(cred.geonode_sub_user_id).catch((e) =>
+        console.error('Failed to clean up Geonode sub-user during account deletion', cred.id, e)
+      )
+    }
+
+    // Step 4: Anonymise — only columns confirmed to exist in profiles
     const { error: profileError } = await adminSupabase
       .from('profiles')
       .update({
@@ -42,10 +60,15 @@ export async function DELETE(req: Request) {
       return NextResponse.json({ error: profileError.message }, { status: 500 })
     }
 
-    // Step 4: Delete auth user — cascades proxy_credentials only
-    const { error: deleteError } = await adminSupabase.auth.admin.deleteUser(user.id)
+    // Step 5: Ban rather than delete the auth account — deleting it would
+    // cascade and remove the anonymised profile row (and everything hanging
+    // off it) we just wrote, and throw an FK error for accounts with
+    // reseller_transfers history. See admin/delete-user/route.ts.
+    const { error: banError } = await adminSupabase.auth.admin.updateUserById(user.id, {
+      ban_duration: '876000h',
+    })
 
-    if (deleteError) {
+    if (banError) {
       // Rollback anonymisation
       await adminSupabase.from('profiles').update({
         full_name: profile?.full_name ?? null,
@@ -53,10 +76,17 @@ export async function DELETE(req: Request) {
         is_deleted: false,
         deleted_at: null,
       }).eq('id', user.id)
-      return NextResponse.json({ error: deleteError.message }, { status: 500 })
+      return NextResponse.json({ error: banError.message }, { status: 500 })
     }
 
-    // Step 5: Email — best-effort, non-fatal
+    // Step 6: Mark remaining credentials suspended (no 'deleted' status value exists)
+    if ((creds ?? []).length) {
+      await adminSupabase.from('proxy_credentials')
+        .update({ status: 'suspended' })
+        .eq('user_id', user.id)
+    }
+
+    // Step 7: Email — best-effort, non-fatal
     if (profile?.email && profile.email !== '[deleted]') {
       await sendEmail({
         to: profile.email,

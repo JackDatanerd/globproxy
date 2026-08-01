@@ -25,6 +25,26 @@ export async function POST(req: Request) {
     const { email, redirectTo } = await req.json()
     if (!email) return NextResponse.json({ error: 'Email required' }, { status: 400 })
 
+    // redirectTo is client-supplied. Supabase enforces its own project-level
+    // redirect URL allow-list, but that's an external config, not something
+    // this code can verify — pin it to our own origin here too so this
+    // endpoint doesn't rely entirely on that allow-list being correctly
+    // locked down. An unrecognized redirectTo is just dropped, not rejected,
+    // so the response shape doesn't change either way.
+    let safeRedirectTo: string | undefined
+    if (redirectTo) {
+      try {
+        const appOrigin = new URL(process.env.NEXT_PUBLIC_APP_URL ?? '').origin
+        if (new URL(redirectTo).origin === appOrigin) {
+          safeRedirectTo = redirectTo
+        } else {
+          console.error('[auth/reset] rejected redirectTo outside app origin:', redirectTo)
+        }
+      } catch {
+        console.error('[auth/reset] malformed redirectTo:', redirectTo)
+      }
+    }
+
     const supabase = await createAdminClient()
 
     // 1. Banned — don't send, don't reveal.
@@ -50,7 +70,7 @@ export async function POST(req: Request) {
 
     // 4. All clear — send reset email. Log failures server-side only; the
     // response to the client stays generic either way.
-    const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo })
+    const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: safeRedirectTo })
     if (error) console.error('[auth/reset] resetPasswordForEmail failed:', error.message)
 
     return genericResponse()

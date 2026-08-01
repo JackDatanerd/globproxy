@@ -31,7 +31,24 @@ async function runStockCheck() {
   //    actually matters for a usage-based model.
   // 2. Absolute floor alert: stock is just low in absolute terms, kept as a
   //    simple backstop regardless of exposure math.
-  const threshold = Number(process.env.STOCK_ALERT_THRESHOLD ?? 10)
+  //
+  // The floor itself: /admin/settings lets an admin set auto_reload_enabled
+  // + auto_reload_threshold_gb in platform_settings, but until now nothing
+  // ever read those back — STOCK_ALERT_THRESHOLD was the only value in
+  // effect and the panel was pure UI theater. When auto_reload is enabled,
+  // its threshold now takes over from the env var. auto_reload_amount_gb is
+  // still not consumed anywhere — there's no automatic Geonode purchase
+  // pipeline in this codebase yet, so "auto-reload" today only means "alert
+  // me earlier," not "buy more automatically." That's a separate feature.
+  const { data: settingsRows } = await supabase
+    .from('platform_settings')
+    .select('key, value')
+    .in('key', ['auto_reload_enabled', 'auto_reload_threshold_gb'])
+  const settings = Object.fromEntries((settingsRows ?? []).map(r => [r.key, r.value]))
+  const autoReloadEnabled = settings.auto_reload_enabled === 'true'
+  const threshold = autoReloadEnabled && settings.auto_reload_threshold_gb
+    ? Number(settings.auto_reload_threshold_gb)
+    : Number(process.env.STOCK_ALERT_THRESHOLD ?? 10)
   const exposureBreach = !stock.covered
   const floorBreach = stock.available_gb <= threshold
 
@@ -108,7 +125,14 @@ async function runBandwidthAlerts() {
   let sent = 0
   for (const acc of accounts ?? []) {
     if (!acc.total_gb) continue
-    const pct = (acc.used_gb / acc.total_gb) * 100
+    // Was (used_gb / total_gb) — but the email below reports available_gb,
+    // which also subtracts allocated_gb (GB reserved into credentials, not
+    // yet consumed). An account with heavy allocated_gb could have
+    // available_gb near zero while used_gb stayed low, so it would never
+    // cross this threshold even though it effectively can't create new
+    // credentials. Basing pct on available_gb keeps the trigger consistent
+    // with what the account can actually still do.
+    const pct = ((acc.total_gb - acc.available_gb) / acc.total_gb) * 100
 
     // Below 80% — clear any stale alert flags so a future approach re-alerts.
     if (pct < 80) {

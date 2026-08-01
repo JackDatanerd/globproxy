@@ -46,14 +46,27 @@ export async function POST(req: Request) {
 
       console.log('[webhook] order lookup', { order, orderErr })
 
-      if (order?.payment_status === 'paid') {
+      // Previously fell through to activateBandwidth() on a failed lookup —
+      // `order` would be undefined, so `order && !amountMatchesOrder(...)`
+      // short-circuited to false and skipped the mismatch check entirely.
+      // It was saved from double-crediting only by activateBandwidth()'s
+      // atomic claim (UPDATE ... WHERE id = order_id AND bandwidth_credited
+      // = false), which matches zero rows for a nonexistent order_id — but
+      // that's an implicit side effect, not an explicit guard. Bail out
+      // here instead so the intent is visible in this file.
+      if (orderErr || !order) {
+        console.error('[webhook] order lookup failed — refusing to credit', { order_id, orderErr })
+        return NextResponse.json({ received: true })
+      }
+
+      if (order.payment_status === 'paid') {
         console.log('[webhook] already paid, skipping')
         return NextResponse.json({ received: true })
       }
 
       // Cross-check what Paystack actually charged against what the order
       // expects, rather than trusting status:success + metadata alone.
-      if (order && !amountMatchesOrder(amount, order.amount_usd)) {
+      if (!amountMatchesOrder(amount, order.amount_usd)) {
         console.error('[webhook] amount mismatch — refusing to credit', {
           order_id, paid_cents: amount, expected_usd: order.amount_usd,
         })
