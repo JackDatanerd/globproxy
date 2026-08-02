@@ -248,7 +248,10 @@ export async function POST(req: Request, context: { params: Promise<{ task: stri
   }
 }
 
-// Also support GET for manual triggering from browser (admin only)
+// Also supports GET so the same handler can be triggered manually (e.g. from
+// a browser or curl) — gated by the CRON_SECRET header via validateCron(),
+// same as POST. Not an admin-session check: hitting this requires knowing
+// the secret and sending it as x-cron-secret, regardless of who's logged in.
 export async function GET(req: Request, context: { params: Promise<{ task: string }> }) {
   return POST(req, context)
 }

@@ -8,13 +8,12 @@
     "build:cf": "opennextjs-cloudflare build",
     "start": "next start",
     "preview": "opennextjs-cloudflare preview",
-    "deploy": "opennextjs-cloudflare build && npx wrangler deploy .open-next/worker.js"
+    "deploy:manual-DANGER": "opennextjs-cloudflare build && npx wrangler deploy .open-next/worker.js"
   },
   "dependencies": {
     "@supabase/ssr": "^0.6.1",
     "@supabase/supabase-js": "^2.49.4",
     "clsx": "^2.1.1",
-    "lucide-react": "^0.511.0",
     "next": "^16.2.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

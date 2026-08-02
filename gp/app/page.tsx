@@ -32,7 +32,7 @@ export default async function Home() {
                 Buy residential bandwidth once. Use it across 195 countries at city-level precision — on your schedule, not ours. No monthly bills, no wasted GB.
               </p>
               <div className="flex gap-3 flex-wrap">
-                <Link href={buyHref} className="inline-flex items-center gap-2 bg-accent text-white px-7 py-3.5 rounded-xl font-medium shadow-[0_2px_12px_rgba(0,87,255,.3)] hover:-translate-y-0.5 transition-all">Start from $35 →</Link>
+                <Link href={buyHref} className="inline-flex items-center gap-2 bg-accent text-white px-7 py-3.5 rounded-xl font-medium shadow-[0_2px_12px_rgba(0,87,255,.3)] hover:-translate-y-0.5 transition-all">Start from $4.50 →</Link>
                 <Link href="#compare" className="inline-flex items-center gap-2 border border-border text-ink2 px-7 py-3.5 rounded-xl font-medium hover:border-ink2 transition-all">See comparison</Link>
               </div>
               <div className="flex items-center gap-3 mt-6 text-xs text-muted">
@@ -175,7 +175,7 @@ export default async function Home() {
           <h2 className="font-display text-5xl font-black text-white tracking-tight leading-tight mb-4">Your bandwidth.<br />Your pace. <em className="not-italic text-accent2/80">Forever.</em></h2>
           <p className="text-white/40 font-light mb-10">Join 1,400+ operators who stopped paying for bandwidth they don&apos;t use.</p>
           <div className="flex gap-3 justify-center flex-wrap">
-            <Link href={buyHref} className="inline-flex items-center gap-2 bg-white text-ink px-7 py-3.5 rounded-xl font-medium hover:-translate-y-0.5 transition-all">Start from $35 →</Link>
+            <Link href={buyHref} className="inline-flex items-center gap-2 bg-white text-ink px-7 py-3.5 rounded-xl font-medium hover:-translate-y-0.5 transition-all">Start from $4.50 →</Link>
             <Link href="#reseller" className="inline-flex items-center gap-2 border border-white/20 text-white px-7 py-3.5 rounded-xl font-medium hover:border-white/50 transition-all">Become a reseller</Link>
           </div>
         </div>

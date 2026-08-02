@@ -18,6 +18,14 @@
 -- allocate_reseller_bandwidth() already uses. available_gb was always
 -- total_gb - used_gb - allocated_gb, so this closes the gap for regular
 -- users the same way it already worked for resellers.
+--
+-- NOTE: the balance-check formula below (total_gb - used_gb - allocated_gb)
+-- was itself buggy — it double-subtracted used_gb, which is always a subset
+-- of what allocated_gb already reserves for active credentials. Superseded
+-- by migration 0009, which CREATE OR REPLACEs this same function with
+-- (total_gb - allocated_gb). Left as-is here rather than edited in place,
+-- since migrations are a historical record — 0009 is what actually runs on
+-- top of this on any real deploy.
 
 create or replace function public.reserve_credential_bandwidth(p_user_id uuid, p_gb numeric)
 returns void

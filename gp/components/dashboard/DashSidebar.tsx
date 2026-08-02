@@ -54,7 +54,7 @@ export default function DashSidebar({ role, apiAccess = false }: Props) {
     ]
   }
   if (role === 'admin') {
-    nav = adminNav // admin always sees everything
+    nav = [...adminNav.slice(0, 5), apiKeyItem, ...adminNav.slice(5)] // up to Credentials, then API Keys, then Settings
   }
 
   const label = role === 'admin' ? 'Admin Panel' : role === 'reseller' ? 'Reseller Panel' : 'My Account'
