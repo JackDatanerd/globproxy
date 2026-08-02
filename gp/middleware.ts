@@ -66,5 +66,21 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/dashboard/:path*', '/reseller/:path*', '/admin/:path*'],
+  // Runs on page routes generally (not /api, not static assets) so that any
+  // route calling supabase.auth.getUser() — including Server Components like
+  // app/page.tsx, which reads it just to pick the CTA link — gets its
+  // rotated refresh-token cookie actually persisted back to the browser.
+  // Server Components themselves can't write cookies (Next.js restriction);
+  // only middleware can. Previously this only ran on /dashboard, /reseller,
+  // /admin, so a visitor with a session who landed on the homepage first
+  // would have their refresh token rotated server-side with nowhere to
+  // write the new one back — their next homepage load would send the same
+  // already-consumed token and fail with "Invalid Refresh Token: Already
+  // Used" every time, on that page, indefinitely (non-fatal — getUser()
+  // just falls back to null — but a permanent noisy failure for that
+  // visitor). /api is excluded: API routes do their own auth (session
+  // cookie or Bearer token per-route) and don't need middleware's
+  // redirect/suspension logic, which stays exactly as before, scoped to
+  // /dashboard, /reseller, /admin inside the function body.
+  matcher: ['/((?!api|_next/static|_next/image|favicon\\.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|webmanifest|xml|txt)$).*)'],
 }

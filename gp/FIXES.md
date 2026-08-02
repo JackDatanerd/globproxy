@@ -1,71 +1,47 @@
-# GlobProxy — fix package 7
+# GlobProxy — fix package 8
 
-All 8 findings from the Aug 2 "findings only" audit confirmed against a
-fresh clone (HEAD `78bd6de`, post fix-package-6) and fixed. Nothing was
-skipped; nothing needed a database migration this round.
+Not from an audit pass — this is the follow-up to the `refresh_token_already_used`
+errors you saw in `wrangler tail` after restoring secrets.
 
-## 🟡 Real bugs
+## The bug
 
-**1. `/reseller/transfers` Label/Country columns always empty** —
-`allocate/route.ts` never sets `credential_id` on a transfer (confirmed via
-grep — it isn't set anywhere), so the `proxy_credentials(*)` join always
-came back null. Dropped the join and the two dead columns from
-`app/reseller/transfers/page.tsx` rather than trying to populate
-`credential_id`, since allocations genuinely aren't 1:1 with a credential in
-the current data model — that would be a bigger design change than this
-audit called for.
+`middleware.ts`'s matcher only ran on `/dashboard`, `/reseller`, `/admin`.
+`app/page.tsx` (the homepage) still calls `supabase.auth.getUser()` directly
+just to decide whether the CTA should link to `/dashboard/buy` or
+`/auth/signup` — and that call can trigger a refresh-token rotation. Only
+middleware can write cookies back to the browser in Next.js; a plain Server
+Component can't (that's what the `try { ... } catch { /* server component —
+safe to ignore */ }` in `lib/supabase/server.ts` was silently swallowing).
 
-**2. Admin nav never got the API Keys link** — confirmed in
-`components/dashboard/DashSidebar.tsx`: the unconditional
-`if (role === 'admin') nav = adminNav` discarded any injection before it,
-and `adminNav` itself had no entry for it. Now injects `apiKeyItem` between
-Credentials and Settings for admins, mirroring how it's already injected for
-resellers with `api_access`.
+So: a visitor with a session who loads the homepage gets their refresh
+token rotated server-side, with nowhere to persist the new one back to
+their browser. Their next homepage load sends the same, now-already-
+consumed token → `Invalid Refresh Token: Already Used`, every time, on
+that page, for that visitor, indefinitely. Non-fatal — `getUser()` just
+falls back to treating them as logged out — but a permanent noisy failure,
+and it means their homepage CTA silently defaults to the signed-out link
+even though they do have a session.
 
-**3. `npm run deploy` was a footgun** — same manual `wrangler deploy` path
-already known (from GlobProxy's own history) to silently strip secrets vs.
-deploying via GitHub Actions, sitting under the generic name `deploy` where
-muscle memory could trigger it by accident. Renamed to
-`deploy:manual-DANGER` in `package.json`. `build:cf` + GitHub Actions remain
-the only sanctioned path — nothing else changed about how deploys actually
-work.
+## The fix
 
-## ⚪ Minor / cosmetic
+Widened the middleware matcher to run on page routes generally (not `/api`,
+not static assets), matching Supabase's own documented pattern for Next.js
+SSR — middleware needs to run wherever a session might get refreshed, since
+it's the only layer that can actually persist the rotated cookie.
 
-**4.** Removed dead `sendAccountDeletionEmail()` from `lib/email.ts` —
-confirmed zero call sites anywhere; both delete routes already build their
-own inline email.
-
-**5.** Removed unused `lucide-react` dependency from `package.json` —
-confirmed zero imports anywhere in `app/`, `components/`, `lib/`.
-**`package-lock.json` regenerated and included in this archive** — needed
-so the lockfile stays in sync with `package.json` after the removal
-(`npm ci` would otherwise complain about drift).
-
-**6. Homepage CTA pricing corrected — flagging this one explicitly, since
-it's a judgment call, not a pure bug.** Both hero and bottom CTAs said
-"Start from $35" while `lib/plans.ts`'s actual cheapest plan (Micro) is
-$4.50 — directly contradicted by the pricing table rendered on the same
-page. The audit flagged this as possibly intentional (not wanting to lead
-with the pay-as-you-go tier). I fixed it to "$4.50" on the reasoning that
-advertising a floor price 7-8x higher than your actual cheapest plan, on
-the same page as a table showing otherwise, reads as a bug rather than
-positioning. **If you actually want to lead with $35 as a deliberate
-choice** (e.g. Starter is the plan you want most people to land on), revert
-just this one and let me know — it's a one-line change in `app/page.tsx`
-(two places), not tied to anything else in this package.
-
-**7.** Added a forward-pointer comment in
-`supabase/migrations/0007_reserve_credential_bandwidth.sql` noting its
-balance-check formula is superseded by `0009` — no functional change,
-`0009` still runs after it and `CREATE OR REPLACE`s the function, this is
-purely so the migration history doesn't mislead a future reader.
-
-**8.** Corrected the misleading `(admin only)` comment on the cron `GET`
-handler in `app/api/cron/[task]/route.ts` — it's gated on `CRON_SECRET` via
-`validateCron()`, not an admin session. No behavior change, just an
-accurate comment so nobody assumes browser-session auth is sufficient here.
+The existing redirect/suspension logic inside `middleware.ts` is untouched
+— it's still scoped to `/dashboard`, `/reseller`, `/admin` internally, so
+nothing about auth-gating behavior changes. `/api/*` is explicitly excluded
+since API routes already do their own auth per-route (cookie or Bearer
+token) and don't need this.
 
 ## No database migration needed
 
-Everything here is application code + one dependency removal.
+Single file, application code only.
+
+## Verify after deploying
+
+Log in, then navigate directly to the homepage (`/`) a couple of times.
+`wrangler tail` should no longer show `refresh_token_already_used` for
+those requests, and the homepage CTA should correctly link to
+`/dashboard/buy` for a logged-in visitor instead of `/auth/signup`.
