@@ -1,0 +1,99 @@
+name: Deploy to Cloudflare Workers
+
+# Closes two real incidents in one file:
+#
+# 1. Manual `wrangler deploy` from a local machine has, more than once, left
+#    the Worker's secrets missing entirely (this app, and previously POA
+#    Defender). This workflow is the only path that sets secrets on every
+#    single deploy via the `secrets:` input below — they can't silently go
+#    stale or get skipped because a human ran the wrong command.
+#
+# 2. NEXT_PUBLIC_* values are baked into the client-side JS bundle at BUILD
+#    time, not read at Worker runtime — `wrangler secret put` alone does
+#    NOT fix a browser-side "Supabase client requires URL and key" error,
+#    because it doesn't touch whatever bundle was already built. This
+#    workflow explicitly exports them as env vars for the build step (job
+#    below), so every deploy rebuilds the client bundle with real values,
+#    not just refreshes server-side secrets.
+#
+# Also: this runs on ubuntu-latest, which sidesteps the Windows/miniflare
+# access-violation crash (`opennextjs-cloudflare` is explicitly documented
+# as unreliable on native Windows — WSL is the workaround locally, but CI
+# on Linux avoids the problem entirely).
+#
+# Must live at .github/workflows/ at the repo root, not inside gp/ — same
+# as the cron workflows.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'gp/**'
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gp
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (Next.js + OpenNext Cloudflare adapter)
+        run: npm run build:cf
+        env:
+          # These three get inlined into the client-side bundle right here —
+          # this is the step that matters for fixing "URL and key are
+          # required" in the browser console. Setting them only as Worker
+          # secrets later (below) does NOT retroactively fix this build's
+          # output.
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL }}
+
+      - name: Deploy to Cloudflare Workers
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: gp
+          command: deploy
+          # Every name listed here gets pushed to the Worker via
+          # `wrangler secret put` as part of this same run, using the
+          # matching value from the env block below. This is what makes
+          # secrets a guarantee on every deploy instead of a one-time
+          # manual step someone has to remember.
+          secrets: |
+            NEXT_PUBLIC_SUPABASE_URL
+            NEXT_PUBLIC_SUPABASE_ANON_KEY
+            SUPABASE_SERVICE_ROLE_KEY
+            GEONODE_API_KEY
+            GEONODE_RESELLER_ID
+            PAYSTACK_SECRET_KEY
+            RESEND_API_KEY
+            CRON_SECRET
+            NEXT_PUBLIC_APP_URL
+            ADMIN_EMAIL
+            FROM_EMAIL
+            STOCK_ALERT_THRESHOLD
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GEONODE_API_KEY: ${{ secrets.GEONODE_API_KEY }}
+          GEONODE_RESELLER_ID: ${{ secrets.GEONODE_RESELLER_ID }}
+          PAYSTACK_SECRET_KEY: ${{ secrets.PAYSTACK_SECRET_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          NEXT_PUBLIC_APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL }}
+          ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL }}
+          FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
+          STOCK_ALERT_THRESHOLD: ${{ secrets.STOCK_ALERT_THRESHOLD }}
