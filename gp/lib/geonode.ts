@@ -116,6 +116,39 @@ export async function getSubUserUsage(geonodeSubUserId: string): Promise<number>
   return mbToGb(result.trafficUsedMB ?? 0)
 }
 
+// Bulk version — fetches usage for ALL sub-users in pages of 100 instead of
+// one call per credential. Fixes a real production bug: the cron usage-sync
+// job was making one Geonode API call per active credential in a loop,
+// which crossed Cloudflare Workers' 50-subrequest-per-invocation cap (Free
+// plan) once enough credentials existed from testing — the runtime enforces
+// that cap below the level JS try/catch can intercept, so it killed the
+// whole invocation with an opaque 500 regardless of per-credential error
+// handling. This reduces N calls to ceil(N/100).
+export async function listAllSubUsersUsage(): Promise<Map<string, number>> {
+  const usageMap = new Map<string, number>()
+  let offset = 0
+  const limit = 100
+  while (true) {
+    const res = await fetch(
+      `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users?limit=${limit}&offset=${offset}`,
+      { headers: headers() }
+    )
+    if (!res.ok) {
+      console.error('Geonode listAllSubUsersUsage failed:', res.status, await res.text().catch(() => ''))
+      break // return whatever was collected so far rather than throwing
+    }
+    const d = await res.json()
+    const result = d.result ?? d.data ?? d
+    const docs = result.documents ?? []
+    for (const doc of docs) {
+      usageMap.set(String(doc.id), mbToGb(doc.trafficUsedMB ?? 0))
+    }
+    if (docs.length < limit) break // last page
+    offset += limit
+  }
+  return usageMap
+}
+
 export async function getAccountBalance(): Promise<{ available_gb: number; total_gb: number }> {
   const res = await fetch(
     `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/traffic`,

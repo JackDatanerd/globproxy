@@ -1,5 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/server'
-import { getSubUserUsage } from '@/lib/geonode'
+import { listAllSubUsersUsage } from '@/lib/geonode'
 import { computeStockStatus } from '@/lib/stockStatus'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { NextResponse } from 'next/server'
@@ -76,36 +76,34 @@ async function runUsageSync() {
   const supabase = await createAdminClient()
   const { data: creds } = await supabase
     .from('proxy_credentials')
-    .select('id, geonode_sub_user_id, gb_used, user_id')
+    .select('id, geonode_sub_user_id, gb_used')
     .eq('status', 'active')
     .not('geonode_sub_user_id', 'is', null)
 
-  let updated = 0
-  for (const cred of creds ?? []) {
-    try {
-      // Geonode's usage endpoint takes the sub-user ID, not the username —
-      // this was passing geonode_username before, which never matched.
-      const newUsed = await getSubUserUsage(cred.geonode_sub_user_id)
-      if (Math.abs(newUsed - (cred.gb_used ?? 0)) > 0.001) {
-        await supabase.from('proxy_credentials').update({ gb_used: newUsed }).eq('id', cred.id)
-        updated++
-      }
-    } catch {}
+  // ONE (or a few, paginated) Geonode call instead of one per credential —
+  // this was the actual cause of the 500s. See listAllSubUsersUsage.
+  const usageMap = await listAllSubUsersUsage()
+
+  const changes = (creds ?? [])
+    .map(cred => ({ id: cred.id, gb_used: usageMap.get(cred.geonode_sub_user_id!) }))
+    .filter((c): c is { id: string; gb_used: number } =>
+      c.gb_used !== undefined &&
+      Math.abs(c.gb_used - ((creds ?? []).find(x => x.id === c.id)?.gb_used ?? 0)) > 0.001
+    )
+
+  // Single bulk update instead of one DB round trip per changed credential.
+  if (changes.length > 0) {
+    const { error } = await supabase.rpc('bulk_update_credential_usage', { updates: changes })
+    if (error) console.error('bulk_update_credential_usage failed:', error)
   }
 
-  // Recalculate bandwidth_accounts per user
-  const { data: accounts } = await supabase.from('bandwidth_accounts').select('user_id')
-  for (const acc of accounts ?? []) {
-    const { data: userCreds } = await supabase
-      .from('proxy_credentials')
-      .select('gb_used')
-      .eq('user_id', acc.user_id)
-      .eq('status', 'active')
-    const totalUsed = userCreds?.reduce((s, c) => s + (c.gb_used ?? 0), 0) ?? 0
-    await supabase.from('bandwidth_accounts').update({ used_gb: totalUsed }).eq('user_id', acc.user_id)
-  }
+  // Single bulk recalculation instead of looping every account with a
+  // select + update each — that loop was a second, independent source of
+  // subrequest bloat on top of the Geonode-call issue above.
+  const { error: recalcErr } = await supabase.rpc('recalculate_bandwidth_accounts')
+  if (recalcErr) console.error('recalculate_bandwidth_accounts failed:', recalcErr)
 
-  return { updated_credentials: updated }
+  return { updated_credentials: changes.length }
 }
 
 // ── User bandwidth alerts ─────────────────────────────────────────
