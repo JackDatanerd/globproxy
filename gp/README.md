@@ -1,130 +1,87 @@
-# GlobProxy audit fixes — round 3
+# GlobProxy UI overhaul — Overview, My Proxies, New Session
 
-Covers the last stretch: proxyEndpoint targeting, cron/stockStatus/email
-libs, admin credentials/orders stat accuracy, and RLS on `orders`.
+Implements the three mockups (`globproxy-ui-refinements.html`) directly in the real app,
+against a fresh clone at commit `12471f4`. Verified with `npx tsc --noEmit` and a full
+`npx next build` — both clean, zero errors.
 
-## What's in this round
+## Files in this archive
 
-**1. State/city silently dropped when country isn't set**
-`buildProxyUsername()` only nests state/city into the connection string
-inside `if (opts.country)` — so a request with `state` set but no `country`
-got a completely untargeted, worldwide proxy with zero indication anything
-was ignored. The dashboard form actively allowed this: the state/city inputs
-rendered and accepted input regardless of country selection.
+```
+app/dashboard/page.tsx                      (replaced)
+app/dashboard/proxies/page.tsx               (replaced)
+app/dashboard/proxies/new/NewProxyForm.tsx   (replaced)
+components/dashboard/ProxyCard.tsx           (replaced — same filename, now a
+                                               collapsible row instead of an
+                                               always-open card; takes new
+                                               `expanded`/`onToggle` props)
+components/dashboard/ProxyList.tsx           (new — search/filter toolbar +
+                                               single-expanded-row state,
+                                               wraps ProxyCard)
+```
 
-Fix, in two layers:
-- `lib/proxyEndpoint.ts` gets a new `validateTargeting()` — used at every
-  write path (dashboard proxy creation, v1 sub-user creation) to reject the
-  combination outright instead of silently dropping it. `buildProxyUsername`
-  itself is left as-is (still silently drops), since it's also used to
-  *render* already-stored credentials (ProxyCard, SessionManager) — throwing
-  there would crash the UI for any legacy row with this shape.
-- `NewProxyForm.tsx` disables state/city until a country is picked, and
-  clears them if country is cleared afterward, so a user can't get into this
-  state through normal use in the first place.
-
-**2. `sendEmail()` never checked whether Resend actually accepted the request**
-No caller anywhere in the app — payment confirmations, suspension/reseller
-notices, admin stock-exposure alerts, bandwidth threshold alerts — had any
-way to know if an email failed. A misconfigured `RESEND_API_KEY` or a
-rejected recipient would silently drop every email in the product. Now logs
-`[email] send failed` with status/body on a non-2xx response.
-
-**3. Admin credentials & orders pages undercounted past 200 rows**
-Same pattern as the orders-page fix from round 1's README notes, now
-actually fixed, plus a second instance found on the credentials page:
-- `admin/orders/page.tsx` — revenue/GB-sold/paid-order-count now come from
-  an unlimited, two-column query instead of the same 200-row-capped list
-  used for the table.
-- `admin/credentials/page.tsx` — total/active/pending counts now come from
-  exact-count queries instead of the capped list.
-
-**4. `orders` RLS let a client rewrite other columns while cancelling**
-The "Cancel own pending order" policy only checks that the *final*
-`payment_status` is `'cancelled'` — RLS doesn't restrict which columns an
-UPDATE touches. A client could technically send
-`{ payment_status: 'cancelled', amount_usd: 0.01 }` on their own pending
-order and it would pass. Not profitably exploitable today — the amount
-actually charged and GB actually credited both come from immutable Paystack
-metadata set at checkout, not this row, so a mismatch just makes the webhook
-refuse to credit — but it corrupts the order history for no reason. Added
-`protect_order_columns` trigger (migration 0006), mirroring the existing
-`protect_privileged_profile_columns` pattern already used on `profiles`: a
-non-admin update can only ever flip `pending → cancelled`, every other
-column is pinned to its previous value.
+Nothing else changed — `SessionManager.tsx`, `lib/proxyEndpoint.ts`, `lib/geoTargeting.ts`,
+and every API route are untouched. All real geo-targeting selects (country/state/city
+sourced from Geonode's actual supported locations, not free text) were preserved exactly
+as they were — my earlier static mockup used plain text inputs for state/city as a
+simplification for the demo, but that's not what got wired in here.
 
 ## Apply
 
 ```bash
-cd globproxy/gp
-tar -xzf ~/Downloads/globproxy-fixes-3.tar.gz --strip-components=1 -C .
-git add .
-git commit -m "fix: state/city-without-country silent drop, email send failures now logged, admin stat accuracy, orders RLS column lockdown
+git checkout -b ui-overhaul
+```
 
-- validateTargeting() rejects state/city with no country at every write
-  path instead of buildProxyUsername silently dropping them; dashboard form
-  disables state/city until a country is picked
-- sendEmail() now checks the Resend response and logs failures instead of
-  every caller silently assuming success
-- admin/orders and admin/credentials pages compute their header stats from
-  unlimited/exact-count queries instead of the same 200-row-capped list
-  used for the table, which silently undercounted past 200 rows
-- add protect_order_columns trigger so cancelling your own pending order
-  can only ever flip payment_status, not rewrite amount_usd/gb_amount/etc.
-  in the same request"
+Drop these 5 files into place at the paths shown above (or extract this archive at your
+repo root — the paths match), then:
+
+```bash
+git add app/dashboard/page.tsx app/dashboard/proxies/page.tsx \
+        app/dashboard/proxies/new/NewProxyForm.tsx \
+        components/dashboard/ProxyCard.tsx components/dashboard/ProxyList.tsx
+git commit -m "ui: row-based proxy list, split new-session form, condensed overview"
 git push
 ```
 
-Run `supabase/migrations/0006_lock_down_order_columns.sql` in Supabase
-first, same as every round before this.
+## What changed, and why
 
-## Noted but not changed (documented, not fixed)
+**`/dashboard/proxies`** — Every session used to render as a fully-open card. Now each
+is a single-line row (colored left rail = status, no badge-reading needed) that expands
+on click; credentials/endpoints/code are tabs instead of stacked. Added a search box and
+Active/Pending status filter — didn't exist before. Only one row expands at a time.
+A quick-copy icon on the collapsed row covers the most common action (grab the first
+endpoint) without expanding — **rotating credentials only**; sticky credentials don't get
+one since there's no single "the" endpoint until a session is created under
+Sticky Sessions, and copying the bare targeting prefix would be a non-working string
+someone might paste in expecting it to connect.
 
-- **Dead code in `activateBandwidth()`**: its "Step 4: Activate pending
-  reseller transfers" queries `reseller_transfers` for `status = 'pending'`
-  rows with a linked `credential_id`. Nothing in the current app ever
-  creates a transfer that way — `POST /api/reseller/allocate` inserts
-  transfers directly as `status: 'active'` with no credential, crediting the
-  recipient's `bandwidth_accounts.total_gb` directly instead. This looks
-  like it's from an earlier design (create-a-credential-then-transfer-it)
-  that got replaced by the current simpler balance-transfer model, but the
-  old activation code never got removed. It's inert, not harmful — just
-  dead weight and a little confusing to read. Worth a cleanup pass whenever
-  convenient, not urgent.
-- **Cron's `runCleanup()` interacts with the same "cancel doesn't cancel the
-  charge" tradeoff noted in round 2.** It marks pending orders older than 24h
-  as `'failed'`. If Paystack's webhook is delayed past that window and
-  arrives later, `activateBandwidth()` will still credit it — its only
-  guard is `bandwidth_credited = false`, not `payment_status`. Same
-  reasoning as before: not changing this, since blocking the credit would
-  mean a customer who was genuinely charged gets nothing. Flagging it here
-  so it's grouped with the other instance of the same tradeoff rather than
-  looking like a new, separate bug.
-- Skimmed the static terms/refunds pages — no code issues, didn't review the
-  legal content itself (out of scope for a code audit).
-- `sendAccountDeletionEmail()` in `lib/email.ts` is defined but never called
-  anywhere — consistent with round 1's finding that the "delete user"
-  feature has no working UI path to it at all.
+**`/dashboard/proxies/new`** — Was 5 stacked bordered boxes + a preview box after all of
+them. Now one continuous card with numbered sections, ASN moved behind an "Advanced
+targeting" disclosure, and a sticky "receipt" panel on the right showing the live
+endpoint preview, running GB math, and the submit button — visible the whole time you're
+configuring, not just after scrolling to the bottom.
 
-## Files touched
+One deliberate behavior change worth knowing about: the GB input no longer has a
+browser-level `max` attribute clamping it to your available balance. Instead the receipt
+panel shows *why* it's blocked (red bar + "exceeds your available balance") and disables
+submit. Functionally equivalent, but it's live JS state instead of a static HTML
+attribute — mentioning it since it's slightly more surface area than before.
 
-```
-lib/proxyEndpoint.ts                       (modified — validateTargeting added)
-lib/email.ts                               (modified)
-app/api/dashboard/proxies/route.ts         (modified)
-app/api/v1/sub-users/route.ts              (modified)
-app/dashboard/proxies/new/NewProxyForm.tsx (modified)
-app/admin/orders/page.tsx                  (modified)
-app/admin/credentials/page.tsx             (modified)
-supabase/migrations/0006_lock_down_order_columns.sql  (new)
-supabase/schema.sql                        (modified)
-```
+**`/dashboard`** — Four equal-weight stat tiles + a separate full-width bandwidth bar
+(which mostly duplicated the one on `/proxies`) became one dark "balance" hero card
+carrying the number, the bar, and the buy CTA together, since that's the actual job of
+this page. The other two stats (active proxies, total purchased) step down to quiet
+supporting tiles. The sessions list now uses the same colored-rail status language as
+`/proxies` instead of a dot + text, so status reads the same way on both pages. Orders
+got real paid/pending/failed pills instead of one badge doing double duty as color and
+label.
 
-## That's the full pass
+## Known gaps / not touched this round
 
-This closes out the systematic trace from auth through admin, including
-dashboard sessions/billing/settings, the reseller clients page, cron tasks,
-email, and RLS. If you want, I can go back through with fresh eyes on
-anything specific — the frontend design/UX layer wasn't in scope here at
-all, and I didn't fuzz inputs or write actual tests against any of this,
-just read the code carefully.
+- `/dashboard/billing`, `/dashboard/usage`, `/dashboard/settings`, `/dashboard/api-keys`,
+  the admin pages, and the marketing site were **not** touched — no mockup was built for
+  them yet, so I didn't want to freehand a redesign without you seeing it first. Say the
+  word if you want those next.
+- This only covers the UI refinement work from this conversation. It does **not** include
+  fixes for anything from the earlier code-review pass (suspended-user API gap, the
+  `signOut(user_id, ...)` bug, the bandwidth reclaim-via-delete exploit) — those are
+  separate and still open, see `globproxy-audit-findings.md` from earlier in this thread.

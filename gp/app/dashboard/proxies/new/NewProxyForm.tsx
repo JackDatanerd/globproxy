@@ -23,6 +23,7 @@ const STICKY_DURATIONS = [
 export default function NewProxyForm({ availableGb }: { availableGb: number }) {
   const router = useRouter()
   const [loading, setLoading] = useState(false)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
   const [form, setForm] = useState({
     label:           '',
     country:         '',
@@ -55,12 +56,6 @@ export default function NewProxyForm({ availableGb }: { availableGb: number }) {
       .catch(e => setCountryListError(e.message))
   }, [])
 
-  // State/city only mean anything with a country set — buildProxyUsername
-  // silently drops them otherwise. Clearing them here means a user can
-  // never end up in that state through normal use of this form. This also
-  // clears state/city when switching between two real countries (not just
-  // back to "Any country") — a state/city picked for one country is never
-  // valid for another, so carrying it over would silently mismatch.
   function setCountry(v: string) {
     setForm(f => ({ ...f, country: v, state: '', city: '' }))
     setCountryDetail(null)
@@ -73,20 +68,17 @@ export default function NewProxyForm({ availableGb }: { availableGb: number }) {
       .finally(() => setGeoLoading(false))
   }
 
-  // Picking a new state invalidates whatever city was picked under the
-  // previous state.
   function setState(v: string) {
     setForm(f => ({ ...f, state: v, city: '' }))
   }
 
   const selectedStateOption = countryDetail?.states.find(s => s.code === form.state) ?? null
+  const selectedCountryName = countryList.find(c => c.code === form.country)?.name ?? ''
+  const selectedCityName = selectedStateOption?.cities.find(c => c.code === form.city)?.name ?? ''
 
   // Live endpoint preview — uses the same builder as ProxyCard and the v1
   // API, so this preview can never drift out of sync with what the customer
-  // actually gets again. Previously this was hand-rolled here with three
-  // separate bugs: uppercase country (Geonode wants lowercase), no
-  // "-type-residential" segment, and a fake hardcoded "-session-1" with no
-  // real lifetime value.
+  // actually gets.
   const previewUsername = useMemo(
     () => buildProxyUsername('gp_xxxxxxxx', form, 'xxxxxxxx'),
     [form.country, form.state, form.city, form.asn, form.session_type, form.sticky_duration]
@@ -96,9 +88,13 @@ export default function NewProxyForm({ availableGb }: { availableGb: number }) {
   const previewProto = form.protocol === 'socks5' ? 'socks5' : 'http'
   const previewLine = `${previewProto}://${previewUsername}:••••••••@proxy.globproxy.com:${previewPort}`
 
+  const overBudget = form.gb_allocated > availableGb
+  const gbLeftAfter = Math.max(0, availableGb - (form.gb_allocated || 0))
+  const gbMeterPct = availableGb > 0 ? Math.min(100, ((form.gb_allocated || 0) / availableGb) * 100) : 0
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (form.gb_allocated > availableGb) {
+    if (overBudget) {
       toast.error(`You only have ${availableGb.toFixed(2)}GB available`)
       return
     }
@@ -128,53 +124,70 @@ export default function NewProxyForm({ availableGb }: { availableGb: number }) {
   }
 
   return (
-    <div className="max-w-2xl">
-      <div className="mb-8">
+    <div className="max-w-5xl">
+      <div className="text-xs font-mono text-muted mb-3.5 flex items-center gap-1.5">
+        <button type="button" onClick={() => router.push('/dashboard/proxies')} className="hover:text-accent transition-colors">My Proxies</button>
+        <span>/</span>
+        <span className="text-ink">New session</span>
+      </div>
+
+      <div className="mb-6">
         <h1 className="font-display font-bold text-2xl text-ink">New proxy session</h1>
         <p className="text-muted text-sm mt-1">
-          Configure your proxy. You have <span className="text-accent font-medium">{availableGb.toFixed(2)} GB</span> available.
+          Configure your proxy — <span className="text-accent font-medium">{availableGb.toFixed(2)} GB</span> available to allocate.
         </p>
       </div>
 
-      <form onSubmit={handleSubmit} className="flex flex-col gap-5">
+      <form onSubmit={handleSubmit} className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-6 items-start">
 
-        {/* Label */}
-        <div className="bg-white border border-border rounded-xl p-5">
-          <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">Session label (optional)</label>
-          <input value={form.label} onChange={e => set('label', e.target.value)}
-            placeholder="e.g. US Scraper, UK Account Manager"
-            className="w-full bg-surface border border-border px-4 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors" />
-        </div>
+        {/* ============ FORM: one continuous card, numbered sections ============ */}
+        <div className="bg-white border border-border rounded-2xl overflow-hidden">
 
-        {/* Geo */}
-        <div className="bg-white border border-border rounded-xl p-5">
-          <div className="text-[10px] font-mono text-muted uppercase tracking-wider mb-3">Geo targeting</div>
-          <div className="grid grid-cols-1 gap-3">
-            <div>
-              <label className="block text-xs text-muted mb-1">Country</label>
-              <select value={form.country} onChange={e => setCountry(e.target.value)}
-                className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors">
-                <option value="">Any country</option>
-                {countryList.some(c => POPULAR_COUNTRY_CODES.has(c.code)) && (
-                  <optgroup label="Popular">
-                    {countryList.filter(c => POPULAR_COUNTRY_CODES.has(c.code)).map(c => (
-                      <option key={c.code} value={c.code}>{c.name}</option>
-                    ))}
-                  </optgroup>
-                )}
-                <optgroup label="All countries">
-                  {countryList.filter(c => !POPULAR_COUNTRY_CODES.has(c.code)).map(c => (
+          {/* 1. Label */}
+          <div className="px-7 py-6 border-b border-border">
+            <div className="flex items-baseline justify-between mb-3.5">
+              <div className="font-display font-semibold text-[15px] text-ink flex items-center gap-2">
+                <span className="font-mono text-[10px] text-muted border border-border rounded-md w-5 h-5 inline-flex items-center justify-center">1</span>
+                Label
+              </div>
+              <span className="text-[10.5px] font-mono text-muted">optional</span>
+            </div>
+            <input value={form.label} onChange={e => set('label', e.target.value)}
+              placeholder="e.g. US Scraper, UK Account Manager"
+              className="w-full bg-surface border border-border px-3.5 py-2.5 rounded-lg text-[13.5px] focus:outline-none focus:border-accent transition-colors" />
+          </div>
+
+          {/* 2. Location */}
+          <div className="px-7 py-6 border-b border-border">
+            <div className="font-display font-semibold text-[15px] text-ink flex items-center gap-2 mb-3.5">
+              <span className="font-mono text-[10px] text-muted border border-border rounded-md w-5 h-5 inline-flex items-center justify-center">2</span>
+              Location
+            </div>
+
+            <label className="block text-xs text-ink2 font-medium mb-1.5">Country</label>
+            <select value={form.country} onChange={e => setCountry(e.target.value)}
+              className="w-full bg-surface border border-border px-3.5 py-2.5 rounded-lg text-[13.5px] focus:outline-none focus:border-accent transition-colors">
+              <option value="">Any country</option>
+              {countryList.some(c => POPULAR_COUNTRY_CODES.has(c.code)) && (
+                <optgroup label="Popular">
+                  {countryList.filter(c => POPULAR_COUNTRY_CODES.has(c.code)).map(c => (
                     <option key={c.code} value={c.code}>{c.name}</option>
                   ))}
                 </optgroup>
-              </select>
-              {countryListError && (
-                <p className="text-xs text-red-600 mt-1">Couldn't load the country list — {countryListError}. Try refreshing the page.</p>
               )}
-            </div>
-            <div className="grid grid-cols-2 gap-3">
+              <optgroup label="All countries">
+                {countryList.filter(c => !POPULAR_COUNTRY_CODES.has(c.code)).map(c => (
+                  <option key={c.code} value={c.code}>{c.name}</option>
+                ))}
+              </optgroup>
+            </select>
+            {countryListError && (
+              <p className="text-xs text-red-600 mt-1">Couldn't load the country list — {countryListError}. Try refreshing the page.</p>
+            )}
+
+            <div className="grid grid-cols-2 gap-3 mt-3.5">
               <div>
-                <label className="block text-xs text-muted mb-1">State / Region <span className="text-muted">(optional)</span></label>
+                <label className="block text-xs text-ink2 font-medium mb-1.5">State / Region <span className="text-muted font-normal">(optional)</span></label>
                 <select value={form.state} onChange={e => setState(e.target.value)}
                   disabled={!form.country || geoLoading || !countryDetail || countryDetail.states.length === 0}
                   className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
@@ -191,7 +204,7 @@ export default function NewProxyForm({ availableGb }: { availableGb: number }) {
                 {geoError && <p className="text-xs text-red-600 mt-1">Couldn't load regions — {geoError}</p>}
               </div>
               <div>
-                <label className="block text-xs text-muted mb-1">City <span className="text-muted">(optional)</span></label>
+                <label className="block text-xs text-ink2 font-medium mb-1.5">City <span className="text-muted font-normal">(optional)</span></label>
                 <select value={form.city} onChange={e => set('city', e.target.value)}
                   disabled={!form.state || !selectedStateOption}
                   className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
@@ -203,106 +216,169 @@ export default function NewProxyForm({ availableGb }: { availableGb: number }) {
                 {!form.state && <p className="text-xs text-muted mt-1">Pick a region first</p>}
               </div>
             </div>
-            <div>
-              <label className="block text-xs text-muted mb-1">
-                ASN / ISP targeting <span className="text-muted">(optional)</span>
-              </label>
-              <input value={form.asn} onChange={e => set('asn', e.target.value.replace(/[^0-9]/g, ''))}
-                placeholder="e.g. 13868"
-                className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors" />
-              <p className="text-xs text-muted mt-1">Target a specific ISP by ASN number — look yours up at a public ASN lookup tool (e.g. bgp.he.net) if you're not sure of the number.</p>
-            </div>
-          </div>
-        </div>
 
-        {/* Protocol */}
-        <div className="bg-white border border-border rounded-xl p-5">
-          <div className="text-[10px] font-mono text-muted uppercase tracking-wider mb-3">Protocol</div>
-          <div className="flex gap-3">
-            {(['http', 'socks5'] as const).map(val => (
-              <button type="button" key={val} onClick={() => set('protocol', val)}
-                className={clsx('flex-1 p-3.5 rounded-xl border-2 text-left transition-all', form.protocol === val ? 'border-accent bg-accent-light' : 'border-border hover:border-accent/40')}>
-                <div className="font-medium text-sm text-ink">{val === 'socks5' ? 'SOCKS5' : 'HTTP / HTTPS'}</div>
-                <div className="text-xs text-muted mt-0.5">Port {getProxyPort(val, form.session_type)}</div>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Session type */}
-        <div className="bg-white border border-border rounded-xl p-5">
-          <div className="text-[10px] font-mono text-muted uppercase tracking-wider mb-3">Session type</div>
-          <div className="flex gap-3 mb-3">
-            {([['rotating','Rotating','New IP per request'],['sticky','Sticky','Same IP per session']] as const).map(([val, label, sub]) => (
-              <button type="button" key={val} onClick={() => set('session_type', val)}
-                className={clsx('flex-1 p-3.5 rounded-xl border-2 text-left transition-all', form.session_type === val ? 'border-accent bg-accent-light' : 'border-border hover:border-accent/40')}>
-                <div className="font-medium text-sm text-ink">{label}</div>
-                <div className="text-xs text-muted mt-0.5">{sub}</div>
-              </button>
-            ))}
-          </div>
-          {form.session_type === 'sticky' && (
-            <div>
-              <label className="block text-xs text-muted mb-1.5">Sticky duration</label>
-              <div className="flex gap-2">
-                {STICKY_DURATIONS.map(d => (
-                  <button type="button" key={d.value} onClick={() => set('sticky_duration', d.value)}
-                    className={clsx('flex-1 py-2 rounded-lg border text-xs font-mono transition-all', form.sticky_duration === d.value ? 'border-accent bg-accent-light text-accent' : 'border-border text-muted hover:border-accent/40')}>
-                    {d.label}
-                  </button>
-                ))}
+            {/* Advanced targeting — moved behind a disclosure since ASN is
+                used by a minority of sessions and was previously sharing
+                equal visual weight with country/state/city. */}
+            <button type="button" onClick={() => setAdvancedOpen(o => !o)}
+              className="flex items-center gap-1.5 text-xs font-mono text-accent mt-3.5">
+              <span className={clsx('inline-block transition-transform text-[10px]', advancedOpen && 'rotate-90')}>▶</span>
+              Advanced targeting (ASN / ISP)
+            </button>
+            {advancedOpen && (
+              <div className="mt-3">
+                <label className="block text-xs text-ink2 font-medium mb-1.5">ASN / ISP <span className="text-muted font-normal">(optional)</span></label>
+                <input value={form.asn} onChange={e => set('asn', e.target.value.replace(/[^0-9]/g, ''))}
+                  placeholder="e.g. 13868"
+                  className="w-full bg-surface border border-border px-3.5 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors" />
+                <p className="text-xs text-muted mt-1.5">Target a specific ISP by ASN number — look yours up at a public ASN lookup tool (e.g. bgp.he.net) if you're not sure of the number.</p>
               </div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
 
-        {/* Endpoints + GB */}
-        <div className="bg-white border border-border rounded-xl p-5">
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">Endpoints (1–10)</label>
-              <input type="number" min={1} max={10} value={form.endpoint_count}
-                onChange={e => set('endpoint_count', Math.min(10, Math.max(1, +e.target.value)))}
-                className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors" />
-              <p className="text-xs text-muted mt-1">Multiple endpoints for parallel connections</p>
+          {/* 3. Protocol & session type */}
+          <div className="px-7 py-6 border-b border-border">
+            <div className="font-display font-semibold text-[15px] text-ink flex items-center gap-2 mb-3.5">
+              <span className="font-mono text-[10px] text-muted border border-border rounded-md w-5 h-5 inline-flex items-center justify-center">3</span>
+              Protocol &amp; session type
             </div>
-            <div>
-              <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">GB to allocate</label>
-              <div className="relative">
-                <input type="number" required min={0.01} step={0.01} max={availableGb}
-                  value={form.gb_allocated}
-                  onChange={e => set('gb_allocated', +e.target.value)}
-                  className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors pr-20" />
-                <button type="button" onClick={() => set('gb_allocated', availableGb)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-mono text-accent bg-accent-light px-2 py-0.5 rounded hover:opacity-80 transition-opacity">
-                  Use all
+
+            <div className="grid grid-cols-2 gap-2.5">
+              {(['http', 'socks5'] as const).map(val => (
+                <button type="button" key={val} onClick={() => set('protocol', val)}
+                  className={clsx('p-3.5 rounded-xl border-[1.5px] text-left transition-all', form.protocol === val ? 'border-accent bg-accent-light' : 'border-border hover:border-accent/40')}>
+                  <div className="font-medium text-[13.5px] text-ink">{val === 'socks5' ? 'SOCKS5' : 'HTTP / HTTPS'}</div>
+                  <div className="text-[11.5px] font-mono text-muted mt-0.5">Port {getProxyPort(val, form.session_type)}</div>
                 </button>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2.5 mt-2.5">
+              {([['rotating', 'Rotating', 'New IP per request'], ['sticky', 'Sticky', 'Same IP per session']] as const).map(([val, label, sub]) => (
+                <button type="button" key={val} onClick={() => set('session_type', val)}
+                  className={clsx('p-3.5 rounded-xl border-[1.5px] text-left transition-all', form.session_type === val ? 'border-accent bg-accent-light' : 'border-border hover:border-accent/40')}>
+                  <div className="font-medium text-[13.5px] text-ink">{label}</div>
+                  <div className="text-[11.5px] font-mono text-muted mt-0.5">{sub}</div>
+                </button>
+              ))}
+            </div>
+
+            {form.session_type === 'sticky' && (
+              <div className="mt-3.5">
+                <label className="block text-xs text-ink2 font-medium mb-1.5">Sticky duration</label>
+                <div className="flex gap-1.5 flex-wrap">
+                  {STICKY_DURATIONS.map(d => (
+                    <button type="button" key={d.value} onClick={() => set('sticky_duration', d.value)}
+                      className={clsx('px-3.5 py-1.5 rounded-full border text-[11.5px] font-mono transition-all', form.sticky_duration === d.value ? 'border-accent bg-accent-light text-accent' : 'border-border text-ink2 hover:border-accent/40')}>
+                      {d.label}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <p className="text-xs text-muted mt-1">{availableGb.toFixed(2)} GB available</p>
+            )}
+          </div>
+
+          {/* 4. Sizing */}
+          <div className="px-7 py-6">
+            <div className="font-display font-semibold text-[15px] text-ink flex items-center gap-2 mb-3.5">
+              <span className="font-mono text-[10px] text-muted border border-border rounded-md w-5 h-5 inline-flex items-center justify-center">4</span>
+              Sizing
+            </div>
+            <div className="grid grid-cols-2 gap-3.5">
+              <div>
+                <label className="block text-xs text-ink2 font-medium mb-1.5">Endpoints <span className="text-muted font-normal">(1–10)</span></label>
+                <input type="number" min={1} max={10} value={form.endpoint_count}
+                  onChange={e => set('endpoint_count', Math.min(10, Math.max(1, +e.target.value)))}
+                  className="w-full bg-surface border border-border px-3.5 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors" />
+                <p className="text-xs text-muted mt-1.5">Multiple endpoints for parallel connections</p>
+              </div>
+              <div>
+                <label className="block text-xs text-ink2 font-medium mb-1.5">
+                  GB to allocate
+                  <button type="button" onClick={() => set('gb_allocated', availableGb)}
+                    className="ml-2 text-[10px] font-mono text-accent bg-accent-light px-2 py-0.5 rounded hover:opacity-80 transition-opacity align-middle">
+                    use all
+                  </button>
+                </label>
+                <div className="relative">
+                  <input type="number" required min={0.01} step={0.01}
+                    value={form.gb_allocated}
+                    onChange={e => set('gb_allocated', +e.target.value)}
+                    className="w-full bg-surface border border-border px-3.5 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors pr-11" />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11.5px] font-mono text-muted pointer-events-none">GB</span>
+                </div>
+                <p className="text-xs text-muted mt-1.5">{availableGb.toFixed(2)} GB available</p>
+              </div>
             </div>
           </div>
         </div>
 
-        {/* Live endpoint preview */}
-        <div className="bg-ink rounded-xl p-4">
-          <div className="text-[10px] font-mono text-white/40 uppercase tracking-widest mb-2">Live endpoint preview</div>
-          <div className="font-mono text-sm text-white/80 break-all leading-relaxed">{previewLine}</div>
-          {form.session_type === 'sticky' && form.endpoint_count > 1 && (
-            <div className="mt-2 text-[11px] font-mono text-white/40">
-              +{form.endpoint_count - 1} more endpoints, each with its own unique session ID
+        {/* ============ RECEIPT: sticky live summary + submit ============ */}
+        <div className="lg:sticky lg:top-6">
+          <div className="bg-ink rounded-2xl overflow-hidden text-white shadow-[0_12px_32px_rgba(15,17,20,.18)]">
+            <div className="px-6 pt-5 pb-4 border-b border-dashed border-white/[.14]">
+              <div className="text-[10px] font-mono uppercase tracking-widest text-white/40 mb-1.5">Session preview</div>
+              <div className="font-display font-semibold text-[17px]">{form.label || 'Untitled session'}</div>
             </div>
-          )}
-        </div>
 
-        <div className="flex gap-3">
-          <button type="submit" disabled={loading || form.gb_allocated > availableGb}
-            className="flex-1 bg-accent text-white py-3.5 rounded-xl text-sm font-medium hover:opacity-90 disabled:opacity-60 transition-opacity shadow-[0_2px_8px_rgba(0,87,255,.2)]">
-            {loading ? 'Creating session...' : `Create session — ${form.gb_allocated} GB`}
-          </button>
-          <button type="button" onClick={() => router.back()}
-            className="border border-border text-muted px-5 py-3.5 rounded-xl text-sm hover:text-ink transition-colors">
-            Cancel
-          </button>
+            <div className="px-6 py-4">
+              <div className="flex justify-between items-center py-2 text-[12.5px]">
+                <span className="font-mono text-[10.5px] uppercase tracking-wide text-white/45">Location</span>
+                <span className="font-medium text-white/90 text-right">
+                  {form.country ? [selectedCityName, selectedCountryName].filter(Boolean).join(', ') : 'Any location'}
+                </span>
+              </div>
+              <div className="flex justify-between items-center py-2 text-[12.5px]">
+                <span className="font-mono text-[10.5px] uppercase tracking-wide text-white/45">Protocol</span>
+                <span className="font-medium text-white/90">{form.protocol === 'socks5' ? 'SOCKS5' : 'HTTP / HTTPS'}</span>
+              </div>
+              <div className="flex justify-between items-center py-2 text-[12.5px]">
+                <span className="font-mono text-[10.5px] uppercase tracking-wide text-white/45">Type</span>
+                <span className="font-medium text-white/90">
+                  {form.session_type === 'sticky'
+                    ? `Sticky · ${form.sticky_duration >= 60 ? (form.sticky_duration / 60) + 'hr' : form.sticky_duration + 'min'}`
+                    : 'Rotating'}
+                </span>
+              </div>
+              <div className="flex justify-between items-center py-2 text-[12.5px]">
+                <span className="font-mono text-[10.5px] uppercase tracking-wide text-white/45">Endpoints</span>
+                <span className="font-medium text-white/90">{form.endpoint_count}</span>
+              </div>
+
+              <div className="bg-white/[.06] border border-white/10 rounded-lg px-3.5 py-3 my-3.5 font-mono text-[11px] text-white/75 break-all leading-relaxed">
+                <span className="block text-[9.5px] uppercase tracking-widest text-white/35 mb-1.5">Endpoint</span>
+                {previewLine}
+              </div>
+
+              <div className="mt-4 mb-1.5">
+                <div className="h-1.5 bg-white/[.12] rounded-full overflow-hidden">
+                  <div className={clsx('h-full rounded-full transition-all', overBudget ? 'bg-red-400' : 'bg-accent2')}
+                    style={{ width: `${gbMeterPct}%` }} />
+                </div>
+                <div className="flex justify-between text-[10px] font-mono text-white/45 mt-1.5">
+                  <span>{(form.gb_allocated || 0).toFixed(2)} GB allocated</span>
+                  <span>{gbLeftAfter.toFixed(2)} GB left after</span>
+                </div>
+              </div>
+
+              {overBudget && (
+                <div className="flex gap-1.5 items-start text-[11px] text-amber-400 bg-amber-400/[.14] px-2.5 py-2 rounded-lg mt-2.5 leading-relaxed">
+                  ⚠ <span>This exceeds your available balance.</span>
+                </div>
+              )}
+            </div>
+
+            <div className="px-6 pb-6 pt-1">
+              <button type="submit" disabled={loading || overBudget || (form.gb_allocated || 0) <= 0}
+                className="w-full bg-accent2 text-ink py-3 rounded-xl text-[13.5px] font-semibold hover:brightness-105 hover:-translate-y-0.5 disabled:opacity-40 disabled:hover:translate-y-0 transition-all">
+                {loading ? 'Creating session…' : `Create session — ${(form.gb_allocated || 0).toFixed(2)} GB`}
+              </button>
+              <button type="button" onClick={() => router.push('/dashboard/proxies')}
+                className="w-full text-center mt-2.5 text-xs text-white/40 hover:text-white/70 transition-colors">
+                Cancel
+              </button>
+            </div>
+          </div>
         </div>
 
       </form>

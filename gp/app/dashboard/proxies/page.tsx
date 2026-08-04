@@ -1,7 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import ProxyCard from '@/components/dashboard/ProxyCard'
+import ProxyList from '@/components/dashboard/ProxyList'
 
 export default async function ProxiesPage() {
   const supabase = await createClient()
@@ -27,10 +27,12 @@ export default async function ProxiesPage() {
   return (
     <div className="max-w-4xl">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
         <div>
           <h1 className="font-display font-bold text-2xl text-ink">My Proxies</h1>
-          <p className="text-muted text-sm mt-1">Manage your proxy sessions and credentials</p>
+          <p className="text-muted text-sm mt-1">
+            {creds?.length ?? 0} session{creds?.length === 1 ? '' : 's'} · manage credentials, endpoints, and sticky sessions
+          </p>
         </div>
         {available > 0 ? (
           <Link href="/dashboard/proxies/new"
@@ -45,35 +47,33 @@ export default async function ProxiesPage() {
         )}
       </div>
 
-      {/* Bandwidth summary bar */}
+      {/* Bandwidth strip — condensed to one row so the list starts higher on
+          the page; the full breakdown/CTA lives on the Overview page. */}
       {total > 0 && (
-        <div className="bg-white border border-border rounded-xl p-5 mb-6">
-          <div className="flex items-center justify-between mb-3">
-            <div className="text-sm font-medium text-ink">Bandwidth overview</div>
-            <div className="text-xs font-mono text-accent2 bg-accent2-light px-2.5 py-1 rounded-full">Never expires</div>
+        <div className="bg-white border border-border rounded-xl px-5 py-4 mb-5 flex items-center gap-7 flex-wrap">
+          {[
+            ['Total', `${total.toFixed(2)} GB`, 'text-ink'],
+            ['Allocated', `${used.toFixed(2)} GB`, 'text-amber-500'],
+            ['Available', `${available.toFixed(2)} GB`, 'text-accent2'],
+          ].map(([l, v, c]) => (
+            <div key={l as string} className="flex-shrink-0">
+              <div className="text-[9px] font-mono text-muted uppercase tracking-wider mb-0.5">{l}</div>
+              <div className={`font-display font-bold text-base tracking-tight ${c}`}>{v}</div>
+            </div>
+          ))}
+          <div className="flex-1 min-w-[160px]">
+            <div className="bg-surface rounded-full h-[7px] overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all duration-700 ${pct > 80 ? 'bg-red-400' : pct > 50 ? 'bg-amber-400' : 'bg-gradient-to-r from-accent to-sky-400'}`}
+                style={{ width: `${Math.min(pct, 100)}%` }}
+              />
+            </div>
+            <div className="flex justify-between text-[10.5px] font-mono text-muted mt-1">
+              <span>{pct.toFixed(1)}% allocated</span>
+              <span>{available.toFixed(2)} GB free to allocate</span>
+            </div>
           </div>
-          <div className="grid grid-cols-3 gap-4 mb-4">
-            {[
-              ['Total purchased', `${total.toFixed(2)} GB`, 'text-ink'],
-              ['Used / allocated', `${used.toFixed(2)} GB`, 'text-amber-500'],
-              ['Available', `${available.toFixed(2)} GB`, 'text-accent2'],
-            ].map(([l, v, c]) => (
-              <div key={l as string}>
-                <div className="text-[10px] font-mono text-muted uppercase tracking-wider mb-0.5">{l}</div>
-                <div className={`font-display font-bold text-xl tracking-tight ${c}`}>{v}</div>
-              </div>
-            ))}
-          </div>
-          <div className="bg-surface rounded-full h-2 overflow-hidden">
-            <div
-              className={`h-full rounded-full transition-all duration-700 ${pct > 80 ? 'bg-red-400' : pct > 50 ? 'bg-amber-400' : 'bg-gradient-to-r from-accent to-sky-400'}`}
-              style={{ width: `${Math.min(pct, 100)}%` }}
-            />
-          </div>
-          <div className="flex justify-between text-[11px] font-mono text-muted mt-1.5">
-            <span>{pct.toFixed(1)}% allocated</span>
-            <span>{available.toFixed(2)} GB free to allocate</span>
-          </div>
+          <div className="text-[10.5px] font-mono text-accent2 bg-accent2-light px-2.5 py-1 rounded-full flex-shrink-0">Never expires</div>
         </div>
       )}
 
@@ -92,13 +92,9 @@ export default async function ProxiesPage() {
         </div>
       )}
 
-      {/* Proxy cards */}
+      {/* Proxy list */}
       {creds && creds.length > 0 ? (
-        <div className="flex flex-col gap-4">
-          {creds.map((cred, i) => (
-            <ProxyCard key={cred.id} cred={cred} index={i} />
-          ))}
-        </div>
+        <ProxyList creds={creds} availableGb={available} />
       ) : total > 0 ? (
         <div className="bg-white border border-border rounded-xl p-12 text-center">
           <div className="text-3xl mb-3">⬡</div>
