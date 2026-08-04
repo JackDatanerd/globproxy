@@ -1,9 +1,11 @@
 'use client'
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { POPULAR_COUNTRIES, OTHER_COUNTRIES } from '@/lib/countries'
-import { POPULAR_US_STATES, OTHER_US_STATES } from '@/lib/usStates'
+import {
+  fetchCountryList, fetchCountryDetail, POPULAR_COUNTRY_CODES,
+  type CountryListItem, type CountryDetail,
+} from '@/lib/geoTargeting'
 import { buildProxyUsername, getProxyPort, validateTargeting } from '@/lib/proxyEndpoint'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
@@ -36,15 +38,48 @@ export default function NewProxyForm({ availableGb }: { availableGb: number }) {
 
   function set(k: string, v: any) { setForm(f => ({ ...f, [k]: v })) }
 
+  // Geo picker data — country list loads once on mount; the state/city
+  // tree for whichever country is selected loads on demand (see
+  // lib/geoTargeting.ts). Both are backed by Geonode's real supported
+  // locations, not hand-typed text, so a selection here can never end up
+  // being something Geonode doesn't recognize.
+  const [countryList, setCountryList] = useState<CountryListItem[]>([])
+  const [countryListError, setCountryListError] = useState<string | null>(null)
+  const [countryDetail, setCountryDetail] = useState<CountryDetail | null>(null)
+  const [geoLoading, setGeoLoading] = useState(false)
+  const [geoError, setGeoError] = useState<string | null>(null)
+
+  useEffect(() => {
+    fetchCountryList()
+      .then(setCountryList)
+      .catch(e => setCountryListError(e.message))
+  }, [])
+
   // State/city only mean anything with a country set — buildProxyUsername
   // silently drops them otherwise. Clearing them here means a user can
-  // never end up in that state through normal use of this form; a change
-  // partway through (pick a state, then switch back to "Any country")
-  // clears the now-meaningless value instead of leaving it to be silently
-  // ignored at submit time.
+  // never end up in that state through normal use of this form. This also
+  // clears state/city when switching between two real countries (not just
+  // back to "Any country") — a state/city picked for one country is never
+  // valid for another, so carrying it over would silently mismatch.
   function setCountry(v: string) {
-    setForm(f => (v ? { ...f, country: v } : { ...f, country: '', state: '', city: '' }))
+    setForm(f => ({ ...f, country: v, state: '', city: '' }))
+    setCountryDetail(null)
+    setGeoError(null)
+    if (!v) return
+    setGeoLoading(true)
+    fetchCountryDetail(v)
+      .then(setCountryDetail)
+      .catch(e => setGeoError(e.message))
+      .finally(() => setGeoLoading(false))
   }
+
+  // Picking a new state invalidates whatever city was picked under the
+  // previous state.
+  function setState(v: string) {
+    setForm(f => ({ ...f, state: v, city: '' }))
+  }
+
+  const selectedStateOption = countryDetail?.states.find(s => s.code === form.state) ?? null
 
   // Live endpoint preview — uses the same builder as ProxyCard and the v1
   // API, so this preview can never drift out of sync with what the customer
@@ -120,47 +155,52 @@ export default function NewProxyForm({ availableGb }: { availableGb: number }) {
               <select value={form.country} onChange={e => setCountry(e.target.value)}
                 className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors">
                 <option value="">Any country</option>
-                <optgroup label="Popular">
-                  {POPULAR_COUNTRIES.map(c => (
-                    <option key={c.code} value={c.code}>{c.name}</option>
-                  ))}
-                </optgroup>
+                {countryList.some(c => POPULAR_COUNTRY_CODES.has(c.code)) && (
+                  <optgroup label="Popular">
+                    {countryList.filter(c => POPULAR_COUNTRY_CODES.has(c.code)).map(c => (
+                      <option key={c.code} value={c.code}>{c.name}</option>
+                    ))}
+                  </optgroup>
+                )}
                 <optgroup label="All countries">
-                  {OTHER_COUNTRIES.map(c => (
+                  {countryList.filter(c => !POPULAR_COUNTRY_CODES.has(c.code)).map(c => (
                     <option key={c.code} value={c.code}>{c.name}</option>
                   ))}
                 </optgroup>
               </select>
+              {countryListError && (
+                <p className="text-xs text-red-600 mt-1">Couldn't load the country list — {countryListError}. Try refreshing the page.</p>
+              )}
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs text-muted mb-1">State / Region <span className="text-muted">(optional)</span></label>
-                {form.country === 'US' ? (
-                  <select value={form.state} onChange={e => set('state', e.target.value)} disabled={!form.country}
-                    className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-                    <option value="">Any</option>
-                    <optgroup label="Popular">
-                      {POPULAR_US_STATES.map(s => (
-                        <option key={s.value} value={s.value}>{s.label}</option>
-                      ))}
-                    </optgroup>
-                    <optgroup label="All states">
-                      {OTHER_US_STATES.map(s => (
-                        <option key={s.value} value={s.value}>{s.label}</option>
-                      ))}
-                    </optgroup>
-                  </select>
-                ) : (
-                  <input value={form.state} onChange={e => set('state', e.target.value)} disabled={!form.country}
-                    placeholder={form.country ? 'e.g. england' : 'Pick a country first'}
-                    className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed" />
+                <select value={form.state} onChange={e => setState(e.target.value)}
+                  disabled={!form.country || geoLoading || !countryDetail || countryDetail.states.length === 0}
+                  className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                  <option value="">Any</option>
+                  {countryDetail?.states.map(s => (
+                    <option key={s.code} value={s.code}>{s.name}</option>
+                  ))}
+                </select>
+                {!form.country && <p className="text-xs text-muted mt-1">Pick a country first</p>}
+                {form.country && geoLoading && <p className="text-xs text-muted mt-1">Loading regions…</p>}
+                {form.country && !geoLoading && countryDetail && countryDetail.states.length === 0 && (
+                  <p className="text-xs text-muted mt-1">No region-level targeting available for this country</p>
                 )}
+                {geoError && <p className="text-xs text-red-600 mt-1">Couldn't load regions — {geoError}</p>}
               </div>
               <div>
                 <label className="block text-xs text-muted mb-1">City <span className="text-muted">(optional)</span></label>
-                <input value={form.city} onChange={e => set('city', e.target.value)} disabled={!form.country}
-                  placeholder={form.country ? 'e.g. new york' : 'Pick a country first'}
-                  className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed" />
+                <select value={form.city} onChange={e => set('city', e.target.value)}
+                  disabled={!form.state || !selectedStateOption}
+                  className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                  <option value="">Any</option>
+                  {selectedStateOption?.cities.map(c => (
+                    <option key={c.code} value={c.code}>{c.name}</option>
+                  ))}
+                </select>
+                {!form.state && <p className="text-xs text-muted mt-1">Pick a region first</p>}
               </div>
             </div>
             <div>
