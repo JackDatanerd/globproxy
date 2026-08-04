@@ -52,7 +52,11 @@ export async function POST(req: Request) {
       callback_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard?payment=success&reference=${reference}`,
     })
 
-    return NextResponse.json({ url: txn.authorization_url })
+    return NextResponse.json({
+      url: txn.authorization_url,
+      access_code: txn.access_code,
+      reference,
+    })
   } catch (err: any) {
     console.error('Checkout error:', err)
     return NextResponse.json({ error: err.message }, { status: 500 })

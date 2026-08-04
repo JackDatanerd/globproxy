@@ -2,6 +2,7 @@
 import { useEffect, useRef } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import toast from 'react-hot-toast'
+import { verifyPayment } from '@/lib/verifyPayment'
 
 export default function PaymentVerifier() {
   const params = useSearchParams()
@@ -16,23 +17,14 @@ export default function PaymentVerifier() {
 
     async function verify() {
       const toastId = toast.loading('Confirming your payment...')
-      try {
-        const res = await fetch('/api/verify-payment', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reference }),
-        })
-        const data = await res.json()
-        if (data.success) {
-          toast.success('Bandwidth credited to your account!', { id: toastId })
-          // Clean URL and refresh to show updated balance
-          router.replace('/dashboard')
-          router.refresh()
-        } else {
-          toast.error(data.error || 'Payment verification failed', { id: toastId })
-        }
-      } catch {
-        toast.error('Could not verify payment', { id: toastId })
+      const result = await verifyPayment(reference!)
+      if (result.success) {
+        toast.success('Bandwidth credited to your account!', { id: toastId })
+        // Clean URL and refresh to show updated balance
+        router.replace('/dashboard')
+        router.refresh()
+      } else {
+        toast.error(result.error || 'Payment verification failed', { id: toastId })
       }
     }
 

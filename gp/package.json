@@ -11,6 +11,7 @@
     "deploy:manual-DANGER": "opennextjs-cloudflare build && npx wrangler deploy .open-next/worker.js"
   },
   "dependencies": {
+    "@paystack/inline-js": "^2.24.0",
     "@supabase/ssr": "^0.6.1",
     "@supabase/supabase-js": "^2.49.4",
     "clsx": "^2.1.1",
@@ -22,6 +23,7 @@
   "devDependencies": {
     "@opennextjs/cloudflare": "^1.4.0",
     "@types/node": "^22",
+    "@types/paystack__inline-js": "^1.0.3",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "autoprefixer": "^10.4.21",

@@ -1,17 +1,22 @@
 'use client'
 import { useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { PLANS } from '@/lib/plans'
+import { verifyPayment } from '@/lib/verifyPayment'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
 export default function BuyPage() {
+  const router = useRouter()
   const [plan, setPlan] = useState(PLANS[1])
   const [loading, setLoading] = useState(false)
+  const [statusText, setStatusText] = useState<string | null>(null)
 
   async function handleBuy() {
     if (plan.custom) { window.location.href='mailto:sales@globproxy.com?subject=Scale Plan Inquiry'; return }
     setLoading(true)
+    setStatusText('Starting checkout...')
     try {
       const { data: { session } } = await createClient().auth.getSession()
       const res = await fetch('/api/checkout', {
@@ -20,10 +25,64 @@ export default function BuyPage() {
         body: JSON.stringify({ plan: plan.slug }),
       })
       const data = await res.json()
-      if (data.url) window.location.href = data.url
-      else toast.error(data.error || 'Something went wrong')
-    } catch { toast.error('Failed to start checkout') }
-    finally { setLoading(false) }
+      if (!data.access_code && !data.url) { toast.error(data.error || 'Something went wrong'); setLoading(false); setStatusText(null); return }
+
+      // Primary path: open Paystack's checkout inline, in a modal, so the
+      // customer never leaves the site. resumeTransaction() completes the
+      // *same* transaction initialize() already created server-side (same
+      // amount, reference, metadata) — it doesn't create a new one, so
+      // there's no separate amount/reference logic to keep in sync here.
+      if (data.access_code) {
+        try {
+          const { default: Paystack } = await import('@paystack/inline-js')
+          const popup = new Paystack()
+          setStatusText('Waiting for payment...')
+          popup.resumeTransaction(data.access_code, {
+            onSuccess: async (tranx) => {
+              setStatusText('Confirming payment...')
+              const result = await verifyPayment(tranx.reference || data.reference)
+              if (result.success) {
+                toast.success('Bandwidth credited to your account!')
+                router.push('/dashboard')
+                router.refresh()
+              } else {
+                // Charge succeeded on Paystack's side but our verify call
+                // failed (network blip, etc.) — the webhook will still
+                // land and credit it independently, so this isn't lost,
+                // just not confirmed on-screen yet.
+                toast.error(result.error || "Payment went through, but we couldn't confirm it here yet. It'll appear on your dashboard shortly — contact support if it doesn't.")
+              }
+              setLoading(false)
+              setStatusText(null)
+            },
+            onCancel: () => {
+              setLoading(false)
+              setStatusText(null)
+            },
+            onError: (err) => {
+              toast.error(err?.message || 'Payment failed to load')
+              setLoading(false)
+              setStatusText(null)
+            },
+          })
+          return
+        } catch (e) {
+          // Inline library failed to load (ad blocker, offline CDN, etc.)
+          // — fall through to the redirect flow below instead of stranding
+          // the customer with no way to pay.
+          console.error('Paystack inline-js failed to load, falling back to redirect:', e)
+        }
+      }
+
+      if (data.url) { window.location.href = data.url; return }
+      toast.error('Could not start the Paystack checkout. Please try again.')
+      setLoading(false)
+      setStatusText(null)
+    } catch {
+      toast.error('Failed to start checkout')
+      setLoading(false)
+      setStatusText(null)
+    }
   }
 
   return (
@@ -72,7 +131,7 @@ export default function BuyPage() {
 
       <button onClick={handleBuy} disabled={loading}
         className="w-full bg-accent text-white py-4 rounded-xl font-medium text-base shadow-[0_2px_12px_rgba(0,87,255,.25)] hover:-translate-y-0.5 hover:shadow-[0_4px_20px_rgba(0,87,255,.35)] transition-all disabled:opacity-60 disabled:transform-none">
-        {loading ? 'Redirecting to Paystack...' : plan.custom ? 'Contact sales →' : `Pay $${plan.total.toFixed(2)} via Paystack →`}
+        {loading ? (statusText || 'Please wait...') : plan.custom ? 'Contact sales →' : `Pay $${plan.total.toFixed(2)} via Paystack →`}
       </button>
       <p className="text-center text-xs text-muted mt-3 font-mono">Secured by Paystack · No subscription · GB never expires</p>
     </div>
