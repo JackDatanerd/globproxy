@@ -25,14 +25,15 @@
 -- reported (it's still useful as "how much of what you've committed have
 -- you actually consumed"), it just isn't subtracted a second time.
 --
--- Known follow-up, not addressed here: deleting a partially-used
--- credential currently releases its FULL gb_allocated back via
--- release_credential_bandwidth regardless of how much of it was actually
--- consumed (gb_used). That means delete+recreate can currently let a user
--- reclaim GB they already consumed. That's a separate, pre-existing
--- design question (how consumption should be treated on deletion) and
--- is intentionally out of scope for this fix, which only addresses the
--- double-subtraction.
+-- Previously noted here as a known, unaddressed follow-up: deleting a
+-- partially-used credential released its FULL gb_allocated back via
+-- release_credential_bandwidth regardless of gb_used, letting delete then
+-- recreate reclaim already-consumed GB. Fixed in
+-- app/api/dashboard/proxies/[id]/route.ts, which now releases only the
+-- unused portion (gb_allocated minus a live Geonode usage check, falling
+-- back to the synced gb_used column). No further schema change needed —
+-- release_credential_bandwidth already took the release amount as a
+-- caller-supplied parameter, so the fix lives entirely in the caller.
 
 alter table public.bandwidth_accounts drop column if exists available_gb;
 alter table public.bandwidth_accounts add column available_gb numeric

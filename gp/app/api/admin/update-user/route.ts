@@ -48,14 +48,19 @@ export async function POST(req: Request) {
   const { error } = await supabase.from('profiles').update(updates).eq('id', user_id)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
-  // A role downgrade or API-access revocation should invalidate any
-  // existing session/token immediately rather than letting it ride out
-  // naturally — same reasoning as suspend-user killing sessions. Granting
-  // access doesn't need this.
-  const isRevocation = action === 'make_user' || (action === 'toggle_api_access' && target.api_access)
-  if (isRevocation) {
-    await supabase.auth.admin.signOut(user_id, 'others').catch(() => {})
-  }
+  // Previously tried to kill the target's session here via
+  // auth.admin.signOut(user_id, 'others') — same bug as suspend-user had:
+  // signOut() takes a session JWT, not a user_id (see auth-js's own type
+  // signature), so this always failed silently and did nothing. Unlike
+  // suspend-user, this isn't a ban — the user should still be able to log
+  // in as whatever they now are — so ban_duration isn't the right fix
+  // here. Turns out no fix is needed: every authorization check in this
+  // app (RLS policies, requireApiAccess, every admin/*  route) reads
+  // role/api_access/is_suspended fresh from `profiles` per request rather
+  // than trusting a JWT claim, so a downgraded user's still-live session
+  // is already fully constrained by the new values the moment this
+  // update() above commits — there's nothing a stale token lets them do
+  // that the fresh DB read wouldn't already block.
 
   return NextResponse.json({ success: true, updates })
 }

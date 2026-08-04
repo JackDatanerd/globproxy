@@ -1,4 +1,5 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
+import { requireActiveUser } from '@/lib/apiAuth'
 import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
@@ -14,6 +15,13 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Reseller access required' }, { status: 403 })
     }
 
+    // Wasn't checked at all before — neither for the sender nor the
+    // recipient below — despite is_suspended being enforced on nearly
+    // every other write route. A suspended reseller could otherwise keep
+    // allocating their existing stock to clients indefinitely.
+    const senderSuspended = await requireActiveUser(user.id)
+    if (senderSuspended) return senderSuspended
+
     // ── Payload validation ──────────────────────────────────────────────────
     const { recipient_email, gb_allocated } = await req.json()
     if (!recipient_email || !gb_allocated || gb_allocated <= 0) {
@@ -28,7 +36,7 @@ export async function POST(req: Request) {
     // ── 1. Find recipient ───────────────────────────────────────────────────
     const { data: recipientProfile, error: recipientError } = await adminSupabase
       .from('profiles')
-      .select('id, email, is_deleted')
+      .select('id, email, is_deleted, is_suspended')
       .eq('email', recipient_email.toLowerCase())
       .single()
 
@@ -40,6 +48,13 @@ export async function POST(req: Request) {
     }
     if (recipientProfile.is_deleted) {
       return NextResponse.json({ error: 'Recipient account no longer exists.' }, { status: 404 })
+    }
+    // Low risk either way (worst case a suspended recipient just can't use
+    // the bandwidth until reinstated), but inconsistent with the
+    // suspension model everywhere else if left unchecked, and it avoids a
+    // reseller burning real stock on an account that can't act on it yet.
+    if (recipientProfile.is_suspended) {
+      return NextResponse.json({ error: 'Recipient account is currently suspended.' }, { status: 403 })
     }
     if (recipientProfile.id === user.id) {
       return NextResponse.json({ error: 'Cannot allocate bandwidth to yourself.' }, { status: 400 })

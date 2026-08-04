@@ -84,12 +84,20 @@ async function runUsageSync() {
   // this was the actual cause of the 500s. See listAllSubUsersUsage.
   const usageMap = await listAllSubUsersUsage()
 
+  // Single pass instead of filter() calling find() on the same array per
+  // item (O(n²) — fine at today's scale, but needlessly so). The previous
+  // gb_used is already sitting right there on `cred` inside this same
+  // map() step; no need to look it back up per item afterward.
   const changes = (creds ?? [])
-    .map(cred => ({ id: cred.id, gb_used: usageMap.get(cred.geonode_sub_user_id!) }))
-    .filter((c): c is { id: string; gb_used: number } =>
-      c.gb_used !== undefined &&
-      Math.abs(c.gb_used - ((creds ?? []).find(x => x.id === c.id)?.gb_used ?? 0)) > 0.001
+    .map(cred => ({
+      id: cred.id,
+      gb_used: usageMap.get(cred.geonode_sub_user_id!),
+      prevGbUsed: cred.gb_used ?? 0,
+    }))
+    .filter((c): c is { id: string; gb_used: number; prevGbUsed: number } =>
+      c.gb_used !== undefined && Math.abs(c.gb_used - c.prevGbUsed) > 0.001
     )
+    .map(({ id, gb_used }) => ({ id, gb_used }))
 
   // Single bulk update instead of one DB round trip per changed credential.
   if (changes.length > 0) {

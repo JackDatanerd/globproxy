@@ -1,4 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/server'
+import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { NextResponse } from 'next/server'
 
 // Shared gate for every app/api/v1/* route.
@@ -22,6 +23,27 @@ async function sha256Hex(input: string): Promise<string> {
 }
 
 const UNAUTHORIZED = NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+// Was previously checked ad-hoc, inconsistently, per-route (present in
+// admin/delete-user, admin/suspend-user, auth/reset, auth/signup,
+// dashboard/api-keys, user/delete-account, and v1 via requireApiAccess
+// below — but missing from checkout, dashboard/proxies POST, and
+// dashboard/sessions). middleware.ts only signs a suspended user out on
+// page navigation; it explicitly excludes /api, so a suspended user with
+// an unexpired access token could hit those three routes directly and
+// keep purchasing bandwidth / creating credentials. Call this at the top
+// of any route that writes on a logged-in user's behalf.
+export async function requireActiveUser(userId: string): Promise<NextResponse | null> {
+  const supabase = await createAdminClient()
+  const { data } = await supabase.from('profiles').select('is_suspended').eq('id', userId).single()
+  if (data?.is_suspended) {
+    return NextResponse.json(
+      { error: 'This account has been suspended. Contact support@globproxy.com.' },
+      { status: 403 }
+    )
+  }
+  return null
+}
 
 export async function requireApiAccess(req: Request): Promise<ApiAuthResult> {
   const token = req.headers.get('authorization')?.replace('Bearer ', '')
@@ -79,8 +101,20 @@ export async function requireApiAccess(req: Request): Promise<ApiAuthResult> {
     }
   }
 
-  // Fire-and-forget usage tracking — not worth failing the request over.
-  supabase.from('api_keys').update({ last_used_at: new Date().toISOString() }).eq('id', apiKey.id).then(() => {}, () => {})
+  // Fire-and-forget usage tracking — not worth failing the request over,
+  // but a bare un-awaited promise like this can get cancelled by the
+  // Workers runtime the moment the response is returned, since nothing
+  // tells it the invocation isn't done yet. waitUntil() keeps the
+  // invocation alive until this actually completes, without making the
+  // caller wait for it. Falls back to the old fire-and-forget behavior if
+  // the Cloudflare context isn't available (e.g. local dev outside
+  // wrangler) rather than throwing.
+  const updateLastUsed = supabase.from('api_keys').update({ last_used_at: new Date().toISOString() }).eq('id', apiKey.id).then(() => {}, () => {})
+  try {
+    getCloudflareContext({ async: false }).ctx.waitUntil(updateLastUsed)
+  } catch {
+    // Not running in a Workers context — nothing to attach to, just let it run.
+  }
 
   return { ok: true, user: { id: profile.id, email: profile.email }, supabase }
 }

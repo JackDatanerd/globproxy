@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { requireActiveUser } from '@/lib/apiAuth'
 import { createSubUser, deleteSubUser } from '@/lib/geonode'
 import { validateTargeting } from '@/lib/proxyEndpoint'
 import { NextResponse } from 'next/server'
@@ -14,6 +15,9 @@ export async function POST(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const suspended = await requireActiveUser(user.id)
+  if (suspended) return suspended
 
   const body = await req.json()
   const {

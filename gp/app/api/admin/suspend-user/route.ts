@@ -35,9 +35,22 @@ export async function POST(req: Request) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
-  // Kill active sessions
+  // Kill active sessions. auth.admin.signOut() takes a session JWT, not a
+  // user_id (confirmed against @supabase/auth-js's own type signature) — a
+  // user_id here always failed, silently, meaning suspended users' existing
+  // tokens kept working until natural expiry despite the code comment
+  // implying otherwise. There's no simple "kill all sessions for this
+  // user_id" call in the admin API, so use ban_duration instead: it blocks
+  // new logins and token refreshes immediately, which combined with
+  // is_suspended now being checked on every write route (see
+  // lib/apiAuth.ts requireActiveUser) means even a still-valid access
+  // token can't do anything meaningful until it naturally expires within
+  // the hour. Reversible on unsuspend below, unlike the permanent ban used
+  // for account deletion.
   if (isSuspending) {
-    await supabase.auth.admin.signOut(user_id, 'others')
+    await supabase.auth.admin.updateUserById(user_id, { ban_duration: '876000h' }).catch(() => {})
+  } else {
+    await supabase.auth.admin.updateUserById(user_id, { ban_duration: 'none' }).catch(() => {})
   }
 
   // Send email

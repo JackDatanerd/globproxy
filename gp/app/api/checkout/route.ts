@@ -1,4 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/server'
+import { requireActiveUser } from '@/lib/apiAuth'
 import { initializeTransaction, generateReference } from '@/lib/paystack'
 import { getPurchasablePlan } from '@/lib/plans'
 import { NextResponse } from 'next/server'
@@ -11,6 +12,9 @@ export async function POST(req: Request) {
     const supabase = await createAdminClient()
     const { data: { user } } = await supabase.auth.getUser(token)
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+    const suspended = await requireActiveUser(user.id)
+    if (suspended) return suspended
 
     const { plan } = await req.json()
     const planData = getPurchasablePlan(plan)

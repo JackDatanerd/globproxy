@@ -94,8 +94,26 @@ export default function ProxyCard({ cred, index }: Props) {
   // IP verify curl command
   const verifyCurl = `curl -x ${cred.protocol === 'socks5' ? 'socks5' : 'http'}://${user}:${pass}@${host}:${port} https://ipinfo.io/json`
 
-  // Integration snippets
-  const pySnippet = `import requests
+  // Integration snippets — branch on cred.protocol the same way verifyCurl
+  // above already does. Previously these two were hardcoded to http://
+  // regardless of protocol, so a SOCKS5 credential's Python/Node snippets
+  // silently produced code that doesn't route through SOCKS5 at all (only
+  // the Browser extension snippet's *label* reflected the real protocol).
+  // socks5h:// (not socks5://) is intentional for both — the 'h' means DNS
+  // resolution happens through the proxy too, which is what you want for a
+  // residential proxy (avoids DNS leaking your real location/ISP).
+  const isSocks5 = cred.protocol === 'socks5'
+
+  const pySnippet = isSocks5 ? `# pip install "requests[socks]"
+import requests
+
+proxies = {
+    "http":  "socks5h://${user}:${pass}@${host}:${port}",
+    "https": "socks5h://${user}:${pass}@${host}:${port}",
+}
+
+response = requests.get("https://ipinfo.io/json", proxies=proxies)
+print(response.json())  # shows your proxy IP and location` : `import requests
 
 proxies = {
     "http":  "http://${user}:${pass}@${host}:${port}",
@@ -105,7 +123,16 @@ proxies = {
 response = requests.get("https://ipinfo.io/json", proxies=proxies)
 print(response.json())  # shows your proxy IP and location`
 
-  const nodeSnippet = `const { HttpsProxyAgent } = require("https-proxy-agent");
+  const nodeSnippet = isSocks5 ? `// npm install socks-proxy-agent
+const { SocksProxyAgent } = require("socks-proxy-agent");
+const fetch = require("node-fetch");
+
+const agent = new SocksProxyAgent(
+  "socks5h://${user}:${pass}@${host}:${port}"
+);
+
+const res = await fetch("https://ipinfo.io/json", { agent });
+console.log(await res.json()); // shows proxy IP and location` : `const { HttpsProxyAgent } = require("https-proxy-agent");
 const fetch = require("node-fetch");
 
 const agent = new HttpsProxyAgent(

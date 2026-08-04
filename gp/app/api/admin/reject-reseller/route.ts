@@ -21,6 +21,11 @@ export async function POST(req: Request) {
     const { userId } = body
     if (!userId) return NextResponse.json({ error: 'User ID missing' }, { status: 400 })
 
+    const { data: existing } = await supabaseAdmin.from('profiles').select('reseller_status').eq('id', userId).single()
+    if (existing?.reseller_status !== 'pending') {
+      return NextResponse.json({ error: 'This application has already been resolved.' }, { status: 409 })
+    }
+
     // Reject user - revert status
     const { data: applicant, error: updateErr } = await supabaseAdmin
       .from('profiles')

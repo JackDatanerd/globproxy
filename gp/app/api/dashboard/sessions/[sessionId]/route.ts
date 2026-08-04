@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { requireActiveUser } from '@/lib/apiAuth'
 import { NextResponse } from 'next/server'
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ sessionId: string }> }) {
@@ -6,6 +7,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ sessio
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const suspended = await requireActiveUser(user.id)
+  if (suspended) return suspended
 
   const body = await req.json().catch(() => ({}))
   const update: Record<string, any> = {}
@@ -36,6 +40,9 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ sessi
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const suspended = await requireActiveUser(user.id)
+  if (suspended) return suspended
 
   const { data: deletedRows, error } = await supabase
     .from('proxy_sessions')
