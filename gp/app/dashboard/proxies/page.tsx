@@ -53,7 +53,7 @@ export default async function ProxiesPage() {
         <div className="bg-white border border-border rounded-xl px-5 py-4 mb-5 flex items-center gap-7 flex-wrap">
           {[
             ['Total', `${total.toFixed(2)} GB`, 'text-ink'],
-            ['Allocated', `${used.toFixed(2)} GB`, 'text-amber-500'],
+            ['Used', `${used.toFixed(2)} GB`, 'text-amber-500'],
             ['Available', `${available.toFixed(2)} GB`, 'text-accent2'],
           ].map(([l, v, c]) => (
             <div key={l as string} className="flex-shrink-0">
@@ -69,7 +69,7 @@ export default async function ProxiesPage() {
               />
             </div>
             <div className="flex justify-between text-[10.5px] font-mono text-muted mt-1">
-              <span>{pct.toFixed(1)}% allocated</span>
+              <span>{pct.toFixed(1)}% used</span>
               <span>{available.toFixed(2)} GB free to allocate</span>
             </div>
           </div>

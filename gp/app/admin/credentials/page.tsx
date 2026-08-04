@@ -49,7 +49,7 @@ export default async function AdminCredentialsPage() {
         <table className="w-full">
           <thead>
             <tr className="border-b border-border bg-surface">
-              {['User', 'Label', 'Country', 'GB', 'Status', 'Created'].map(h => (
+              {['User', 'Label', 'Country', 'Allocated', 'Used', 'Status', 'Created'].map(h => (
                 <th key={h} className="text-left px-5 py-3 text-[10px] font-mono text-muted uppercase tracking-widest">{h}</th>
               ))}
             </tr>
@@ -57,7 +57,7 @@ export default async function AdminCredentialsPage() {
           <tbody>
             {(creds ?? []).length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-5 py-12 text-center text-sm text-muted">
+                <td colSpan={7} className="px-5 py-12 text-center text-sm text-muted">
                   No credentials yet.
                 </td>
               </tr>
@@ -68,7 +68,8 @@ export default async function AdminCredentialsPage() {
                 </td>
                 <td className="px-5 py-3 text-sm text-ink">{c.label || '—'}</td>
                 <td className="px-5 py-3 text-xs font-mono text-muted">{c.country || 'Any'}</td>
-                <td className="px-5 py-3 font-mono text-sm text-ink">{c.gb_allocated}</td>
+                <td className="px-5 py-3 font-mono text-sm text-ink">{Number(c.gb_allocated ?? 0).toFixed(2)}</td>
+                <td className="px-5 py-3 font-mono text-sm text-ink">{Number(c.gb_used ?? 0).toFixed(2)}</td>
                 <td className="px-5 py-3">
                   <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full ${
                     c.status === 'active' ? 'bg-accent2-light text-accent2' :

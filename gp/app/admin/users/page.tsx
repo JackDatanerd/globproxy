@@ -1,5 +1,7 @@
+import Link from 'next/link'
 import { createAdminClient } from '@/lib/supabase/server'
 import AdminUserControls from '@/components/admin/AdminUserControls'
+import AdminSyncUsageButton from '@/components/admin/AdminSyncUsageButton'
 
 export default async function AdminUsersPage() {
   const supabase = await createAdminClient()
@@ -17,16 +19,19 @@ export default async function AdminUsersPage() {
   // 2. Fetch bandwidth separately
   const userIds = users?.map(u => u.id) ?? []
   const { data: bwAccounts } = userIds.length > 0
-    ? await supabase.from('bandwidth_accounts').select('user_id, available_gb, total_gb').in('user_id', userIds)
+    ? await supabase.from('bandwidth_accounts').select('user_id, available_gb, total_gb, used_gb').in('user_id', userIds)
     : { data: [] }
     
   const bwMap = Object.fromEntries((bwAccounts ?? []).map(b => [b.user_id, b]))
 
   return (
     <div className="max-w-6xl">
-      <div className="mb-8">
-        <h1 className="font-display font-bold text-2xl text-ink">All Users</h1>
-        <p className="text-muted text-sm mt-1">{users?.length ?? 0} registered accounts</p>
+      <div className="mb-8 flex items-start justify-between">
+        <div>
+          <h1 className="font-display font-bold text-2xl text-ink">All Users</h1>
+          <p className="text-muted text-sm mt-1">{users?.length ?? 0} registered accounts</p>
+        </div>
+        <AdminSyncUsageButton label="Sync all usage now" />
       </div>
 
       <div className="bg-white border border-border rounded-xl overflow-hidden">
@@ -34,7 +39,7 @@ export default async function AdminUsersPage() {
           <thead>
             {/* ... Keep your existing thead ... */}
             <tr className="border-b border-border bg-surface">
-              {['User', 'Role', 'Stock', 'Status', 'API', 'Joined', 'Actions'].map(h => (
+              {['User', 'Role', 'Total', 'Used', 'Available', 'Status', 'API', 'Joined', 'Actions'].map(h => (
                 <th key={h} className="text-left px-5 py-3 text-[10px] font-mono text-muted uppercase tracking-widest">{h}</th>
               ))}
             </tr>
@@ -46,7 +51,9 @@ export default async function AdminUsersPage() {
               return (
                 <tr key={u.id} className={`${i < users.length - 1 ? 'border-b border-border' : ''} hover:bg-surface transition-colors`}>
                   <td className="px-5 py-3.5">
-                    <div className="text-sm font-medium text-ink">{u.full_name || '—'}</div>
+                    <Link href={`/admin/users/${u.id}`} className="text-sm font-medium text-ink hover:text-accent transition-colors">
+                      {u.full_name || '—'}
+                    </Link>
                     <div className="text-xs font-mono text-muted">{u.email}</div>
                   </td>
                   <td className="px-5 py-3.5">
@@ -56,10 +63,9 @@ export default async function AdminUsersPage() {
                       'bg-surface text-muted border border-border'
                     }`}>{u.role}</span>
                   </td>
-                  <td className="px-5 py-3.5 font-mono text-sm text-ink">
-                    {/* Fixed to use 'bw' instead of array index */}
-                    {(bw?.available_gb ?? 0).toFixed(1)} GB
-                  </td>
+                  <td className="px-5 py-3.5 font-mono text-sm text-ink">{(bw?.total_gb ?? 0).toFixed(1)} GB</td>
+                  <td className="px-5 py-3.5 font-mono text-sm text-ink">{(bw?.used_gb ?? 0).toFixed(1)} GB</td>
+                  <td className="px-5 py-3.5 font-mono text-sm text-ink">{(bw?.available_gb ?? 0).toFixed(1)} GB</td>
                   {/* ... Keep the rest of your existing td elements ... */}
                   <td className="px-5 py-3.5">
                     {u.is_suspended ? <span className="text-[10px] font-mono bg-red-50 text-red-500 px-2.5 py-1 rounded-full">Suspended</span> : <span className="text-[10px] font-mono bg-accent2-light text-accent2 px-2.5 py-1 rounded-full">Active</span>}

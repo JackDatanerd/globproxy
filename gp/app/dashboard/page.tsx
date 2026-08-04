@@ -61,7 +61,7 @@ export default async function DashboardPage() {
               </div>
               <div className="flex justify-between text-[10.5px] font-mono text-white/40 mt-1.5">
                 <span>{used.toFixed(2)} GB used</span>
-                <span>{pct.toFixed(1)}% allocated</span>
+                <span>{pct.toFixed(1)}% used</span>
               </div>
             </div>
           )}

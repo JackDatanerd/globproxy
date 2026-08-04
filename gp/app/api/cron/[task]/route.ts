@@ -1,5 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/server'
-import { listAllSubUsersUsage } from '@/lib/geonode'
+import { syncAllUsage } from '@/lib/usageSync'
 import { computeStockStatus } from '@/lib/stockStatus'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { NextResponse } from 'next/server'
@@ -72,47 +72,11 @@ async function runStockCheck() {
 }
 
 // ── Usage sync ───────────────────────────────────────────────────
-async function runUsageSync() {
-  const supabase = await createAdminClient()
-  const { data: creds } = await supabase
-    .from('proxy_credentials')
-    .select('id, geonode_sub_user_id, gb_used')
-    .eq('status', 'active')
-    .not('geonode_sub_user_id', 'is', null)
-
-  // ONE (or a few, paginated) Geonode call instead of one per credential —
-  // this was the actual cause of the 500s. See listAllSubUsersUsage.
-  const usageMap = await listAllSubUsersUsage()
-
-  // Single pass instead of filter() calling find() on the same array per
-  // item (O(n²) — fine at today's scale, but needlessly so). The previous
-  // gb_used is already sitting right there on `cred` inside this same
-  // map() step; no need to look it back up per item afterward.
-  const changes = (creds ?? [])
-    .map(cred => ({
-      id: cred.id,
-      gb_used: usageMap.get(cred.geonode_sub_user_id!),
-      prevGbUsed: cred.gb_used ?? 0,
-    }))
-    .filter((c): c is { id: string; gb_used: number; prevGbUsed: number } =>
-      c.gb_used !== undefined && Math.abs(c.gb_used - c.prevGbUsed) > 0.001
-    )
-    .map(({ id, gb_used }) => ({ id, gb_used }))
-
-  // Single bulk update instead of one DB round trip per changed credential.
-  if (changes.length > 0) {
-    const { error } = await supabase.rpc('bulk_update_credential_usage', { updates: changes })
-    if (error) console.error('bulk_update_credential_usage failed:', error)
-  }
-
-  // Single bulk recalculation instead of looping every account with a
-  // select + update each — that loop was a second, independent source of
-  // subrequest bloat on top of the Geonode-call issue above.
-  const { error: recalcErr } = await supabase.rpc('recalculate_bandwidth_accounts')
-  if (recalcErr) console.error('recalculate_bandwidth_accounts failed:', recalcErr)
-
-  return { updated_credentials: changes.length }
-}
+// Implementation lives in lib/usageSync.ts — shared with the admin
+// "sync now" button (app/api/admin/sync-usage) so there is exactly one
+// place that decides how gb_used gets reconciled from Geonode, not two
+// that can quietly diverge.
+const runUsageSync = syncAllUsage
 
 // ── User bandwidth alerts ─────────────────────────────────────────
 // Each account only ever gets ONE email per threshold (80%, 95%) until
