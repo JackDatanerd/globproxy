@@ -24,7 +24,25 @@ export default function BuyPage() {
         headers: { 'Content-Type':'application/json', 'Authorization':`Bearer ${session?.access_token}` },
         body: JSON.stringify({ plan: plan.slug }),
       })
-      const data = await res.json()
+
+      // Read as text first, not res.json() directly — a Cloudflare/WAF-level
+      // block or a platform-level crash returns an HTML page, not JSON, and
+      // res.json() throwing on that would land in the catch below with zero
+      // detail about what actually came back. Keeping the raw text (even if
+      // parsing fails) means a real repro tells us plainly what broke
+      // instead of falling through to a generic message every time.
+      const raw = await res.text()
+      let data: any
+      try {
+        data = JSON.parse(raw)
+      } catch {
+        console.error('[checkout] non-JSON response', { status: res.status, body: raw.slice(0, 500) })
+        toast.error(`Checkout failed (server returned status ${res.status}, not JSON — check console for details)`)
+        setLoading(false)
+        setStatusText(null)
+        return
+      }
+
       if (!data.access_code && !data.url) { toast.error(data.error || 'Something went wrong'); setLoading(false); setStatusText(null); return }
 
       // Primary path: open Paystack's checkout inline, in a modal, so the
@@ -78,8 +96,9 @@ export default function BuyPage() {
       toast.error('Could not start the Paystack checkout. Please try again.')
       setLoading(false)
       setStatusText(null)
-    } catch {
-      toast.error('Failed to start checkout')
+    } catch (e: any) {
+      console.error('[checkout] unexpected client-side error', e)
+      toast.error(e?.message ? `Failed to start checkout: ${e.message}` : 'Failed to start checkout — check your connection and try again')
       setLoading(false)
       setStatusText(null)
     }
