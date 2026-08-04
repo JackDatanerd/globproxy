@@ -263,6 +263,7 @@ begin
   new.api_access            := old.api_access;
   new.is_deleted            := old.is_deleted;
   new.deleted_at            := old.deleted_at;
+  new.email                 := old.email; -- see migration 0011 — the sync trigger below is how email changes actually land
 
   return new;
 end;
@@ -271,6 +272,34 @@ $$;
 create trigger protect_privileged_profile_columns
   before update on public.profiles
   for each row execute procedure public.protect_privileged_profile_columns();
+
+-- Keeps profiles.email in sync with the real login email (auth.users.email)
+-- after a user changes it through Supabase's normal email-change flow.
+-- This is the ONLY path that's allowed to move profiles.email post-signup —
+-- protect_privileged_profile_columns() above pins it for every other
+-- caller. Runs with auth.uid() null (no request JWT attached to an
+-- auth.users-triggered update), which is exactly the bypass condition that
+-- function already grants to service-role/trigger writes. See migration
+-- 0011 for the full rationale.
+create or replace function public.sync_profile_email()
+returns trigger language plpgsql security definer as $$
+begin
+  if new.email is distinct from old.email then
+    update public.profiles set email = new.email, updated_at = now() where id = new.id;
+  end if;
+  return new;
+end;
+$$;
+
+create trigger on_auth_user_email_updated
+  after update of email on auth.users
+  for each row execute procedure public.sync_profile_email();
+
+-- Case-insensitive uniqueness — every lookup in this app that queries
+-- profiles by email (signup dedupe, password reset, reseller/allocate's
+-- recipient lookup) does .eq('email', x.toLowerCase()).single() and
+-- assumes exactly one match.
+create unique index if not exists profiles_email_unique_idx on public.profiles (lower(email));
 
 -- Bandwidth
 create policy "Own bandwidth" on public.bandwidth_accounts for select using (auth.uid() = user_id);

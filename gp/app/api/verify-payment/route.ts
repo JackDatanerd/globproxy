@@ -36,6 +36,18 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true, already_paid: true })
     }
 
+    // Same gap as the webhook had (see app/api/webhooks/paystack/route.ts):
+    // only a 'pending' order should ever be creditable. Without this, a
+    // 'cancelled' or 'failed' order whose stale Paystack reference still
+    // verifies as successful would get credited here too, leaving it
+    // permanently mislabeled in billing history despite being paid.
+    if (order.payment_status !== 'pending') {
+      console.error('[verify-payment] order is not pending — refusing to credit', {
+        order_id: order.id, status: order.payment_status,
+      })
+      return NextResponse.json({ error: 'This order is no longer available for payment.' }, { status: 400 })
+    }
+
     // Verify with Paystack directly
     const txn = await verifyTransaction(reference)
     if (txn.status !== 'success') {

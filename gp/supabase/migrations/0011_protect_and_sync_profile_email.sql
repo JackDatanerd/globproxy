@@ -1,9 +1,9 @@
 -- ============================================================
 -- 0011 — profiles.email: sync it, protect it
 -- Safe to run against the live DB: every statement is idempotent
--- (CREATE OR REPLACE / DROP ... IF EXISTS before CREATE), except the
--- unique index at the very bottom — see the note above it before running
--- this in production.
+-- (CREATE OR REPLACE / DROP ... IF EXISTS before CREATE / IF NOT EXISTS),
+-- so this whole file can be re-run top to bottom even if part of it
+-- already applied.
 -- ============================================================
 
 -- ── 1. Nothing kept profiles.email in sync with the real login email ──
@@ -101,11 +101,19 @@ where p.id = u.id
 -- insensitive to match how every one of those lookups already queries
 -- (.eq('email', x.toLowerCase())).
 --
--- NOTE: if step 3's backfill (or the pre-existing writable-email bug this
--- migration closes) already left two profiles sharing an email, this
--- index creation will fail with a duplicate-key error. If that happens,
--- find the collision first:
---   select lower(email), count(*) from public.profiles group by 1 having count(*) > 1;
--- then re-point/rename one of the affected rows' email and re-run just
--- this last statement.
-create unique index if not exists profiles_email_unique_idx on public.profiles (lower(email));
+-- PARTIAL index: admin/delete-user and user/delete-account both
+-- intentionally anonymise a deleted account's email to the literal string
+-- '[deleted]' — by design, every deleted account ends up with that exact
+-- same value, which is not a real collision (this was confirmed live: the
+-- first attempt at this index failed with
+-- `Key (lower(email))=([deleted]) is duplicated`). A plain unique index
+-- would reject that legitimate case, or worse, block a second account
+-- from ever being deleted once one '[deleted]' row already existed.
+-- Excluding that placeholder — rather than excluding on is_deleted, which
+-- would leave the placeholder string itself uncovered if that flag were
+-- ever out of sync — keeps the constraint scoped to real, live addresses
+-- only, which is what every lookup above actually needs uniqueness on.
+drop index if exists public.profiles_email_unique_idx;
+create unique index profiles_email_unique_idx
+  on public.profiles (lower(email))
+  where email <> '[deleted]';

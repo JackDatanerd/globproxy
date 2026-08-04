@@ -64,6 +64,23 @@ export async function POST(req: Request) {
         return NextResponse.json({ received: true })
       }
 
+      // Only a 'pending' order should ever be credited. Previously the only
+      // guard here was the 'paid' check above — an order sitting in
+      // 'cancelled' (e.g. api/checkout auto-cancels a user's other pending
+      // orders when they start a new checkout) or 'failed' (cron cleanup)
+      // would still fall through and get credited if Paystack later fired
+      // charge.success for it (a stale checkout tab completed after the
+      // order moved on). Not a way to get bandwidth without paying —
+      // amountMatchesOrder + verifyTransaction below still require a real,
+      // matching payment — but it left orders permanently mislabeled
+      // ('cancelled' in billing history while actually credited).
+      if (order.payment_status !== 'pending') {
+        console.error('[webhook] order is not pending — refusing to credit', {
+          order_id, status: order.payment_status,
+        })
+        return NextResponse.json({ received: true })
+      }
+
       // Cross-check what Paystack actually charged against what the order
       // expects, rather than trusting status:success + metadata alone.
       if (!amountMatchesOrder(amount, order.amount_usd)) {

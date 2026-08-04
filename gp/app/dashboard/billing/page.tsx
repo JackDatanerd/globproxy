@@ -26,14 +26,24 @@ export default function BillingPage() {
   async function cancelOrder(orderId: string) {
     setCancelling(orderId)
     const sb = createClient()
-    const { error } = await sb
+    // .select() here is load-bearing, not decorative — Supabase does NOT
+    // error on an update that matches 0 rows (RLS silently filtering, or
+    // the order having already left 'pending' — paid, or cancelled from
+    // another tab). Without it, a no-op update and a real one both come
+    // back as `{ error: null }`, so this could show "Order cancelled" while
+    // leaving the row untouched. Same pattern already used elsewhere in
+    // this app (admin/suspend-user, dashboard/proxies/[id] DELETE, etc.).
+    const { data: updated, error } = await sb
       .from('orders')
       .update({ payment_status: 'cancelled' })
       .eq('id', orderId)
       .eq('payment_status', 'pending') // safety — only cancel if still pending
+      .select('id')
 
     if (error) {
       toast.error('Failed to cancel order')
+    } else if (!updated || updated.length === 0) {
+      toast.error('This order can no longer be cancelled — refresh to see its current status.')
     } else {
       toast.success('Order cancelled')
       setOrders(prev =>
