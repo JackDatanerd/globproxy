@@ -216,6 +216,144 @@ returns void language sql security definer as $$
     set total_gb = public.bandwidth_accounts.total_gb + excluded.total_gb;
 $$;
 
+-- Reserve/release a credential's cap out of allocated_gb at creation/delete
+-- time — see migration 0007/0009 for the full rationale (available_gb is
+-- total_gb - allocated_gb; this is what keeps a burst of credential
+-- creations from each passing a stale balance check). auth.uid() is null
+-- for the service-role/admin client (trusted, app code gates those
+-- callers); for the authenticated role calling this directly — which is
+-- the legitimate path from app/api/dashboard/proxies' own session client —
+-- the target account must be the caller's own. See migration 0012 for why
+-- this check exists: security definer bypasses RLS, so without it any
+-- logged-in user could pass someone else's user_id here directly.
+create or replace function public.reserve_credential_bandwidth(p_user_id uuid, p_gb numeric)
+returns void language plpgsql security definer as $$
+declare
+  v_updated numeric;
+begin
+  if auth.uid() is not null and auth.uid() <> p_user_id then
+    raise exception 'Not authorized to reserve bandwidth for another account.' using errcode = '42501';
+  end if;
+
+  if p_gb is null or p_gb <= 0 then
+    raise exception 'gb_allocated must be greater than 0';
+  end if;
+
+  update public.bandwidth_accounts
+  set allocated_gb = allocated_gb + p_gb
+  where user_id = p_user_id
+    and (total_gb - allocated_gb) >= p_gb
+  returning allocated_gb into v_updated;
+
+  if v_updated is null then
+    raise exception 'Insufficient bandwidth in your account.' using errcode = 'P0001';
+  end if;
+end;
+$$;
+
+create or replace function public.release_credential_bandwidth(p_user_id uuid, p_gb numeric)
+returns void language plpgsql security definer as $$
+begin
+  if auth.uid() is not null and auth.uid() <> p_user_id then
+    raise exception 'Not authorized to release bandwidth for another account.' using errcode = '42501';
+  end if;
+
+  if p_gb is null or p_gb <= 0 then
+    return;
+  end if;
+  update public.bandwidth_accounts
+  set allocated_gb = greatest(0, allocated_gb - p_gb)
+  where user_id = p_user_id;
+end;
+$$;
+
+-- Bulk usage-sync helpers — see migration 0010. Only ever called from
+-- lib/usageSync.ts via the admin (service_role) client.
+create or replace function public.bulk_update_credential_usage(updates jsonb)
+returns void language plpgsql security definer as $$
+begin
+  update public.proxy_credentials pc
+  set gb_used = (u->>'gb_used')::numeric
+  from jsonb_array_elements(updates) as u
+  where pc.id = (u->>'id')::uuid;
+end;
+$$;
+
+create or replace function public.recalculate_bandwidth_accounts()
+returns void language plpgsql security definer as $$
+begin
+  update public.bandwidth_accounts ba
+  set used_gb = coalesce(sub.total, 0)
+  from (
+    select user_id, sum(gb_used) as total
+    from public.proxy_credentials
+    where status = 'active'
+    group by user_id
+  ) sub
+  where ba.user_id = sub.user_id;
+
+  update public.bandwidth_accounts ba
+  set used_gb = 0
+  where used_gb <> 0
+    and not exists (
+      select 1 from public.proxy_credentials pc
+      where pc.user_id = ba.user_id and pc.status = 'active'
+    );
+end;
+$$;
+
+-- ── PROXY SESSIONS ────────────────────────────────────────────
+-- Persisted, user-managed sticky sessions — see migration 0002.
+create table public.proxy_sessions (
+  id              uuid default uuid_generate_v4() primary key,
+  credential_id   uuid references public.proxy_credentials(id) on delete cascade not null,
+  user_id         uuid references public.profiles(id) on delete cascade not null,
+  session_token   text not null,
+  label           text not null default 'Session',
+  pinned          boolean not null default false,
+  collapsed       boolean not null default false,
+  terminated_at   timestamp with time zone,
+  created_at      timestamp with time zone default now()
+);
+
+create index proxy_sessions_credential_id_idx on public.proxy_sessions(credential_id);
+create index proxy_sessions_user_id_idx on public.proxy_sessions(user_id);
+
+alter table public.proxy_sessions enable row level security;
+
+create policy "Users can view their own sessions"
+  on public.proxy_sessions for select using (auth.uid() = user_id);
+create policy "Users can create their own sessions"
+  on public.proxy_sessions for insert with check (auth.uid() = user_id);
+create policy "Users can update their own sessions"
+  on public.proxy_sessions for update using (auth.uid() = user_id);
+create policy "Users can delete their own sessions"
+  on public.proxy_sessions for delete using (auth.uid() = user_id);
+
+-- ── API KEYS ──────────────────────────────────────────────────
+-- See migration 0005 — durable, hashed, revocable API keys.
+create table public.api_keys (
+  id           uuid default uuid_generate_v4() primary key,
+  user_id      uuid references public.profiles(id) on delete cascade not null,
+  key_hash     text not null unique,
+  key_prefix   text not null,
+  label        text not null default 'Default key',
+  created_at   timestamp with time zone default now(),
+  last_used_at timestamp with time zone,
+  revoked_at   timestamp with time zone
+);
+
+create index api_keys_user_id_idx on public.api_keys(user_id);
+
+alter table public.api_keys enable row level security;
+
+create policy "Users can view own api keys"
+  on public.api_keys for select using (auth.uid() = user_id);
+create policy "Users can revoke own api keys"
+  on public.api_keys for update
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id and revoked_at is not null);
+
 -- ── ROW LEVEL SECURITY ────────────────────────────────────────
 alter table public.profiles           enable row level security;
 alter table public.bandwidth_accounts enable row level security;
@@ -371,3 +509,38 @@ create policy "Admin settings" on public.platform_settings
 -- Banned emails - admin read only
 create policy "Admin can read banned emails" on public.banned_emails for select
   using (exists (select 1 from public.profiles where id = auth.uid() and role = 'admin'));
+
+-- ── LOCK DOWN RPC EXECUTE GRANTS ────────────────────────────────
+-- See migration 0012 for the full rationale: every security-definer
+-- function above bypasses RLS by design, and Postgres/Supabase both
+-- default new functions to PUBLIC-executable unless explicitly revoked —
+-- without this section, any authenticated user could call these directly
+-- (e.g. credit_bandwidth to mint free bandwidth) regardless of the
+-- ownership/role checks in application code. reserve_credential_bandwidth
+-- and release_credential_bandwidth are genuinely called from the user's
+-- own browser session (app/api/dashboard/proxies), so they keep
+-- `authenticated`, backed by the auth.uid()-vs-p_user_id check inside each
+-- function above; everything else is service_role only.
+revoke all on function public.reserve_credential_bandwidth(uuid, numeric) from public;
+grant execute on function public.reserve_credential_bandwidth(uuid, numeric) to authenticated, service_role;
+
+revoke all on function public.release_credential_bandwidth(uuid, numeric) from public;
+grant execute on function public.release_credential_bandwidth(uuid, numeric) to authenticated, service_role;
+
+revoke all on function public.credit_bandwidth(uuid, numeric) from public;
+grant execute on function public.credit_bandwidth(uuid, numeric) to service_role;
+
+revoke all on function public.allocate_reseller_bandwidth(uuid, uuid, numeric) from public;
+grant execute on function public.allocate_reseller_bandwidth(uuid, uuid, numeric) to service_role;
+
+revoke all on function public.bulk_update_credential_usage(jsonb) from public;
+grant execute on function public.bulk_update_credential_usage(jsonb) to service_role;
+
+revoke all on function public.recalculate_bandwidth_accounts() from public;
+grant execute on function public.recalculate_bandwidth_accounts() to service_role;
+
+-- Any function created after this point defaults to service_role-only —
+-- closes the gap for the next RPC function someone adds without thinking
+-- about grants. Explicit opt-in required for authenticated/anon access.
+alter default privileges in schema public revoke execute on functions from public;
+alter default privileges in schema public grant execute on functions to service_role;

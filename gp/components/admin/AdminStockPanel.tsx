@@ -9,7 +9,15 @@ export default function AdminStockPanel() {
   const [reloading, setReloading] = useState(false)
   const [autoReload, setAutoReload] = useState(false)
   const [threshold, setThreshold] = useState(10)
-  const [reloadAmt, setReloadAmt] = useState(500)
+  // Previously one `reloadAmt` state backed both the one-time "Manual
+  // reload" input and the persisted "Auto-reload amount" setting — typing
+  // a number into either field and then triggering the other action (a
+  // manual reload, or "Save settings") silently overwrote the other value
+  // with whatever was currently sitting in the shared field. Split into
+  // two so they're actually independent, matching what the two labeled
+  // inputs already implied to the user.
+  const [manualReloadGb, setManualReloadGb] = useState(500)
+  const [autoReloadAmount, setAutoReloadAmount] = useState(500)
 
   useEffect(() => { loadAll() }, [])
 
@@ -20,7 +28,7 @@ export default function AdminStockPanel() {
       if (s.key==='geonode_stock') { try { setStock(JSON.parse(s.value)) } catch {} }
       if (s.key==='auto_reload_enabled') setAutoReload(s.value==='true')
       if (s.key==='auto_reload_threshold_gb') setThreshold(Number(s.value))
-      if (s.key==='auto_reload_amount_gb') setReloadAmt(Number(s.value))
+      if (s.key==='auto_reload_amount_gb') setAutoReloadAmount(Number(s.value))
     })
   }
 
@@ -37,10 +45,10 @@ export default function AdminStockPanel() {
   async function manualReload() {
     setReloading(true)
     const { data: { session } } = await createClient().auth.getSession()
-    const res = await fetch('/api/admin/reload-stock', { method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${session?.access_token}`}, body: JSON.stringify({ gb_amount: reloadAmt }) })
+    const res = await fetch('/api/admin/reload-stock', { method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${session?.access_token}`}, body: JSON.stringify({ gb_amount: manualReloadGb }) })
     const data = await res.json()
     if (data.error) toast.error(data.error)
-    else { toast.success(`${reloadAmt}GB reloaded`); await syncStock() }
+    else { toast.success(`${manualReloadGb}GB reloaded`); await syncStock() }
     setReloading(false)
   }
 
@@ -49,7 +57,7 @@ export default function AdminStockPanel() {
     await Promise.all([
       sb.from('platform_settings').upsert({key:'auto_reload_enabled',value:String(autoReload)},{onConflict:'key'}),
       sb.from('platform_settings').upsert({key:'auto_reload_threshold_gb',value:String(threshold)},{onConflict:'key'}),
-      sb.from('platform_settings').upsert({key:'auto_reload_amount_gb',value:String(reloadAmt)},{onConflict:'key'}),
+      sb.from('platform_settings').upsert({key:'auto_reload_amount_gb',value:String(autoReloadAmount)},{onConflict:'key'}),
     ])
     toast.success('Settings saved')
   }
@@ -122,10 +130,10 @@ export default function AdminStockPanel() {
       <div className="mb-5 p-4 bg-surface border border-border rounded-xl">
         <div className="text-xs font-medium text-ink mb-3">Manual reload</div>
         <div className="flex gap-3 items-center">
-          <input type="number" value={reloadAmt} onChange={e=>setReloadAmt(+e.target.value)} min={100} step={100}
+          <input type="number" value={manualReloadGb} onChange={e=>setManualReloadGb(+e.target.value)} min={100} step={100}
             className="w-28 bg-white border border-border px-3 py-2 rounded-lg text-sm font-mono focus:outline-none focus:border-accent" />
           <span className="text-sm text-muted">GB</span>
-          <span className="text-xs text-muted font-mono">≈ ${(reloadAmt*0.49).toFixed(2)}</span>
+          <span className="text-xs text-muted font-mono">≈ ${(manualReloadGb*0.49).toFixed(2)}</span>
           <button onClick={manualReload} disabled={reloading} className="ml-auto bg-accent text-white px-4 py-2 rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-60">
             {reloading ? 'Reloading...' : 'Reload now →'}
           </button>
@@ -141,7 +149,7 @@ export default function AdminStockPanel() {
         </div>
         {autoReload && (
           <div className="flex flex-col gap-2.5 mb-3">
-            {[['Alert threshold',threshold,(v:number)=>setThreshold(v),'GB remaining'],['Reload amount',reloadAmt,(v:number)=>setReloadAmt(v),'GB']].map(([l,v,fn,unit])=>(
+            {[['Alert threshold',threshold,(v:number)=>setThreshold(v),'GB remaining'],['Reload amount',autoReloadAmount,(v:number)=>setAutoReloadAmount(v),'GB']].map(([l,v,fn,unit])=>(
               <div key={l as string} className="flex items-center gap-3">
                 <label className="text-xs text-muted w-28">{l as string}</label>
                 <input type="number" value={v as number} onChange={e=>(fn as Function)(+e.target.value)} min={5}
