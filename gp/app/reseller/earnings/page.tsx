@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
+import { formatGb } from '@/lib/format'
 
 export default async function EarningsPage() {
   const supabase = await createClient()
@@ -21,7 +22,7 @@ export default async function EarningsPage() {
         <p className="text-muted text-sm mt-1">Track your bandwidth allocation and activity</p>
       </div>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        {[['Stock available',`${(bw?.available_gb??0).toFixed(1)} GB`,'text-accent'],['Total allocated',`${totalAllocated.toFixed(1)} GB`,'text-ink'],['Active clients',String(active.length),'text-accent2'],['Pending payment',String(pending.length),'text-yellow-500']].map(([l,v,c])=>(
+        {[['Stock available',`${formatGb(bw?.available_gb)} GB`,'text-accent'],['Total allocated',`${formatGb(totalAllocated)} GB`,'text-ink'],['Active clients',String(active.length),'text-accent2'],['Pending payment',String(pending.length),'text-yellow-500']].map(([l,v,c])=>(
           <div key={l} className="bg-white border border-border rounded-xl p-5">
             <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-2">{l}</div>
             <div className={`font-display text-3xl font-bold ${c}`}>{v}</div>

@@ -3,6 +3,7 @@ import { useState, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { buildProxyUsername, getProxyPort, genSessionId } from '@/lib/proxyEndpoint'
+import { formatGb, formatPct } from '@/lib/format'
 import SessionManager from '@/components/dashboard/SessionManager'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
@@ -201,8 +202,8 @@ console.log(await res.json()); // shows proxy IP and location`
               <div className={clsx('h-full rounded-full', usageFillColor)} style={{ width: `${Math.min(pct, 100)}%` }} />
             </div>
             <div className="flex justify-between text-[10px] font-mono text-muted mt-1">
-              <span>{gbUsed.toFixed(1)} / {gbAllocated} GB</span>
-              <span>{pct.toFixed(0)}%</span>
+              <span>{formatGb(gbUsed)} / {formatGb(gbAllocated)} GB</span>
+              <span>{formatPct(gbUsed, gbAllocated, 0)}%</span>
             </div>
           </div>
         )}

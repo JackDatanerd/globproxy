@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { Suspense } from 'react'
 import PaymentVerifier from '@/components/PaymentVerifier'
+import { formatGb, formatPct } from '@/lib/format'
 
 export default async function DashboardPage() {
   const supabase = await createClient()
@@ -48,9 +49,9 @@ export default async function DashboardPage() {
             <div>
               <div className="text-[10px] font-mono uppercase tracking-widest text-white/40">Bandwidth left</div>
               <div className="font-display font-bold text-[40px] sm:text-[44px] leading-tight tracking-tight mt-1">
-                {available.toFixed(2)}<span className="text-lg sm:text-xl font-medium text-white/50 ml-1.5">GB</span>
+                {formatGb(available)}<span className="text-lg sm:text-xl font-medium text-white/50 ml-1.5">GB</span>
               </div>
-              <div className="text-xs text-white/55 mt-0.5">of {total.toFixed(2)} GB purchased</div>
+              <div className="text-xs text-white/55 mt-0.5">of {formatGb(total)} GB purchased</div>
             </div>
             <div className="text-[10px] font-mono text-accent2 bg-accent2/[.14] px-2.5 py-1 rounded-full flex-shrink-0">Never expires</div>
           </div>
@@ -60,8 +61,8 @@ export default async function DashboardPage() {
                 <div className="h-full rounded-full bg-gradient-to-r from-accent2 to-teal-300" style={{ width: `${Math.min(pct, 100)}%` }} />
               </div>
               <div className="flex justify-between text-[10.5px] font-mono text-white/40 mt-1.5">
-                <span>{used.toFixed(2)} GB used</span>
-                <span>{pct.toFixed(1)}% used</span>
+                <span>{formatGb(used)} GB used</span>
+                <span>{formatPct(used, total)}% used</span>
               </div>
             </div>
           )}
@@ -81,7 +82,7 @@ export default async function DashboardPage() {
           <div className="bg-white border border-border rounded-2xl px-5 py-4 flex items-center">
             <div>
               <div className="text-[9.5px] font-mono uppercase tracking-widest text-muted mb-1">Total purchased, all time</div>
-              <div className="font-display font-bold text-[22px] text-ink">{total.toFixed(1)} <span className="text-[13px] font-mono text-muted font-normal">GB</span></div>
+              <div className="font-display font-bold text-[22px] text-ink">{formatGb(total)} <span className="text-[13px] font-mono text-muted font-normal">GB</span></div>
             </div>
           </div>
         </div>

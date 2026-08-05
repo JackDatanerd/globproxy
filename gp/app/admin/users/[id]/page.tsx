@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { createAdminClient } from '@/lib/supabase/server'
 import AdminSyncUsageButton from '@/components/admin/AdminSyncUsageButton'
+import { formatGb } from '@/lib/format'
 
 export default async function AdminUserDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
@@ -52,7 +53,7 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
         {stats.map(([label, value, color]) => (
           <div key={label} className="bg-white border border-border rounded-xl p-4">
             <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-1">{label}</div>
-            <div className={`font-display text-xl font-bold ${color}`}>{Number(value).toFixed(2)} GB</div>
+            <div className={`font-display text-xl font-bold ${color}`}>{formatGb(Number(value))} GB</div>
           </div>
         ))}
       </div>
@@ -88,9 +89,9 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
                 <td className="px-5 py-3 text-xs font-mono text-muted">
                   {[c.city, c.state, c.country].filter(Boolean).join(', ') || 'Any'}
                 </td>
-                <td className="px-5 py-3 font-mono text-sm text-ink">{Number(c.gb_allocated ?? 0).toFixed(2)}</td>
+                <td className="px-5 py-3 font-mono text-sm text-ink">{formatGb(c.gb_allocated)}</td>
                 <td className="px-5 py-3 font-mono text-sm text-ink">
-                  {Number(c.gb_used ?? 0).toFixed(2)}
+                  {formatGb(c.gb_used)}
                   {c.status !== 'active' && <span className="text-muted text-xs ml-1">(last known)</span>}
                 </td>
                 <td className="px-5 py-3">

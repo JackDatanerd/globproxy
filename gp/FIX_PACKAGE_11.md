@@ -139,8 +139,37 @@ state+city-together format), dependency list (small, current, nothing
 flagged). No `dangerouslySetInnerHTML`, no `eval`, no client-side secret
 leakage anywhere in `app/`/`components/`.
 
-`npx tsc --noEmit` and `npx next build` both clean, zero errors, after all
-changes above.
+## Follow-up: display formatting consistency
+
+Separate from the fixes above — raised after a screenshot review flagged
+`ProxyCard.tsx` showing "0.1 / 0.05 GB · 100%" on a session row, which
+reads as used-exceeding-allocated. Traced it back: it's a display bug, not
+a data bug. `gbUsed` was rounded to 1 decimal while `gbAllocated` printed
+raw/unformatted right next to it — for a credential sitting at ~0.0501 GB
+used against a 0.05 GB allocation (basically fully used), that rounds to
+"0.1" next to "0.05" even though the real numbers are sane and the 100%
+figure is correct. Same root cause behind "0.9 GB" vs "0.92 GB" for the
+same `available_gb` value on different pages — every page had picked its
+own `toFixed()` depth independently, with no shared convention.
+
+Added `lib/format.ts` — `formatGb()` (2 decimals, canonical) and
+`formatPct(used, total, decimals)` (clamped to 100, matching what every
+progress bar already does for its width — a few percentage *labels* had
+forgotten to clamp the same way the bar next to them did, which would've
+shown e.g. a full red bar next to "142%"). Applied across every GB/percent
+display in the app: `ProxyCard.tsx`, `dashboard/usage`, `dashboard/proxies`,
+`dashboard/page.tsx` (which had the same value at two different
+precisions on one page), `dashboard/billing`, `reseller/users`,
+`reseller/earnings`, `ResellerUsersList.tsx`, and the admin pages
+(`admin/users`, `admin/users/[id]`, `admin/orders`, `admin/page.tsx`,
+`admin/resellers`, `admin/credentials`, `AdminStockPanel.tsx`).
+`NewProxyForm.tsx` was already consistently at 2 decimals throughout —
+left untouched.
+
+No behavior change beyond display — every underlying value, calculation,
+and API response is exactly what it was; this only changes how numbers are
+rounded on screen. `tsc --noEmit` and `next build` both clean.
+
 
 ## Apply
 
@@ -149,13 +178,12 @@ cd C:\Users\jackk\Desktop\MyWebApps\globproxy\gp
 git checkout -b fix-package-11
 ```
 
-Extract the tarball at that repo root (paths match), then:
+Extract the tarball at that repo root (paths match, `--strip-components=1`
+works fine on this tarball — see earlier note), then:
 
 ```powershell
-git add "app/api/dashboard/proxies/[id]/sessions/route.ts" `
-        supabase/schema.sql supabase/migrations/0012_lock_down_rpc_grants.sql `
-        components/admin/AdminStockPanel.tsx FIX_PACKAGE_11.md
-git commit -m "fix: lock down security-definer RPC grants (P0), complete schema.sql, suspend-check on session creation, split reload-amount state"
+git add -A
+git commit -m "fix: lock down security-definer RPC grants (P0), complete schema.sql, suspend-check on session creation, split reload-amount state, standardize GB/percentage display formatting"
 git push
 ```
 

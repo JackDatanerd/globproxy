@@ -4,6 +4,7 @@ import { useState, useMemo } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
+import { formatGb } from '@/lib/format'
 
 export default function ResellerUsersList({
   subUsers, availableGb, resellerId
@@ -105,7 +106,7 @@ export default function ResellerUsersList({
                 <input required type="number" min={0.1} step={0.1} max={availableGb} value={form.gb}
                   onChange={e => setForm({ ...form, gb: +e.target.value })}
                   className="w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent" />
-                <div className="text-[10px] font-mono text-muted mt-1">{availableGb.toFixed(2)} GB available</div>
+                <div className="text-[10px] font-mono text-muted mt-1">{formatGb(availableGb)} GB available</div>
               </div>
             </div>
 

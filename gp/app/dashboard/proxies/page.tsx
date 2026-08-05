@@ -2,6 +2,7 @@ import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import ProxyList from '@/components/dashboard/ProxyList'
+import { formatGb, formatPct } from '@/lib/format'
 
 export default async function ProxiesPage() {
   const supabase = await createClient()
@@ -52,9 +53,9 @@ export default async function ProxiesPage() {
       {total > 0 && (
         <div className="bg-white border border-border rounded-xl px-5 py-4 mb-5 flex items-center gap-7 flex-wrap">
           {[
-            ['Total', `${total.toFixed(2)} GB`, 'text-ink'],
-            ['Used', `${used.toFixed(2)} GB`, 'text-amber-500'],
-            ['Available', `${available.toFixed(2)} GB`, 'text-accent2'],
+            ['Total', `${formatGb(total)} GB`, 'text-ink'],
+            ['Used', `${formatGb(used)} GB`, 'text-amber-500'],
+            ['Available', `${formatGb(available)} GB`, 'text-accent2'],
           ].map(([l, v, c]) => (
             <div key={l as string} className="flex-shrink-0">
               <div className="text-[9px] font-mono text-muted uppercase tracking-wider mb-0.5">{l}</div>
@@ -69,8 +70,8 @@ export default async function ProxiesPage() {
               />
             </div>
             <div className="flex justify-between text-[10.5px] font-mono text-muted mt-1">
-              <span>{pct.toFixed(1)}% used</span>
-              <span>{available.toFixed(2)} GB free to allocate</span>
+              <span>{formatPct(used, total)}% used</span>
+              <span>{formatGb(available)} GB free to allocate</span>
             </div>
           </div>
           <div className="text-[10.5px] font-mono text-accent2 bg-accent2-light px-2.5 py-1 rounded-full flex-shrink-0">Never expires</div>
@@ -100,7 +101,7 @@ export default async function ProxiesPage() {
           <div className="text-3xl mb-3">⬡</div>
           <h2 className="font-display font-bold text-lg text-ink mb-2">No sessions yet</h2>
           <p className="text-muted text-sm font-light mb-5 max-w-xs mx-auto">
-            You have {available.toFixed(2)} GB ready to use. Create your first proxy session.
+            You have {formatGb(available)} GB ready to use. Create your first proxy session.
           </p>
           <Link href="/dashboard/proxies/new"
             className="inline-flex items-center gap-2 bg-accent text-white px-6 py-2.5 rounded-xl text-sm font-medium hover:opacity-90 transition-opacity">

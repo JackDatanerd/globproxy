@@ -1,4 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/server'
+import { formatGb } from '@/lib/format'
 
 export default async function AdminOrdersPage() {
   const supabase = await createAdminClient()
@@ -41,7 +42,7 @@ export default async function AdminOrdersPage() {
         </div>
         <div className="bg-white border border-border rounded-xl p-5">
           <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-2">Total GB sold</div>
-          <div className="font-display text-3xl font-bold text-accent">{totalGb.toFixed(1)} GB</div>
+          <div className="font-display text-3xl font-bold text-accent">{formatGb(totalGb)} GB</div>
         </div>
         <div className="bg-white border border-border rounded-xl p-5">
           <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-2">Paid orders</div>

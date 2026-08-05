@@ -1,4 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/server'
+import { formatGb } from '@/lib/format'
 
 export default async function AdminCredentialsPage() {
   const supabase = await createAdminClient()
@@ -68,8 +69,8 @@ export default async function AdminCredentialsPage() {
                 </td>
                 <td className="px-5 py-3 text-sm text-ink">{c.label || '—'}</td>
                 <td className="px-5 py-3 text-xs font-mono text-muted">{c.country || 'Any'}</td>
-                <td className="px-5 py-3 font-mono text-sm text-ink">{Number(c.gb_allocated ?? 0).toFixed(2)}</td>
-                <td className="px-5 py-3 font-mono text-sm text-ink">{Number(c.gb_used ?? 0).toFixed(2)}</td>
+                <td className="px-5 py-3 font-mono text-sm text-ink">{formatGb(c.gb_allocated)}</td>
+                <td className="px-5 py-3 font-mono text-sm text-ink">{formatGb(c.gb_used)}</td>
                 <td className="px-5 py-3">
                   <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full ${
                     c.status === 'active' ? 'bg-accent2-light text-accent2' :

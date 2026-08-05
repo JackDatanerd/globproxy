@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import ResellerUsersList from '@/components/reseller/ResellerUsersList'
+import { formatGb } from '@/lib/format'
 
 export default async function ResellerUsersPage() {
   const supabase = await createClient()
@@ -26,7 +27,7 @@ export default async function ResellerUsersPage() {
         </div>
         <div className="text-right">
           <div className="text-xs font-mono text-muted">Available stock</div>
-          <div className="font-display font-bold text-accent">{(bw?.available_gb??0).toFixed(1)} GB</div>
+          <div className="font-display font-bold text-accent">{formatGb(bw?.available_gb)} GB</div>
         </div>
       </div>
       <ResellerUsersList subUsers={subUsers??[]} availableGb={bw?.available_gb??0} resellerId={user.id} />

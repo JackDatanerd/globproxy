@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
+import { formatGb } from '@/lib/format'
 
 export default function BillingPage() {
   const [orders, setOrders] = useState<any[]>([])
@@ -68,7 +69,7 @@ export default function BillingPage() {
       <div className="grid grid-cols-3 gap-4 mb-8">
         {[
           ['Total spent', `$${totalSpent.toFixed(2)}`],
-          ['Total GB purchased', `${totalGb.toFixed(1)} GB`],
+          ['Total GB purchased', `${formatGb(totalGb)} GB`],
           ['Total orders', String(paid.length)],
         ].map(([l, v]) => (
           <div key={l} className="bg-white border border-border rounded-xl p-5">

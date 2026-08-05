@@ -2,6 +2,7 @@
 import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
+import { formatGb, formatPct } from '@/lib/format'
 
 export default function AdminStockPanel() {
   const [stock, setStock] = useState<any>({ available_gb:0, total_gb:0, total_allocated_gb:0, total_used_gb:0, exposure_gb:0, covered:true, last_synced:null })
@@ -80,7 +81,7 @@ export default function AdminStockPanel() {
         <div className="flex justify-between items-end mb-3">
           <div>
             <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-1">Available stock</div>
-            <div className={`font-display text-4xl font-bold ${isCritical?'text-red-500':isWarn?'text-yellow-600':'text-accent'}`}>{avail.toFixed(1)} GB</div>
+            <div className={`font-display text-4xl font-bold ${isCritical?'text-red-500':isWarn?'text-yellow-600':'text-accent'}`}>{formatGb(avail)} GB</div>
           </div>
           {isCritical && <div className="bg-red-100 text-red-600 text-xs font-mono px-3 py-1.5 rounded-full animate-pulse">⚠ Critical</div>}
           {isWarn && !isCritical && <div className="bg-yellow-100 text-yellow-700 text-xs font-mono px-3 py-1.5 rounded-full">Low stock</div>}
@@ -89,8 +90,8 @@ export default function AdminStockPanel() {
           <div className={`h-full rounded-full ${isCritical?'bg-red-400':isWarn?'bg-yellow-400':'bg-accent'}`} style={{width:`${Math.min(pct,100)}%`}} />
         </div>
         <div className="flex justify-between text-[11px] font-mono text-muted">
-          <span>{pct.toFixed(1)}% remaining</span>
-          <span>Total: {total.toFixed(1)} GB</span>
+          <span>{formatPct(avail, total)}% remaining</span>
+          <span>Total: {formatGb(total)} GB</span>
         </div>
         {stock?.last_synced && <div className="text-[10px] font-mono text-muted mt-2">Synced: {new Date(stock.last_synced).toLocaleString()}</div>}
       </div>
@@ -107,15 +108,15 @@ export default function AdminStockPanel() {
         </div>
         <div className="grid grid-cols-3 gap-3 text-center">
           <div>
-            <div className="font-display text-xl font-bold text-ink">{(stock.total_allocated_gb ?? 0).toFixed(1)}</div>
+            <div className="font-display text-xl font-bold text-ink">{formatGb(stock.total_allocated_gb)}</div>
             <div className="text-[10px] font-mono text-muted mt-0.5">Allocated (sold)</div>
           </div>
           <div>
-            <div className="font-display text-xl font-bold text-ink">{(stock.total_used_gb ?? 0).toFixed(1)}</div>
+            <div className="font-display text-xl font-bold text-ink">{formatGb(stock.total_used_gb)}</div>
             <div className="text-[10px] font-mono text-muted mt-0.5">Actually used</div>
           </div>
           <div>
-            <div className={`font-display text-xl font-bold ${stock.covered === false ? 'text-red-500' : 'text-ink'}`}>{(stock.exposure_gb ?? 0).toFixed(1)}</div>
+            <div className={`font-display text-xl font-bold ${stock.covered === false ? 'text-red-500' : 'text-ink'}`}>{formatGb(stock.exposure_gb)}</div>
             <div className="text-[10px] font-mono text-muted mt-0.5">Exposure</div>
           </div>
         </div>

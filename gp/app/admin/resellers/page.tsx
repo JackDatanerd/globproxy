@@ -1,5 +1,6 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import AdminResellerActions from '@/components/admin/AdminResellerActions'
+import { formatGb } from '@/lib/format'
 
 export default async function AdminResellersPage() {
   const supabase = await createAdminClient()
@@ -112,8 +113,8 @@ export default async function AdminResellersPage() {
                       <div className="text-sm font-medium text-ink">{r.full_name || '—'}</div>
                       <div className="text-xs font-mono text-muted">{r.email}</div>
                     </td>
-                    <td className="px-6 py-4 font-mono text-sm text-accent">{Math.max(0, available).toFixed(1)} GB</td>
-                    <td className="px-6 py-4 font-mono text-sm text-ink">{(bw?.total_gb ?? 0).toFixed(1)} GB</td>
+                    <td className="px-6 py-4 font-mono text-sm text-accent">{formatGb(Math.max(0, available))} GB</td>
+                    <td className="px-6 py-4 font-mono text-sm text-ink">{formatGb(bw?.total_gb)} GB</td>
                     <td className="px-6 py-4 text-xs font-mono text-muted">
                       {new Date(r.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
                     </td>

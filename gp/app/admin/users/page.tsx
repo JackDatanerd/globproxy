@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { createAdminClient } from '@/lib/supabase/server'
 import AdminUserControls from '@/components/admin/AdminUserControls'
 import AdminSyncUsageButton from '@/components/admin/AdminSyncUsageButton'
+import { formatGb } from '@/lib/format'
 
 export default async function AdminUsersPage() {
   const supabase = await createAdminClient()
@@ -63,9 +64,9 @@ export default async function AdminUsersPage() {
                       'bg-surface text-muted border border-border'
                     }`}>{u.role}</span>
                   </td>
-                  <td className="px-5 py-3.5 font-mono text-sm text-ink">{(bw?.total_gb ?? 0).toFixed(1)} GB</td>
-                  <td className="px-5 py-3.5 font-mono text-sm text-ink">{(bw?.used_gb ?? 0).toFixed(1)} GB</td>
-                  <td className="px-5 py-3.5 font-mono text-sm text-ink">{(bw?.available_gb ?? 0).toFixed(1)} GB</td>
+                  <td className="px-5 py-3.5 font-mono text-sm text-ink">{formatGb(bw?.total_gb)} GB</td>
+                  <td className="px-5 py-3.5 font-mono text-sm text-ink">{formatGb(bw?.used_gb)} GB</td>
+                  <td className="px-5 py-3.5 font-mono text-sm text-ink">{formatGb(bw?.available_gb)} GB</td>
                   {/* ... Keep the rest of your existing td elements ... */}
                   <td className="px-5 py-3.5">
                     {u.is_suspended ? <span className="text-[10px] font-mono bg-red-50 text-red-500 px-2.5 py-1 rounded-full">Suspended</span> : <span className="text-[10px] font-mono bg-accent2-light text-accent2 px-2.5 py-1 rounded-full">Active</span>}

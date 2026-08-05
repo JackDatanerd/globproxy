@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
+import { formatGb, formatPct } from '@/lib/format'
 
 export default async function UsagePage() {
   const supabase = await createClient()
@@ -24,7 +25,7 @@ export default async function UsagePage() {
       <div className="bg-white border border-border rounded-xl p-6 mb-6">
         <h2 className="font-display font-bold text-base text-ink mb-5">Overall bandwidth</h2>
         <div className="grid grid-cols-3 gap-4 mb-5">
-          {[['Total purchased',`${total.toFixed(2)} GB`,'text-ink'],['Used',`${used.toFixed(2)} GB`,'text-accent'],['Remaining',`${available.toFixed(2)} GB`,'text-accent2']].map(([l,v,c])=>(
+          {[['Total purchased',`${formatGb(total)} GB`,'text-ink'],['Used',`${formatGb(used)} GB`,'text-accent'],['Remaining',`${formatGb(available)} GB`,'text-accent2']].map(([l,v,c])=>(
             <div key={l} className="bg-surface rounded-xl p-4">
               <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-1">{l}</div>
               <div className={`font-display text-2xl font-bold ${c}`}>{v}</div>
@@ -37,7 +38,7 @@ export default async function UsagePage() {
               <div className="h-full rounded-full bg-gradient-to-r from-accent to-sky-400" style={{width:`${Math.min((used/total)*100,100)}%`}} />
             </div>
             <div className="flex justify-between text-xs font-mono text-muted">
-              <span>{((used/total)*100).toFixed(1)}% used</span><span>Never expires ✓</span>
+              <span>{formatPct(used, total)}% used</span><span>Never expires ✓</span>
             </div>
           </>
         )}
@@ -55,13 +56,13 @@ export default async function UsagePage() {
                       <span className="font-medium text-sm text-ink">{c.label||'Unnamed'}</span>
                       {c.country && <span className="text-[11px] font-mono bg-accent-light text-accent px-2 py-0.5 rounded">{c.country}</span>}
                     </div>
-                    <span className="text-xs font-mono text-muted">{c.gb_used.toFixed(2)} / {c.gb_allocated} GB</span>
+                    <span className="text-xs font-mono text-muted">{formatGb(c.gb_used)} / {formatGb(c.gb_allocated)} GB</span>
                   </div>
                   <div className="bg-surface rounded-full h-2 overflow-hidden">
                     <div className={`h-full rounded-full ${pct>80?'bg-red-400':pct>50?'bg-yellow-400':'bg-accent2'}`} style={{width:`${Math.min(pct,100)}%`}} />
                   </div>
                   <div className="flex justify-between mt-1 text-xs font-mono text-muted">
-                    <span>{pct.toFixed(1)}% used</span><span>{Math.max(0,c.gb_allocated-c.gb_used).toFixed(2)} GB left</span>
+                    <span>{formatPct(c.gb_used, c.gb_allocated)}% used</span><span>{formatGb(Math.max(0,c.gb_allocated-c.gb_used))} GB left</span>
                   </div>
                 </div>
               )

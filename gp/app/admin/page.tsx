@@ -1,6 +1,7 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import Link from 'next/link'
 import AdminStockPanel from '@/components/admin/AdminStockPanel'
+import { formatGb } from '@/lib/format'
 
 export default async function AdminPage() {
   const supabase = await createAdminClient()
@@ -32,7 +33,7 @@ export default async function AdminPage() {
         {[
           {label:'Total revenue',value:`$${totalRevenue.toLocaleString('en-US',{minimumFractionDigits:2})}`,color:'text-accent2',sub:'All time'},
           {label:'This month',value:`$${thisMonth.toLocaleString('en-US',{minimumFractionDigits:2})}`,color:'text-accent',sub:now.toLocaleString('default',{month:'long'})},
-          {label:'Total GB sold',value:`${totalGbSold.toFixed(1)} GB`,color:'text-ink',sub:'All time'},
+          {label:'Total GB sold',value:`${formatGb(totalGbSold)} GB`,color:'text-ink',sub:'All time'},
           {label:'Total orders',value:String(orders?.length??0),color:'text-ink',sub:'Paid only'},
         ].map(m=>(
           <div key={m.label} className="bg-white border border-border rounded-xl p-5">
