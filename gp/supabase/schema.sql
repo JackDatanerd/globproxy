@@ -108,7 +108,14 @@ create table public.proxy_credentials (
   geonode_sub_user_id  text, -- Geonode's numeric sub-user ID; required for usage/delete calls, NOT geonode_username
   geonode_username     text,
   geonode_password     text,
-  host                 text default 'residential.geonode.com',
+  -- Was 'residential.geonode.com' — the real, un-white-labeled upstream
+  -- hostname. Every current insert path (dashboard/proxies, v1/sub-users,
+  -- lib/bandwidth.ts activation) sets `host` explicitly, so this default
+  -- was never actually hit in production, but it was a live landmine: any
+  -- future insert that forgot to set it would silently leak the supplier's
+  -- domain to a customer instead of failing loudly. See lib/geonode.ts's
+  -- own comment: "always expose this to users, never residential.geonode.com".
+  host                 text default 'proxy.globproxy.com',
   port                 integer default 9000,
   protocol             text default 'http' check (protocol in ('http','socks5')),
   sticky_duration      integer,
@@ -437,7 +444,18 @@ create trigger on_auth_user_email_updated
 -- profiles by email (signup dedupe, password reset, reseller/allocate's
 -- recipient lookup) does .eq('email', x.toLowerCase()).single() and
 -- assumes exactly one match.
-create unique index if not exists profiles_email_unique_idx on public.profiles (lower(email));
+--
+-- PARTIAL index, excluding the '[deleted]' placeholder that
+-- admin/delete-user and user/delete-account both write on account
+-- deletion — see migration 0011. A plain unique index rejects that
+-- literal, shared value the moment a second account is ever deleted
+-- (confirmed live: `Key (lower(email))=([deleted]) is duplicated`).
+-- schema.sql previously drifted from 0011 here, so a fresh install from
+-- this file alone would still hit that exact failure on the second
+-- deletion even though production (which ran 0011) does not.
+create unique index if not exists profiles_email_unique_idx
+  on public.profiles (lower(email))
+  where email <> '[deleted]';
 
 -- Bandwidth
 create policy "Own bandwidth" on public.bandwidth_accounts for select using (auth.uid() = user_id);
