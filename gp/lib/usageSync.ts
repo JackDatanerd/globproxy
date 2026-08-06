@@ -38,6 +38,10 @@ async function applyChanges(
   // in this pass happens to have moved.
   const { error: recalcErr } = await supabase.rpc('recalculate_bandwidth_accounts')
   if (recalcErr) console.error('recalculate_bandwidth_accounts failed:', recalcErr)
+  // recalculate_bandwidth_accounts is the step that actually writes the
+  // numbers stock-exposure math and customer-facing balances depend on —
+  // its success (not bulk_update's) is what "usage sync is healthy" means.
+  return { recalcOk: !recalcErr }
 }
 
 // Full sync — every active credential across every user. This is what the
@@ -56,8 +60,23 @@ export async function syncAllUsage() {
 
   const usageMap = await listAllSubUsersUsage()
   const changes = buildChanges(creds ?? [], usageMap)
-  await applyChanges(supabase, changes)
-  return { updated_credentials: changes.length }
+  const { recalcOk } = await applyChanges(supabase, changes)
+
+  // Stamp a freshness marker on every successful run — this is what lets
+  // runStockCheck() (a *separate* cron task, deliberately) notice if this
+  // one silently stops running. It already happened once in production:
+  // migration 0010's own history is cron-job.org auto-disabling the usage
+  // job after 26 consecutive failures, with nothing in-app to notice or
+  // alert on it — gb_used just went stale platform-wide until someone
+  // happened to look. Only stamp on a genuine success (recalcOk), not on
+  // "the function ran without throwing" — a run where the actual write
+  // failed shouldn't count as fresh.
+  if (recalcOk) {
+    await supabase.from('platform_settings')
+      .upsert({ key: 'usage_last_synced_at', value: new Date().toISOString() }, { onConflict: 'key' })
+  }
+
+  return { updated_credentials: changes.length, recalc_ok: recalcOk }
 }
 
 // Scoped sync — one user's active credentials only. For the admin

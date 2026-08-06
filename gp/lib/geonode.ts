@@ -105,12 +105,35 @@ export async function createSubUser(p: CreateSubUserParams): Promise<GCred> {
 
 // Per spec there is no separate "/usage" endpoint — usage comes back as
 // trafficUsedMB on the same "get sub-user" call.
+//
+// IMPORTANT: this throws on a failed request rather than returning 0.
+// It used to return 0 on `!res.ok`, which silently collapsed "Geonode
+// errored / I don't actually know" into "confirmed zero usage" — and that
+// fake zero fed straight into two money-affecting call sites:
+//   1. syncUserUsage() (admin "sync this user now") would overwrite a
+//      real, previously-synced gb_used with 0 on a transient Geonode
+//      error, corrupting the exact number an admin is trying to fix.
+//   2. The pre-delete live-usage check in dashboard/proxies/[id]/route.ts
+//      would set liveUsedGb = 0 (not null) on a transient error — and
+//      since `0 ?? cred.gb_used` evaluates to 0 (0 isn't nullish, so the
+//      fallback to the last-synced value never fired), the full
+//      gb_allocated got refunded regardless of real consumption. That's
+//      the same delete-then-recreate revenue leak migration 0007/0009
+//      already fixed once, reopened by any ordinary Geonode hiccup.
+// Both call sites already have their own try/catch and correctly treat a
+// thrown error as "unknown, don't touch the number" (skip in the sync
+// loop; fall back to the last-synced gb_used on delete) — they just never
+// got the chance to do that while this function swallowed the failure
+// into a fake real value.
 export async function getSubUserUsage(geonodeSubUserId: string): Promise<number> {
   const res = await fetch(
     `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${geonodeSubUserId}`,
     { headers: headers() }
   )
-  if (!res.ok) return 0
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(`Geonode getSubUserUsage failed: ${res.status} ${JSON.stringify(err)}`)
+  }
   const d = await res.json()
   const result = d.result ?? d.data ?? d
   return mbToGb(result.trafficUsedMB ?? 0)

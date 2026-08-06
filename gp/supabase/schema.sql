@@ -151,6 +151,12 @@ insert into public.platform_settings (key, value) values
   ('geonode_stock',          '{"available_gb":0,"total_gb":0,"last_synced":null}')
 on conflict (key) do nothing;
 
+-- usage_last_synced_at / usage_sync_stale_alerted_at are written by
+-- lib/usageSync.ts and app/api/cron/[task]/route.ts's checkUsageSyncFreshness()
+-- (the usage-sync watchdog) — no seed row needed, upsert creates them on
+-- first write. Documented here only so schema.sql stays a complete picture
+-- of platform_settings keys in use.
+
 -- ── BANNED EMAILS ─────────────────────────────────────────────
 create table public.banned_emails (
   id         uuid default uuid_generate_v4() primary key,

@@ -17,10 +17,63 @@ function validateCron(req: Request): boolean {
   return crypto.timingSafeEqual(a, b)
 }
 
+// Usage-sync freshness watchdog. Deliberately called from the 'stock'
+// task rather than living inside the 'usage' task itself — cron-job.org
+// schedules each task as its own separate job, and the whole point is to
+// notice if the 'usage' job specifically stops firing (or starts failing)
+// without anyone watching it directly. This already happened once (see
+// migration 0010's history): cron-job.org auto-disabled the usage job
+// after 26 consecutive failures, and gb_used silently went stale
+// platform-wide with nothing in-app to surface it. A NULL timestamp
+// (never synced yet — e.g. right after a fresh deploy/migration) is
+// treated as "unknown" and skipped rather than alerted, to avoid a false
+// alarm before the first sync has had a chance to run.
+const USAGE_SYNC_STALE_THRESHOLD_MS = 20 * 60 * 1000 // 20 min — ~4x the ~5 min cadence
+
+async function checkUsageSyncFreshness(supabase: Awaited<ReturnType<typeof createAdminClient>>) {
+  const { data: rows } = await supabase
+    .from('platform_settings')
+    .select('key, value')
+    .in('key', ['usage_last_synced_at', 'usage_sync_stale_alerted_at'])
+  const settings = Object.fromEntries((rows ?? []).map(r => [r.key, r.value]))
+
+  if (!settings.usage_last_synced_at) return { stale: false, reason: 'never_synced' }
+
+  const ageMs = Date.now() - new Date(settings.usage_last_synced_at).getTime()
+  const stale = ageMs > USAGE_SYNC_STALE_THRESHOLD_MS
+
+  if (!stale) {
+    // Recovered — clear any prior alert flag so a future staleness re-alerts.
+    if (settings.usage_sync_stale_alerted_at) {
+      await supabase.from('platform_settings').delete().eq('key', 'usage_sync_stale_alerted_at')
+    }
+    return { stale: false }
+  }
+
+  // Already alerted for this ongoing incident — don't spam on every
+  // 'stock' tick until it recovers.
+  if (settings.usage_sync_stale_alerted_at) return { stale: true, already_alerted: true }
+
+  await sendEmail({
+    to: process.env.ADMIN_EMAIL!,
+    subject: `[USAGE SYNC STALE] Last successful sync was ${Math.round(ageMs / 60000)} min ago`,
+    html: `<p>Usage-sync (the 'usage' cron task) hasn't completed successfully in over
+           ${Math.round(USAGE_SYNC_STALE_THRESHOLD_MS / 60000)} minutes.</p>
+           <p><strong>Last known good sync:</strong> ${settings.usage_last_synced_at}</p>
+           <p>gb_used and account balances are going stale until this recovers — check
+           whether the external cron trigger for the 'usage' task is still firing.</p>`,
+  })
+  await supabase.from('platform_settings')
+    .upsert({ key: 'usage_sync_stale_alerted_at', value: new Date().toISOString() }, { onConflict: 'key' })
+
+  return { stale: true, already_alerted: false }
+}
+
 // ── Stock check ──────────────────────────────────────────────────
 async function runStockCheck() {
   const supabase = await createAdminClient()
   const stock = await computeStockStatus(supabase)
+  const syncHealth = await checkUsageSyncFreshness(supabase)
 
   await supabase.from('platform_settings')
     .upsert({ key: 'geonode_stock', value: JSON.stringify(stock) }, { onConflict: 'key' })
@@ -66,9 +119,9 @@ async function runStockCheck() {
              ${exposureBreach ? '<p style="color:#e24b4a"><strong>If customers drew down their full remaining allocation right now, you would run short.</strong></p>' : ''}
              <p><a href="${process.env.NEXT_PUBLIC_APP_URL}/admin/settings">Go to Admin Panel →</a></p>`,
     })
-    return { action: 'alert_sent', ...stock }
+    return { action: 'alert_sent', ...stock, usage_sync: syncHealth }
   }
-  return { action: 'ok', ...stock }
+  return { action: 'ok', ...stock, usage_sync: syncHealth }
 }
 
 // ── Usage sync ───────────────────────────────────────────────────
