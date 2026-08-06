@@ -103,6 +103,36 @@ export async function createSubUser(p: CreateSubUserParams): Promise<GCred> {
   }
 }
 
+// Raises an existing sub-user's traffic cap — used by the credential
+// top-up flow so a customer can add GB to a credential they're already
+// using instead of always minting a brand-new one.
+//
+// CRITICAL: this must NEVER send `activeUntil` in the same PATCH body.
+// Per the live OpenAPI spec (PATCH /sub-users/{subUid}): "changing
+// activeUntil resets sub-user current traffic usage." A top-up call that
+// happened to also touch activeUntil would zero out trafficUsedMB on
+// Geonode's side — a free, repeatable usage-reset exploit disguised as a
+// routine limit bump. Keep this function's request body to trafficLimitMB
+// only, deliberately, rather than accepting a generic "patch fields"
+// param that a future caller could accidentally widen.
+export async function updateSubUserTrafficLimit(
+  geonodeSubUserId: string,
+  newTrafficLimitMB: number
+): Promise<void> {
+  const res = await fetch(
+    `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${geonodeSubUserId}`,
+    {
+      method: 'PATCH',
+      headers: headers(),
+      body: JSON.stringify({ trafficLimitMB: Math.round(newTrafficLimitMB) }),
+    }
+  )
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(`Geonode updateSubUserTrafficLimit failed: ${res.status} ${JSON.stringify(err)}`)
+  }
+}
+
 // Per spec there is no separate "/usage" endpoint — usage comes back as
 // trafficUsedMB on the same "get sub-user" call.
 //

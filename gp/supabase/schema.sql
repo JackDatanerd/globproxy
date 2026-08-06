@@ -313,6 +313,61 @@ begin
 end;
 $$;
 
+-- Atomic credential top-up — see migration 0016 for full rationale.
+-- service_role-only; the calling route (dashboard/proxies/[id]/topup)
+-- verifies the caller's own session before ever reaching this.
+create or replace function public.topup_credential(
+  p_credential_id uuid,
+  p_user_id uuid,
+  p_gb numeric
+)
+returns numeric language plpgsql security definer as $$
+declare
+  v_status text;
+  v_created_by uuid;
+  v_new_total numeric;
+  v_reserved numeric;
+begin
+  if p_gb is null or p_gb <= 0 then
+    raise exception 'Top-up amount must be greater than 0';
+  end if;
+
+  select status, created_by into v_status, v_created_by
+  from public.proxy_credentials
+  where id = p_credential_id and user_id = p_user_id
+  for update;
+
+  if not found then
+    raise exception 'Credential not found' using errcode = 'P0002';
+  end if;
+
+  if v_created_by is not null then
+    raise exception 'This credential was allocated by your reseller and cannot be topped up directly. Contact them.';
+  end if;
+
+  if v_status not in ('active', 'pending') then
+    raise exception 'Only active or pending credentials can be topped up.';
+  end if;
+
+  update public.bandwidth_accounts
+  set allocated_gb = allocated_gb + p_gb
+  where user_id = p_user_id
+    and (total_gb - allocated_gb) >= p_gb
+  returning allocated_gb into v_reserved;
+
+  if v_reserved is null then
+    raise exception 'Insufficient bandwidth in your account.' using errcode = 'P0001';
+  end if;
+
+  update public.proxy_credentials
+  set gb_allocated = gb_allocated + p_gb
+  where id = p_credential_id
+  returning gb_allocated into v_new_total;
+
+  return v_new_total;
+end;
+$$;
+
 -- Bulk usage-sync helpers — see migration 0010. Only ever called from
 -- lib/usageSync.ts via the admin (service_role) client.
 create or replace function public.bulk_update_credential_usage(updates jsonb)
@@ -606,6 +661,9 @@ grant execute on function public.bulk_update_credential_usage(jsonb) to service_
 
 revoke all on function public.recalculate_bandwidth_accounts() from public;
 grant execute on function public.recalculate_bandwidth_accounts() to service_role;
+
+revoke all on function public.topup_credential(uuid, uuid, numeric) from public;
+grant execute on function public.topup_credential(uuid, uuid, numeric) to service_role;
 
 -- Any function created after this point defaults to service_role-only —
 -- closes the gap for the next RPC function someone adds without thinking

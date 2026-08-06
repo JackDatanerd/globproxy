@@ -3,6 +3,19 @@
   "name": "globproxy5",
   "compatibility_date": "2025-04-01",
   "compatibility_flags": ["nodejs_compat"],
-  "main": ".open-next/worker.js",
-  "assets": { "directory": ".open-next/assets", "binding": "ASSETS" }
+  "main": "custom-worker.ts",
+  "assets": { "directory": ".open-next/assets", "binding": "ASSETS" },
+  // Native Cloudflare Cron Triggers — see custom-worker.ts for the full
+  // rationale (replaces the external cron-job.org dispatcher). Keep this
+  // array in sync with custom-worker.ts's CRON_TASKS map: each pattern
+  // here needs a matching entry there, and vice versa.
+  "triggers": {
+    "crons": [
+      "*/5 * * * *",
+      "*/10 * * * *",
+      "*/15 * * * *",
+      "0 9 * * *",
+      "0 * * * *"
+    ]
+  }
 }
