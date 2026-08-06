@@ -108,7 +108,7 @@ create table public.proxy_credentials (
   geonode_sub_user_id  text, -- Geonode's numeric sub-user ID; required for usage/delete calls, NOT geonode_username
   geonode_username     text,
   geonode_password     text,
-  host                 text default 'residential.geonode.com',
+  host                 text default 'proxy.globproxy.com', -- see migration 0013 — never default to the real Geonode hostname
   port                 integer default 9000,
   protocol             text default 'http' check (protocol in ('http','socks5')),
   sticky_duration      integer,
@@ -368,6 +368,20 @@ alter table public.banned_emails      enable row level security;
 create policy "Own profile" on public.profiles for select using (auth.uid() = id);
 create policy "Update own profile" on public.profiles for update using (auth.uid() = id);
 
+-- Lets a reseller see the profile (email/full_name) of a client they've
+-- actually transferred bandwidth to — see migration 0014. Without this,
+-- reseller_transfers' embedded `profiles` join returns null under RLS for
+-- every recipient (since auth.uid() is the reseller, not the client),
+-- which silently emptied /reseller/users, /reseller/earnings, and
+-- /reseller/transfers.
+create policy "Resellers can view own client profiles" on public.profiles for select
+  using (
+    exists (
+      select 1 from public.reseller_transfers rt
+      where rt.recipient_id = profiles.id and rt.reseller_id = auth.uid()
+    )
+  );
+
 -- Admins can update any profile (needed for suspend/reinstate,
 -- reseller approve/reject, API-access toggle done from the admin UI).
 create policy "Admins can update any profile" on public.profiles for update
@@ -437,7 +451,12 @@ create trigger on_auth_user_email_updated
 -- profiles by email (signup dedupe, password reset, reseller/allocate's
 -- recipient lookup) does .eq('email', x.toLowerCase()).single() and
 -- assumes exactly one match.
-create unique index if not exists profiles_email_unique_idx on public.profiles (lower(email));
+-- PARTIAL index — see migration 0011. Every deleted account gets the literal
+-- placeholder email '[deleted]', which is not a real collision; a plain
+-- unique index would reject the second-ever account deletion.
+create unique index if not exists profiles_email_unique_idx
+  on public.profiles (lower(email))
+  where email <> '[deleted]';
 
 -- Bandwidth
 create policy "Own bandwidth" on public.bandwidth_accounts for select using (auth.uid() = user_id);

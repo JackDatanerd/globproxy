@@ -1,0 +1,42 @@
+name: Cron — Usage Sync (every 5 min)
+
+# Was referenced by comments in cron-daily.yml and cron-stock.yml
+# ("Same secrets as cron-usage.yml") but never actually existed — the
+# `usage` task in app/api/cron/[task]/route.ts was reachable only via the
+# manual admin "Sync usage now" button. Without this, gb_used on
+# proxy_credentials (and bandwidth_accounts.used_gb via
+# recalculate_bandwidth_accounts) never syncs from Geonode automatically,
+# so every customer's usage display freezes at whatever it was on last
+# manual sync.
+#
+# Same secrets and pattern as cron-stock.yml/cron-daily.yml — CRON_SECRET
+# and APP_URL. Must live at .github/workflows/ at the repo root, not
+# inside gp/.
+#
+# Note: GitHub Actions' `schedule` trigger is best-effort, not a hard
+# guarantee — under load it can queue and fire later than the interval
+# below. If usage needs to be fresher than "eventually, usually within a
+# few minutes," a Cloudflare Cron Trigger in wrangler.jsonc calling the
+# same endpoint would be more reliable than GitHub's scheduler.
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  usage-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call usage sync endpoint
+        run: |
+          response=$(curl -s -w "\n%{http_code}" -X POST "${{ secrets.APP_URL }}/api/cron/usage" \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}")
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+          echo "Response body: $body"
+          echo "HTTP status: $http_code"
+          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            echo "::error::usage sync failed with HTTP $http_code — see response body above"
+            exit 1
+          fi
