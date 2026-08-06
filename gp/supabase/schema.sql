@@ -216,6 +216,46 @@ returns void language sql security definer as $$
     set total_gb = public.bandwidth_accounts.total_gb + excluded.total_gb;
 $$;
 
+-- Atomically claims an order (payment_status='paid', bandwidth_credited=true)
+-- AND credits the GB in one transaction — see migration 0015. Previously
+-- lib/bandwidth.ts did these as two separate calls: if the credit step
+-- failed after the claim had already committed, the order was left
+-- permanently "paid" with bandwidth_credited=true and nothing credited,
+-- with no way for a retry to ever re-enter this path. Folding both into
+-- one plpgsql function means an uncaught error in credit_bandwidth() below
+-- rolls back the claim too, since both run in the same transaction.
+create or replace function public.claim_and_credit_order(
+  p_order_id uuid,
+  p_user_id uuid,
+  p_gb numeric,
+  p_paystack_reference text
+)
+returns boolean
+language plpgsql
+security definer
+as $$
+declare
+  v_claimed uuid;
+begin
+  update public.orders
+  set payment_status     = 'paid',
+      paystack_reference = p_paystack_reference,
+      bandwidth_credited = true,
+      paid_at            = now()
+  where id = p_order_id
+    and bandwidth_credited = false
+  returning id into v_claimed;
+
+  if v_claimed is null then
+    return false; -- already credited by a concurrent/duplicate call
+  end if;
+
+  perform public.credit_bandwidth(p_user_id, p_gb); -- uncaught error here rolls back the claim above too
+
+  return true;
+end;
+$$;
+
 -- Reserve/release a credential's cap out of allocated_gb at creation/delete
 -- time — see migration 0007/0009 for the full rationale (available_gb is
 -- total_gb - allocated_gb; this is what keeps a burst of credential
@@ -548,6 +588,9 @@ grant execute on function public.release_credential_bandwidth(uuid, numeric) to 
 
 revoke all on function public.credit_bandwidth(uuid, numeric) from public;
 grant execute on function public.credit_bandwidth(uuid, numeric) to service_role;
+
+revoke all on function public.claim_and_credit_order(uuid, uuid, numeric, text) from public;
+grant execute on function public.claim_and_credit_order(uuid, uuid, numeric, text) to service_role;
 
 revoke all on function public.allocate_reseller_bandwidth(uuid, uuid, numeric) from public;
 grant execute on function public.allocate_reseller_bandwidth(uuid, uuid, numeric) to service_role;

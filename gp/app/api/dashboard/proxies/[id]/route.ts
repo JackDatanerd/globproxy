@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { requireActiveUser } from '@/lib/apiAuth'
 import { deleteSubUser, getSubUserUsage } from '@/lib/geonode'
 import { NextResponse } from 'next/server'
 
@@ -9,6 +10,14 @@ export async function DELETE(
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  // Every other write route in this app gates on this — this one didn't.
+  // Low-impact either way (deleting your own credential only frees a
+  // reservation back to your own balance, it doesn't grant anything new),
+  // but left inconsistent it's an easy thing to trip over later when
+  // reasoning about "does suspension actually block everything."
+  const suspended = await requireActiveUser(user.id)
+  if (suspended) return suspended
 
   const { id } = await context.params
 

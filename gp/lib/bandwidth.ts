@@ -17,46 +17,37 @@ export async function activateBandwidth(p: {
 }) {
   const supabase = await createAdminClient()
 
-  // 1. Atomically claim the order. The webhook and /api/verify-payment can
-  // both reach this function within moments of each other (Paystack fires
-  // the webhook around the same time the browser redirects back). A plain
-  // "check payment_status, then update" has a race window where both
-  // callers pass the check before either writes 'paid', crediting bandwidth
-  // twice. Guarding the UPDATE itself on bandwidth_credited = false makes
-  // the claim a single atomic statement — only one caller's UPDATE can
-  // match and return a row.
-  const { data: claimed } = await supabase
-    .from('orders')
-    .update({
-      payment_status: 'paid',
-      paystack_reference: p.paystack_reference,
-      bandwidth_credited: true,
-      paid_at: new Date().toISOString(),
-    })
-    .eq('id', p.order_id)
-    .eq('bandwidth_credited', false)
-    .select('id')
-    .single()
+  // 1 & 2. Atomically claim the order AND credit the GB in one call — see
+  // migration 0015. These used to be two separate statements: claim first
+  // (guarding the UPDATE on bandwidth_credited = false so a racing webhook
+  // + verify-payment call can't both credit the same order), then a
+  // separate credit_bandwidth RPC. If that second call failed for any
+  // reason, the claim had already committed — the order was left
+  // permanently "paid" with bandwidth_credited=true and nothing actually
+  // credited, and the claim guard meant no retry could ever re-enter this
+  // path. claim_and_credit_order() does both inside one Postgres
+  // transaction, so an error crediting rolls back the claim too, leaving
+  // the order exactly as it was before this call — safe for a webhook
+  // redelivery or manual re-verify to complete it cleanly.
+  const { data: claimed, error: claimErr } = await supabase.rpc('claim_and_credit_order', {
+    p_order_id: p.order_id,
+    p_user_id: p.user_id,
+    p_gb: p.gb_amount,
+    p_paystack_reference: p.paystack_reference,
+  })
+
+  if (claimErr) {
+    // Nothing committed — the order is untouched and still claimable.
+    // Surfaced loudly since this is the one path where staying silent
+    // previously turned into a permanent, unrecoverable non-credit.
+    console.error('[bandwidth] claim_and_credit_order RPC failed — order left unclaimed, safe to retry', p.order_id, claimErr)
+    return
+  }
 
   if (!claimed) {
     // Already credited by a concurrent call (or a retry) — nothing to do.
     console.log('[bandwidth] order already credited, skipping', p.order_id)
     return
-  }
-
-  // 2. Credit GB to bandwidth account.
-  // Previously this read total_gb then wrote back total_gb + gb_amount as
-  // two separate calls — a lost-update race if two orders for the same
-  // user got paid at nearly the same instant (e.g. two tabs, a retried
-  // checkout). credit_bandwidth() (migration 0004) does the increment
-  // atomically in Postgres, and creates the account row if it somehow
-  // doesn't exist yet instead of silently no-op-ing.
-  const { error: creditErr } = await supabase.rpc('credit_bandwidth', {
-    p_user_id: p.user_id,
-    p_gb: p.gb_amount,
-  })
-  if (creditErr) {
-    console.error('[bandwidth] credit_bandwidth RPC failed', p.order_id, creditErr)
   }
 
   // 3. Activate pending proxy credentials — only when provider is configured

@@ -10,18 +10,12 @@ export async function POST(req: Request) {
     const body = await req.text()
     const sig = req.headers.get('x-paystack-signature') ?? ''
 
-    console.log('[webhook] hit', { sigPresent: !!sig, bodyLength: body.length })
-
     if (!verifyWebhookSignature(body, sig)) {
-      console.log('[webhook] signature FAILED')
+      console.error('[webhook] signature verification failed')
       return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
     }
 
-    console.log('[webhook] signature OK')
-
     const event = JSON.parse(body)
-    console.log('[webhook] event type:', event.event)
-    console.log('[webhook] metadata:', JSON.stringify(event.data?.metadata))
 
     if (event.event === 'charge.success') {
       const { reference, metadata, amount } = event.data
@@ -29,8 +23,6 @@ export async function POST(req: Request) {
       const order_id  = metadata?.order_id  ?? ''
       const user_id   = metadata?.user_id   ?? ''
       const gb_amount = Number(metadata?.gb_amount ?? 0)
-
-      console.log('[webhook] parsed', { order_id, user_id, gb_amount })
 
       if (!order_id || !user_id || !gb_amount) {
         console.error('[webhook] missing metadata', { order_id, user_id, gb_amount })
@@ -43,8 +35,6 @@ export async function POST(req: Request) {
         .select('payment_status, amount_usd, gb_amount')
         .eq('id', order_id)
         .single()
-
-      console.log('[webhook] order lookup', { order, orderErr })
 
       // Previously fell through to activateBandwidth() on a failed lookup —
       // `order` would be undefined, so `order && !amountMatchesOrder(...)`
@@ -60,7 +50,6 @@ export async function POST(req: Request) {
       }
 
       if (order.payment_status === 'paid') {
-        console.log('[webhook] already paid, skipping')
         return NextResponse.json({ received: true })
       }
 
@@ -98,7 +87,6 @@ export async function POST(req: Request) {
       // different sources of truth for the same value is worth collapsing
       // into one now that the order row is already in hand.
       await activateBandwidth({ order_id, user_id, gb_amount: Number(order.gb_amount), paystack_reference: reference })
-      console.log('[webhook] activateBandwidth complete')
     }
 
     return NextResponse.json({ received: true })
