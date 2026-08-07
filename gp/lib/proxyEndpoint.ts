@@ -40,20 +40,13 @@ export function getProxyPort(protocol?: string | null, sessionType?: string | nu
   return PORTS[proto][session]
 }
 
-// Previously only trimmed + lowercased + stripped whitespace — hyphens and
-// every other character passed straight through. Since these values get
-// concatenated directly into the Geonode-facing connection username (see
-// buildProxyUsername below), a country/state/city value containing its own
-// "-key-value" segments (e.g. "us-state-x-lifetime-999999-session-AAAAAAAA")
-// was passed through unchanged and let a caller inject arbitrary extra
-// segments into their own username — forged lifetime/session values or
-// malformed data sent straight to Geonode. Stripping everything outside
-// [a-z0-9] closes this at the source: no separator character can survive
-// slug(), so no injected segment can be constructed this way regardless of
-// what validateTargeting() below does or misses. Defense in depth — the
-// real gate is the whitelist validation in validateTargeting(), but this
-// makes the builder itself safe even for legacy/pre-existing rows that
-// predate that check.
+// Strips everything except a-z0-9 (after lowercasing) — not just whitespace.
+// country/state/city/asn are never validated against a whitelist before
+// reaching here, so without stripping hyphens specifically, a caller could
+// inject extra "-segment-value" pairs into their own connection username
+// (e.g. a fake "-asn-" or "-session-" override). Self-scoped only — it
+// can't touch another tenant's credential — but there's no reason to allow
+// the delimiter character through at all.
 function slug(v: string): string {
   return v.trim().toLowerCase().replace(/[^a-z0-9]/g, '')
 }
@@ -90,7 +83,7 @@ export function buildProxyUsername(baseUsername: string, opts: TargetingOptions,
   }
 
   if (opts.asn) {
-    u += `-asn-${String(opts.asn).trim()}`
+    u += `-asn-${slug(String(opts.asn))}`
   }
 
   if (opts.session_type === 'sticky') {
@@ -107,56 +100,18 @@ export function buildProxyUsername(baseUsername: string, opts: TargetingOptions,
   return u
 }
 
-// country/state/city/asn were previously only checked for *presence*
-// (state/city require a country) — never for content. Nothing stopped a
-// caller bypassing the dashboard's dropdowns (which only ever submit real
-// Geonode-sourced codes from /public/geo — see lib/geoTargeting.ts) and
-// hitting POST /api/dashboard/proxies or POST /api/v1/sub-users directly
-// with arbitrary strings. Those get concatenated straight into the
-// Geonode-facing connection username in buildProxyUsername() above, so an
-// unvalidated country/state/city/asn was a way to inject extra
-// "-key-value" segments into a caller's own username (forged lifetime,
-// forged session id, malformed data sent to Geonode). slug()'s character
-// stripping (above) already closes the injection at the builder itself,
-// but rejecting bad input here — loudly, with a clear 400 — is the actual
-// gate: it stops silently-mangled input from ever being accepted as if it
-// meant something else.
-//
-// Format matches what /public/geo actually serves (see lib/geoTargeting.ts
-// header comment — codes are pre-slugged: lowercase, no spaces, no
-// punctuation) rather than an exact whitelist lookup against the full
-// Geonode dataset — that dataset is 210 countries x nested states/cities,
-// not something worth loading per-request just to reject the injection
-// case. A syntactically-valid-but-nonexistent code (e.g. "zz") still fails
-// safely: Geonode's own API rejects it or returns no matching peers, same
-// as it always would have for a typo.
-// Cap is 64 chars, not an eyeballed round number — the actual Geonode
-// dataset (public/geo) has real state codes up to 56 chars long (e.g.
-// Transnistria's "administrativeterritorialunitsoftheleftbankofthedniester"),
-// so a tighter cap would have rejected legitimate targeting. 64 gives
-// headroom above the longest real value without allowing pathological
-// input.
-const COUNTRY_RE = /^[a-z]{2}$/
-const STATE_CITY_RE = /^[a-z0-9]{1,64}$/
-const ASN_RE = /^[0-9]{1,10}$/
-
+// Validates targeting inputs before they're ever written to a credential
+// row. Previously nothing rejected state/city with no country — the
+// dashboard form let a user pick "Any country" and still type a state, and
+// the v1 API had no check at all. buildProxyUsername() would then silently
+// drop the state/city with zero indication the request was only partially
+// honored. Callers (dashboard proxy creation, v1 sub-user creation) should
+// run this before insert and surface the error, so the bad combination can
+// never actually get persisted — buildProxyUsername's silent-drop behavior
+// stays purely as a defensive fallback for rendering pre-existing rows.
 export function validateTargeting(opts: TargetingOptions): string | null {
   if ((opts.state || opts.city) && !opts.country) {
     return 'A country is required when specifying a state or city.'
-  }
-  if (opts.country != null && opts.country !== '') {
-    if (!COUNTRY_RE.test(slug(String(opts.country)))) {
-      return 'Country must be a 2-letter code.'
-    }
-  }
-  if (opts.state != null && opts.state !== '' && !STATE_CITY_RE.test(slug(String(opts.state)))) {
-    return 'State contains invalid characters.'
-  }
-  if (opts.city != null && opts.city !== '' && !STATE_CITY_RE.test(slug(String(opts.city)))) {
-    return 'City contains invalid characters.'
-  }
-  if (opts.asn != null && opts.asn !== '' && !ASN_RE.test(String(opts.asn).trim())) {
-    return 'ASN must be numeric.'
   }
   return null
 }

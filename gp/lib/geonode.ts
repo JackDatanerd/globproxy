@@ -214,8 +214,18 @@ export async function getAccountBalance(): Promise<{ available_gb: number; total
   }
   const d = await res.json()
   const result = d.result ?? d.data ?? d
+  // remainingMB (= totalMB - usedMB) tracks only the reseller's own direct
+  // traffic — it does NOT subtract allocatedToSubUsersMB, so it silently
+  // overstates real sellable stock by however much is already committed to
+  // customer credentials but not yet consumed. availableForAllocationMB
+  // (= totalMB - allocatedToSubUsersMB) is the field that actually answers
+  // "how much can I still sell" — confirmed against the live OpenAPI spec's
+  // /traffic response schema. This is what Geonode's own dashboard shows
+  // as "Available Bandwidth", and what our stock/exposure alerting needs
+  // to match — using remainingMB here is what caused the admin panel to
+  // read higher than Geonode's true available figure.
   return {
-    available_gb: mbToGb(result.remainingMB ?? 0),
+    available_gb: mbToGb(result.availableForAllocationMB ?? 0),
     total_gb: mbToGb(result.totalMB ?? 0),
   }
 }
