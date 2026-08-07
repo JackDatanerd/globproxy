@@ -6,16 +6,14 @@
   "main": "custom-worker.ts",
   "assets": { "directory": ".open-next/assets", "binding": "ASSETS" },
   // Native Cloudflare Cron Triggers — see custom-worker.ts for the full
-  // rationale (replaces the external cron-job.org dispatcher). Keep this
-  // array in sync with custom-worker.ts's CRON_TASKS map: each pattern
-  // here needs a matching entry there, and vice versa.
+  // rationale (replaces cron-job.org, already disabled, and the three
+  // GitHub Actions cron-*.yml workflows, to be deleted once this is
+  // verified live). Keep in sync with custom-worker.ts's CRON_TASKS map.
   "triggers": {
     "crons": [
       "*/5 * * * *",
-      "*/10 * * * *",
-      "*/15 * * * *",
-      "0 9 * * *",
-      "0 * * * *"
+      "0 * * * *",
+      "0 8 * * *"
     ]
   }
 }

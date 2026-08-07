@@ -29,20 +29,24 @@
 // scheduled() invocation — costs nothing, and means route.ts needed zero
 // changes for this migration.
 //
-// ACTION NEEDED AFTER DEPLOYING THIS: delete/disable the cron-job.org
-// jobs. Leaving both running would double-fire every task — harmless for
-// idempotent ones (usage, cleanup), but 'stock' and 'summary' have no
-// de-dupe guard the way the bandwidth-threshold alerts do, so you'd get
-// duplicate admin emails until the old jobs are removed.
+// ACTION NEEDED AFTER THIS DEPLOYS AND IS VERIFIED WORKING: delete
+// .github/workflows/cron-usage.yml, cron-stock.yml, and cron-daily.yml —
+// they are the real dispatcher this replaces (cron-job.org, separately,
+// has already been disabled). Leaving them running alongside this would
+// double-fire every task. Do NOT delete them before confirming the
+// Cloudflare triggers actually fired successfully at least once each —
+// check the Triggers tab / wrangler tail, don't just trust the deploy
+// succeeding.
 //
-// VERIFY THE SCHEDULE: the five cron patterns below are reasonable
-// defaults, not a copy of whatever was actually configured on
-// cron-job.org (that config lives on their dashboard, not in this repo —
-// there was no way to read it from here). Adjust CRON_TASKS and
-// wrangler.jsonc's triggers.crons together if your real intervals
-// differed, especially for 'usage' — usageSync.ts's own comments assume
-// a ~5 minute cadence, so keep that one close to what's below unless you
-// have a specific reason to change it.
+// SCHEDULE: matched to the real, already-proven cadence in those three
+// workflows (see CRON_TASKS below for the mapping and reasoning) rather
+// than guessed — usage every 5 min, stock hourly, and alerts → summary →
+// cleanup once a day at 8am UTC as a chain, exactly replicating
+// cron-daily.yml's `needs:` dependency (each step only runs if the
+// previous one succeeded). If you want tighter alerting than once a day
+// — e.g. a customer crossing 95% usage at 9am currently won't be emailed
+// until the next day's 8am run — that's a deliberate product change to
+// make separately, not something to fold in here silently.
 
 // @ts-ignore `.open-next/worker.js` is generated at build time
 import { default as handler } from './.open-next/worker.js'
@@ -50,21 +54,29 @@ import { default as handler } from './.open-next/worker.js'
 // Keep this in sync with wrangler.jsonc's triggers.crons array — every
 // pattern here needs a matching entry there, and vice versa. Cloudflare
 // cron expressions run in UTC.
-const CRON_TASKS: Record<string, string> = {
-  '*/5 * * * *': 'usage',    // usage-sync — see usageSync.ts's ~5 min cadence comments
-  '*/10 * * * *': 'stock',   // stock/exposure check + usage-sync freshness watchdog
-  '*/15 * * * *': 'alerts',  // user bandwidth threshold (80%/95%) alerts
-  '0 9 * * *': 'summary',    // daily admin summary — 9am UTC
-  '0 * * * *': 'cleanup',    // stale pending-order cleanup — hourly
+//
+// These three schedules replace the three GitHub Actions workflows
+// (cron-usage.yml, cron-stock.yml, cron-daily.yml) — matched to their
+// real, already-proven cadence rather than guessed at:
+//   - usage: every 5 min (cron-usage.yml)
+//   - stock: hourly (cron-stock.yml)
+//   - alerts → summary → cleanup: once a day at 8am UTC, run in that
+//     order, each step only running if the previous one succeeded
+//     (cron-daily.yml used GitHub Actions' `needs:` for this exact
+//     chain — replicated below rather than dropped).
+const CRON_TASKS: Record<string, string[]> = {
+  '*/5 * * * *': ['usage'],
+  '0 * * * *': ['stock'],
+  '0 8 * * *': ['alerts', 'summary', 'cleanup'],
 }
 
 export default {
   fetch: handler.fetch,
 
   async scheduled(event: any, env: any, ctx: any) {
-    const task = CRON_TASKS[event.cron]
-    if (!task) {
-      console.error(`[scheduled] no task mapped for cron pattern "${event.cron}" — check wrangler.jsonc and custom-worker.ts are in sync`)
+    const tasks = CRON_TASKS[event.cron]
+    if (!tasks) {
+      console.error(`[scheduled] no tasks mapped for cron pattern "${event.cron}" — check wrangler.jsonc and custom-worker.ts are in sync`)
       return
     }
 
@@ -74,24 +86,40 @@ export default {
     // as process.env.* inside the Next.js request-handling code this
     // self-invokes.
     const base = env.NEXT_PUBLIC_APP_URL || 'https://globproxy.com'
-    const req = new Request(`${base}/api/cron/${task}`, {
-      method: 'POST',
-      headers: { 'x-cron-secret': env.CRON_SECRET ?? '' },
-    })
 
     // waitUntil so the scheduled invocation doesn't get torn down before
-    // the self-fetch (and everything it awaits — email sends, Geonode
+    // the chain (and everything each step awaits — email sends, Geonode
     // calls, Supabase writes) actually finishes.
-    ctx.waitUntil(
-      handler.fetch(req, env, ctx)
-        .then(async (res: Response) => {
-          if (!res.ok) {
-            console.error(`[scheduled] cron task "${task}" returned ${res.status}:`, await res.text().catch(() => ''))
-          }
-        })
-        .catch((e: unknown) => {
-          console.error(`[scheduled] cron task "${task}" threw:`, e)
-        })
-    )
+    ctx.waitUntil(runTaskChain(base, env.CRON_SECRET ?? '', tasks, handler, env, ctx))
   },
+}
+
+// Runs tasks in order, stopping at the first failure — same semantics as
+// cron-daily.yml's `needs:` chain (alerts → summary → cleanup): a failed
+// step means the ones after it don't run this cycle, rather than firing
+// blind on top of a known-bad state.
+async function runTaskChain(
+  base: string,
+  cronSecret: string,
+  tasks: string[],
+  handler: any,
+  env: any,
+  ctx: any
+) {
+  for (const task of tasks) {
+    const req = new Request(`${base}/api/cron/${task}`, {
+      method: 'POST',
+      headers: { 'x-cron-secret': cronSecret },
+    })
+    try {
+      const res: Response = await handler.fetch(req, env, ctx)
+      if (!res.ok) {
+        console.error(`[scheduled] cron task "${task}" returned ${res.status}:`, await res.text().catch(() => ''))
+        return // stop the chain, matching needs:
+      }
+    } catch (e) {
+      console.error(`[scheduled] cron task "${task}" threw:`, e)
+      return // stop the chain, matching needs:
+    }
+  }
 }
