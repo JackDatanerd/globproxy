@@ -100,18 +100,66 @@ export function buildProxyUsername(baseUsername: string, opts: TargetingOptions,
   return u
 }
 
-// Validates targeting inputs before they're ever written to a credential
-// row. Previously nothing rejected state/city with no country — the
-// dashboard form let a user pick "Any country" and still type a state, and
-// the v1 API had no check at all. buildProxyUsername() would then silently
-// drop the state/city with zero indication the request was only partially
-// honored. Callers (dashboard proxy creation, v1 sub-user creation) should
-// run this before insert and surface the error, so the bad combination can
-// never actually get persisted — buildProxyUsername's silent-drop behavior
-// stays purely as a defensive fallback for rendering pre-existing rows.
+// country/state/city/asn were previously only checked for *presence*
+// (state/city require a country) — never for content. Nothing stopped a
+// caller bypassing the dashboard's dropdowns (which only ever submit real
+// Geonode-sourced codes from /public/geo — see lib/geoTargeting.ts) and
+// hitting POST /api/dashboard/proxies or POST /api/v1/sub-users directly
+// with arbitrary strings. Those get concatenated straight into the
+// Geonode-facing connection username in buildProxyUsername() above, so an
+// unvalidated country/state/city/asn was a way to inject extra
+// "-key-value" segments into a caller's own username (forged lifetime,
+// forged session id, malformed data sent to Geonode). slug()'s character
+// stripping (above) already closes the injection at the builder itself,
+// but rejecting bad input here — loudly, with a clear 400 — is the actual
+// gate: it stops silently-mangled input from ever being accepted as if it
+// meant something else.
+//
+// Format matches what /public/geo actually serves (see lib/geoTargeting.ts
+// header comment — codes are pre-slugged: lowercase, no spaces, no
+// punctuation) rather than an exact whitelist lookup against the full
+// Geonode dataset — that dataset is 210 countries x nested states/cities,
+// not something worth loading per-request just to reject the injection
+// case. A syntactically-valid-but-nonexistent code (e.g. "zz") still fails
+// safely: Geonode's own API rejects it or returns no matching peers, same
+// as it always would have for a typo.
+// Cap is 64 chars, not an eyeballed round number — the actual Geonode
+// dataset (public/geo) has real state codes up to 56 chars long (e.g.
+// Transnistria's "administrativeterritorialunitsoftheleftbankofthedniester"),
+// so a tighter cap would have rejected legitimate targeting. 64 gives
+// headroom above the longest real value without allowing pathological
+// input.
+//
+// RESTORED 2026-08-07 — this block was accidentally dropped by a later
+// commit (an unrelated slug()/stock-calc edit was made from a stale copy
+// of this file and silently clobbered it on merge). The injection itself
+// stayed closed the whole time regardless — slug()'s character stripping
+// is unconditional and doesn't depend on this check — but malformed input
+// was being silently accepted instead of rejected with a clear error in
+// the gap. Confirmed via direct adversarial testing against the compiled
+// module (real injection payloads through country/state/asn, not just
+// read the diff) before restoring.
+const COUNTRY_RE = /^[a-z]{2}$/
+const STATE_CITY_RE = /^[a-z0-9]{1,64}$/
+const ASN_RE = /^[0-9]{1,10}$/
+
 export function validateTargeting(opts: TargetingOptions): string | null {
   if ((opts.state || opts.city) && !opts.country) {
     return 'A country is required when specifying a state or city.'
+  }
+  if (opts.country != null && opts.country !== '') {
+    if (!COUNTRY_RE.test(slug(String(opts.country)))) {
+      return 'Country must be a 2-letter code.'
+    }
+  }
+  if (opts.state != null && opts.state !== '' && !STATE_CITY_RE.test(slug(String(opts.state)))) {
+    return 'State contains invalid characters.'
+  }
+  if (opts.city != null && opts.city !== '' && !STATE_CITY_RE.test(slug(String(opts.city)))) {
+    return 'City contains invalid characters.'
+  }
+  if (opts.asn != null && opts.asn !== '' && !ASN_RE.test(String(opts.asn).trim())) {
+    return 'ASN must be numeric.'
   }
   return null
 }
