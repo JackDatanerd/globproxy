@@ -30,7 +30,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'gb_allocated must be greater than 0' }, { status: 400 })
   }
 
-  const targetingError = validateTargeting({ country, state, city })
+  const targetingError = validateTargeting({ country, state, city, asn })
   if (targetingError) {
     return NextResponse.json({ error: targetingError }, { status: 400 })
   }
