@@ -25,7 +25,21 @@ export async function computeStockStatus(supabase: any): Promise<StockStatus> {
 
   const totalAllocated = activeCreds?.reduce((s: number, c: any) => s + (c.gb_allocated ?? 0), 0) ?? 0
   const totalUsed = activeCreds?.reduce((s: number, c: any) => s + (c.gb_used ?? 0), 0) ?? 0
-  const exposureGb = Math.max(0, totalAllocated - totalUsed)
+  // Clamp PER CREDENTIAL before summing, not the aggregate. Nothing in
+  // usageSync.ts caps gb_used at gb_allocated when writing a sync (Geonode's
+  // own trafficUsedMB can itself exceed trafficLimitMB — confirmed live on
+  // the account, e.g. a sub-user at 53.29MB used against a 51MB limit), and
+  // nothing auto-suspends a credential once it's over. If any single
+  // credential is over its own cap, summing (allocated - used) at the
+  // aggregate level lets that credential's negative remainder silently
+  // cancel out another credential's real remaining exposure — understating
+  // the number this metric exists to get right. A customer who's already
+  // over their cap contributes 0 future draw risk; it can't offset a
+  // different customer who genuinely still has headroom to pull.
+  const exposureGb = activeCreds?.reduce(
+    (s: number, c: any) => s + Math.max(0, (c.gb_allocated ?? 0) - (c.gb_used ?? 0)),
+    0
+  ) ?? 0
 
   return {
     available_gb: balance.available_gb,
