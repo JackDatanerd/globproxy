@@ -1,5 +1,6 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { listAllSubUsersUsage, getSubUserUsage } from '@/lib/geonode'
+import { runAutoTopups } from '@/lib/autoTopup'
 
 // Extracted from app/api/cron/[task]/route.ts's runUsageSync() so the admin
 // "sync now" button (app/api/admin/sync-usage) and the cron-job.org-driven
@@ -62,6 +63,14 @@ export async function syncAllUsage() {
   const changes = buildChanges(creds ?? [], usageMap)
   const { recalcOk } = await applyChanges(supabase, changes)
 
+  // Auto-allocate: run after gb_used is fresh (just above) so "remaining
+  // GB" reflects real current usage, not whatever it was ~5 minutes ago
+  // at the last tick. See lib/autoTopup.ts for the full flow — failures
+  // here (e.g. insufficient balance) are logged/alerted internally and
+  // never throw, so a problem with one credential's auto-topup can't
+  // block the rest of this cron run.
+  const autoTopup = await runAutoTopups()
+
   // Stamp a freshness marker on every successful run — this is what lets
   // runStockCheck() (a *separate* cron task, deliberately) notice if this
   // one silently stops running. It already happened once in production:
@@ -76,7 +85,7 @@ export async function syncAllUsage() {
       .upsert({ key: 'usage_last_synced_at', value: new Date().toISOString() }, { onConflict: 'key' })
   }
 
-  return { updated_credentials: changes.length, recalc_ok: recalcOk }
+  return { updated_credentials: changes.length, recalc_ok: recalcOk, auto_topup: autoTopup }
 }
 
 // Scoped sync — one user's active credentials only. For the admin
@@ -108,5 +117,10 @@ export async function syncUserUsage(userId: string) {
 
   const changes = buildChanges(creds ?? [], usageMap)
   await applyChanges(supabase, changes)
-  return { updated_credentials: changes.length }
+  // Scoped to this user only — same reasoning as the full sync above,
+  // just narrowed so an admin's "sync this user now" button also settles
+  // that user's auto-topups immediately rather than waiting for the next
+  // full cron tick.
+  const autoTopup = await runAutoTopups(userId)
+  return { updated_credentials: changes.length, auto_topup: autoTopup }
 }

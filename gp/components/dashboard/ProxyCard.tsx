@@ -10,7 +10,7 @@ import clsx from 'clsx'
 
 interface Props { cred: any; index: number; expanded: boolean; onToggle: () => void }
 
-type Tab = 'cred' | 'endpoints' | 'code'
+type Tab = 'cred' | 'bandwidth' | 'endpoints' | 'code'
 type Lang = 'py' | 'node' | 'browser'
 
 // Row-based redesign: collapsed by default (status communicated by the left
@@ -26,6 +26,18 @@ export default function ProxyCard({ cred, index, expanded, onToggle }: Props) {
   const [tab, setTab] = useState<Tab>('cred')
   const [lang, setLang] = useState<Lang>('py')
   const [justCopied, setJustCopied] = useState(false)
+
+  // Manual top-up
+  const [topupAmount, setTopupAmount] = useState('')
+  const [topupLoading, setTopupLoading] = useState(false)
+
+  // Auto-allocate — seeded from the credential row, re-seeded whenever a
+  // fresh `cred` prop arrives (router.refresh() after a save re-fetches
+  // the page's server-side data and passes it back down).
+  const [autoEnabled, setAutoEnabled] = useState(!!cred.auto_topup_enabled)
+  const [autoThreshold, setAutoThreshold] = useState(String(cred.auto_topup_threshold_gb ?? ''))
+  const [autoAmount, setAutoAmount] = useState(String(cred.auto_topup_amount_gb ?? ''))
+  const [autoLoading, setAutoLoading] = useState(false)
 
   const host = cred.host || 'proxy.globproxy.com'
   const port = cred.port || getProxyPort(cred.protocol, cred.session_type)
@@ -101,6 +113,61 @@ export default function ProxyCard({ cred, index, expanded, onToggle }: Props) {
       toast.error(err.message)
     } finally {
       setDeleting(false); setConfirmDelete(false)
+    }
+  }
+
+  async function handleTopup(e: React.FormEvent) {
+    e.preventDefault()
+    const gb = Number(topupAmount)
+    if (!gb || gb <= 0) { toast.error('Enter a GB amount greater than 0'); return }
+    setTopupLoading(true)
+    try {
+      const { data: { session } } = await createClient().auth.getSession()
+      const res = await fetch(`/api/dashboard/proxies/${cred.id}/topup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
+        body: JSON.stringify({ gb_amount: gb }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error)
+      toast.success(`+${gb} GB added`)
+      if (data.warning) toast(data.warning, { icon: '⚠️', duration: 6000 })
+      setTopupAmount('')
+      router.refresh()
+    } catch (err: any) {
+      toast.error(err.message)
+    } finally {
+      setTopupLoading(false)
+    }
+  }
+
+  async function handleAutoTopupSave(e: React.FormEvent) {
+    e.preventDefault()
+    if (autoEnabled) {
+      const t = Number(autoThreshold), a = Number(autoAmount)
+      if (!Number.isFinite(t) || t < 0) { toast.error('Threshold must be 0 or greater'); return }
+      if (!Number.isFinite(a) || a <= 0) { toast.error('Top-up amount must be greater than 0'); return }
+    }
+    setAutoLoading(true)
+    try {
+      const { data: { session } } = await createClient().auth.getSession()
+      const res = await fetch(`/api/dashboard/proxies/${cred.id}/auto-topup`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
+        body: JSON.stringify({
+          enabled: autoEnabled,
+          threshold_gb: autoEnabled ? Number(autoThreshold) : null,
+          amount_gb: autoEnabled ? Number(autoAmount) : null,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error)
+      toast.success(autoEnabled ? 'Auto-allocate enabled' : 'Auto-allocate disabled')
+      router.refresh()
+    } catch (err: any) {
+      toast.error(err.message)
+    } finally {
+      setAutoLoading(false)
     }
   }
 
@@ -243,6 +310,10 @@ console.log(await res.json()); // shows proxy IP and location`
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'cred' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
                   Credentials
                 </button>
+                <button onClick={() => setTab('bandwidth')}
+                  className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'bandwidth' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
+                  Bandwidth{pct >= 85 && <span className="ml-1 text-red-400">●</span>}
+                </button>
                 <button onClick={() => setTab('endpoints')}
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'endpoints' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
                   {isSticky ? 'Sticky sessions' : `Endpoints (${count})`}
@@ -276,6 +347,101 @@ console.log(await res.json()); // shows proxy IP and location`
                       </button>
                     </div>
                   ))}
+                </div>
+              )}
+
+              {tab === 'bandwidth' && (
+                <div className="mb-2">
+                  {!canDelete ? (
+                    <div className="text-xs text-muted bg-surface border border-border rounded-lg px-4 py-3 font-mono">
+                      ⚠ This session was allocated by your reseller. Bandwidth top-ups and auto-allocate aren't available here — contact them directly.
+                    </div>
+                  ) : (
+                    <>
+                      <div className="bg-surface border border-border rounded-lg px-4 py-3 mb-2 flex items-center justify-between">
+                        <span className="text-[10px] font-mono text-muted uppercase tracking-wider">Remaining</span>
+                        <span className={clsx('text-sm font-mono font-medium', pct >= 85 ? 'text-red-500' : 'text-ink')}>
+                          {formatGb(Math.max(0, gbAllocated - gbUsed))} GB of {formatGb(gbAllocated)} GB
+                        </span>
+                      </div>
+
+                      {/* Manual top-up */}
+                      <form onSubmit={handleTopup} className="mb-4">
+                        <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-1.5">Top up now</div>
+                        <div className="flex gap-2">
+                          <input
+                            type="number" min="0.1" step="0.1" placeholder="GB to add"
+                            value={topupAmount} onChange={e => setTopupAmount(e.target.value)}
+                            className="flex-1 bg-white border border-border px-3 py-2 rounded-lg text-xs focus:outline-none focus:border-accent transition-colors"
+                          />
+                          <button type="submit" disabled={topupLoading}
+                            className="bg-accent text-white px-4 py-2 rounded-lg text-xs font-medium hover:opacity-90 transition-opacity disabled:opacity-50 flex-shrink-0">
+                            {topupLoading ? 'Adding…' : 'Add GB'}
+                          </button>
+                        </div>
+                        <p className="text-[10.5px] text-muted mt-1.5">
+                          Draws from your account balance and applies immediately — no new session needed.
+                        </p>
+                      </form>
+
+                      {/* Auto-allocate */}
+                      <form onSubmit={handleAutoTopupSave} className="border-t border-border pt-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <div>
+                            <div className="text-xs font-medium text-ink">Auto-allocate</div>
+                            <p className="text-[10.5px] text-muted mt-0.5">
+                              Automatically top up this session before it runs out.
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setAutoEnabled(v => !v)}
+                            aria-pressed={autoEnabled}
+                            className={clsx('relative w-9 h-5 rounded-full transition-colors flex-shrink-0', autoEnabled ? 'bg-accent' : 'bg-border')}
+                          >
+                            <span className={clsx('absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform', autoEnabled && 'translate-x-4')} />
+                          </button>
+                        </div>
+
+                        {autoEnabled && (
+                          <div className="flex gap-2 mb-2">
+                            <div className="flex-1">
+                              <label className="text-[10px] font-mono text-muted uppercase tracking-wider block mb-1">When remaining falls below</label>
+                              <div className="flex items-center gap-1.5">
+                                <input
+                                  type="number" min="0" step="0.1" placeholder="e.g. 2"
+                                  value={autoThreshold} onChange={e => setAutoThreshold(e.target.value)}
+                                  className="w-full bg-white border border-border px-3 py-2 rounded-lg text-xs focus:outline-none focus:border-accent transition-colors"
+                                />
+                                <span className="text-[10.5px] text-muted flex-shrink-0">GB</span>
+                              </div>
+                            </div>
+                            <div className="flex-1">
+                              <label className="text-[10px] font-mono text-muted uppercase tracking-wider block mb-1">Add</label>
+                              <div className="flex items-center gap-1.5">
+                                <input
+                                  type="number" min="0.1" step="0.1" placeholder="e.g. 10"
+                                  value={autoAmount} onChange={e => setAutoAmount(e.target.value)}
+                                  className="w-full bg-white border border-border px-3 py-2 rounded-lg text-xs focus:outline-none focus:border-accent transition-colors"
+                                />
+                                <span className="text-[10.5px] text-muted flex-shrink-0">GB</span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        <button type="submit" disabled={autoLoading}
+                          className="text-xs font-mono px-3 py-1.5 rounded-lg border border-border text-ink2 hover:border-accent hover:text-accent transition-colors disabled:opacity-50">
+                          {autoLoading ? 'Saving…' : 'Save auto-allocate settings'}
+                        </button>
+                        {autoEnabled && (
+                          <p className="text-[10.5px] text-muted mt-1.5">
+                            Checked roughly every 5 minutes. If your account balance can't cover a top-up, you'll get an email instead — the session keeps working off its current allocation until then.
+                          </p>
+                        )}
+                      </form>
+                    </>
+                  )}
                 </div>
               )}
 
