@@ -35,6 +35,9 @@ export default function NewProxyForm({ availableGb }: { availableGb: number }) {
     sticky_duration: 10,
     endpoint_count:  1,
     gb_allocated:    1,
+    auto_topup_enabled:     false,
+    auto_topup_threshold_gb: 1,
+    auto_topup_amount_gb:    5,
   })
 
   function set(k: string, v: any) { setForm(f => ({ ...f, [k]: v })) }
@@ -103,6 +106,16 @@ export default function NewProxyForm({ availableGb }: { availableGb: number }) {
       toast.error(targetingError)
       return
     }
+    if (form.auto_topup_enabled) {
+      if (!Number.isFinite(form.auto_topup_threshold_gb) || form.auto_topup_threshold_gb < 0) {
+        toast.error('Auto-allocate threshold must be 0 or greater')
+        return
+      }
+      if (!Number.isFinite(form.auto_topup_amount_gb) || form.auto_topup_amount_gb <= 0) {
+        toast.error('Auto-allocate top-up amount must be greater than 0')
+        return
+      }
+    }
     setLoading(true)
     try {
       const { data: { session } } = await createClient().auth.getSession()
@@ -114,6 +127,7 @@ export default function NewProxyForm({ availableGb }: { availableGb: number }) {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error)
       toast.success('Proxy session created!')
+      if (data.warning) toast(data.warning, { icon: '⚠️', duration: 6000 })
       router.push('/dashboard/proxies')
       router.refresh()
     } catch (err: any) {
@@ -311,6 +325,55 @@ export default function NewProxyForm({ availableGb }: { availableGb: number }) {
               </div>
             </div>
           </div>
+
+          {/* 5. Auto-allocate */}
+          <div className="px-7 py-6 border-t border-border">
+            <div className="flex items-center justify-between mb-1">
+              <div className="font-display font-semibold text-[15px] text-ink flex items-center gap-2">
+                <span className="font-mono text-[10px] text-muted border border-border rounded-md w-5 h-5 inline-flex items-center justify-center">5</span>
+                Auto-allocate
+              </div>
+              <button
+                type="button"
+                onClick={() => set('auto_topup_enabled', !form.auto_topup_enabled)}
+                aria-pressed={form.auto_topup_enabled}
+                className={clsx('relative w-9 h-5 rounded-full transition-colors flex-shrink-0', form.auto_topup_enabled ? 'bg-accent' : 'bg-border')}
+              >
+                <span className={clsx('absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform', form.auto_topup_enabled && 'translate-x-4')} />
+              </button>
+            </div>
+            <p className="text-xs text-muted mb-3.5">
+              Automatically top up this session from your account balance before it runs out — no need to create a new one when it depletes.
+            </p>
+
+            {form.auto_topup_enabled && (
+              <div className="grid grid-cols-2 gap-3.5">
+                <div>
+                  <label className="block text-xs text-ink2 font-medium mb-1.5">When remaining falls below</label>
+                  <div className="relative">
+                    <input type="number" min={0} step={0.1}
+                      value={form.auto_topup_threshold_gb}
+                      onChange={e => set('auto_topup_threshold_gb', +e.target.value)}
+                      className="w-full bg-surface border border-border px-3.5 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors pr-11" />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11.5px] font-mono text-muted pointer-events-none">GB</span>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs text-ink2 font-medium mb-1.5">Add</label>
+                  <div className="relative">
+                    <input type="number" min={0.1} step={0.1}
+                      value={form.auto_topup_amount_gb}
+                      onChange={e => set('auto_topup_amount_gb', +e.target.value)}
+                      className="w-full bg-surface border border-border px-3.5 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors pr-11" />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11.5px] font-mono text-muted pointer-events-none">GB</span>
+                  </div>
+                </div>
+                <p className="col-span-2 text-xs text-muted -mt-1">
+                  Checked roughly every 5 minutes. If your balance can't cover a top-up, you'll get an email instead of it failing silently.
+                </p>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* ============ RECEIPT: sticky live summary + submit ============ */}
@@ -343,6 +406,14 @@ export default function NewProxyForm({ availableGb }: { availableGb: number }) {
               <div className="flex justify-between items-center py-2 text-[12.5px]">
                 <span className="font-mono text-[10.5px] uppercase tracking-wide text-white/45">Endpoints</span>
                 <span className="font-medium text-white/90">{form.endpoint_count}</span>
+              </div>
+              <div className="flex justify-between items-center py-2 text-[12.5px]">
+                <span className="font-mono text-[10.5px] uppercase tracking-wide text-white/45">Auto-allocate</span>
+                <span className="font-medium text-white/90">
+                  {form.auto_topup_enabled
+                    ? `Below ${form.auto_topup_threshold_gb} GB → +${form.auto_topup_amount_gb} GB`
+                    : 'Off'}
+                </span>
               </div>
 
               <div className="bg-white/[.06] border border-white/10 rounded-lg px-3.5 py-3 my-3.5 font-mono text-[11px] text-white/75 break-all leading-relaxed">
