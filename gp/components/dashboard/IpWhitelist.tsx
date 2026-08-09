@@ -1,0 +1,310 @@
+'use client'
+import { useEffect, useState } from 'react'
+import { createClient } from '@/lib/supabase/client'
+import toast from 'react-hot-toast'
+import clsx from 'clsx'
+
+interface WhitelistedIp {
+  ip: string
+  description: string
+}
+
+interface Props {
+  credentialId: string
+}
+
+// Geonode's reseller API has always had a full set of endpoints for
+// locking a sub-user's credential down to specific source IPs
+// (list/add/bulk-add/bulk-remove/remove-by-ip) — this is the first UI
+// GlobProxy has exposed for it. With no whitelist entries, a credential's
+// only access control is its username/password pair; adding IPs here
+// restricts connections to just those sources on top of that.
+export default function IpWhitelist({ credentialId }: Props) {
+  const [ips, setIps] = useState<WhitelistedIp[] | null>(null)
+  const [provisioning, setProvisioning] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+
+  const [ip, setIp] = useState('')
+  const [description, setDescription] = useState('')
+  const [adding, setAdding] = useState(false)
+
+  const [bulkMode, setBulkMode] = useState(false)
+  const [bulkText, setBulkText] = useState('')
+  const [bulkAdding, setBulkAdding] = useState(false)
+
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [removing, setRemoving] = useState<Set<string>>(new Set())
+  const [bulkRemoving, setBulkRemoving] = useState(false)
+
+  async function authHeaders() {
+    const { data: { session } } = await createClient().auth.getSession()
+    return {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${session?.access_token}`,
+    }
+  }
+
+  async function load() {
+    try {
+      const headers = await authHeaders()
+      const res = await fetch(`/api/dashboard/proxies/${credentialId}/whitelist`, { headers })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error)
+      setIps(data.ips ?? [])
+      setProvisioning(!!data.provisioning)
+      setLoadError(null)
+    } catch (err: any) {
+      setLoadError(err.message || 'Failed to load whitelist')
+    }
+  }
+
+  useEffect(() => { load() }, [credentialId])
+
+  async function addIp(e: React.FormEvent) {
+    e.preventDefault()
+    if (!ip.trim()) { toast.error('Enter an IP address'); return }
+    if (!description.trim()) { toast.error('Enter a short description (e.g. "Office IP")'); return }
+    setAdding(true)
+    try {
+      const headers = await authHeaders()
+      const res = await fetch(`/api/dashboard/proxies/${credentialId}/whitelist`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ ip: ip.trim(), description: description.trim() }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error)
+      setIps(data.ips)
+      setIp('')
+      setDescription('')
+      toast.success('IP whitelisted')
+    } catch (err: any) {
+      toast.error(err.message)
+    } finally {
+      setAdding(false)
+    }
+  }
+
+  // Accepts one entry per line, as "ip" or "ip,description" or
+  // "ip description" — blank descriptions fall back to a timestamped
+  // default rather than failing the whole batch over a missing label.
+  // Comma is checked first (so a description containing spaces, e.g.
+  // "203.0.113.4, Office VPN exit", still splits correctly); falls back
+  // to splitting on the first run of whitespace when there's no comma.
+  function parseBulkLines(text: string): { ip: string; description: string }[] {
+    const fallbackDesc = `Bulk added ${new Date().toLocaleDateString()}`
+    return text
+      .split('\n')
+      .map(l => l.trim())
+      .filter(Boolean)
+      .map(line => {
+        let ipPart: string
+        let desc: string
+        if (line.includes(',')) {
+          const idx = line.indexOf(',')
+          ipPart = line.slice(0, idx).trim()
+          desc = line.slice(idx + 1).trim()
+        } else {
+          const idx = line.search(/\s/)
+          ipPart = idx === -1 ? line : line.slice(0, idx).trim()
+          desc = idx === -1 ? '' : line.slice(idx + 1).trim()
+        }
+        return { ip: ipPart, description: desc || fallbackDesc }
+      })
+  }
+
+  async function bulkAdd() {
+    const items = parseBulkLines(bulkText)
+    if (items.length === 0) { toast.error('Paste at least one IP'); return }
+    if (items.length > 150) { toast.error('Max 150 IPs per bulk request'); return }
+    setBulkAdding(true)
+    try {
+      const headers = await authHeaders()
+      const res = await fetch(`/api/dashboard/proxies/${credentialId}/whitelist/bulk`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ items }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error)
+      setIps(data.ips)
+      setBulkText('')
+      setBulkMode(false)
+      toast.success(`${items.length} IP${items.length > 1 ? 's' : ''} submitted`)
+    } catch (err: any) {
+      toast.error(err.message)
+    } finally {
+      setBulkAdding(false)
+    }
+  }
+
+  async function removeIp(target: string) {
+    setRemoving(prev => new Set(prev).add(target))
+    try {
+      const headers = await authHeaders()
+      const res = await fetch(
+        `/api/dashboard/proxies/${credentialId}/whitelist?ip=${encodeURIComponent(target)}`,
+        { method: 'DELETE', headers }
+      )
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error)
+      setIps(data.ips)
+      setSelected(prev => { const n = new Set(prev); n.delete(target); return n })
+      toast.success('IP removed')
+    } catch (err: any) {
+      toast.error(err.message)
+    } finally {
+      setRemoving(prev => { const n = new Set(prev); n.delete(target); return n })
+    }
+  }
+
+  async function removeSelected() {
+    if (selected.size === 0) return
+    setBulkRemoving(true)
+    try {
+      const headers = await authHeaders()
+      const res = await fetch(`/api/dashboard/proxies/${credentialId}/whitelist/bulk`, {
+        method: 'DELETE', headers,
+        body: JSON.stringify({ ips: Array.from(selected) }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error)
+      setIps(data.ips)
+      toast.success(`${selected.size} IP${selected.size > 1 ? 's' : ''} removed`)
+      setSelected(new Set())
+    } catch (err: any) {
+      toast.error(err.message)
+    } finally {
+      setBulkRemoving(false)
+    }
+  }
+
+  function toggleSelected(target: string) {
+    setSelected(prev => {
+      const n = new Set(prev)
+      if (n.has(target)) n.delete(target); else n.add(target)
+      return n
+    })
+  }
+
+  function toggleSelectAll() {
+    if (!ips || ips.length === 0) return
+    setSelected(prev => prev.size === ips.length ? new Set() : new Set(ips.map(i => i.ip)))
+  }
+
+  if (ips === null) {
+    return loadError
+      ? <div className="text-xs text-red-500 px-3 py-3 font-mono">{loadError}</div>
+      : <div className="text-xs text-muted px-3 py-3 font-mono">Loading whitelist...</div>
+  }
+
+  return (
+    <div className="mb-2">
+      {provisioning && (
+        <div className="mb-3 text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-4 py-3 font-mono">
+          ⏳ This credential is still being provisioned — IP whitelisting will be available once it's active.
+        </div>
+      )}
+
+      <p className="text-[10.5px] text-muted mb-3">
+        Only these IPs will be able to authenticate with this credential's username and password. Leave empty to
+        allow connections from any IP (default).
+      </p>
+
+      {/* Add form */}
+      {!provisioning && (
+        <div className="mb-3">
+          {!bulkMode ? (
+            <form onSubmit={addIp} className="flex flex-wrap gap-2">
+              <input
+                value={ip} onChange={e => setIp(e.target.value)}
+                placeholder="e.g. 203.0.113.4"
+                className="flex-1 min-w-[140px] bg-white border border-border px-3 py-2 rounded-lg text-xs font-mono focus:outline-none focus:border-accent transition-colors"
+              />
+              <input
+                value={description} onChange={e => setDescription(e.target.value)}
+                placeholder="Description (e.g. Office IP)"
+                maxLength={100}
+                className="flex-1 min-w-[140px] bg-white border border-border px-3 py-2 rounded-lg text-xs focus:outline-none focus:border-accent transition-colors"
+              />
+              <button type="submit" disabled={adding}
+                className="bg-accent text-white px-4 py-2 rounded-lg text-xs font-medium hover:opacity-90 transition-opacity disabled:opacity-50 flex-shrink-0">
+                {adding ? 'Adding…' : 'Add IP'}
+              </button>
+            </form>
+          ) : (
+            <div>
+              <textarea
+                value={bulkText} onChange={e => setBulkText(e.target.value)}
+                placeholder={'One IP per line, e.g.\n203.0.113.4, Office IP\n198.51.100.7, Home IP'}
+                rows={4}
+                className="w-full bg-white border border-border px-3 py-2 rounded-lg text-xs font-mono focus:outline-none focus:border-accent transition-colors resize-y"
+              />
+              <div className="flex gap-2 mt-2">
+                <button type="button" onClick={bulkAdd} disabled={bulkAdding}
+                  className="bg-accent text-white px-4 py-2 rounded-lg text-xs font-medium hover:opacity-90 transition-opacity disabled:opacity-50">
+                  {bulkAdding ? 'Adding…' : 'Add all'}
+                </button>
+              </div>
+            </div>
+          )}
+          <button type="button" onClick={() => setBulkMode(v => !v)}
+            className="text-[10.5px] font-mono text-muted hover:text-accent mt-1.5 transition-colors">
+            {bulkMode ? '← back to single add' : 'bulk add multiple IPs →'}
+          </button>
+        </div>
+      )}
+
+      {/* List */}
+      <div className="bg-ink rounded-lg overflow-hidden">
+        <div className="flex items-center justify-between px-3 py-2 border-b border-white/10">
+          <span className="text-[10px] font-mono text-white/40 uppercase tracking-widest">
+            Whitelisted IPs {ips.length > 0 ? `(${ips.length})` : ''}
+          </span>
+          {selected.size > 0 && (
+            <button onClick={removeSelected} disabled={bulkRemoving}
+              className="text-[10px] font-mono text-red-400 hover:opacity-70 border border-red-400/30 px-2.5 py-1 rounded transition-colors disabled:opacity-50">
+              {bulkRemoving ? 'removing…' : `remove ${selected.size} selected`}
+            </button>
+          )}
+        </div>
+
+        {ips.length === 0 ? (
+          <div className="px-3 py-4 text-[11px] font-mono text-white/40">
+            No IPs whitelisted — this credential currently accepts connections from any IP.
+          </div>
+        ) : (
+          <div className="divide-y divide-white/10">
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-white/[0.02]">
+              <input type="checkbox"
+                checked={selected.size === ips.length}
+                onChange={toggleSelectAll}
+                className="accent-accent" />
+              <span className="text-[10px] font-mono text-white/30 uppercase tracking-wider">select all</span>
+            </div>
+            {ips.map(entry => (
+              <div key={entry.ip} className="flex items-center gap-2 px-3 py-2.5">
+                <input type="checkbox"
+                  checked={selected.has(entry.ip)}
+                  onChange={() => toggleSelected(entry.ip)}
+                  className="accent-accent flex-shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="font-mono text-xs text-white/80 truncate">{entry.ip}</div>
+                  <div className="font-mono text-[10.5px] text-white/40 truncate">{entry.description}</div>
+                </div>
+                <button
+                  onClick={() => removeIp(entry.ip)}
+                  disabled={removing.has(entry.ip)}
+                  title="Remove"
+                  className={clsx(
+                    'text-[10px] font-mono px-1.5 flex-shrink-0 transition-colors',
+                    removing.has(entry.ip) ? 'text-white/20' : 'text-white/40 hover:text-red-400'
+                  )}>
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}

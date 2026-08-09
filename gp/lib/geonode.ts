@@ -244,6 +244,113 @@ export async function purchaseBandwidth(gb: number): Promise<void> {
   )
 }
 
+// Thrown by every function below instead of a plain Error, so callers
+// (the API routes) can branch on the real Geonode HTTP status instead of
+// regex-parsing a formatted message string. The other functions in this
+// file predate this and were left as-is rather than widening their
+// existing (already-handled-at-each-callsite) contracts.
+export class GeonodeApiError extends Error {
+  status: number
+  body: any
+  constructor(message: string, status: number, body: any) {
+    super(message)
+    this.name = 'GeonodeApiError'
+    this.status = status
+    this.body = body
+  }
+}
+
+export interface WhitelistedIp {
+  ip: string
+  description: string
+}
+
+// ─── Whitelisted IPs ──────────────────────────────────────────────────────
+// Confirmed against the live OpenAPI spec: GET/POST .../whitelisted-ips,
+// POST .../whitelisted-ips/bulk-create, POST .../whitelisted-ips/bulk-delete,
+// DELETE .../whitelisted-ips/{ip} — all scoped under the same
+// resellerUid/serviceType/sub-users/{subUid} path every other sub-user call
+// in this file uses. This restricts which source IPs may authenticate with
+// a given sub-user's credentials, layered on top of the username/password
+// pair which is currently the only access control a credential has.
+//
+// Every one of these endpoints returns the sub-user's full, current
+// whitelist as `result` (even DELETE) — so callers can just replace their
+// local list with the response rather than re-fetching separately.
+
+async function whitelistRequest(
+  geonodeSubUserId: string,
+  path: string,
+  init?: RequestInit
+): Promise<WhitelistedIp[]> {
+  const res = await fetch(
+    `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${geonodeSubUserId}/whitelisted-ips${path}`,
+    { ...init, headers: headers() }
+  )
+  const d = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new GeonodeApiError(
+      d?.message || `Geonode whitelist request failed: ${res.status}`,
+      res.status,
+      d
+    )
+  }
+  const result = d.result ?? d.data ?? d
+  return Array.isArray(result) ? result : []
+}
+
+export function listWhitelistedIps(geonodeSubUserId: string): Promise<WhitelistedIp[]> {
+  return whitelistRequest(geonodeSubUserId, '', { method: 'GET' })
+}
+
+export function addWhitelistedIp(
+  geonodeSubUserId: string,
+  ip: string,
+  description: string
+): Promise<WhitelistedIp[]> {
+  return whitelistRequest(geonodeSubUserId, '', {
+    method: 'POST',
+    body: JSON.stringify({ ip, description }),
+  })
+}
+
+// Max 150 items per request (matches the spec's maxItems on `items`).
+// Geonode dedupes by IP within the request (first description wins) and
+// skips IPs already on the whitelist.
+export function bulkAddWhitelistedIps(
+  geonodeSubUserId: string,
+  items: WhitelistedIp[]
+): Promise<WhitelistedIp[]> {
+  return whitelistRequest(geonodeSubUserId, '/bulk-create', {
+    method: 'POST',
+    body: JSON.stringify({ items }),
+  })
+}
+
+export function removeWhitelistedIp(
+  geonodeSubUserId: string,
+  ip: string
+): Promise<WhitelistedIp[]> {
+  // The IP is a path segment here (DELETE /whitelisted-ips/{ip}), not a
+  // query param or body field — encode it so a literal IPv6 address
+  // (colons) doesn't get misparsed as part of the URL structure.
+  return whitelistRequest(geonodeSubUserId, `/${encodeURIComponent(ip)}`, {
+    method: 'DELETE',
+  })
+}
+
+// Unknown IPs are ignored by Geonode; an empty list is a no-op. Max 150
+// per request (matches the spec's maxItems on `ips`).
+export function bulkRemoveWhitelistedIps(
+  geonodeSubUserId: string,
+  ips: string[]
+): Promise<WhitelistedIp[]> {
+  return whitelistRequest(geonodeSubUserId, '/bulk-delete', {
+    method: 'POST',
+    body: JSON.stringify({ ips }),
+  })
+}
+
 export async function deleteSubUser(geonodeSubUserId: string): Promise<void> {
   const res = await fetch(`${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${geonodeSubUserId}`, {
     method: 'DELETE',

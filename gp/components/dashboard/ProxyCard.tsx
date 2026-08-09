@@ -5,12 +5,13 @@ import { createClient } from '@/lib/supabase/client'
 import { buildProxyUsername, getProxyPort, genSessionId } from '@/lib/proxyEndpoint'
 import { formatGb, formatPct } from '@/lib/format'
 import SessionManager from '@/components/dashboard/SessionManager'
+import IpWhitelist from '@/components/dashboard/IpWhitelist'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
 interface Props { cred: any; index: number; expanded: boolean; onToggle: () => void }
 
-type Tab = 'cred' | 'bandwidth' | 'endpoints' | 'code'
+type Tab = 'cred' | 'bandwidth' | 'endpoints' | 'whitelist' | 'code'
 type Lang = 'py' | 'node' | 'browser'
 
 // Row-based redesign: collapsed by default (status communicated by the left
@@ -318,6 +319,10 @@ console.log(await res.json()); // shows proxy IP and location`
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'endpoints' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
                   {isSticky ? 'Sticky sessions' : `Endpoints (${count})`}
                 </button>
+                <button onClick={() => setTab('whitelist')}
+                  className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'whitelist' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
+                  IP whitelist
+                </button>
                 <button onClick={() => setTab('code')}
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'code' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
                   Code snippets
@@ -480,6 +485,10 @@ console.log(await res.json()); // shows proxy IP and location`
                     </div>
                   </div>
                 )
+              )}
+
+              {tab === 'whitelist' && (
+                <IpWhitelist credentialId={cred.id} />
               )}
 
               {tab === 'code' && (
