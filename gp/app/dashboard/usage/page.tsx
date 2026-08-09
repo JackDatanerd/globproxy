@@ -2,6 +2,7 @@ import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { formatGb, formatPct } from '@/lib/format'
+import UsageHistoryChart from '@/components/dashboard/UsageHistoryChart'
 
 export default async function UsagePage() {
   const supabase = await createClient()
@@ -43,6 +44,8 @@ export default async function UsagePage() {
           </>
         )}
       </div>
+      <UsageHistoryChart />
+
       <div className="bg-white border border-border rounded-xl overflow-hidden">
         <div className="px-6 py-4 border-b border-border"><h2 className="font-display font-bold text-base text-ink">Per-session breakdown</h2></div>
         {creds && creds.length > 0 ? (

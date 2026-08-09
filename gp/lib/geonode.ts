@@ -265,6 +265,140 @@ export interface WhitelistedIp {
   description: string
 }
 
+// ─── Usage Statistics (monitor.geonode.com) ──────────────────────────────
+// Confirmed against the live OpenAPI spec: these two endpoints live on a
+// DIFFERENT host (monitor.geonode.com, not app-api.geonode.com) and use a
+// DIFFERENT auth header — "r-api-key", not "Reseller-Api-Key". Also unlike
+// every other call in this file, the path has no {resellerUid} segment —
+// the API key alone scopes the request to this reseller's account. Mixing
+// these up (reseller header on the monitor host, or vice versa) reads as
+// an auth failure with no hint that it's actually the wrong host/header
+// pair, so keep this section's requests fully separate from headers()/BASE
+// above rather than trying to generalize them together.
+const MONITOR_BASE = 'https://monitor.geonode.com'
+
+function monitorHeaders() {
+  return {
+    'r-api-key': KEY,
+    'Content-Type': 'application/json',
+  }
+}
+
+// Per the spec: dateFrom/dateTo together with granularity may not span
+// more than 720 units (minutes/hours/days). Callers are expected to stay
+// well under that (this app only ever asks for 7 or 30 days at
+// granularity=day), but this is a hard ceiling on the provider side, not
+// just a suggestion — a caller that ignores it gets a 400 from Geonode,
+// not a silently truncated range.
+export const MAX_STATS_GRANULARITY_UNITS = 720
+
+export interface PeriodStat {
+  periodStart: string
+  bandwidthBytes: number
+  failedRequests: number
+  successfulRequests: number
+  successRate: number
+  totalRequests: number
+}
+
+// Time-series usage for a single sub-user (by Geonode username, NOT the
+// numeric geonode_sub_user_id — confirmed from the spec's own example
+// values, and matches what subUserId comes back as in
+// per-subuser-host-country below). Always grouped by periodStart; there is
+// no per-subuser breakdown on this endpoint, which is why the usage-history
+// route calls this once per credential and merges by date rather than
+// asking for ".all" and trying to split it back out afterward.
+export async function getPeriodStats(
+  subUserFilter: string,
+  dateFrom: Date,
+  dateTo: Date,
+  granularity: 'minute' | 'hour' | 'day' = 'day'
+): Promise<PeriodStat[]> {
+  const params = new URLSearchParams({
+    granularity,
+    dateFrom: dateFrom.toISOString(),
+    dateTo: dateTo.toISOString(),
+    subUserFilter,
+  })
+  const res = await fetch(
+    `${MONITOR_BASE}/statistics/${SERVICE_TYPE}/per-period?${params}`,
+    { headers: monitorHeaders() }
+  )
+  const d = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new GeonodeApiError(
+      d?.message || `Geonode getPeriodStats failed: ${res.status}`,
+      res.status,
+      d
+    )
+  }
+  return d.documents ?? []
+}
+
+export interface HostCountryStat {
+  subUserId: string
+  email: string
+  host: string
+  country: string
+  bandwidthBytes: number
+  avgLatency: number
+  avgDuration: number
+  failedRequests: number
+  successfulRequests: number
+  successRate: number
+  totalRequests: number
+}
+
+// Breakdown of usage by destination host + target country for a single
+// sub-user, paginated (max 5000/page per spec). This is what actually
+// answers "what is this credential being used to scrape, and where" —
+// the per-period endpoint above only ever returns a single aggregated
+// bandwidth number per date, with no host/country dimension at all.
+//
+// hardCap bounds total pages fetched (not just per-page size) so a
+// pathological result set can't turn one usage-history page load into an
+// unbounded number of upstream calls — same subrequest-budget concern
+// documented on listAllSubUsersUsage above, just scoped to a single
+// credential's stats instead of the full-account usage-sync cron.
+export async function getHostCountryStats(
+  subUserFilter: string,
+  dateFrom: Date,
+  dateTo: Date,
+  granularity: 'minute' | 'hour' | 'day' = 'day',
+  limit = 500,
+  hardCap = 2000
+): Promise<HostCountryStat[]> {
+  const results: HostCountryStat[] = []
+  let offset = 0
+  while (results.length < hardCap) {
+    const params = new URLSearchParams({
+      granularity,
+      dateFrom: dateFrom.toISOString(),
+      dateTo: dateTo.toISOString(),
+      subUserFilter,
+      limit: String(Math.min(limit, 5000)),
+      offset: String(offset),
+    })
+    const res = await fetch(
+      `${MONITOR_BASE}/statistics/${SERVICE_TYPE}/per-subuser-host-country?${params}`,
+      { headers: monitorHeaders() }
+    )
+    const d = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      throw new GeonodeApiError(
+        d?.message || `Geonode getHostCountryStats failed: ${res.status}`,
+        res.status,
+        d
+      )
+    }
+    const docs: HostCountryStat[] = d.documents ?? []
+    results.push(...docs)
+    if (docs.length < limit) break // last page
+    offset += limit
+  }
+  return results
+}
+
 // ─── Whitelisted IPs ──────────────────────────────────────────────────────
 // Confirmed against the live OpenAPI spec: GET/POST .../whitelisted-ips,
 // POST .../whitelisted-ips/bulk-create, POST .../whitelisted-ips/bulk-delete,
