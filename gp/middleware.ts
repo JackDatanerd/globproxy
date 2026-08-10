@@ -68,7 +68,14 @@ export async function middleware(request: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser()
   const path = request.nextUrl.pathname
 
-  const isProtected = ['/dashboard', '/reseller', '/admin'].some(p => path.startsWith(p))
+  // '/invoice' added alongside '/dashboard'/'/reseller'/'/admin': it's an
+  // order's billing/PII document, equivalent in sensitivity to what's
+  // already on the (MFA-gated, for admin/reseller) /dashboard/billing
+  // page — leaving it out of isProtected would let an admin/reseller
+  // reach the same underlying order data at a URL the MFA gate below
+  // never inspects, defeating the point of "mandatory for every
+  // protected path" a few lines down.
+  const isProtected = ['/dashboard', '/reseller', '/admin', '/invoice'].some(p => path.startsWith(p))
   // Both the mandatory-setup and step-up-verify pages need a logged-in
   // user (they act on user.id) but must be reachable precisely *because*
   // the MFA gate below hasn't been satisfied yet — they're excluded from
@@ -142,6 +149,6 @@ export const config = {
   // visitor). /api is excluded: API routes do their own auth (session
   // cookie or Bearer token per-route) and don't need middleware's
   // redirect/suspension logic, which stays exactly as before, scoped to
-  // /dashboard, /reseller, /admin inside the function body.
+  // /dashboard, /reseller, /admin, /invoice inside the function body.
   matcher: ['/((?!api|_next/static|_next/image|favicon\\.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|webmanifest|xml|txt)$).*)'],
 }

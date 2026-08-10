@@ -60,9 +60,19 @@ export default function BillingPage() {
 
   return (
     <div className="max-w-4xl">
-      <div className="mb-8">
-        <h1 className="font-display font-bold text-2xl text-ink">Billing</h1>
-        <p className="text-muted text-sm mt-1">Your order history and spend</p>
+      <div className="flex items-start justify-between gap-4 mb-8 flex-wrap">
+        <div>
+          <h1 className="font-display font-bold text-2xl text-ink">Billing</h1>
+          <p className="text-muted text-sm mt-1">Your order history and spend</p>
+        </div>
+        {!loading && orders.length > 0 && (
+          <a
+            href="/api/dashboard/billing/export"
+            className="text-sm font-medium text-ink2 border border-border hover:border-accent hover:text-accent px-4 py-2 rounded-xl transition-colors flex-shrink-0"
+          >
+            Export CSV ↓
+          </a>
+        )}
       </div>
 
       {/* Stats */}
@@ -113,7 +123,17 @@ export default function BillingPage() {
                       {o.payment_status}
                     </span>
                   </td>
-                  <td className="px-6 py-4 text-right">
+                  <td className="px-6 py-4 text-right whitespace-nowrap">
+                    {(o.payment_status === 'paid' || o.payment_status === 'refunded') && (
+                      <a
+                        href={`/invoice/${o.id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[10px] font-mono text-muted hover:text-accent border border-border hover:border-accent-light px-3 py-1 rounded-lg transition-colors inline-block"
+                      >
+                        Invoice
+                      </a>
+                    )}
                     {o.payment_status === 'pending' && (
                       <button
                         onClick={() => cancelOrder(o.id)}

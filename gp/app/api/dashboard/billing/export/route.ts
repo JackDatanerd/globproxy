@@ -1,0 +1,39 @@
+import { createClient } from '@/lib/supabase/server'
+import { toCsv, csvResponse } from '@/lib/csv'
+import { NextResponse } from 'next/server'
+
+// Reuses lib/csv.ts (added alongside the usage-history CSV export) rather
+// than building a second CSV encoder — same escaping, same \r\n line
+// endings, same filename-plus-date convention. Auth matches that route
+// too: createClient() reads the browser's session cookie, so a plain
+// `<a href>` GET (see app/dashboard/billing/page.tsx) works without any
+// client-side fetch/Blob handling.
+//
+// Every order regardless of status, not just paid ones — "billing
+// history" is the full record. Pending/cancelled/failed rows are
+// legitimate bookkeeping context too (e.g. reconciling why a charge never
+// landed), so this deliberately doesn't filter payment_status the way the
+// invoice page does.
+export async function GET() {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const { data: orders } = await supabase
+    .from('orders')
+    .select('created_at, invoice_number, gb_amount, amount_usd, payment_status, paystack_reference')
+    .eq('user_id', user.id)
+    .order('created_at', { ascending: false })
+
+  const csv = toCsv(orders ?? [], [
+    { header: 'date', value: o => new Date(o.created_at).toISOString().slice(0, 10) },
+    { header: 'invoice_number', value: o => o.invoice_number ?? '' },
+    { header: 'description', value: o => `${o.gb_amount} GB residential proxy bandwidth` },
+    { header: 'gb', value: o => o.gb_amount },
+    { header: 'amount_usd', value: o => Number(o.amount_usd).toFixed(2) },
+    { header: 'status', value: o => o.payment_status },
+    { header: 'payment_reference', value: o => o.paystack_reference ?? '' },
+  ])
+
+  return csvResponse(csv, 'globproxy-billing-history')
+}

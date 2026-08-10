@@ -96,7 +96,11 @@ create table public.orders (
   paystack_reference  text,
   bandwidth_credited  boolean default false,
   created_at          timestamp with time zone default now(),
-  paid_at             timestamp with time zone
+  paid_at             timestamp with time zone,
+  -- Assigned exactly once, atomically, inside claim_and_credit_order()
+  -- below when an order is claimed as paid — never at order-creation, so
+  -- a pending/cancelled/failed order never has one. See migration 0021.
+  invoice_number      text unique
 );
 
 -- ── PROXY CREDENTIALS ─────────────────────────────────────────
@@ -230,6 +234,13 @@ $$;
 -- with no way for a retry to ever re-enter this path. Folding both into
 -- one plpgsql function means an uncaught error in credit_bandwidth() below
 -- rolls back the claim too, since both run in the same transaction.
+--
+-- invoice_number is assigned in this same atomic claim (migration 0021) —
+-- the one place an order transitions to paid, so it's also the one place
+-- an invoice number can be generated without racing a concurrent
+-- webhook + verify-payment call.
+create sequence if not exists public.invoice_number_seq;
+
 create or replace function public.claim_and_credit_order(
   p_order_id uuid,
   p_user_id uuid,
@@ -247,7 +258,9 @@ begin
   set payment_status     = 'paid',
       paystack_reference = p_paystack_reference,
       bandwidth_credited = true,
-      paid_at            = now()
+      paid_at             = now(),
+      invoice_number      = 'INV-' || to_char(now(), 'YYYY')
+                             || '-' || lpad(nextval('public.invoice_number_seq')::text, 6, '0')
   where id = p_order_id
     and bandwidth_credited = false
   returning id into v_claimed;
@@ -664,6 +677,13 @@ grant execute on function public.recalculate_bandwidth_accounts() to service_rol
 
 revoke all on function public.topup_credential(uuid, uuid, numeric) from public;
 grant execute on function public.topup_credential(uuid, uuid, numeric) to service_role;
+
+-- Postgres doesn't auto-grant sequence USAGE to PUBLIC by default, so this
+-- is belt-and-suspenders rather than closing a real hole — but it matches
+-- the explicit deny-by-default posture this whole section establishes.
+-- nextval() only needs to work for claim_and_credit_order's definer (the
+-- function is `security definer`); no caller ever needs direct access.
+revoke all on sequence public.invoice_number_seq from public;
 
 -- Any function created after this point defaults to service_role-only —
 -- closes the gap for the next RPC function someone adds without thinking
