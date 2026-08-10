@@ -255,7 +255,16 @@ async function runCleanup() {
   for (const o of stale ?? []) {
     await supabase.from('orders').update({ payment_status: 'failed' }).eq('id', o.id)
   }
-  return { cleaned: stale?.length ?? 0 }
+
+  // Expired MFA "verified this browser" tokens (migration 0020). Already
+  // functionally inert everywhere they're checked (every lookup filters
+  // expires_at > now()) — this just keeps the table from growing
+  // unbounded on a long-lived deployment, same reasoning as the stale
+  // orders above.
+  const { error: mfaErr } = await supabase.rpc('cleanup_expired_mfa_sessions')
+  if (mfaErr) console.error('cleanup_expired_mfa_sessions failed:', mfaErr)
+
+  return { cleaned: stale?.length ?? 0, mfa_sessions_swept: !mfaErr }
 }
 
 // ── Route handler ─────────────────────────────────────────────────

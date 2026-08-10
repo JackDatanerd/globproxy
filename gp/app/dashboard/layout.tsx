@@ -1,5 +1,7 @@
 import { redirect } from 'next/navigation'
+import { cookies } from 'next/headers'
 import { createClient } from '@/lib/supabase/server'
+import { mfaRequiredForRole, checkVerifiedSession, MFA_COOKIE_NAME } from '@/lib/mfa'
 import DashSidebar from '@/components/dashboard/DashSidebar'
 import DashTopbar from '@/components/dashboard/DashTopbar'
 
@@ -20,6 +22,14 @@ export default async function DashboardLayout({ children }: { children: React.Re
   // bypassed or misconfigured for this route group, the same way admin/layout.tsx
   // independently re-checks role rather than relying on middleware alone.
   if (profile?.is_suspended) redirect('/auth/login?suspended=1')
+
+  // Same defense-in-depth reasoning, for the mandatory-MFA gate — see
+  // middleware.ts for the primary enforcement and full rationale.
+  if (mfaRequiredForRole(profile?.role)) {
+    if (!profile?.mfa_enabled) redirect('/auth/mfa-setup?next=/dashboard')
+    const token = (await cookies()).get(MFA_COOKIE_NAME)?.value
+    if (!(await checkVerifiedSession(token, user.id))) redirect('/auth/mfa-verify?next=/dashboard')
+  }
 
   return (
     <div className="min-h-screen bg-surface flex flex-col">

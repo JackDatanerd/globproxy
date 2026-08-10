@@ -16,6 +16,8 @@
     "@supabase/supabase-js": "^2.49.4",
     "clsx": "^2.1.1",
     "next": "16.2.12",
+    "otpauth": "^9.5.1",
+    "qrcode": "^1.5.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-hot-toast": "^2.5.2"
@@ -24,6 +26,7 @@
     "@opennextjs/cloudflare": "^1.4.0",
     "@types/node": "^22",
     "@types/paystack__inline-js": "^1.0.3",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "autoprefixer": "^10.4.21",

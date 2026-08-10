@@ -63,6 +63,14 @@ export default async function AdminUsersPage() {
                       u.role === 'reseller' ? 'bg-accent2-light text-accent2' :
                       'bg-surface text-muted border border-border'
                     }`}>{u.role}</span>
+                    {/* MFA is mandatory for admin/reseller — surface non-compliance
+                        (still-mid-setup accounts) directly in the list, not just
+                        on each user's detail page. */}
+                    {(u.role === 'admin' || u.role === 'reseller') && !u.mfa_enabled && (
+                      <span className="ml-1.5 text-[10px] font-mono px-2 py-1 rounded-full bg-red-50 text-red-500" title="Two-factor authentication not yet set up">
+                        no 2FA
+                      </span>
+                    )}
                   </td>
                   <td className="px-5 py-3.5 font-mono text-sm text-ink">{formatGb(bw?.total_gb)} GB</td>
                   <td className="px-5 py-3.5 font-mono text-sm text-ink">{formatGb(bw?.used_gb)} GB</td>

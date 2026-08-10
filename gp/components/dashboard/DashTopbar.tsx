@@ -7,6 +7,11 @@ import toast from 'react-hot-toast'
 export default function DashTopbar({ profile }: { profile: any }) {
   const router = useRouter()
   async function signOut() {
+    // Clears the separate gp_mfa "verified this browser" cookie/session —
+    // Supabase's own signOut() below has no idea that cookie exists, so
+    // without this a shared machine would stay MFA-verified until the
+    // cookie's natural expiry even after the account signs out.
+    await fetch('/api/auth/mfa/logout', { method: 'POST' }).catch(() => {})
     await createClient().auth.signOut()
     toast.success('Signed out')
     router.push('/')

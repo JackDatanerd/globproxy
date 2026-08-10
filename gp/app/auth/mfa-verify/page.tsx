@@ -1,0 +1,98 @@
+'use client'
+import { useState, Suspense } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { createClient } from '@/lib/supabase/client'
+import toast from 'react-hot-toast'
+
+function MfaVerifyFlow() {
+  const router = useRouter()
+  const params = useSearchParams()
+  const next = params.get('next') || '/dashboard'
+
+  const [code, setCode] = useState('')
+  const [useBackupCode, setUseBackupCode] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setSubmitting(true)
+    try {
+      const { data: { session } } = await createClient().auth.getSession()
+      if (!session) { router.replace('/auth/login'); return }
+      const res = await fetch('/api/auth/mfa/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ code }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Incorrect code.')
+      if (data.used_backup_code && typeof data.backup_codes_remaining === 'number') {
+        if (data.backup_codes_remaining <= 3) {
+          toast(`Only ${data.backup_codes_remaining} backup code${data.backup_codes_remaining === 1 ? '' : 's'} left — generate new ones from Settings soon.`, { icon: '⚠️', duration: 6000 })
+        }
+      }
+      router.push(next)
+      router.refresh()
+    } catch (e: any) {
+      toast.error(e.message)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function signOut() {
+    await createClient().auth.signOut()
+    router.push('/auth/login')
+  }
+
+  return (
+    <div className="w-full max-w-md bg-white border border-border rounded-2xl p-10 shadow-sm">
+      <h1 className="font-display font-bold text-2xl text-ink mb-1">Verify it's you</h1>
+      <p className="text-muted text-sm mb-8">
+        {useBackupCode ? 'Enter one of your backup codes.' : 'Enter the 6-digit code from your authenticator app.'}
+      </p>
+      <form onSubmit={handleSubmit} className="flex flex-col gap-5">
+        <div>
+          <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">
+            {useBackupCode ? 'Backup code' : 'Authentication code'}
+          </label>
+          {useBackupCode ? (
+            <input
+              type="text" autoComplete="off" required value={code}
+              onChange={e => setCode(e.target.value.toUpperCase())}
+              placeholder="XXXX-XXXX"
+              className="w-full bg-surface border border-border text-ink placeholder-muted px-4 py-3 rounded-xl text-lg font-mono tracking-widest text-center focus:outline-none focus:border-accent transition-colors"
+            />
+          ) : (
+            <input
+              type="text" inputMode="numeric" autoComplete="one-time-code" required maxLength={6}
+              value={code} onChange={e => setCode(e.target.value.replace(/\D/g, ''))}
+              placeholder="000000"
+              className="w-full bg-surface border border-border text-ink placeholder-muted px-4 py-3 rounded-xl text-lg font-mono tracking-[0.3em] text-center focus:outline-none focus:border-accent transition-colors"
+            />
+          )}
+        </div>
+        <button
+          type="submit" disabled={submitting || (useBackupCode ? code.length < 8 : code.length !== 6)}
+          className="w-full bg-accent text-white py-3 rounded-xl font-medium text-sm hover:opacity-90 disabled:opacity-60 transition-opacity"
+        >
+          {submitting ? 'Verifying…' : 'Verify →'}
+        </button>
+      </form>
+      <div className="text-center mt-5">
+        <button
+          onClick={() => { setUseBackupCode(v => !v); setCode('') }}
+          className="text-xs text-muted hover:text-accent transition-colors"
+        >
+          {useBackupCode ? 'Use your authenticator app instead' : "Lost your device? Use a backup code"}
+        </button>
+      </div>
+      <div className="flex items-center gap-3 my-6"><div className="flex-1 h-px bg-border" /><span className="text-xs text-muted">or</span><div className="flex-1 h-px bg-border" /></div>
+      <p className="text-center text-sm"><button onClick={signOut} className="text-muted hover:text-ink transition-colors">Sign out and use a different account</button></p>
+    </div>
+  )
+}
+
+export default function MfaVerifyPage() {
+  return <Suspense fallback={<div className="w-full max-w-md bg-white border border-border rounded-2xl p-10 text-center text-muted text-sm">Loading...</div>}><MfaVerifyFlow /></Suspense>
+}

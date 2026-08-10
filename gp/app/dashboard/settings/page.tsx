@@ -3,6 +3,7 @@ import { useState, useEffect, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
+import TwoFactorSettings from '@/components/dashboard/TwoFactorSettings'
 
 const COUNTRIES = [
   'Afghanistan','Albania','Algeria','Angola','Argentina','Australia','Austria','Bangladesh',
@@ -392,6 +393,8 @@ function SettingsPageInner() {
           </button>
         </form>
       </div>
+
+      {profile && <TwoFactorSettings role={profile.role ?? 'user'} />}
 
       {/* Reseller application */}
       {profile?.role === 'user' && profile?.reseller_status !== 'pending' && (

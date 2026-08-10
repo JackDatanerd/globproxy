@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { createAdminClient } from '@/lib/supabase/server'
 import AdminSyncUsageButton from '@/components/admin/AdminSyncUsageButton'
+import AdminMfaResetButton from '@/components/admin/AdminMfaResetButton'
 import { formatGb } from '@/lib/format'
 
 export default async function AdminUserDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -45,8 +46,16 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
         <div>
           <h1 className="font-display font-bold text-2xl text-ink">{profile.full_name || profile.email}</h1>
           <p className="text-muted text-sm mt-1 font-mono">{profile.email}</p>
+          <div className="mt-2 flex items-center gap-2">
+            <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full ${profile.mfa_enabled ? 'bg-accent2-light text-accent2' : 'bg-red-50 text-red-500'}`}>
+              2FA {profile.mfa_enabled ? 'ENABLED' : 'NOT ENABLED'}
+            </span>
+          </div>
         </div>
-        <AdminSyncUsageButton userId={id} label="Sync this user's usage now" />
+        <div className="flex items-center gap-2">
+          {profile.mfa_enabled && <AdminMfaResetButton userId={id} />}
+          <AdminSyncUsageButton userId={id} label="Sync this user's usage now" />
+        </div>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
