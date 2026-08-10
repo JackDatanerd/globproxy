@@ -1,6 +1,7 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { purchaseBandwidth } from '@/lib/geonode'
 import { sendEmail } from '@/lib/email'
+import { requireMfaVerified } from '@/lib/mfa'
 import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
@@ -18,6 +19,9 @@ export async function POST(req: Request) {
 
   const { data: cp } = await supabase.from('profiles').select('role').eq('id', caller.id).single()
   if (cp?.role !== 'admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+  const mfaCheck = await requireMfaVerified(req, caller.id)
+  if (mfaCheck) return mfaCheck
 
   const { gb_amount } = await req.json()
   if (!gb_amount || gb_amount < 100)

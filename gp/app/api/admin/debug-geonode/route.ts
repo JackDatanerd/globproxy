@@ -1,5 +1,6 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { debugCreateSubUser, getAccountBalance } from '@/lib/geonode'
+import { requireMfaVerified } from '@/lib/mfa'
 import { NextResponse } from 'next/server'
 
 // Admin-only diagnostic endpoint — OFF by default. Even though it's
@@ -49,6 +50,9 @@ export async function GET(req: Request) {
   const user = await verifyAdmin(req)
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  const mfaCheck = await requireMfaVerified(req, user.id)
+  if (mfaCheck) return mfaCheck
+
   const apiKey = process.env.GEONODE_API_KEY
   const resellerId = process.env.GEONODE_RESELLER_ID
 
@@ -72,6 +76,9 @@ export async function POST(req: Request) {
 
   const user = await verifyAdmin(req)
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const mfaCheck = await requireMfaVerified(req, user.id)
+  if (mfaCheck) return mfaCheck
 
   try {
     const result = await debugCreateSubUser()

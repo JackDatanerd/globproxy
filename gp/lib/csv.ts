@@ -6,8 +6,20 @@ import { NextResponse } from 'next/server'
 // with internal quotes doubled. Values are stringified as-is otherwise
 // (numbers/booleans pass through String()), so callers control formatting
 // (e.g. toFixed()) before handing rows to this function.
+// Leading =, +, -, @, tab, or CR makes Excel/Sheets treat the cell as a
+// formula on open rather than literal text — e.g. a credential label of
+// `=HYPERLINK("http://evil.example","click")` or a DDE payload. Prefixing
+// with a single quote forces spreadsheet apps to render it as plain text;
+// RFC 4180 has no opinion on this (it's an application-layer convention,
+// not a CSV-format one), so it's applied here rather than folded into the
+// quote-wrapping logic below.
+const FORMULA_TRIGGER_RE = /^[=+\-@\t\r]/
+
 function escapeCsvCell(value: unknown): string {
-  const s = value === null || value === undefined ? '' : String(value)
+  let s = value === null || value === undefined ? '' : String(value)
+  if (FORMULA_TRIGGER_RE.test(s)) {
+    s = `'${s}`
+  }
   if (/[",\n]/.test(s)) {
     return `"${s.replace(/"/g, '""')}"`
   }

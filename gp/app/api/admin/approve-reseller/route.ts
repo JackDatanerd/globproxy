@@ -1,5 +1,6 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { sendEmail, escapeHtml } from '@/lib/email'
+import { requireMfaVerified } from '@/lib/mfa'
 import { NextResponse } from 'next/server'
 
 // Previously "Approve" in the admin resellers panel wrote directly to
@@ -25,6 +26,9 @@ export async function POST(req: Request) {
 
     const { data: adminProfile } = await supabaseAdmin.from('profiles').select('role').eq('id', user.id).single()
     if (adminProfile?.role !== 'admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+    const mfaCheck = await requireMfaVerified(req, user.id)
+    if (mfaCheck) return mfaCheck
 
     const { userId } = await req.json()
     if (!userId) return NextResponse.json({ error: 'User ID missing' }, { status: 400 })

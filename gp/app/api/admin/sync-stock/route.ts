@@ -1,5 +1,6 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { computeStockStatus } from '@/lib/stockStatus'
+import { requireMfaVerified } from '@/lib/mfa'
 import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
@@ -16,6 +17,9 @@ export async function POST(req: Request) {
     .eq('id', user.id)
     .single()
   if (profile?.role !== 'admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+  const mfaCheck = await requireMfaVerified(req, user.id)
+  if (mfaCheck) return mfaCheck
 
   try {
     const stock = await computeStockStatus(supabase)

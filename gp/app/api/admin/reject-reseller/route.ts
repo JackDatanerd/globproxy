@@ -1,5 +1,6 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { sendEmail, escapeHtml } from '@/lib/email'
+import { requireMfaVerified } from '@/lib/mfa'
 import { NextResponse } from 'next/server'
 
 // See approve-reseller/route.ts for why this now uses the same
@@ -16,6 +17,9 @@ export async function POST(req: Request) {
 
     const { data: adminProfile } = await supabaseAdmin.from('profiles').select('role').eq('id', user.id).single()
     if (adminProfile?.role !== 'admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+    const mfaCheck = await requireMfaVerified(req, user.id)
+    if (mfaCheck) return mfaCheck
 
     const body = await req.json()
     const { userId } = body

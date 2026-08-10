@@ -34,6 +34,15 @@ async function deliverOne(
     const signature = await hmacHex(ep.secret, body)
     const res = await fetch(ep.url, {
       method: 'POST',
+      // validateWebhookUrl() (lib/ssrfGuard.ts) only checks the URL the
+      // customer submitted — it can't see where a 3xx response might
+      // redirect to. Default fetch() behavior follows redirects
+      // automatically with no re-validation, so a URL that's a legitimate
+      // public https host at save-time could still redirect our server to
+      // a private/internal address at delivery-time. 'manual' stops fetch
+      // from following it; any redirect is treated as a failed delivery
+      // below instead, the same as any other non-2xx response.
+      redirect: 'manual',
       headers: {
         'Content-Type': 'application/json',
         'X-GlobProxy-Event': event,
@@ -42,6 +51,17 @@ async function deliverOne(
       body,
       signal: AbortSignal.timeout(8000), // a slow/dead customer endpoint must not hang the request that triggered this
     })
+    // With redirect: 'manual', a 3xx response comes back as either an
+    // opaque 'opaqueredirect' type (no readable status/headers) or, on
+    // some runtimes, a visible 3xx status — handle both rather than
+    // assuming one shape.
+    if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) {
+      const errMsg = 'Endpoint returned a redirect — redirects are not followed for webhook deliveries'
+      await supabase.from('webhook_endpoints')
+        .update({ last_failure_at: new Date().toISOString(), last_error: errMsg })
+        .eq('id', ep.id)
+      return { ok: false, error: errMsg }
+    }
     if (res.ok) {
       await supabase.from('webhook_endpoints')
         .update({ last_success_at: new Date().toISOString(), last_error: null })

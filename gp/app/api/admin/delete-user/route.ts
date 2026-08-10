@@ -1,6 +1,7 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { deleteSubUser } from '@/lib/geonode'
 import { sendEmail, escapeHtml } from '@/lib/email'
+import { requireMfaVerified } from '@/lib/mfa'
 import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
@@ -14,6 +15,9 @@ export async function POST(req: Request) {
   const { data: cp } = await supabase
     .from('profiles').select('role').eq('id', caller.id).single()
   if (cp?.role !== 'admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+  const mfaCheck = await requireMfaVerified(req, caller.id)
+  if (mfaCheck) return mfaCheck
 
   const { user_id } = await req.json()
   if (!user_id) return NextResponse.json({ error: 'Missing user_id' }, { status: 400 })

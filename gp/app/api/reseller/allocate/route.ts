@@ -1,5 +1,6 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
+import { requireMfaVerified } from '@/lib/mfa'
 import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
@@ -14,6 +15,9 @@ export async function POST(req: Request) {
     if (!['reseller', 'admin'].includes(profile?.role ?? '')) {
       return NextResponse.json({ error: 'Reseller access required' }, { status: 403 })
     }
+
+    const mfaCheck = await requireMfaVerified(req, user.id)
+    if (mfaCheck) return mfaCheck
 
     // Wasn't checked at all before — neither for the sender nor the
     // recipient below — despite is_suspended being enforced on nearly

@@ -1,5 +1,6 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { syncAllUsage, syncUserUsage } from '@/lib/usageSync'
+import { requireMfaVerified } from '@/lib/mfa'
 import { NextResponse } from 'next/server'
 
 // POST { user_id?: string }
@@ -16,6 +17,9 @@ export async function POST(req: Request) {
 
   const { data: cp } = await supabase.from('profiles').select('role').eq('id', caller.id).single()
   if (cp?.role !== 'admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+  const mfaCheck = await requireMfaVerified(req, caller.id)
+  if (mfaCheck) return mfaCheck
 
   const { user_id } = await req.json().catch(() => ({ user_id: undefined }))
 
