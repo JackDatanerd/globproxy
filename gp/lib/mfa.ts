@@ -1,5 +1,5 @@
 import * as OTPAuth from 'otpauth'
-import QRCode from 'qrcode'
+import { renderQrSvg } from '@/lib/qrSvg'
 import { createAdminClient } from '@/lib/supabase/server'
 
 type AdminClient = Awaited<ReturnType<typeof createAdminClient>>
@@ -144,7 +144,7 @@ export async function startEnrollment(userId: string, email: string): Promise<En
   if (error) throw new Error('Could not start MFA setup. Please try again.')
 
   const otpauthUri = totp.toString()
-  const qrSvg = await QRCode.toString(otpauthUri, { type: 'svg', width: 220, margin: 1 })
+  const qrSvg = renderQrSvg(otpauthUri, { width: 220, margin: 1 })
 
   return { secret: secret.base32, otpauth_uri: otpauthUri, qr_svg: qrSvg }
 }
