@@ -20,10 +20,16 @@ const STICKY_DURATIONS = [
   { value: 1440, label: '24 hours' }, // confirmed max from live dashboard ("Rotating Interval: 24 Hour")
 ]
 
-export default function NewProxyForm({ availableGb }: { availableGb: number }) {
+type DefaultAutoTopup = { enabled: boolean; threshold_gb: number | null; amount_gb: number | null }
+
+export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availableGb: number; defaultAutoTopup?: DefaultAutoTopup }) {
   const router = useRouter()
   const [loading, setLoading] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  // Seeds the auto-allocate fields from the account-level default (set on
+  // the Settings page) so it doesn't have to be re-entered on every new
+  // session — still fully editable below before submitting, and a plain
+  // 1/5 fallback when there's no default configured yet.
   const [form, setForm] = useState({
     label:           '',
     country:         '',
@@ -35,10 +41,14 @@ export default function NewProxyForm({ availableGb }: { availableGb: number }) {
     sticky_duration: 10,
     endpoint_count:  1,
     gb_allocated:    1,
-    auto_topup_enabled:     false,
-    auto_topup_threshold_gb: 1,
-    auto_topup_amount_gb:    5,
+    auto_topup_enabled:      defaultAutoTopup?.enabled ?? false,
+    auto_topup_threshold_gb: defaultAutoTopup?.threshold_gb ?? 1,
+    auto_topup_amount_gb:    defaultAutoTopup?.amount_gb ?? 5,
   })
+  // Only relevant when auto-allocate is on for this session — lets someone
+  // update their account-level default from right here instead of having
+  // to go find it on the Settings page.
+  const [saveAsDefault, setSaveAsDefault] = useState(false)
 
   function set(k: string, v: any) { setForm(f => ({ ...f, [k]: v })) }
 
@@ -128,6 +138,24 @@ export default function NewProxyForm({ availableGb }: { availableGb: number }) {
       if (!res.ok) throw new Error(data.error)
       toast.success('Proxy session created!')
       if (data.warning) toast(data.warning, { icon: '⚠️', duration: 6000 })
+
+      // Optional, non-fatal: update the account-level default so future
+      // sessions pre-fill with these same numbers. Failing this shouldn't
+      // block navigating away from a session that was already created
+      // successfully — it's just a convenience setting for next time.
+      if (saveAsDefault) {
+        const { data: { session: s2 } } = await createClient().auth.getSession()
+        await fetch('/api/dashboard/settings/auto-topup-default', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${s2?.access_token}` },
+          body: JSON.stringify({
+            enabled: form.auto_topup_enabled,
+            threshold_gb: form.auto_topup_enabled ? form.auto_topup_threshold_gb : null,
+            amount_gb: form.auto_topup_enabled ? form.auto_topup_amount_gb : null,
+          }),
+        }).catch((e) => console.error('Failed to save auto-allocate default', e))
+      }
+
       router.push('/dashboard/proxies')
       router.refresh()
     } catch (err: any) {
@@ -371,6 +399,15 @@ export default function NewProxyForm({ availableGb }: { availableGb: number }) {
                 <p className="col-span-2 text-xs text-muted -mt-1">
                   Checked roughly every 5 minutes. If your balance can't cover a top-up, you'll get an email instead of it failing silently.
                 </p>
+                <label className="col-span-2 flex items-center gap-2 -mt-0.5 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={saveAsDefault}
+                    onChange={e => setSaveAsDefault(e.target.checked)}
+                    className="w-3.5 h-3.5 rounded border-border text-accent focus:ring-accent"
+                  />
+                  <span className="text-xs text-ink2">Use these numbers as my default for future sessions</span>
+                </label>
               </div>
             )}
           </div>

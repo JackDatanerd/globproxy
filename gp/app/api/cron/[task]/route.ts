@@ -2,6 +2,7 @@ import { createAdminClient } from '@/lib/supabase/server'
 import { syncAllUsage } from '@/lib/usageSync'
 import { computeStockStatus } from '@/lib/stockStatus'
 import { sendEmail, escapeHtml } from '@/lib/email'
+import { dispatchWebhook } from '@/lib/webhooks'
 import { NextResponse } from 'next/server'
 
 // Secured with CRON_SECRET env var
@@ -181,6 +182,12 @@ async function runBandwidthAlerts() {
         html: `<p>Hi ${firstName}, you've used ${pct.toFixed(0)}% of your bandwidth. Only ${avail.toFixed(1)}GB remains.</p>
                <a href="${process.env.NEXT_PUBLIC_APP_URL}/dashboard/buy">Top up now →</a>`,
       })
+      // Same trigger, same data, as a webhook — fired from right here
+      // rather than a separate scan so there's exactly one place deciding
+      // "has this account crossed a threshold," not two that could drift.
+      await dispatchWebhook(acc.user_id, 'bandwidth_threshold_crossed', {
+        threshold_pct: 95, used_pct: pct, available_gb: avail, total_gb: acc.total_gb,
+      }).catch((e) => console.error('[webhooks] bandwidth_threshold_crossed dispatch threw', acc.user_id, e))
       await supabase.from('bandwidth_accounts')
         .update({ alerted_95_at: new Date().toISOString() })
         .eq('user_id', acc.user_id)
@@ -192,6 +199,9 @@ async function runBandwidthAlerts() {
         html: `<p>Hi ${firstName}, you've used ${pct.toFixed(0)}% of your bandwidth. ${avail.toFixed(1)}GB remains.</p>
                <a href="${process.env.NEXT_PUBLIC_APP_URL}/dashboard/buy">Buy more →</a>`,
       })
+      await dispatchWebhook(acc.user_id, 'bandwidth_threshold_crossed', {
+        threshold_pct: 80, used_pct: pct, available_gb: avail, total_gb: acc.total_gb,
+      }).catch((e) => console.error('[webhooks] bandwidth_threshold_crossed dispatch threw', acc.user_id, e))
       await supabase.from('bandwidth_accounts')
         .update({ alerted_80_at: new Date().toISOString() })
         .eq('user_id', acc.user_id)

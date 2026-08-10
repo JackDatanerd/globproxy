@@ -2,6 +2,7 @@ import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { createSubUser, deleteSubUser } from '@/lib/geonode'
 import { validateTargeting } from '@/lib/proxyEndpoint'
+import { dispatchWebhook } from '@/lib/webhooks'
 import { NextResponse } from 'next/server'
 
 function providerConfigured(): boolean {
@@ -158,6 +159,23 @@ export async function POST(req: Request) {
       autoTopupWarning = 'Session created, but auto-allocate couldn\u2019t be turned on — enable it from the Bandwidth tab.'
     }
   }
+
+  // Notify — non-fatal, same reasoning as the auto-allocate follow-up
+  // above: the session is already created and successful at this point,
+  // a webhook delivery problem on the customer's end must never surface
+  // as this request having failed.
+  await dispatchWebhook(user.id, 'session_created', {
+    credential_id: cred.id,
+    label: label || null,
+    protocol,
+    session_type,
+    gb_allocated,
+    country: country ?? null,
+    state: state ?? null,
+    city: city ?? null,
+    asn: asn ?? null,
+    status: cred.status,
+  }).catch((e) => console.error('[webhooks] session_created dispatch threw', cred.id, e))
 
   return NextResponse.json({ success: true, id: cred.id, status: cred.status, warning: autoTopupWarning })
 }
