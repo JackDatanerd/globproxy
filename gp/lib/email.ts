@@ -15,11 +15,29 @@ export function escapeHtml(input: unknown): string {
     .replace(/'/g, '&#39;')
 }
 
+// escapeHtml() protects the HTML *body* — it does nothing for CR/LF, which
+// is the character class that actually matters for a *header* field like
+// `subject`. Every subject line in this app is either a hardcoded string or
+// interpolates a server-computed number/date, except
+// app/api/auth/apply-reseller/route.ts, which puts the caller's own
+// (fully user-controlled) full_name straight into the subject. Stripping
+// CR/LF there (and, defensively, here) closes header-injection if the
+// downstream provider ever passes `subject` through to a raw SMTP header
+// without its own sanitization — not confirmed exploitable against Resend
+// specifically, but there's no reason to depend on that.
+function sanitizeHeaderValue(input: string): string {
+  return input.replace(/[\r\n]+/g, ' ').trim()
+}
+
 export async function sendEmail(p: { to: string; subject: string; html: string }) {
+  // Enforced here, not just at each call site, so a future caller that
+  // interpolates user input into `subject` can't reintroduce this by
+  // forgetting to sanitize it themselves.
+  const safeSubject = sanitizeHeaderValue(p.subject)
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ from: process.env.FROM_EMAIL ?? 'noreply@globproxy.com', to: p.to, subject: p.subject, html: p.html }),
+    body: JSON.stringify({ from: process.env.FROM_EMAIL ?? 'noreply@globproxy.com', to: p.to, subject: safeSubject, html: p.html }),
   })
   if (!res.ok) {
     // Previously nothing checked this — every caller in the app (payment
