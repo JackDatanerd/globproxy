@@ -15,7 +15,7 @@ launch.**
 ## P0
 
 **1. Security-definer RPC functions had no execute-grant restriction —
-any logged-in user could call them directly and bypass every
+any logged-in user could call them directly  and bypass every
 ownership/role check the app code relies on.**
 
 `credit_bandwidth`, `allocate_reseller_bandwidth`,
