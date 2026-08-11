@@ -1,4 +1,5 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
+import { requireActiveUser } from '@/lib/apiAuth'
 import { validateWebhookUrl } from '@/lib/ssrfGuard'
 import { NextResponse } from 'next/server'
 
@@ -12,6 +13,9 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const suspended = await requireActiveUser(user.id)
+  if (suspended) return suspended
 
   const { id } = await context.params
   const body = await req.json().catch(() => ({}))
@@ -61,6 +65,9 @@ export async function DELETE(_req: Request, context: { params: Promise<{ id: str
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const suspended = await requireActiveUser(user.id)
+  if (suspended) return suspended
 
   const { id } = await context.params
   const admin = await createAdminClient()

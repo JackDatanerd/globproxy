@@ -20,6 +20,11 @@ create table public.profiles (
   deleted_at      timestamp with time zone,
   api_access      boolean default false,
   reseller_application jsonb,
+  -- Denormalized from mfa_totp_factors so middleware's existing single
+  -- profile fetch (role, is_suspended) can add this to the same query
+  -- instead of a second round trip on every protected request. Kept in
+  -- sync exclusively by lib/mfa.ts. See migration 0020.
+  mfa_enabled     boolean not null default false,
   created_at      timestamp with time zone default now(),
   updated_at      timestamp with time zone default now()
 );
@@ -47,8 +52,25 @@ create table public.bandwidth_accounts (
   available_gb numeric generated always as (total_gb - allocated_gb) stored, -- NOT total_gb - used_gb - allocated_gb: allocated_gb already reserves a credential's full cap at creation, and used_gb (cron-synced) is always a subset of that reservation for active credentials — subtracting both double-counts. See migration 0009.
   alerted_80_at timestamp with time zone,
   alerted_95_at timestamp with time zone,
+  -- Account-level default that a new session's auto-allocate section
+  -- pre-fills from (still overridable per session before submit) — set
+  -- once via set_default_auto_topup() instead of typing it in on every
+  -- session. Deliberately never applied retroactively to existing
+  -- sessions. See migration 0019.
+  default_auto_topup_enabled boolean not null default false,
+  default_auto_topup_threshold_gb numeric,
+  default_auto_topup_amount_gb numeric,
   created_at   timestamp with time zone default now(),
-  updated_at   timestamp with time zone default now()
+  updated_at   timestamp with time zone default now(),
+  constraint bwacct_default_auto_topup_threshold_nonneg
+    check (default_auto_topup_threshold_gb is null or default_auto_topup_threshold_gb >= 0),
+  constraint bwacct_default_auto_topup_amount_positive
+    check (default_auto_topup_amount_gb is null or default_auto_topup_amount_gb > 0),
+  constraint bwacct_default_auto_topup_requires_config
+    check (
+      not default_auto_topup_enabled
+      or (default_auto_topup_threshold_gb is not null and default_auto_topup_amount_gb is not null)
+    )
 );
 
 create or replace function public.handle_new_profile()
@@ -126,8 +148,36 @@ create table public.proxy_credentials (
   city                 text,
   session_type         text default 'rotating' check (session_type in ('rotating','sticky')),
   activated_at         timestamp with time zone,
-  created_at           timestamp with time zone default now()
+  created_at           timestamp with time zone default now(),
+  -- Lets a credential top itself up automatically once its remaining GB
+  -- drops to a threshold, by an amount, using the account's existing
+  -- balance — via topup_credential(), the same RPC the manual top-up
+  -- button calls. See migration 0017.
+  auto_topup_enabled   boolean not null default false,
+  auto_topup_threshold_gb numeric,
+  auto_topup_amount_gb numeric,
+  auto_topup_last_triggered_at timestamptz,
+  -- Set when an auto-topup attempt fails for insufficient account balance,
+  -- so lib/autoTopup.ts can alert once and go quiet rather than re-sending
+  -- the same email every ~5 minutes on every subsequent cron tick.
+  auto_topup_insufficient_alerted_at timestamptz,
+  constraint auto_topup_threshold_nonneg
+    check (auto_topup_threshold_gb is null or auto_topup_threshold_gb >= 0),
+  constraint auto_topup_amount_positive
+    check (auto_topup_amount_gb is null or auto_topup_amount_gb > 0),
+  constraint auto_topup_requires_config
+    check (
+      not auto_topup_enabled
+      or (auto_topup_threshold_gb is not null and auto_topup_amount_gb is not null)
+    )
 );
+
+-- Partial index — the cron scan (lib/autoTopup.ts) filters on this, and
+-- almost every row will have it false, so a full index would carry a lot
+-- of dead weight for a query that only ever wants the true rows.
+create index proxy_credentials_auto_topup_idx
+  on public.proxy_credentials (auto_topup_enabled)
+  where auto_topup_enabled = true;
 
 -- ── RESELLER TRANSFERS ────────────────────────────────────────
 create table public.reseller_transfers (
@@ -381,6 +431,110 @@ begin
 end;
 $$;
 
+-- Lets a user (or admin, via the same dashboard route later if ever
+-- needed) turn auto-topup on/off and set its threshold/amount for a
+-- credential they own. Mirrors topup_credential() above's ownership
+-- model exactly: created_by must be null (self-owned — a
+-- reseller-allocated credential is the reseller's commitment to the
+-- client, not the client's own balance to configure draws against), and
+-- status must be 'active' or 'pending'. Reuses topup_credential() as the
+-- actual top-up mechanism rather than duplicating its atomic
+-- reserve+bump logic — the cron-driven auto-topup path and the
+-- user-initiated manual top-up button call the exact same RPC. See
+-- migration 0017.
+create or replace function public.set_auto_topup(
+  p_credential_id uuid,
+  p_user_id uuid,
+  p_enabled boolean,
+  p_threshold_gb numeric,
+  p_amount_gb numeric
+)
+returns void
+language plpgsql
+security definer
+as $$
+declare
+  v_status text;
+  v_created_by uuid;
+begin
+  select status, created_by into v_status, v_created_by
+  from public.proxy_credentials
+  where id = p_credential_id and user_id = p_user_id
+  for update;
+
+  if not found then
+    raise exception 'Credential not found' using errcode = 'P0002';
+  end if;
+
+  if v_created_by is not null then
+    raise exception 'This credential was allocated by your reseller — auto-allocate can only be configured on credentials you purchased yourself. Contact them.';
+  end if;
+
+  if v_status not in ('active', 'pending') then
+    raise exception 'Auto-allocate can only be enabled on an active or pending credential.';
+  end if;
+
+  if p_enabled then
+    if p_threshold_gb is null or p_threshold_gb < 0 then
+      raise exception 'threshold_gb must be 0 or greater';
+    end if;
+    if p_amount_gb is null or p_amount_gb <= 0 then
+      raise exception 'amount_gb must be greater than 0';
+    end if;
+  end if;
+
+  update public.proxy_credentials
+  set auto_topup_enabled = p_enabled,
+      -- Disabling clears the threshold/amount rather than leaving stale
+      -- numbers behind that a future re-enable might silently inherit.
+      auto_topup_threshold_gb = case when p_enabled then p_threshold_gb else null end,
+      auto_topup_amount_gb = case when p_enabled then p_amount_gb else null end,
+      -- Any change here (on, off, or reconfigured while already on) is a
+      -- deliberate fresh start — clear a stale insufficient-balance alert
+      -- flag so the next real dip re-alerts instead of inheriting old
+      -- suppressed state.
+      auto_topup_insufficient_alerted_at = null
+  where id = p_credential_id;
+end;
+$$;
+
+-- Account-level counterpart to set_auto_topup() above — see migration
+-- 0019. bandwidth_accounts has select-own RLS only ("Own bandwidth"
+-- below), no update policy, same reasoning as proxy_credentials: writes
+-- go through a service_role RPC that validates the input, not direct
+-- client writes.
+create or replace function public.set_default_auto_topup(
+  p_user_id uuid,
+  p_enabled boolean,
+  p_threshold_gb numeric,
+  p_amount_gb numeric
+)
+returns void
+language plpgsql
+security definer
+as $$
+begin
+  if p_enabled then
+    if p_threshold_gb is null or p_threshold_gb < 0 then
+      raise exception 'threshold_gb must be 0 or greater';
+    end if;
+    if p_amount_gb is null or p_amount_gb <= 0 then
+      raise exception 'amount_gb must be greater than 0';
+    end if;
+  end if;
+
+  update public.bandwidth_accounts
+  set default_auto_topup_enabled = p_enabled,
+      default_auto_topup_threshold_gb = case when p_enabled then p_threshold_gb else null end,
+      default_auto_topup_amount_gb = case when p_enabled then p_amount_gb else null end
+  where user_id = p_user_id;
+
+  if not found then
+    raise exception 'Bandwidth account not found' using errcode = 'P0002';
+  end if;
+end;
+$$;
+
 -- Bulk usage-sync helpers — see migration 0010. Only ever called from
 -- lib/usageSync.ts via the admin (service_role) client.
 create or replace function public.bulk_update_credential_usage(updates jsonb)
@@ -467,6 +621,148 @@ create policy "Users can revoke own api keys"
   on public.api_keys for update
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id and revoked_at is not null);
+
+-- ── WEBHOOK ENDPOINTS ─────────────────────────────────────────
+-- See migration 0018. Two events for v1: 'session_created' and
+-- 'bandwidth_threshold_crossed'.
+--
+-- The signing secret (secret) is stored in plaintext, unlike
+-- api_keys.key_hash above — deliberate, not an oversight: an API key is
+-- only ever compared against an incoming attempt, so a one-way hash
+-- works; a webhook secret has to be read back in full at send time to
+-- compute the outgoing HMAC signature. Protected the same way api_keys
+-- is instead: RLS restricts it to select-by-owner only, and no
+-- application code ever returns it in a list response after creation —
+-- only the create response includes it, once.
+create table public.webhook_endpoints (
+  id               uuid default uuid_generate_v4() primary key,
+  user_id          uuid references public.profiles(id) on delete cascade not null,
+  url              text not null,
+  secret           text not null,
+  event_types      text[] not null default '{}',
+  enabled          boolean not null default true,
+  created_at       timestamptz not null default now(),
+  last_success_at  timestamptz,
+  last_failure_at  timestamptz,
+  last_error       text,
+  constraint webhook_endpoints_https_only check (url ~* '^https://'),
+  -- Defense-in-depth alongside the app-layer check in the API routes —
+  -- even a bug in application code can't get an unrecognized event type
+  -- persisted here.
+  constraint webhook_endpoints_valid_events
+    check (event_types <@ array['session_created', 'bandwidth_threshold_crossed']::text[])
+);
+
+create index webhook_endpoints_user_id_idx on public.webhook_endpoints(user_id);
+-- Lets dispatchWebhook() find "who's subscribed to event X" directly via
+-- the `.contains()` query instead of loading every endpoint and filtering
+-- in application code.
+create index webhook_endpoints_event_types_idx
+  on public.webhook_endpoints using gin(event_types);
+
+alter table public.webhook_endpoints enable row level security;
+
+create policy "Users can view own webhook endpoints"
+  on public.webhook_endpoints for select
+  using (auth.uid() = user_id);
+
+-- Deliberately no client insert/update/delete policy, same reasoning as
+-- api_keys above: creating one requires generating the secret
+-- server-side, and every mutation — including just editing the URL or
+-- flipping enabled — needs to re-run the SSRF guard (lib/ssrfGuard.ts)
+-- against the URL, which RLS has no way to do. All writes go through
+-- /api/dashboard/webhooks/* using the service role after an explicit
+-- ownership check.
+
+-- ── TWO-FACTOR AUTHENTICATION (MFA) ───────────────────────────
+-- See migration 0020. Mandatory for admin and reseller roles (enforced
+-- in application code — middleware.ts + the three protected layouts —
+-- not here; this section only lays down the storage). Optional and
+-- available to any user.
+--
+-- Three tables:
+--   mfa_totp_factors      — one row per user, the authenticator-app secret
+--   mfa_backup_codes      — one-time recovery codes, hashed like api_keys
+--   mfa_verified_sessions — short-lived "this browser session completed
+--                           its second factor" tokens. Supabase's own
+--                           session (the JWT in the cookie) has no concept
+--                           of our custom TOTP step-up, so this is a
+--                           second, independent proof-of-recent-MFA that
+--                           middleware checks on every protected request
+--                           for admin/reseller accounts.
+--
+-- All three are RLS-enabled with NO client policies at all — every access
+-- path goes through server routes using the service-role admin client
+-- with an explicit, code-level user_id check (see lib/mfa.ts), the same
+-- "no direct client access, ever" posture migration 0012 pushed the
+-- money-moving RPCs toward. A TOTP secret or a backup-code hash has no
+-- legitimate reason to ever be readable via a client-side supabase.from()
+-- call, unlike api_keys which deliberately lets an owner list their own
+-- key hashes/prefixes.
+create table public.mfa_totp_factors (
+  user_id        uuid primary key references public.profiles(id) on delete cascade,
+  secret         text not null,          -- base32 TOTP secret. Shown to the user once, at enrollment, then never again.
+  confirmed      boolean not null default false,
+  failed_attempts integer not null default 0,
+  locked_until   timestamptz,            -- brute-force lockout after MAX_FAILED_ATTEMPTS (lib/mfa.ts)
+  created_at     timestamptz not null default now(),
+  confirmed_at   timestamptz,
+  last_used_at   timestamptz,
+  -- Absolute 30-second period index of the last successfully-consumed
+  -- TOTP code (see lib/mfa.ts's validateTotpOnce()). Any code whose own
+  -- period counter is <= this value is rejected as a replay, regardless
+  -- of whether it's otherwise numerically correct — otpauth's
+  -- TOTP.validate() only checks correctness within a window, not
+  -- whether that exact code was already accepted once already. See
+  -- migration 0022.
+  last_used_counter bigint
+);
+
+alter table public.mfa_totp_factors enable row level security;
+
+create table public.mfa_backup_codes (
+  id          uuid default uuid_generate_v4() primary key,
+  user_id     uuid not null references public.profiles(id) on delete cascade,
+  code_hash   text not null,   -- sha-256 hex digest of the plaintext code; plaintext is shown once at generation and never stored
+  used_at     timestamptz,
+  created_at  timestamptz not null default now()
+);
+
+create index mfa_backup_codes_user_id_idx on public.mfa_backup_codes(user_id);
+-- Fast "does this user have unused codes left" / lookup-by-hash path —
+-- both the settings page count and consumeBackupCode() filter on this.
+create index mfa_backup_codes_unused_idx on public.mfa_backup_codes(user_id) where used_at is null;
+create unique index mfa_backup_codes_hash_idx on public.mfa_backup_codes(code_hash);
+
+alter table public.mfa_backup_codes enable row level security;
+
+create table public.mfa_verified_sessions (
+  token_hash  text primary key,   -- sha-256 hex digest of the opaque cookie value
+  user_id     uuid not null references public.profiles(id) on delete cascade,
+  created_at  timestamptz not null default now(),
+  expires_at  timestamptz not null
+);
+
+create index mfa_verified_sessions_user_id_idx on public.mfa_verified_sessions(user_id);
+-- Middleware's hot-path lookup is by token_hash (the primary key) alone;
+-- this second index just makes "revoke everything for this user" (used on
+-- disable/reset) and the cron sweep in the helper functions above cheap too.
+create index mfa_verified_sessions_expires_idx on public.mfa_verified_sessions(expires_at);
+
+alter table public.mfa_verified_sessions enable row level security;
+
+-- Cron cleanup for mfa_verified_sessions — mirrors the existing
+-- app/api/cron/[task]/route.ts task registry pattern. Expired rows are
+-- already functionally inert (any lookup filters expires_at > now()),
+-- this just keeps the table from growing unbounded on a long-lived
+-- deployment. See migration 0020.
+create or replace function public.cleanup_expired_mfa_sessions()
+returns void
+language sql
+security definer
+as $$
+  delete from public.mfa_verified_sessions where expires_at < now();
+$$;
 
 -- ── ROW LEVEL SECURITY ────────────────────────────────────────
 alter table public.profiles           enable row level security;

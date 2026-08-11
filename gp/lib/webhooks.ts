@@ -1,4 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/server'
+import { validateWebhookUrl } from '@/lib/ssrfGuard'
 
 export type WebhookEvent = 'session_created' | 'bandwidth_threshold_crossed'
 
@@ -29,6 +30,20 @@ async function deliverOne(
   event: string,
   data: Record<string, unknown>
 ): Promise<{ ok: boolean; error?: string }> {
+  // validateWebhookUrl() at create/update time only checks the URL the
+  // customer typed in at that moment. Re-run the same literal-address
+  // guard here, at the point of every actual outbound fetch, not just
+  // once at save time — a delivery can happen days after the URL was
+  // saved, so this also catches a URL edited to something private via a
+  // direct DB path, rather than trusting a decision made earlier.
+  const guardErr = validateWebhookUrl(ep.url)
+  if (guardErr) {
+    await supabase.from('webhook_endpoints')
+      .update({ last_failure_at: new Date().toISOString(), last_error: guardErr })
+      .eq('id', ep.id)
+    return { ok: false, error: guardErr }
+  }
+
   const body = JSON.stringify({ event, created_at: new Date().toISOString(), data })
   try {
     const signature = await hmacHex(ep.secret, body)

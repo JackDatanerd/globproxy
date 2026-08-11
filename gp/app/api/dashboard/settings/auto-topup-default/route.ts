@@ -1,4 +1,5 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
+import { requireActiveUser } from '@/lib/apiAuth'
 import { NextResponse } from 'next/server'
 
 // Sets the account-level default that the "new session" form pre-fills
@@ -8,6 +9,9 @@ export async function PATCH(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const suspended = await requireActiveUser(user.id)
+  if (suspended) return suspended
 
   const body = await req.json().catch(() => ({}))
   const enabled = Boolean(body?.enabled)
