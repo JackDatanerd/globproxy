@@ -1,0 +1,41 @@
+name: Schema drift check
+
+# Fails the build if supabase/schema.sql is out of sync with
+# supabase/migrations/ — see scripts/check-schema-sync.mjs for the
+# comparison logic and why this exists (schema.sql has drifted from
+# migrations before, silently reopening a fixed RLS gap).
+#
+# Runs on pull_request too, not just push to main, so drift is caught
+# before merge — a manual `wrangler deploy` or a merge without CI
+# shouldn't be the only way this ever gets checked.
+#
+# Must live at .github/workflows/ at the repo root, not inside gp/ —
+# same as deploy.yml and the cron workflows.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'gp/supabase/**'
+      - 'gp/scripts/check-schema-sync.mjs'
+  pull_request:
+    paths:
+      - 'gp/supabase/**'
+      - 'gp/scripts/check-schema-sync.mjs'
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gp
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check schema.sql is in sync with migrations
+        run: node scripts/check-schema-sync.mjs

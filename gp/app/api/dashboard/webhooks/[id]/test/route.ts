@@ -9,9 +9,17 @@ import { NextResponse } from 'next/server'
 // is otherwise an unthrottled way to make GlobProxy's server repeatedly
 // POST to an arbitrary third-party URL. There's no rate-limit
 // infrastructure yet (same gap noted for verify-payment), so this uses
-// the endpoint's own last_success_at/last_failure_at — already updated
-// on every delivery by deliverOne() — as a cheap per-endpoint cooldown
-// instead of standing up a new table.
+// last_success_at/last_failure_at — already updated on every delivery by
+// deliverOne() — as a cheap cooldown instead of standing up a new table.
+//
+// Scoped to the ACCOUNT (max last-attempt across every endpoint this user
+// owns), not to the single endpoint row being tested. An earlier version
+// keyed the cooldown per-row, which an account could bypass by creating
+// several endpoints that all point at the same URL (endpoint creation
+// has no URL-uniqueness constraint) and round-robining test calls across
+// them, each with its own untouched cooldown clock. Checking the max
+// across all rows means every test call from an account shares one
+// clock, however many endpoints it has.
 const TEST_COOLDOWN_MS = 10_000
 
 export async function POST(_req: Request, context: { params: Promise<{ id: string }> }) {
@@ -26,14 +34,20 @@ export async function POST(_req: Request, context: { params: Promise<{ id: strin
 
   const { data: ep } = await supabase
     .from('webhook_endpoints')
-    .select('last_success_at, last_failure_at')
+    .select('id')
     .eq('id', id)
     .eq('user_id', user.id)
     .single()
 
   if (!ep) return NextResponse.json({ error: 'Webhook not found' }, { status: 404 })
 
-  const lastAttempt = [ep.last_success_at, ep.last_failure_at]
+  const { data: accountEndpoints } = await supabase
+    .from('webhook_endpoints')
+    .select('last_success_at, last_failure_at')
+    .eq('user_id', user.id)
+
+  const lastAttempt = (accountEndpoints ?? [])
+    .flatMap((row) => [row.last_success_at, row.last_failure_at])
     .filter(Boolean)
     .map((t) => new Date(t as string).getTime())
     .sort((a, b) => b - a)[0]

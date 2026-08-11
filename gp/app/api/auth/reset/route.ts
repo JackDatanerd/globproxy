@@ -21,7 +21,28 @@ function genericResponse() {
   })
 }
 
+// Identical response shape isn't the whole fix — wall-clock time still
+// leaks which branch ran. Banned / no-account / suspended all return
+// after one or two fast SELECTs; the "all clear" branch additionally
+// waits on supabase.auth.resetPasswordForEmail(), a real network call
+// that dispatches an email. That latency gap is itself a timing oracle
+// for "does this email have an active account," same class of leak as
+// auth/signup/route.ts had. Padding every exit to a shared floor
+// collapses the gap from trivially measurable to buried in jitter —
+// not a cryptographic guarantee, since real network latency varies, but
+// the realistic bar for this mitigation.
+const RESPONSE_FLOOR_MS = 500
+
+async function respondGeneric(startedAt: number) {
+  const elapsed = Date.now() - startedAt
+  if (elapsed < RESPONSE_FLOOR_MS) {
+    await new Promise((resolve) => setTimeout(resolve, RESPONSE_FLOOR_MS - elapsed))
+  }
+  return genericResponse()
+}
+
 export async function POST(req: Request) {
+  const startedAt = Date.now()
   try {
     const limited = await rateLimited(req, 'AUTH_RATE_LIMITER')
     if (limited) return limited
@@ -58,7 +79,7 @@ export async function POST(req: Request) {
       .eq('email', email.toLowerCase())
       .single()
 
-    if (banned) return genericResponse()
+    if (banned) return respondGeneric(startedAt)
 
     // 2. No account — don't send, don't reveal.
     const { data: profile } = await supabase
@@ -67,17 +88,17 @@ export async function POST(req: Request) {
       .eq('email', email.toLowerCase())
       .single()
 
-    if (!profile) return genericResponse()
+    if (!profile) return respondGeneric(startedAt)
 
     // 3. Suspended — don't send, don't reveal.
-    if (profile.is_suspended) return genericResponse()
+    if (profile.is_suspended) return respondGeneric(startedAt)
 
     // 4. All clear — send reset email. Log failures server-side only; the
     // response to the client stays generic either way.
     const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: safeRedirectTo })
     if (error) console.error('[auth/reset] resetPasswordForEmail failed:', error.message)
 
-    return genericResponse()
+    return respondGeneric(startedAt)
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })
   }

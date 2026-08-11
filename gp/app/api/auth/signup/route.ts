@@ -7,11 +7,9 @@ import { NextResponse } from 'next/server'
 // "brand new" — matching the pattern in app/api/auth/reset/route.ts.
 // Previously this endpoint returned a distinct 409 { existing: true } for
 // already-registered emails, which let anyone enumerate which emails have
-// GlobProxy accounts just by posting to this endpoint. The frontend still
-// gets a real "already registered" hint (see below) but only for genuine
-// registered-and-confirmed accounts trying to sign up while logged out
-// through the normal flow — an attacker scripting requests against this
-// endpoint gets the identical generic response every time.
+// GlobProxy accounts just by posting to this endpoint. An attacker
+// scripting requests against this endpoint now gets the identical
+// response body every time, whichever branch actually ran.
 function genericResponse() {
   return NextResponse.json({
     success: true,
@@ -19,7 +17,30 @@ function genericResponse() {
   })
 }
 
+// Response *shape* being identical isn't the whole fix — wall-clock time
+// still leaks which branch ran. The banned/already-registered branches
+// return after one or two fast SELECTs; the brand-new-signup branch
+// additionally waits on supabase.auth.signUp(), which dispatches a real
+// email over the network and is meaningfully slower. That latency gap is
+// itself an enumeration oracle, just a timing one instead of a
+// status-code one. RESPONSE_FLOOR_MS pads every exit out to a shared
+// minimum so total request time doesn't reveal which path was taken.
+// It's an approximation (real network latency for signUp varies), not a
+// cryptographic guarantee — but it collapses the gap from "trivially
+// measurable" to "buried in normal jitter," which is what this class of
+// mitigation can realistically promise.
+const RESPONSE_FLOOR_MS = 700
+
+async function respondGeneric(startedAt: number) {
+  const elapsed = Date.now() - startedAt
+  if (elapsed < RESPONSE_FLOOR_MS) {
+    await new Promise((resolve) => setTimeout(resolve, RESPONSE_FLOOR_MS - elapsed))
+  }
+  return genericResponse()
+}
+
 export async function POST(req: Request) {
+  const startedAt = Date.now()
   try {
     const limited = await rateLimited(req, 'AUTH_RATE_LIMITER')
     if (limited) return limited
@@ -59,7 +80,7 @@ export async function POST(req: Request) {
       .eq('email', email.toLowerCase())
       .single()
 
-    if (banned) return genericResponse()
+    if (banned) return respondGeneric(startedAt)
 
     // 2. Already registered — don't attempt signup again (Supabase would
     // just error), don't reveal that an account exists either. Whether
@@ -70,7 +91,7 @@ export async function POST(req: Request) {
       .eq('email', email.toLowerCase())
       .single()
 
-    if (profile) return genericResponse()
+    if (profile) return respondGeneric(startedAt)
 
     // 3. All clear — sign up via Supabase. Errors here (weak password,
     // provider-side validation) are still surfaced directly since they're
@@ -87,7 +108,7 @@ export async function POST(req: Request) {
 
     if (error) return NextResponse.json({ error: error.message }, { status: 400 })
 
-    return genericResponse()
+    return respondGeneric(startedAt)
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })
   }

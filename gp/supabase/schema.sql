@@ -2,6 +2,20 @@
 -- GLOBPROXY — FULL DATABASE SCHEMA
 -- Run this entire file in Supabase SQL Editor (fresh project)
 -- ============================================================
+--
+-- INCLUDES MIGRATIONS THROUGH: 0023_proxy_sessions_credential_ownership.sql
+--
+-- This line is the source of truth `scripts/check-schema-sync.mjs` reads
+-- to compare against supabase/migrations/ — it's what CI checks on every
+-- push (see .github/workflows/schema-drift-check.yml). It exists because
+-- this file has drifted from the migrations folder before: this schema
+-- was "regenerated through 0022" in one commit, then 0023 landed in the
+-- very next commit without this file being touched, silently reopening
+-- the RLS gap 0023 existed to close. A human remembering to regen this
+-- file is not a control; a CI check that fails the build when the two
+-- are out of sync is. When you add a migration, update the line above
+-- to match, or the schema-drift-check job will fail your push.
+-- ============================================================
 
 create extension if not exists "uuid-ossp";
 
@@ -592,9 +606,24 @@ alter table public.proxy_sessions enable row level security;
 create policy "Users can view their own sessions"
   on public.proxy_sessions for select using (auth.uid() = user_id);
 create policy "Users can create their own sessions"
-  on public.proxy_sessions for insert with check (auth.uid() = user_id);
+  on public.proxy_sessions for insert
+  with check (
+    auth.uid() = user_id
+    and exists (
+      select 1 from public.proxy_credentials pc
+      where pc.id = credential_id and pc.user_id = auth.uid()
+    )
+  );
 create policy "Users can update their own sessions"
-  on public.proxy_sessions for update using (auth.uid() = user_id);
+  on public.proxy_sessions for update
+  using (auth.uid() = user_id)
+  with check (
+    auth.uid() = user_id
+    and exists (
+      select 1 from public.proxy_credentials pc
+      where pc.id = credential_id and pc.user_id = auth.uid()
+    )
+  );
 create policy "Users can delete their own sessions"
   on public.proxy_sessions for delete using (auth.uid() = user_id);
 

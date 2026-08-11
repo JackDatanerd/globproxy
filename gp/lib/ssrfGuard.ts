@@ -45,20 +45,41 @@ function isPrivateIpv4(ip: string): boolean {
   })
 }
 
-// Pulls an embedded IPv4 out of an IPv6-mapped address in either the
-// dotted form (::ffff:127.0.0.1) or the pure-hex form (::ffff:7f00:1) —
-// the second is the exact form that slipped past Passthrough's original
-// check, so it gets handled explicitly here rather than assumed away.
+// Combines two 16-bit hex groups into the dotted-quad they encode.
+function hexPairToIpv4(hi: string, lo: string): string {
+  const h = parseInt(hi, 16)
+  const l = parseInt(lo, 16)
+  return `${(h >> 8) & 0xff}.${h & 0xff}.${(l >> 8) & 0xff}.${l & 0xff}`
+}
+
+// Pulls an embedded IPv4 out of an IPv6 transition-mechanism address.
+// Two address families do this, and both need handling since either one
+// can smuggle a private/loopback IPv4 target past a naive IPv6 check:
+//
+// 1. IPv4-mapped (RFC 4291), ::ffff:0:0/96 — dotted form
+//    (::ffff:127.0.0.1) or pure-hex form (::ffff:7f00:1). The hex form is
+//    the exact one that slipped past Passthrough's original check.
+//
+// 2. NAT64 well-known prefix (RFC 6052), 64:ff9b::/96 — same idea, same
+//    dotted/hex duality (64:ff9b::127.0.0.1 or 64:ff9b::7f00:1), plus the
+//    fully-expanded non-compressed form some URL parsers will still
+//    accept (64:ff9b:0:0:0:0:7f00:1). Audit-confirmed bypass: the
+//    ::ffff: check alone let 64:ff9b::7f00:1 (== 127.0.0.1) through.
 function extractEmbeddedIpv4(hostname: string): string | null {
   const h = hostname.toLowerCase()
+
   let m = h.match(/^\[?::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\]?$/)
   if (m) return m[1]
   m = h.match(/^\[?::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})\]?$/)
-  if (m) {
-    const hi = parseInt(m[1], 16)
-    const lo = parseInt(m[2], 16)
-    return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`
-  }
+  if (m) return hexPairToIpv4(m[1], m[2])
+
+  m = h.match(/^\[?64:ff9b::(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\]?$/)
+  if (m) return m[1]
+  m = h.match(/^\[?64:ff9b::([0-9a-f]{1,4}):([0-9a-f]{1,4})\]?$/)
+  if (m) return hexPairToIpv4(m[1], m[2])
+  m = h.match(/^\[?64:ff9b:0{1,4}:0{1,4}:0{1,4}:0{1,4}:([0-9a-f]{1,4}):([0-9a-f]{1,4})\]?$/)
+  if (m) return hexPairToIpv4(m[1], m[2])
+
   return null
 }
 
