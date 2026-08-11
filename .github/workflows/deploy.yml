@@ -32,7 +32,28 @@ on:
   workflow_dispatch: {}
 
 jobs:
+  # Gates the deploy job below via `needs:` — this is what actually stops
+  # a schema-drifted push from reaching production, not the separate
+  # schema-drift-check.yml workflow (that one runs independently, with no
+  # ordering guarantee against this file, so its failure alone never
+  # blocked anything). Duplicating the check here, in the same workflow
+  # run as the deploy it gates, is what makes it structural instead of a
+  # step someone has to remember to wire up in repo settings.
+  check-schema:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check schema.sql is in sync with migrations
+        run: node scripts/check-schema-sync.mjs
+
   deploy:
+    needs: check-schema
     runs-on: ubuntu-latest
     defaults:
       run:
