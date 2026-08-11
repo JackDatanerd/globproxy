@@ -15,5 +15,20 @@
       "0 * * * *",
       "0 8 * * *"
     ]
+  },
+  // Cloudflare's native rate-limiting binding — auto-provisioned on deploy,
+  // no separate `wrangler kv namespace create`-style step needed. Shared by
+  // auth/signup and auth/reset (see lib/rateLimit.ts). namespace_id just
+  // needs to be unique among rate-limit bindings in this account; 1001 has
+  // no significance beyond that.
+  "unsafe": {
+    "bindings": [
+      {
+        "name": "AUTH_RATE_LIMITER",
+        "type": "ratelimit",
+        "namespace_id": "1001",
+        "simple": { "limit": 10, "period": 60 }
+      }
+    ]
   }
 }

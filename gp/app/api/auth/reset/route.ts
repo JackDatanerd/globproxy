@@ -1,4 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/server'
+import { rateLimited } from '@/lib/rateLimit'
 import { NextResponse } from 'next/server'
 
 // Always the exact same response, whatever happened internally. Previously
@@ -22,6 +23,9 @@ function genericResponse() {
 
 export async function POST(req: Request) {
   try {
+    const limited = await rateLimited(req, 'AUTH_RATE_LIMITER')
+    if (limited) return limited
+
     const { email, redirectTo } = await req.json()
     if (!email) return NextResponse.json({ error: 'Email required' }, { status: 400 })
 

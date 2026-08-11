@@ -42,15 +42,13 @@ function SignupForm() {
     const data = await res.json()
 
     if (!res.ok) {
-      if (data.existing) {
-        setEmailErr('Already registered — try signing in instead.')
-        toast.error('An account with this email already exists.')
-      } else {
-        toast.error(data.error)
-        if (data.error?.toLowerCase().includes('suspended')) {
-          setEmailErr(data.error)
-        }
-      }
+      // These are genuine input errors (missing fields, invalid email,
+      // weak password) — not "does this email have an account", which the
+      // API now deliberately never reveals. Banned/already-registered/
+      // brand-new all return the same success response below, same
+      // pattern as the password-reset flow, so this can't be used to
+      // enumerate registered emails.
+      toast.error(data.error)
       setLoading(false)
       return
     }
