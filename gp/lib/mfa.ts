@@ -413,10 +413,6 @@ export async function revokeVerifiedSession(token: string | undefined): Promise<
   await supabase.from('mfa_verified_sessions').delete().eq('token_hash', tokenHash)
 }
 
-async function revokeAllVerifiedSessions(supabase: AdminClient, userId: string): Promise<void> {
-  await supabase.from('mfa_verified_sessions').delete().eq('user_id', userId)
-}
-
 // ── Disable / reset ──────────────────────────────────────────────────
 // Self-service disable requires proof of a currently-valid code (TOTP or
 // backup) — the same bar as any other MFA action, so a hijacked
@@ -457,9 +453,12 @@ export async function adminResetMfa(userId: string): Promise<void> {
   await wipeMfa(supabase, userId)
 }
 
+// Runs as a single Postgres transaction via wipe_mfa() (migration 0024) —
+// see that migration's header for why this can't safely be four separate
+// sequential calls from here. An error thrown by this RPC propagates to
+// the caller (disableMfa / adminResetMfa), which is deliberate: better a
+// visible failure here than a silent partial wipe.
 async function wipeMfa(supabase: AdminClient, userId: string): Promise<void> {
-  await supabase.from('mfa_totp_factors').delete().eq('user_id', userId)
-  await supabase.from('mfa_backup_codes').delete().eq('user_id', userId)
-  await revokeAllVerifiedSessions(supabase, userId)
-  await supabase.from('profiles').update({ mfa_enabled: false }).eq('id', userId)
+  const { error } = await supabase.rpc('wipe_mfa', { p_user_id: userId })
+  if (error) throw new Error('Could not reset MFA. Please try again.')
 }
