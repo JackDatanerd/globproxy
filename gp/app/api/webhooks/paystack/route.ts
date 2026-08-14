@@ -3,7 +3,6 @@ import { verifyWebhookSignature, amountMatchesOrder } from '@/lib/paystack'
 import { activateBandwidth } from '@/lib/bandwidth'
 import { createAdminClient } from '@/lib/supabase/server'
 
-export const runtime = 'edge'
 
 export async function POST(req: Request) {
   try {
