@@ -3,7 +3,7 @@
 -- Run this entire file in Supabase SQL Editor (fresh project)
 -- ============================================================
 --
--- INCLUDES MIGRATIONS THROUGH: 0024_atomic_wipe_mfa.sql
+-- INCLUDES MIGRATIONS THROUGH: 0025_archive_used_gb_on_delete.sql
 --
 -- This line is the source of truth `scripts/check-schema-sync.mjs` reads
 -- to compare against supabase/migrations/ — it's what CI checks on every
@@ -64,6 +64,7 @@ create table public.bandwidth_accounts (
   used_gb      numeric default 0, -- actual bytes consumed; cron usage-sync is the only writer
   allocated_gb numeric not null default 0, -- GB committed: reseller→client transfers (migration 0004) AND this account's own credentials (migration 0007)
   available_gb numeric generated always as (total_gb - allocated_gb) stored, -- NOT total_gb - used_gb - allocated_gb: allocated_gb already reserves a credential's full cap at creation, and used_gb (cron-synced) is always a subset of that reservation for active credentials — subtracting both double-counts. See migration 0009.
+  archived_used_gb numeric not null default 0, -- Durable ledger for GB consumed by credentials that have since been deleted — used_gb (live sum over *active* credentials) would otherwise silently lose this the moment the row disappears. See migration 0025.
   alerted_80_at timestamp with time zone,
   alerted_95_at timestamp with time zone,
   -- Account-level default that a new session's auto-allocate section
@@ -565,7 +566,7 @@ create or replace function public.recalculate_bandwidth_accounts()
 returns void language plpgsql security definer as $$
 begin
   update public.bandwidth_accounts ba
-  set used_gb = coalesce(sub.total, 0)
+  set used_gb = coalesce(sub.total, 0) + ba.archived_used_gb
   from (
     select user_id, sum(gb_used) as total
     from public.proxy_credentials
@@ -575,12 +576,28 @@ begin
   where ba.user_id = sub.user_id;
 
   update public.bandwidth_accounts ba
-  set used_gb = 0
-  where used_gb <> 0
+  set used_gb = archived_used_gb
+  where used_gb <> archived_used_gb
     and not exists (
       select 1 from public.proxy_credentials pc
       where pc.user_id = ba.user_id and pc.status = 'active'
     );
+end;
+$$;
+
+-- Bump the archive by exactly what a credential had consumed, at the
+-- moment it's deleted — see migration 0025. Called from the same request
+-- that releases the credential's unused allocation, so both numbers come
+-- from the same usedGb snapshot and can't drift apart.
+create or replace function public.archive_credential_used_gb(p_user_id uuid, p_gb numeric)
+returns void language plpgsql security definer as $$
+begin
+  if p_gb is null or p_gb <= 0 then
+    return;
+  end if;
+  update public.bandwidth_accounts
+  set archived_used_gb = archived_used_gb + p_gb
+  where user_id = p_user_id;
 end;
 $$;
 
@@ -1020,6 +1037,9 @@ grant execute on function public.bulk_update_credential_usage(jsonb) to service_
 
 revoke all on function public.recalculate_bandwidth_accounts() from public;
 grant execute on function public.recalculate_bandwidth_accounts() to service_role;
+
+revoke all on function public.archive_credential_used_gb(uuid, numeric) from public;
+grant execute on function public.archive_credential_used_gb(uuid, numeric) to service_role;
 
 revoke all on function public.topup_credential(uuid, uuid, numeric) from public;
 grant execute on function public.topup_credential(uuid, uuid, numeric) to service_role;

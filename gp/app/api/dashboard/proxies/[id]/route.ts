@@ -116,5 +116,25 @@ export async function DELETE(
   })
   if (releaseErr) console.error('Failed to release bandwidth reservation on delete:', releaseErr)
 
+  // Archive whatever this credential actually consumed. used_gb (see
+  // recalculate_bandwidth_accounts, migration 0009) is a LIVE sum over
+  // *active* credentials — the row we just deleted drops out of that sum
+  // on the next cron tick, taking every GB it had recorded as consumed
+  // with it. That GB isn't coming back (only the unused portion was just
+  // released above), so without this it silently vanishes from the
+  // dashboard entirely: not in Used, not in Available, gone from Total
+  // with nothing to show for it. archive_credential_used_gb (migration
+  // 0025) folds it into a durable per-account ledger that
+  // recalculate_bandwidth_accounts adds back on top of the live sum, so
+  // Used keeps reflecting real historical consumption after the session
+  // that generated it is gone.
+  if (usedGb > 0) {
+    const { error: archiveErr } = await supabase.rpc('archive_credential_used_gb', {
+      p_user_id: user.id,
+      p_gb: usedGb,
+    })
+    if (archiveErr) console.error('Failed to archive consumed bandwidth on delete:', archiveErr)
+  }
+
   return NextResponse.json({ success: true })
 }

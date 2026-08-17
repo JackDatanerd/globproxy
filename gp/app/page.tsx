@@ -4,6 +4,18 @@ import HeroCard from '@/components/HeroCard'
 import PricingPlans from '@/components/PricingPlans'
 import ResellerCalc from '@/components/ResellerCalc'
 import { createClient } from '@/lib/supabase/server'
+import { getPlan } from '@/lib/plans'
+
+// "Start from $4.50" is the entry TOTAL (Micro: 1 GB @ $4.50), not a
+// per-GB price — but sitting alone on a CTA button next to a reseller
+// section that advertises $2.00/GB at Scale, it reads like a per-GB price
+// floor that contradicts the lower number a few sections down. Pulling
+// both from lib/plans.ts (the single source of truth already established
+// there — see its own header comment) and pairing them in one line where
+// the ambiguity would otherwise land removes the contradiction without
+// touching the actual pricing.
+const ENTRY_PLAN = getPlan('micro')!
+const SCALE_PLAN = getPlan('scale')!
 
 export default async function Home() {
   const supabase = await createClient()
@@ -32,13 +44,16 @@ export default async function Home() {
                 Buy residential bandwidth once. Use it across 195 countries at city-level precision — on your schedule, not ours. No monthly bills, no wasted GB.
               </p>
               <div className="flex gap-3 flex-wrap">
-                <Link href={buyHref} className="inline-flex items-center gap-2 bg-accent text-white px-7 py-3.5 rounded-xl font-medium shadow-[0_2px_12px_rgba(0,87,255,.3)] hover:-translate-y-0.5 transition-all">Start from $4.50 →</Link>
+                <Link href={buyHref} className="inline-flex items-center gap-2 bg-accent text-white px-7 py-3.5 rounded-xl font-medium shadow-[0_2px_12px_rgba(0,87,255,.3)] hover:-translate-y-0.5 transition-all">Start from ${ENTRY_PLAN.total.toFixed(2)} →</Link>
                 <Link href="#compare" className="inline-flex items-center gap-2 border border-border text-ink2 px-7 py-3.5 rounded-xl font-medium hover:border-ink2 transition-all">See comparison</Link>
               </div>
               <div className="flex items-center gap-3 mt-6 text-xs text-muted">
                 <div className="flex gap-1">{[1,.6,.3].map((o,i)=><div key={i} className="w-2 h-2 rounded-full bg-accent2" style={{opacity:o}}/>)}</div>
                 Trusted by 1,400+ freelancers and agencies worldwide
               </div>
+              <p className="text-[11px] text-muted mt-2 font-mono">
+                ${ENTRY_PLAN.total.toFixed(2)} total to get started · as low as ${SCALE_PLAN.price.toFixed(2)}/GB at scale
+              </p>
             </div>
             <HeroCard />
           </div>
@@ -175,9 +190,12 @@ export default async function Home() {
           <h2 className="font-display text-5xl font-black text-white tracking-tight leading-tight mb-4">Your bandwidth.<br />Your pace. <em className="not-italic text-accent2/80">Forever.</em></h2>
           <p className="text-white/40 font-light mb-10">Join 1,400+ operators who stopped paying for bandwidth they don&apos;t use.</p>
           <div className="flex gap-3 justify-center flex-wrap">
-            <Link href={buyHref} className="inline-flex items-center gap-2 bg-white text-ink px-7 py-3.5 rounded-xl font-medium hover:-translate-y-0.5 transition-all">Start from $4.50 →</Link>
+            <Link href={buyHref} className="inline-flex items-center gap-2 bg-white text-ink px-7 py-3.5 rounded-xl font-medium hover:-translate-y-0.5 transition-all">Start from ${ENTRY_PLAN.total.toFixed(2)} →</Link>
             <Link href="#reseller" className="inline-flex items-center gap-2 border border-white/20 text-white px-7 py-3.5 rounded-xl font-medium hover:border-white/50 transition-all">Become a reseller</Link>
           </div>
+          <p className="text-[11px] text-white/30 mt-4 font-mono">
+            ${ENTRY_PLAN.total.toFixed(2)} total to get started · as low as ${SCALE_PLAN.price.toFixed(2)}/GB at scale
+          </p>
         </div>
       </section>
 

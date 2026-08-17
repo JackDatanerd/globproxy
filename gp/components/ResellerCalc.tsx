@@ -1,10 +1,31 @@
 'use client'
 import { useState } from 'react'
+import { getPlan } from '@/lib/plans'
+
+// `buy` and `sell` used to both be hardcoded here — `buy` duplicated the
+// Starter/Growth/Scale per-GB prices from lib/plans.ts (exactly the kind
+// of drift-prone duplication that file's own header comment warns about),
+// and `sell` was `buy + 2.20`, a fixed markup that just rides along with
+// whatever tier `buy` lands on. That second part meant "Margin per GB"
+// never actually moved as the slider crossed tier boundaries — a reseller
+// buying at the Scale rate saw the exact same margin as one buying at
+// Starter, which undersells the real incentive to commit to volume.
+//
+// Fix: read `buy` from the real plan tiers (one source of truth, stays in
+// sync if pricing ever changes), and peg `sell` to what GlobProxy itself
+// charges retail at the Micro tier — roughly what a reseller's own end
+// customers would expect to pay. Margin then correctly widens as the
+// wholesale price drops at higher volume, which is the actual mechanic
+// this calculator exists to demonstrate.
+const STARTER_PRICE = getPlan('starter')!.price
+const GROWTH_PRICE  = getPlan('growth')!.price
+const SCALE_PRICE   = getPlan('scale')!.price
+const RETAIL_PRICE  = getPlan('micro')!.price
 
 export default function ResellerCalc() {
   const [gb, setGb] = useState(100)
-  const buy = gb >= 500 ? 2.00 : gb >= 100 ? 2.80 : 3.50
-  const sell = buy + 2.20
+  const buy = gb >= 500 ? SCALE_PRICE : gb >= 100 ? GROWTH_PRICE : STARTER_PRICE
+  const sell = RETAIL_PRICE
   const profit = (sell - buy) * gb
 
   return (

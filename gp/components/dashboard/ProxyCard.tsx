@@ -68,6 +68,19 @@ export default function ProxyCard({ cred, index, expanded, onToggle }: Props) {
     ? buildProxyUsername(baseUser, { ...cred, session_type: 'rotating' })
     : (endpoints.length ? buildProxyUsername(baseUser, cred, sessionIds[0]) : baseUser)
 
+  // Ad hoc sticky endpoint for the header's quick-copy button. The
+  // managed, persisted sessions (SessionManager, "Sticky sessions" tab)
+  // are the real management surface, but the same on-the-fly pattern
+  // already used for rotating endpoints above works just as well here —
+  // stickiness lives in the connection username itself (the
+  // lifetime/session suffix), not in anything that has to be pre-registered
+  // in our DB. Without this, sticky sessions had no quick-copy at all
+  // (endpoints was always [] for them), unlike every rotating session.
+  const quickStickySessionId = useMemo(() => genSessionId(), [cred.id])
+  const quickStickyEndpoint = isSticky
+    ? `${host}:${port}:${buildProxyUsername(baseUser, cred, quickStickySessionId)}:${pass}`
+    : null
+
   function copy(text: string, label = 'Copied') {
     navigator.clipboard.writeText(text)
     toast.success(label)
@@ -79,8 +92,9 @@ export default function ProxyCard({ cred, index, expanded, onToggle }: Props) {
 
   function quickCopy(e: React.MouseEvent) {
     e.stopPropagation()
-    if (!endpoints.length) return
-    navigator.clipboard.writeText(endpoints[0])
+    const target = isSticky ? quickStickyEndpoint : endpoints[0]
+    if (!target) return
+    navigator.clipboard.writeText(target)
     setJustCopied(true)
     toast.success('Endpoint copied')
     setTimeout(() => setJustCopied(false), 1300)
@@ -276,8 +290,8 @@ console.log(await res.json()); // shows proxy IP and location`
           </div>
         )}
 
-        {cred.status === 'active' && !isSticky && endpoints.length > 0 && (
-          <button onClick={quickCopy} title="Quick copy endpoint"
+        {cred.status === 'active' && (isSticky ? !!quickStickyEndpoint : endpoints.length > 0) && (
+          <button onClick={quickCopy} title={isSticky ? 'Quick copy a sticky endpoint' : 'Quick copy endpoint'}
             className={clsx(
               'w-8 h-8 rounded-lg border flex items-center justify-center transition-colors flex-shrink-0',
               justCopied ? 'border-accent2 text-accent2 bg-accent2-light' : 'border-border text-ink2 hover:border-accent hover:text-accent hover:bg-accent-light'
