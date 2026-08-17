@@ -3,7 +3,7 @@
 -- Run this entire file in Supabase SQL Editor (fresh project)
 -- ============================================================
 --
--- INCLUDES MIGRATIONS THROUGH: 0025_archive_used_gb_on_delete.sql
+-- INCLUDES MIGRATIONS THROUGH: 0026_atomic_confirm_mfa_enrollment.sql
 --
 -- This line is the source of truth `scripts/check-schema-sync.mjs` reads
 -- to compare against supabase/migrations/ — it's what CI checks on every
@@ -830,6 +830,40 @@ $$;
 
 revoke all on function public.wipe_mfa(uuid) from public;
 grant execute on function public.wipe_mfa(uuid) to service_role;
+
+-- Atomic MFA enrollment confirmation — see migration 0026. Mirrors
+-- wipe_mfa above for the opposite direction: confirming a factor and
+-- marking the account mfa_enabled must commit together or not at all,
+-- same reasoning as every other "two related writes, one real state"
+-- RPC in this file (claim_and_credit_order, topup_credential, etc).
+create or replace function public.confirm_totp_enrollment(
+  p_user_id uuid,
+  p_used_counter integer
+)
+returns void language plpgsql security definer as $$
+declare
+  v_updated uuid;
+begin
+  update public.mfa_totp_factors
+  set confirmed = true,
+      confirmed_at = now(),
+      failed_attempts = 0,
+      locked_until = null,
+      last_used_at = now(),
+      last_used_counter = p_used_counter
+  where user_id = p_user_id
+  returning user_id into v_updated;
+
+  if v_updated is null then
+    raise exception 'No pending MFA enrollment found for this account.' using errcode = 'P0002';
+  end if;
+
+  update public.profiles set mfa_enabled = true where id = p_user_id;
+end;
+$$;
+
+revoke all on function public.confirm_totp_enrollment(uuid, integer) from public;
+grant execute on function public.confirm_totp_enrollment(uuid, integer) to service_role;
 
 -- ── ROW LEVEL SECURITY ────────────────────────────────────────
 alter table public.profiles           enable row level security;

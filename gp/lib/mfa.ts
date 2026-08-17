@@ -201,18 +201,18 @@ export async function confirmEnrollment(userId: string, email: string, code: str
     throw new Error('Incorrect code. Check your authenticator app and try again.')
   }
 
-  await supabase
-    .from('mfa_totp_factors')
-    .update({
-      confirmed: true,
-      confirmed_at: new Date().toISOString(),
-      failed_attempts: 0,
-      locked_until: null,
-      last_used_at: new Date().toISOString(),
-      last_used_counter: usedCounter,
-    })
-    .eq('user_id', userId)
-  await supabase.from('profiles').update({ mfa_enabled: true }).eq('id', userId)
+  // Atomic — see migration 0026. Previously this was two separate
+  // unchecked writes (factor.confirmed, then profiles.mfa_enabled); if
+  // the first one silently failed, the second still ran unconditionally
+  // and left the account in a state where middleware routes to
+  // mfa-verify (mfa_enabled=true) but verifyFactor() rejects every code,
+  // including backup codes, because the underlying factor was never
+  // actually confirmed. Now either both flip together or neither does.
+  const { error: confirmErr } = await supabase.rpc('confirm_totp_enrollment', {
+    p_user_id: userId,
+    p_used_counter: usedCounter,
+  })
+  if (confirmErr) throw new Error('Could not confirm MFA setup. Please try again.')
 
   const backupCodes = await regenerateBackupCodesInternal(supabase, userId)
   const sessionToken = await createVerifiedSession(supabase, userId)
