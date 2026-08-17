@@ -95,7 +95,7 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
             <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-1.5">From</div>
             <div className="text-sm text-ink font-medium">Saltern Studio</div>
             <div className="text-sm text-ink2">trading as GlobProxy</div>
-            <div className="text-sm text-ink2">Kenya</div>
+            <div className="text-sm text-ink2"></div>
             <div className="text-sm text-ink2">support@globproxy.com</div>
           </div>
           <div>
