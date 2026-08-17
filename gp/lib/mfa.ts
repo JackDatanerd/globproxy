@@ -70,11 +70,27 @@ type FactorRow = {
 }
 
 async function getFactor(supabase: AdminClient, userId: string): Promise<FactorRow | null> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('mfa_totp_factors')
     .select('user_id, secret, confirmed, failed_attempts, locked_until, last_used_counter')
     .eq('user_id', userId)
     .maybeSingle()
+  // Previously this only destructured `data` — a query failure for ANY
+  // reason (bad/stale service-role credentials, a transient network
+  // error, anything) came back as data=null indistinguishable from "this
+  // user genuinely has no factor row," and every caller (verifyFactor,
+  // disableMfa, regenerateBackupCodes, confirmEnrollment) treats null the
+  // same as "not set up." That's the exact misleading error a healthy,
+  // confirmed account can end up seeing: the real row exists (visible
+  // directly in Postgres), but this read silently failed for an unrelated
+  // reason and got reported as "never enrolled." Throwing here instead
+  // makes an infra failure loud and distinguishable from a real "not set
+  // up" — check server logs for the actual `error` reason (e.g. an
+  // invalid API key) rather than assuming enrollment state next time.
+  if (error) {
+    console.error('[mfa] getFactor query failed — NOT the same as "not set up", see error below', userId, error)
+    throw new Error('Could not verify your account right now. Please try again in a moment.')
+  }
   return (data as FactorRow) ?? null
 }
 
@@ -296,26 +312,40 @@ export async function regenerateBackupCodes(userId: string, email: string, code:
 
 async function consumeBackupCode(supabase: AdminClient, userId: string, code: string): Promise<boolean> {
   const hash = await sha256Hex(code.trim().toUpperCase())
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('mfa_backup_codes')
     .select('id')
     .eq('user_id', userId)
     .eq('code_hash', hash)
     .is('used_at', null)
     .maybeSingle()
+  // Same reasoning as getFactor() above: a query failure here previously
+  // looked identical to "that code doesn't exist," which — via the
+  // caller's registerFailedAttempt() — would even count against the
+  // account's lockout threshold for a problem that was never the user's
+  // fault. Throwing keeps an infra failure from masquerading as an
+  // incorrect code (and from silently eating into their attempt budget).
+  if (error) {
+    console.error('[mfa] consumeBackupCode lookup failed', userId, error)
+    throw new Error('Could not verify your account right now. Please try again in a moment.')
+  }
   if (!data) return false
 
   // Re-check is_null in the UPDATE itself (not just the SELECT above) so
   // two concurrent requests racing to redeem the exact same code can't
   // both succeed — only the update that actually flips used_at from null
   // wins, the loser's .select() comes back empty.
-  const { data: updated } = await supabase
+  const { data: updated, error: updateErr } = await supabase
     .from('mfa_backup_codes')
     .update({ used_at: new Date().toISOString() })
     .eq('id', data.id)
     .is('used_at', null)
     .select('id')
     .maybeSingle()
+  if (updateErr) {
+    console.error('[mfa] consumeBackupCode redemption failed', userId, updateErr)
+    throw new Error('Could not verify your account right now. Please try again in a moment.')
+  }
   return !!updated
 }
 
@@ -397,11 +427,24 @@ export async function checkVerifiedSession(token: string | undefined, userId: st
   if (!token) return false
   const supabase = await createAdminClient()
   const tokenHash = await sha256Hex(token)
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('mfa_verified_sessions')
     .select('user_id, expires_at')
     .eq('token_hash', tokenHash)
     .maybeSingle()
+  // Unlike getFactor()/consumeBackupCode() above, this stays fail-closed
+  // on error (still returns false) rather than throwing — this runs on
+  // every protected page load via dashboard/layout.tsx, not inside an API
+  // route's try/catch, so throwing here would surface as a hard Next.js
+  // error page instead of the existing "go re-verify" redirect. Logging
+  // the real reason is what matters: previously a query failure here was
+  // indistinguishable from "session genuinely expired," so the same
+  // infra problem that breaks getFactor() would just look like an
+  // endless mfa-verify loop with nothing in the app pointing at why.
+  if (error) {
+    console.error('[mfa] checkVerifiedSession query failed — treating as unverified, check this reason before assuming the session actually expired', userId, error)
+    return false
+  }
   if (!data || data.user_id !== userId) return false
   return new Date(data.expires_at).getTime() > Date.now()
 }

@@ -36,11 +36,22 @@ async function hasValidMfaSession(request: NextRequest, userId: string): Promise
     { auth: { autoRefreshToken: false, persistSession: false } }
   )
   const tokenHash = await sha256Hex(token)
-  const { data } = await admin
+  const { data, error } = await admin
     .from('mfa_verified_sessions')
     .select('user_id, expires_at')
     .eq('token_hash', tokenHash)
     .maybeSingle()
+  // Stays fail-closed on error (same reasoning as lib/mfa.ts's
+  // checkVerifiedSession, kept in sync manually since this copy is
+  // deliberately duplicated — see the header comment on why). The logging
+  // is what actually matters here: this gates every protected page load,
+  // so if the underlying service-role read is broken for infra reasons,
+  // it previously looked identical to "your session expired" on every
+  // single request, with nothing anywhere pointing at why.
+  if (error) {
+    console.error('[mfa] hasValidMfaSession query failed — treating as unverified, check this reason before assuming the session actually expired', userId, error)
+    return false
+  }
   if (!data || data.user_id !== userId) return false
   return new Date(data.expires_at).getTime() > Date.now()
 }
