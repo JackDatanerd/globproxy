@@ -3,7 +3,7 @@
 -- Run this entire file in Supabase SQL Editor (fresh project)
 -- ============================================================
 --
--- INCLUDES MIGRATIONS THROUGH: 0026_atomic_confirm_mfa_enrollment.sql
+-- INCLUDES MIGRATIONS THROUGH: 0027_migration_tracking.sql
 --
 -- This line is the source of truth `scripts/check-schema-sync.mjs` reads
 -- to compare against supabase/migrations/ — it's what CI checks on every
@@ -1090,3 +1090,21 @@ revoke all on sequence public.invoice_number_seq from public;
 -- about grants. Explicit opt-in required for authenticated/anon access.
 alter default privileges in schema public revoke execute on functions from public;
 alter default privileges in schema public grant execute on functions to service_role;
+
+-- ============================================================
+-- Migration tracking — see migration 0027
+-- ============================================================
+-- The record of which migrations have actually been run against this
+-- database, as opposed to which ones exist in supabase/migrations/ on
+-- disk. Every migration from 0027 onward inserts its own filename here
+-- as its last statement — scripts/check-migrations-applied.mjs diffs
+-- this table against the folder to answer "is this database actually
+-- caught up," a question nothing before 0027 could answer.
+create table if not exists public.schema_migrations (
+  filename text primary key,
+  applied_at timestamptz not null default now()
+);
+
+alter table public.schema_migrations enable row level security;
+-- No policies granted — service_role bypasses RLS, and there's no
+-- legitimate reason for any client-side role to read or write this.
