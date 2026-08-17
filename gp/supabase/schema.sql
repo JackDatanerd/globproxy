@@ -3,7 +3,7 @@
 -- Run this entire file in Supabase SQL Editor (fresh project)
 -- ============================================================
 --
--- INCLUDES MIGRATIONS THROUGH: 0023_proxy_sessions_credential_ownership.sql
+-- INCLUDES MIGRATIONS THROUGH: 0024_atomic_wipe_mfa.sql
 --
 -- This line is the source of truth `scripts/check-schema-sync.mjs` reads
 -- to compare against supabase/migrations/ — it's what CI checks on every
@@ -792,6 +792,27 @@ security definer
 as $$
   delete from public.mfa_verified_sessions where expires_at < now();
 $$;
+
+-- Atomic MFA teardown, used by both self-service disable and admin
+-- reset (lib/mfa.ts wipeMfa()). Runs as one transaction so a failure
+-- partway through can't leave mfa_enabled=true with no confirmed
+-- factor to verify against — see migration 0024 for the full incident
+-- writeup of what that desync looked like in practice.
+create or replace function public.wipe_mfa(p_user_id uuid)
+returns void
+language plpgsql
+security definer
+as $$
+begin
+  delete from public.mfa_totp_factors where user_id = p_user_id;
+  delete from public.mfa_backup_codes where user_id = p_user_id;
+  delete from public.mfa_verified_sessions where user_id = p_user_id;
+  update public.profiles set mfa_enabled = false where id = p_user_id;
+end;
+$$;
+
+revoke all on function public.wipe_mfa(uuid) from public;
+grant execute on function public.wipe_mfa(uuid) to service_role;
 
 -- ── ROW LEVEL SECURITY ────────────────────────────────────────
 alter table public.profiles           enable row level security;
