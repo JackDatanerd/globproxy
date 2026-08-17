@@ -106,7 +106,12 @@ function SettingsPageInner() {
     setLoading(true)
     const { error } = await createClient().auth.updateUser({ password: pw.next })
     if (error) toast.error(error.message)
-    else { toast.success('Password updated'); setPw({ next: '', confirm: '' }) }
+    else {
+      toast.success('Password updated')
+      setPw({ next: '', confirm: '' })
+      // Best-effort — password change already succeeded above regardless.
+      fetch('/api/auth/notify-password-changed', { method: 'POST' }).catch(() => {})
+    }
     setLoading(false)
   }
 

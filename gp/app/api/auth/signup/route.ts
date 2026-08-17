@@ -1,4 +1,4 @@
-import { createAdminClient } from '@/lib/supabase/server'
+import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { validateEmail } from '@/lib/email-validation'
 import { rateLimited } from '@/lib/rateLimit'
 import { NextResponse } from 'next/server'
@@ -97,7 +97,23 @@ export async function POST(req: Request) {
     // provider-side validation) are still surfaced directly since they're
     // about the input just submitted, not about whether this email has an
     // account — same distinction auth/reset draws for its own failures.
-    const { error } = await supabase.auth.signUp({
+    //
+    // This MUST go through the cookie-aware ssr client (`ssrClient` below),
+    // not `supabase` (the service-role admin client used for the lookups
+    // above). The confirmation email's link uses PKCE (this app's default
+    // flowType everywhere else), which requires a code_verifier to be
+    // generated and handed back to *this visitor's own browser* as a
+    // cookie at signUp() time, so it's still there when they later click
+    // the link and /auth/callback exchanges the code for a session.
+    // The admin client has no `window`/cookies to write to — it's a plain
+    // @supabase/supabase-js instance running server-side with an in-memory
+    // storage fallback, so any code_verifier it generates dies with this
+    // request and is never sent to the browser. Confirmation links signed
+    // that way permanently fail exchangeCodeForSession() at
+    // /auth/callback, which was landing everyone back on
+    // /auth/login?error=link_expired instead of /dashboard.
+    const ssrClient = await createClient()
+    const { error } = await ssrClient.auth.signUp({
       email,
       password,
       options: {

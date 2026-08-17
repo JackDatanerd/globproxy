@@ -9,7 +9,7 @@ export async function POST(req: Request) {
 
   const { code } = await req.json().catch(() => ({}))
   if (!code || typeof code !== 'string') {
-    return NextResponse.json({ error: 'Enter your current 6-digit code to confirm.' }, { status: 400 })
+    return NextResponse.json({ error: 'Enter your current code or a backup code to confirm.' }, { status: 400 })
   }
 
   try {

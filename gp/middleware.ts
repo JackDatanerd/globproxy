@@ -124,19 +124,34 @@ export async function middleware(request: NextRequest) {
       return NextResponse.redirect(new URL('/dashboard', request.url))
     }
 
-    // ── Mandatory MFA for admin & reseller ──────────────────────────
-    // Applies to every protected path for these roles, not just /admin
-    // and /reseller — a reseller's own bandwidth/billing lives under
-    // /dashboard too, so gating only /reseller would leave that reachable
-    // MFA-free.
-    const mfaRequired = profile?.role === 'admin' || profile?.role === 'reseller'
-    if (mfaRequired && isProtected && !isMfaFlowPath) {
-      if (!profile?.mfa_enabled) {
+    // ── MFA step-up ──────────────────────────────────────────────────
+    // Two separate things bundled here:
+    //  1. *Mandatory* for admin & reseller — applies to every protected
+    //     path for these roles, not just /admin and /reseller, since a
+    //     reseller's own bandwidth/billing lives under /dashboard too, so
+    //     gating only /reseller would leave that reachable MFA-free. If
+    //     they haven't enrolled yet, they're forced into setup before
+    //     anything else.
+    //  2. *Opt-in* for plain 'user' accounts — profiles.mfa_enabled can be
+    //     true for any role, not just admin/reseller (Settings lets any
+    //     signed-in user turn it on for themselves). Previously this whole
+    //     block was gated on `mfaRequired` (admin/reseller only), so a
+    //     regular user who'd deliberately enabled 2FA still sailed straight
+    //     into /dashboard on password alone — the verify step only ever
+    //     ran for the two roles it was mandatory for. mfa_enabled=true
+    //     needs the same step-up check regardless of role; the only thing
+    //     that's role-specific is whether NOT having it enabled forces you
+    //     into setup.
+    const mfaMandatoryForRole = profile?.role === 'admin' || profile?.role === 'reseller'
+    if (isProtected && !isMfaFlowPath) {
+      if (mfaMandatoryForRole && !profile?.mfa_enabled) {
         return NextResponse.redirect(new URL(`/auth/mfa-setup?next=${encodeURIComponent(path)}`, request.url))
       }
-      const verified = await hasValidMfaSession(request, user.id)
-      if (!verified) {
-        return NextResponse.redirect(new URL(`/auth/mfa-verify?next=${encodeURIComponent(path)}`, request.url))
+      if (profile?.mfa_enabled) {
+        const verified = await hasValidMfaSession(request, user.id)
+        if (!verified) {
+          return NextResponse.redirect(new URL(`/auth/mfa-verify?next=${encodeURIComponent(path)}`, request.url))
+        }
       }
     }
   }

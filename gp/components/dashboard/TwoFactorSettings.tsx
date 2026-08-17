@@ -155,8 +155,15 @@ export default function TwoFactorSettings({ role }: { role: string }) {
       ) : (
         <form onSubmit={mode === 'disable' ? handleDisable : handleRegenerate} className="flex flex-col gap-3">
           <p className="text-sm text-ink2">
-            {mode === 'disable' ? 'Enter your current code to confirm disabling two-factor authentication.' : 'Enter your current authenticator code to generate a new set of backup codes.'}
+            {mode === 'disable'
+              ? 'Enter your current authenticator code, or one of your backup codes, to confirm disabling two-factor authentication.'
+              : 'Enter your current authenticator code, or one of your backup codes, to generate a new set of backup codes.'}
           </p>
+          {mode === 'regenerate' && (
+            <p className="text-xs text-muted -mt-1">
+              Using a backup code to confirm will consume that code, same as using it to sign in.
+            </p>
+          )}
           <input
             type="text" autoFocus required value={code}
             onChange={e => setCode(e.target.value.trim())}

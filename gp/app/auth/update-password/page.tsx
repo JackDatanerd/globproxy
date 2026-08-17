@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
@@ -9,6 +9,44 @@ export default function UpdatePasswordPage() {
   const [confirm, setConfirm] = useState('')
   const [loading, setLoading] = useState(false)
   const router = useRouter()
+
+  // /api/auth/reset now sends recovery links through the PKCE code flow
+  // (see app/api/auth/reset/route.ts), which /auth/callback already
+  // exchanges for a real session before ever redirecting here — so in the
+  // normal case sb.auth.getSession() below just finds the cookie-based
+  // session already in place and this effect does nothing.
+  //
+  // This stays as a fallback for any link that still arrives the old,
+  // implicit way (#access_token=...&refresh_token=... in the hash — e.g.
+  // an email already sent before this fix went out, or any other
+  // integration that generates a recovery link outside this app's own
+  // /api/auth/reset). This app's Supabase client is configured for PKCE
+  // (flowType: 'pkce'), which makes it explicitly refuse to auto-consume
+  // an implicit-style hash — so without this, those tokens would just sit
+  // in the URL unused and getSession() would come back empty. Reading them
+  // manually and calling setSession() directly sidesteps that PKCE/implicit
+  // mismatch entirely, since setSession() just takes the tokens at face
+  // value instead of re-deriving them from a callback-type check.
+  useEffect(() => {
+    const hash = window.location.hash
+    if (!hash || hash.length < 2) return
+    const params = new URLSearchParams(hash.slice(1))
+    const access_token = params.get('access_token')
+    const refresh_token = params.get('refresh_token')
+    if (!access_token || !refresh_token) return
+
+    createClient().auth.setSession({ access_token, refresh_token }).then(({ error }) => {
+      if (error) {
+        console.error('[update-password] setSession from URL hash failed:', error.message)
+        return
+      }
+      // Drop the tokens from the visible URL/history now that they're
+      // consumed — same reasoning as the PKCE code-cleanup in auth-js
+      // itself (leaving them would mean an autofill/back-button/copy-paste
+      // could keep resurfacing the raw token).
+      window.history.replaceState(null, '', window.location.pathname)
+    })
+  }, [])
 
   async function handle(e: React.FormEvent) {
     e.preventDefault()
@@ -27,6 +65,10 @@ export default function UpdatePasswordPage() {
 
     const { error } = await sb.auth.updateUser({ password: pw })
     if (error) { toast.error(error.message); setLoading(false); return }
+
+    // Best-effort — a failure here shouldn't block the redirect, the
+    // password change itself already succeeded above.
+    fetch('/api/auth/notify-password-changed', { method: 'POST' }).catch(() => {})
 
     toast.success('Password updated!')
     router.push('/dashboard')

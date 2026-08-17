@@ -292,21 +292,41 @@ async function regenerateBackupCodesInternal(supabase: AdminClient, userId: stri
   return codes
 }
 
-// Requires a fresh valid TOTP code — same bar as disabling MFA entirely —
-// since a full replacement set invalidates every code the user currently
-// holds, including ones they might still need.
+// Requires a fresh valid code — same bar as disabling MFA entirely — since
+// a full replacement set invalidates every code the user currently holds,
+// including ones they might still need. Accepts either a TOTP code or a
+// backup code, same as disableMfa() below: someone down to their last
+// backup code because they lost their authenticator device still has a
+// legitimate reason to rotate in a fresh set (rather than their only
+// remaining option being "disable 2FA entirely, then re-enroll from
+// scratch") — this previously only accepted TOTP, which meant "lost phone,
+// still have a backup code" had no self-service way to top up before
+// running out, only the all-or-nothing disable-and-restart path.
 export async function regenerateBackupCodes(userId: string, email: string, code: string): Promise<string[]> {
   const supabase = await createAdminClient()
   const factor = await getFactor(supabase, userId)
   if (!factor?.confirmed) throw new Error('Two-factor authentication is not set up on this account.')
   if (isLocked(factor)) throw new Error('Too many incorrect attempts. Try again in a few minutes.')
 
-  const usedCounter = validateTotpOnce(factor, buildTotp(email, factor.secret), code.trim())
-  if (usedCounter === null) {
-    await registerFailedAttempt(supabase, userId, factor)
-    throw new Error('Incorrect code.')
+  const trimmed = code.trim()
+  if (isBackupCodeFormat(trimmed)) {
+    if (!(await consumeBackupCode(supabase, userId, trimmed))) {
+      await registerFailedAttempt(supabase, userId, factor)
+      throw new Error('Incorrect code.')
+    }
+    // No usedCounter for a backup-code success — same reasoning as
+    // disableMfa/verifyFactor: don't overwrite the TOTP factor's real
+    // last_used_counter with undefined based on an unrelated code type.
+    await clearFailedAttempts(supabase, userId)
+  } else {
+    const usedCounter = validateTotpOnce(factor, buildTotp(email, factor.secret), trimmed)
+    if (usedCounter === null) {
+      await registerFailedAttempt(supabase, userId, factor)
+      throw new Error('Incorrect code.')
+    }
+    await clearFailedAttempts(supabase, userId, usedCounter)
   }
-  await clearFailedAttempts(supabase, userId, usedCounter)
+
   return regenerateBackupCodesInternal(supabase, userId)
 }
 

@@ -1,4 +1,4 @@
-import { createAdminClient } from '@/lib/supabase/server'
+import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { rateLimited } from '@/lib/rateLimit'
 import { NextResponse } from 'next/server'
 
@@ -95,7 +95,23 @@ export async function POST(req: Request) {
 
     // 4. All clear — send reset email. Log failures server-side only; the
     // response to the client stays generic either way.
-    const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: safeRedirectTo })
+    //
+    // This MUST go through the cookie-aware ssr client, not `supabase`
+    // (the service-role admin client used for the lookups above). With
+    // PKCE flowType, resetPasswordForEmail() generates a code_challenge
+    // and needs to persist the matching code_verifier back to *this
+    // visitor's own browser* as a cookie, so it's available later when
+    // they click the link and /auth/callback exchanges the code for a
+    // session. The admin client is a plain @supabase/supabase-js instance
+    // with no cookies to write to — server-side, its storage falls back to
+    // an in-memory object that dies with this request, so no verifier ever
+    // reaches the browser. Supabase then has no choice but to fall back to
+    // an implicit-style link (#access_token=... in the hash), which this
+    // app's client is configured to reject (flowType: 'pkce'), so the
+    // update-password page saw "Auth session missing or expired" on every
+    // reset, even with a fresh, unexpired link.
+    const ssrClient = await createClient()
+    const { error } = await ssrClient.auth.resetPasswordForEmail(email, { redirectTo: safeRedirectTo })
     if (error) console.error('[auth/reset] resetPasswordForEmail failed:', error.message)
 
     return respondGeneric(startedAt)
