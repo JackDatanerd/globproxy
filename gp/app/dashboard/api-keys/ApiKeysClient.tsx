@@ -106,7 +106,8 @@ export default function ApiKeysClient() {
       <div className="mb-8">
         <h1 className="font-display font-bold text-2xl text-ink">API Keys</h1>
         <p className="text-muted text-sm mt-1">
-          Automate sub-user creation, bandwidth allocation, and usage tracking.
+          Automate sub-user creation, bandwidth allocation, and usage tracking. See the{' '}
+          <a href="/docs/api" target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">full API docs →</a>
         </p>
       </div>
 

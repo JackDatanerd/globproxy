@@ -1,12 +1,14 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import AdminResellerActions from '@/components/admin/AdminResellerActions'
+import AdminApiAccessActions from '@/components/admin/AdminApiAccessActions'
 import { formatGb } from '@/lib/format'
 
 export default async function AdminResellersPage() {
   const supabase = await createAdminClient()
-  const [{ data: resellers }, { data: applicants }] = await Promise.all([
+  const [{ data: resellers }, { data: applicants }, { data: apiApplicants }] = await Promise.all([
     supabase.from('profiles').select('*').eq('role', 'reseller').order('created_at', { ascending: false }),
     supabase.from('profiles').select('*').eq('role', 'user').eq('reseller_status', 'pending').order('created_at', { ascending: false }),
+    supabase.from('profiles').select('*').eq('role', 'reseller').eq('api_access_status', 'pending').order('created_at', { ascending: false }),
   ])
 
   const resellerIds = resellers?.map(r => r.id) ?? []
@@ -75,6 +77,57 @@ export default async function AdminResellersPage() {
                     <div className="flex gap-2 flex-shrink-0">
                       <AdminResellerActions userId={a.id} action="approve" />
                       <AdminResellerActions userId={a.id} action="reject" />
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Pending API access requests */}
+      {apiApplicants && apiApplicants.length > 0 && (
+        <div className="mb-8">
+          <h2 className="font-display font-bold text-base text-ink mb-3">
+            Pending API access requests
+            <span className="ml-2 text-xs font-mono bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full">
+              {apiApplicants.length}
+            </span>
+          </h2>
+          <div className="flex flex-col gap-3">
+            {apiApplicants.map(a => {
+              const app = a.api_access_application as any
+              return (
+                <div key={a.id} className="bg-white border border-border rounded-xl p-5">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-3">
+                        <div className="text-sm font-medium text-ink">{a.full_name || '—'}</div>
+                        <span className="text-[10px] font-mono bg-yellow-50 text-yellow-600 px-2 py-0.5 rounded-full">pending</span>
+                      </div>
+                      <div className="flex flex-col gap-1.5">
+                        <div className="flex gap-2">
+                          <span className="text-[10px] font-mono text-muted uppercase tracking-wider w-20 flex-shrink-0">Email</span>
+                          <span className="text-xs text-ink">{a.email}</span>
+                        </div>
+                        <div className="flex gap-2">
+                          <span className="text-[10px] font-mono text-muted uppercase tracking-wider w-20 flex-shrink-0">Use case</span>
+                          <span className="text-xs text-ink">{app?.use_case || '—'}</span>
+                        </div>
+                        {app?.applied_at && (
+                          <div className="flex gap-2">
+                            <span className="text-[10px] font-mono text-muted uppercase tracking-wider w-20 flex-shrink-0">Applied</span>
+                            <span className="text-xs text-muted">
+                              {new Date(app.applied_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex gap-2 flex-shrink-0">
+                      <AdminApiAccessActions userId={a.id} action="approve" />
+                      <AdminApiAccessActions userId={a.id} action="reject" />
                     </div>
                   </div>
                 </div>

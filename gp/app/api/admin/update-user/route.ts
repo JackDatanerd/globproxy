@@ -43,7 +43,16 @@ export async function POST(req: Request) {
       updates = { role: 'user', reseller_status: null }
       break
     case 'toggle_api_access':
-      updates = { api_access: !target.api_access }
+      // Keep api_access_status in sync when access is granted/revoked this
+      // way (the quick per-user toggle in /admin/users), not just when it
+      // goes through the applicant queue on /admin/resellers — otherwise a
+      // reseller granted access here would still show as "not requested"
+      // on their own /dashboard/api-keys page, and revoking here wouldn't
+      // clear a stale 'approved' status.
+      updates = {
+        api_access: !target.api_access,
+        api_access_status: !target.api_access ? 'approved' : null,
+      }
       break
     default:
       return NextResponse.json({ error: 'Unknown action' }, { status: 400 })

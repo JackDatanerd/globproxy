@@ -19,6 +19,7 @@ function MfaSetupFlow() {
   const [errorMsg, setErrorMsg] = useState('')
   const [backupCodes, setBackupCodes] = useState<string[]>([])
   const [savedAck, setSavedAck] = useState(false)
+  const [role, setRole] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -35,6 +36,7 @@ function MfaSetupFlow() {
         if (cancelled) return
         setSecret(data.secret)
         setQrSvg(data.qr_svg)
+        setRole(data.role ?? null)
         setStep('scan')
       } catch (e: any) {
         if (!cancelled) { setErrorMsg(e.message); setStep('error') }
@@ -128,8 +130,10 @@ function MfaSetupFlow() {
     <div className="w-full max-w-md bg-white border border-border rounded-2xl p-10 shadow-sm">
       <h1 className="font-display font-bold text-2xl text-ink mb-1">Set up two-factor authentication</h1>
       <p className="text-muted text-sm mb-6">
-        Required for admin and reseller accounts. Scan this with an authenticator app —
-        Google Authenticator, Authy, 1Password, or similar.
+        {role === 'reseller'
+          ? 'Required for reseller accounts. Scan this with an authenticator app —'
+          : 'Required for this account. Scan this with an authenticator app —'}
+        {' '}Google Authenticator, Authy, 1Password, or similar.
       </p>
       <div className="flex justify-center mb-4">
         <div className="bg-white border border-border rounded-xl p-3" dangerouslySetInnerHTML={{ __html: qrSvg }} />

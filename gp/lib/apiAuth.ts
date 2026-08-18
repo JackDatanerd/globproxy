@@ -85,7 +85,11 @@ export async function requireApiAccess(req: Request): Promise<ApiAuthResult> {
     return {
       ok: false,
       response: NextResponse.json(
-        { error: 'API access is not enabled for your account. Apply at globproxy.com/reseller.' },
+        // Was pointing at globproxy.com/reseller, which doesn't exist as
+        // its own page — the reseller program is a homepage section
+        // (id="reseller"), not a standalone route. Pointing at the actual
+        // anchor instead of a dead link.
+        { error: 'API access is available to resellers. See globproxy.com/#reseller to apply.' },
         { status: 403 }
       ),
     }
@@ -95,7 +99,11 @@ export async function requireApiAccess(req: Request): Promise<ApiAuthResult> {
     return {
       ok: false,
       response: NextResponse.json(
-        { error: 'API access is not enabled for your account. Apply at globproxy.com/reseller.' },
+        // This account is already a reseller — send them to the actual
+        // in-app request flow (see /dashboard/api-keys and
+        // /api/dashboard/apply-api-access) rather than back to the
+        // reseller sign-up they've already completed.
+        { error: 'API access is not enabled for your account. Apply from API Keys in your dashboard.' },
         { status: 403 }
       ),
     }

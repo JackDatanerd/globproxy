@@ -45,8 +45,14 @@ export default function DashSidebar({ role, apiAccess = false }: Props) {
 
   let nav = role === 'admin' ? adminNav : role === 'reseller' ? resellerNav : userNav
 
-  // Inject API Keys item for resellers with api_access, or always for admin
-  if (role === 'reseller' && apiAccess) {
+  // API Keys nav item shown for every reseller, not just ones who already
+  // have api_access — previously this was gated on `apiAccess`, which
+  // meant a reseller with no access had literally no path to discover
+  // that API access exists or that they could ask for it; the page
+  // itself has always explained this and offered a way to apply, it was
+  // just unreachable via nav. Admin still always sees it (has access
+  // unconditionally).
+  if (role === 'reseller') {
     nav = [
       ...resellerNav.slice(0, 6), // up to Earnings
       apiKeyItem,

@@ -1,5 +1,6 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import AdminStockPanel from '@/components/admin/AdminStockPanel'
+import AdminAccountSecurity from '@/components/admin/AdminAccountSecurity'
 
 export default async function AdminSettingsPage() {
   return (
@@ -17,6 +18,17 @@ export default async function AdminSettingsPage() {
         </div>
         <p className="text-xs text-muted mt-3 font-light">Set this URL in Paystack → Settings → Webhooks. Event: <span className="font-mono">charge.success</span></p>
       </div>
+
+      {/* Account & security — password + MFA management for the admin's
+          own account. Previously missing entirely from this page, the only
+          time an admin ever touched MFA was the one-time mandatory setup
+          screen at first login, with no way back in afterward short of a
+          database edit. */}
+      <div className="mt-8 mb-4">
+        <h2 className="font-display font-bold text-lg text-ink">Your account</h2>
+        <p className="text-muted text-sm mt-1">Password and two-factor authentication for your own admin login</p>
+      </div>
+      <AdminAccountSecurity />
     </div>
   )
 }

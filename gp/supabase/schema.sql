@@ -3,7 +3,7 @@
 -- Run this entire file in Supabase SQL Editor (fresh project)
 -- ============================================================
 --
--- INCLUDES MIGRATIONS THROUGH: 0027_migration_tracking.sql
+-- INCLUDES MIGRATIONS THROUGH: 0028_api_access_applications.sql
 --
 -- This line is the source of truth `scripts/check-schema-sync.mjs` reads
 -- to compare against supabase/migrations/ — it's what CI checks on every
@@ -34,6 +34,11 @@ create table public.profiles (
   deleted_at      timestamp with time zone,
   api_access      boolean default false,
   reseller_application jsonb,
+  -- API access application — see migration 0028. Same pending/approved/
+  -- rejected shape as reseller_status/reseller_application above, just
+  -- for the separate "can this reseller call the v1 API" capability.
+  api_access_status text check (api_access_status is null or api_access_status in ('pending','approved','rejected')),
+  api_access_application jsonb,
   -- Denormalized from mfa_totp_factors so middleware's existing single
   -- profile fetch (role, is_suspended) can add this to the same query
   -- instead of a second round trip on every protected request. Kept in
@@ -924,6 +929,7 @@ begin
   new.suspension_reason     := old.suspension_reason;
   new.reseller_status       := old.reseller_status;
   new.api_access            := old.api_access;
+  new.api_access_status     := old.api_access_status;
   new.is_deleted            := old.is_deleted;
   new.deleted_at            := old.deleted_at;
   new.email                 := old.email; -- see migration 0011 — the sync trigger below is how email changes actually land

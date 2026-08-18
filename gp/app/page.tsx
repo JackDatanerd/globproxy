@@ -176,6 +176,11 @@ export default async function Home() {
                 ))}
               </div>
               <Link href="/auth/signup?role=reseller" className="inline-flex items-center gap-2 bg-ink text-white px-7 py-3.5 rounded-xl font-medium hover:-translate-y-0.5 transition-all">Apply to resell →</Link>
+              <div className="mt-3">
+                <Link href="/docs/api" className="text-sm text-accent2 hover:underline">
+                  API access is available to approved resellers — view the docs →
+                </Link>
+              </div>
             </div>
             <ResellerCalc />
           </div>
@@ -208,7 +213,7 @@ export default async function Home() {
               <p className="text-white/30 text-sm font-light leading-relaxed max-w-xs">Residential proxies that never expire. Buy once, use forever. No subscriptions.</p>
             </div>
             {[
-              {title:'Product',links:[['/#features','Features'],['/#pricing','Pricing'],['/#reseller','Resellers'],['/#compare','Compare']]},
+              {title:'Product',links:[['/#features','Features'],['/#pricing','Pricing'],['/#reseller','Resellers'],['/#compare','Compare'],['/docs/api','API Docs']]},
               {title:'Support',links:[['mailto:support@globproxy.com','Contact us'],['mailto:sales@globproxy.com','Sales']]},
               {title:'Legal',links:[['/terms','Terms of Service'],['/privacy','Privacy Policy'],['/refunds','Refund Policy']]},
             ].map(col=>(

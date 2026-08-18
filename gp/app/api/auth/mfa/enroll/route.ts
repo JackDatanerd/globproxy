@@ -9,7 +9,13 @@ export async function POST() {
 
   try {
     const result = await startEnrollment(user.id, user.email)
-    return NextResponse.json(result)
+    // Covered by the "Own profile" RLS select policy — just this user's
+    // own row. Only used so the setup screen can say *why* MFA is
+    // mandatory in terms that make sense for the account reading it,
+    // instead of a single hardcoded line naming every role that's ever
+    // required to enroll (see mfa-setup/page.tsx).
+    const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single()
+    return NextResponse.json({ ...result, role: profile?.role ?? null })
   } catch (e: any) {
     return NextResponse.json({ error: e.message ?? 'Could not start MFA setup.' }, { status: 400 })
   }
