@@ -1,6 +1,7 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { requireMfaVerified } from '@/lib/mfa'
+import { sendEmail, escapeHtml } from '@/lib/email'
 import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
@@ -11,7 +12,7 @@ export async function POST(req: Request) {
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
     const { data: profile } = await supabase
-      .from('profiles').select('role').eq('id', user.id).single()
+      .from('profiles').select('role, email, full_name').eq('id', user.id).single()
     if (!['reseller', 'admin'].includes(profile?.role ?? '')) {
       return NextResponse.json({ error: 'Reseller access required' }, { status: 403 })
     }
@@ -40,7 +41,7 @@ export async function POST(req: Request) {
     // ── 1. Find recipient ───────────────────────────────────────────────────
     const { data: recipientProfile, error: recipientError } = await adminSupabase
       .from('profiles')
-      .select('id, email, is_deleted, is_suspended')
+      .select('id, email, full_name, is_deleted, is_suspended')
       .eq('email', recipient_email.toLowerCase())
       .single()
 
@@ -114,6 +115,71 @@ export async function POST(req: Request) {
 
     if (historyError) {
       console.error('Transfer history write failed (transfer itself succeeded):', historyError.message)
+    }
+
+    // Notify both sides — previously a transfer completed silently for
+    // everyone: the recipient had no way to know new bandwidth had landed
+    // on their account short of noticing it themselves in the dashboard,
+    // and the sender had no durable confirmation beyond the toast on
+    // screen at the moment of the transfer. Best-effort: the transfer
+    // itself already succeeded above regardless of whether either email
+    // goes out.
+    const senderName = escapeHtml(profile?.full_name?.split(' ')[0]) || 'there'
+    if (profile?.email) {
+      await sendEmail({
+        to: profile.email,
+        subject: `Confirmed: ${gb_allocated}GB transferred to ${recipient_email}`,
+        html: `
+          <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
+            <img src="https://globproxy.com/og-image.png" alt="GlobProxy" width="200"
+              style="display:block;margin:0 auto 32px auto;border-radius:12px;"/>
+            <h2 style="text-align:center;color:#111;">Transfer confirmed ✓</h2>
+            <p style="color:#444;text-align:center;">
+              Hi ${senderName}, you've transferred <strong>${gb_allocated}GB</strong> to
+              ${escapeHtml(recipient_email)}. It's been deducted from your available stock
+              and is now active on their account.
+            </p>
+            <div style="text-align:center;margin:32px 0;">
+              <a href="${process.env.NEXT_PUBLIC_APP_URL}/reseller/transfers"
+                 style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">
+                View transfer history →
+              </a>
+            </div>
+            <p style="color:#bbb;font-size:12px;text-align:center;margin-top:32px;">
+              © 2026 GlobProxy · Residential Proxies That Never Expire
+            </p>
+          </div>
+        `,
+      }).catch((e) => console.error('[reseller/allocate] sender confirmation email failed:', e))
+    }
+
+    if (recipientProfile.email) {
+      await sendEmail({
+        to: recipientProfile.email,
+        subject: `${gb_allocated}GB of bandwidth was added to your account`,
+        html: `
+          <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
+            <img src="https://globproxy.com/og-image.png" alt="GlobProxy" width="200"
+              style="display:block;margin:0 auto 32px auto;border-radius:12px;"/>
+            <h2 style="text-align:center;color:#111;">Bandwidth added ✓</h2>
+            <p style="color:#444;text-align:center;">
+              Hi ${escapeHtml(recipientProfile.full_name?.split(' ')[0]) || 'there'},
+              <strong>${gb_allocated}GB</strong> has been added to your GlobProxy account by
+              ${escapeHtml(profile?.full_name) || escapeHtml(user.email) || 'your reseller'}.
+              It's ready to use now.
+            </p>
+            <div style="text-align:center;margin:32px 0;">
+              <a href="${process.env.NEXT_PUBLIC_APP_URL}/dashboard"
+                 style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">
+                Go to dashboard →
+              </a>
+            </div>
+            <p style="color:#bbb;font-size:12px;text-align:center;margin-top:32px;">
+              © 2026 GlobProxy · Residential Proxies That Never Expire
+            </p>
+          </div>
+        `,
+      }).catch((e) => console.error('[reseller/allocate] recipient notification email failed:', e))
     }
 
     return NextResponse.json({

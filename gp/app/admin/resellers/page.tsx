@@ -115,6 +115,12 @@ export default async function AdminResellersPage() {
                           <span className="text-[10px] font-mono text-muted uppercase tracking-wider w-20 flex-shrink-0">Use case</span>
                           <span className="text-xs text-ink">{app?.use_case || '—'}</span>
                         </div>
+                        {app?.website_url && (
+                          <div className="flex gap-2">
+                            <span className="text-[10px] font-mono text-muted uppercase tracking-wider w-20 flex-shrink-0">Website</span>
+                            <a href={app.website_url} target="_blank" rel="noopener noreferrer" className="text-xs text-accent hover:underline">{app.website_url}</a>
+                          </div>
+                        )}
                         {app?.applied_at && (
                           <div className="flex gap-2">
                             <span className="text-[10px] font-mono text-muted uppercase tracking-wider w-20 flex-shrink-0">Applied</span>

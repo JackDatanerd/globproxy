@@ -50,14 +50,21 @@ export async function POST(req: Request) {
           <p style="color:#444;text-align:center;">
             Hi ${escapeHtml(target.full_name) || 'there'}, our support team reset two-factor
             authentication on your GlobProxy account. You'll be asked to set it up again the
-            next time you sign in. If you didn't request this, contact us immediately.
+            next time you sign in. If you didn't request this, sign in now and re-enable
+            two-factor authentication right away — your password still works, so you don't
+            need to wait on a reply from us to lock things back down.
           </p>
           <div style="text-align:center;margin:32px 0;">
-            <a href="mailto:support@globproxy.com"
+            <a href="${process.env.NEXT_PUBLIC_APP_URL}/dashboard/settings"
                style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">
-              Contact support →
+              Go to account settings →
             </a>
           </div>
+          <p style="color:#888;font-size:13px;text-align:center;">
+            Also worth changing your password if you're not sure how this happened.
+            Still concerned, or can't sign in?
+            <a href="mailto:support@globproxy.com" style="color:#2563eb;">Contact support</a>.
+          </p>
           <p style="color:#bbb;font-size:12px;text-align:center;margin-top:32px;">
             © 2026 GlobProxy · Residential Proxies That Never Expire
           </p>

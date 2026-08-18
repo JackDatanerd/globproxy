@@ -41,14 +41,19 @@ export async function POST() {
           account (${escapeHtml(user.email)}) was just changed. If you made this change, no action is needed.
         </p>
         <p style="color:#444;text-align:center;">
-          If you didn't request this, contact us immediately — someone else may have access to your account.
+          If you didn't make this change, reset your password right away to lock out anyone who
+          might have access — that's faster and more effective than waiting on a reply from us.
         </p>
         <div style="text-align:center;margin:32px 0;">
-          <a href="mailto:support@globproxy.com"
+          <a href="${process.env.NEXT_PUBLIC_APP_URL}/auth/reset"
              style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">
-            Contact support →
+            Reset your password →
           </a>
         </div>
+        <p style="color:#888;font-size:13px;text-align:center;">
+          Still locked out, or think something else is wrong?
+          <a href="mailto:support@globproxy.com" style="color:#2563eb;">Contact support</a>.
+        </p>
         <p style="color:#bbb;font-size:12px;text-align:center;margin-top:32px;">
           © 2026 GlobProxy · Residential Proxies That Never Expire
         </p>

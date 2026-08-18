@@ -1,5 +1,6 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { requireMfaVerified } from '@/lib/mfa'
+import { sendEmail, escapeHtml } from '@/lib/email'
 import { NextResponse } from 'next/server'
 
 // Handles the role-change and API-access actions from AdminUserControls.tsx
@@ -28,7 +29,7 @@ export async function POST(req: Request) {
   }
   if (!user_id || !action) return NextResponse.json({ error: 'Missing fields' }, { status: 400 })
 
-  const { data: target } = await supabase.from('profiles').select('role, api_access').eq('id', user_id).single()
+  const { data: target } = await supabase.from('profiles').select('role, api_access, email, full_name').eq('id', user_id).single()
   if (!target) return NextResponse.json({ error: 'User not found' }, { status: 404 })
   if (target.role === 'admin') return NextResponse.json({ error: 'Cannot modify an admin account' }, { status: 403 })
 
@@ -60,6 +61,68 @@ export async function POST(req: Request) {
 
   const { error } = await supabase.from('profiles').update(updates).eq('id', user_id)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+  // Previously none of these three actions sent any notification at all —
+  // approve-reseller/reject-reseller/approve-api-access/reject-api-access
+  // (the applicant-queue routes) already did, but this direct admin
+  // shortcut (bypassing an application entirely) silently changed access
+  // with nothing telling the account owner it happened. Best-effort: the
+  // access change itself already succeeded above regardless of whether
+  // the email goes out.
+  if (target.email) {
+    const firstName = escapeHtml(target.full_name?.split(' ')[0]) || 'there'
+    let subject: string | null = null
+    let heading = ''
+    let body = ''
+    let cta: { href: string; label: string } | null = null
+
+    if (action === 'make_reseller') {
+      subject = "You're now a GlobProxy reseller"
+      heading = "You're now a reseller ✓"
+      body = `Hi ${firstName}, your account has been switched to a reseller account. You can now buy wholesale bandwidth and allocate it to your own clients under your own brand.`
+      cta = { href: `${process.env.NEXT_PUBLIC_APP_URL}/reseller`, label: 'Go to reseller dashboard →' }
+    } else if (action === 'make_user') {
+      subject = 'Your GlobProxy reseller status has been removed'
+      heading = 'Reseller status removed'
+      body = `Hi ${firstName}, your account is no longer a reseller account — it's back to a regular customer account. Any bandwidth you'd already allocated to clients is unaffected. If this wasn't expected, contact support.`
+      cta = { href: 'mailto:support@globproxy.com', label: 'Contact support →' }
+    } else if (action === 'toggle_api_access') {
+      const nowEnabled = updates.api_access
+      subject = nowEnabled ? 'API access has been enabled on your GlobProxy account' : 'API access has been disabled on your GlobProxy account'
+      heading = nowEnabled ? 'API access enabled ✓' : 'API access disabled'
+      body = nowEnabled
+        ? `Hi ${firstName}, API access has been enabled on your account. Generate a key from API Keys in your dashboard to get started.`
+        : `Hi ${firstName}, API access has been disabled on your account. Any existing keys stop working immediately. If this wasn't expected, contact support.`
+      cta = nowEnabled
+        ? { href: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/api-keys`, label: 'Go to API Keys →' }
+        : { href: 'mailto:support@globproxy.com', label: 'Contact support →' }
+    }
+
+    if (subject) {
+      await sendEmail({
+        to: target.email,
+        subject,
+        html: `
+          <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
+            <img src="https://globproxy.com/og-image.png" alt="GlobProxy" width="200"
+              style="display:block;margin:0 auto 32px auto;border-radius:12px;"/>
+            <h2 style="text-align:center;color:#111;">${heading}</h2>
+            <p style="color:#444;text-align:center;">${body}</p>
+            ${cta ? `
+            <div style="text-align:center;margin:32px 0;">
+              <a href="${cta.href}"
+                 style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">
+                ${cta.label}
+              </a>
+            </div>` : ''}
+            <p style="color:#bbb;font-size:12px;text-align:center;margin-top:32px;">
+              © 2026 GlobProxy · Residential Proxies That Never Expire
+            </p>
+          </div>
+        `,
+      }).catch((e) => console.error('[update-user] notification email failed:', e))
+    }
+  }
 
   // Previously tried to kill the target's session here via
   // auth.admin.signOut(user_id, 'others') — same bug as suspend-user had:

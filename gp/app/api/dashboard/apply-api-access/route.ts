@@ -35,13 +35,30 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'You already have a pending API access request.' }, { status: 409 })
     }
 
-    const { use_case } = await req.json()
+    const { use_case, website_url } = await req.json()
     if (!use_case || typeof use_case !== 'string' || use_case.trim().length < 10) {
       return NextResponse.json({ error: 'Tell us a little about what you plan to automate (at least a sentence).' }, { status: 400 })
+    }
+    // Optional — some integrations don't have a public-facing site (e.g.
+    // an internal tool), so this isn't required the way use_case is. Light
+    // validation only: catch obvious typos/junk without being a strict
+    // URL-format gate that rejects a bare domain someone typed without a
+    // scheme.
+    let cleanedUrl: string | null = null
+    if (website_url && typeof website_url === 'string' && website_url.trim()) {
+      const trimmed = website_url.trim()
+      if (trimmed.length > 300) {
+        return NextResponse.json({ error: 'Website URL is too long.' }, { status: 400 })
+      }
+      cleanedUrl = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
+      try { new URL(cleanedUrl) } catch {
+        return NextResponse.json({ error: 'That website URL doesn\'t look right.' }, { status: 400 })
+      }
     }
 
     const application = {
       use_case: use_case.trim(),
+      website_url: cleanedUrl,
       applied_at: new Date().toISOString(),
     }
 
@@ -71,6 +88,7 @@ export async function POST(req: Request) {
               <tr><td style="padding:8px 0;color:#888;font-size:13px;">Reseller</td><td style="padding:8px 0;font-size:13px;font-weight:600;">${escapeHtml(profile.full_name) || '—'}</td></tr>
               <tr><td style="padding:8px 0;color:#888;font-size:13px;">Email</td><td style="padding:8px 0;font-size:13px;">${escapeHtml(user.email)}</td></tr>
               <tr><td style="padding:8px 0;color:#888;font-size:13px;">Use case</td><td style="padding:8px 0;font-size:13px;">${escapeHtml(use_case.trim())}</td></tr>
+              ${cleanedUrl ? `<tr><td style="padding:8px 0;color:#888;font-size:13px;">Website</td><td style="padding:8px 0;font-size:13px;"><a href="${escapeHtml(cleanedUrl)}" style="color:#2563eb;">${escapeHtml(cleanedUrl)}</a></td></tr>` : ''}
             </table>
             <div style="text-align:center;margin:32px 0;">
               <a href="${process.env.NEXT_PUBLIC_APP_URL}/admin/resellers"

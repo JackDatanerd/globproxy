@@ -7,6 +7,7 @@ type Status = 'pending' | 'approved' | 'rejected' | null
 export default function ApiAccessRequestForm({ status: initialStatus }: { status: Status }) {
   const [status, setStatus] = useState(initialStatus)
   const [useCase, setUseCase] = useState('')
+  const [websiteUrl, setWebsiteUrl] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
   async function submit(e: React.FormEvent) {
@@ -20,7 +21,7 @@ export default function ApiAccessRequestForm({ status: initialStatus }: { status
       const res = await fetch('/api/dashboard/apply-api-access', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ use_case: useCase.trim() }),
+        body: JSON.stringify({ use_case: useCase.trim(), website_url: websiteUrl.trim() || null }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || 'Failed to submit request')
@@ -75,6 +76,18 @@ export default function ApiAccessRequestForm({ status: initialStatus }: { status
                 rows={4}
                 required
                 className="w-full bg-surface border border-border px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-accent transition-colors resize-none"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">
+                Website (optional)
+              </label>
+              <input
+                type="text"
+                value={websiteUrl}
+                onChange={e => setWebsiteUrl(e.target.value)}
+                placeholder="https://yourcompany.com"
+                className="w-full bg-surface border border-border px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-accent transition-colors"
               />
             </div>
             <button type="submit" disabled={submitting}
