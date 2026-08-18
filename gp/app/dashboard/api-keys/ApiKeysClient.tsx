@@ -36,6 +36,42 @@ const ENDPOINTS = [
     example: `curl https://globproxy.com/api/v1/sub-users/SUB_USER_ID/usage \\
   -H "Authorization: Bearer YOUR_KEY"`,
   },
+  {
+    method: 'DELETE', title: 'Delete sub-user',
+    path: '/api/v1/sub-users/:id',
+    example: `curl -X DELETE https://globproxy.com/api/v1/sub-users/SUB_USER_ID \\
+  -H "Authorization: Bearer YOUR_KEY"`,
+  },
+  {
+    method: 'POST', title: 'Top up sub-user',
+    path: '/api/v1/sub-users/:id/topup',
+    example: `curl -X POST https://globproxy.com/api/v1/sub-users/SUB_USER_ID/topup \\
+  -H "Authorization: Bearer YOUR_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "gb_amount": 5 }'`,
+  },
+  {
+    method: 'PATCH', title: 'Configure auto-topup',
+    path: '/api/v1/sub-users/:id/auto-topup',
+    example: `curl -X PATCH https://globproxy.com/api/v1/sub-users/SUB_USER_ID/auto-topup \\
+  -H "Authorization: Bearer YOUR_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "enabled": true, "threshold_gb": 1, "amount_gb": 5 }'`,
+  },
+  {
+    method: 'GET', title: 'List whitelisted IPs',
+    path: '/api/v1/sub-users/:id/whitelist',
+    example: `curl https://globproxy.com/api/v1/sub-users/SUB_USER_ID/whitelist \\
+  -H "Authorization: Bearer YOUR_KEY"`,
+  },
+  {
+    method: 'POST', title: 'Add whitelisted IP',
+    path: '/api/v1/sub-users/:id/whitelist',
+    example: `curl -X POST https://globproxy.com/api/v1/sub-users/SUB_USER_ID/whitelist \\
+  -H "Authorization: Bearer YOUR_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "ip": "203.0.113.4", "description": "Office IP" }'`,
+  },
 ]
 
 type ApiKeyMeta = {
@@ -206,6 +242,10 @@ export default function ApiKeysClient() {
           <p className="text-xs text-muted">
             Base URL: <span className="font-mono text-ink">https://globproxy.com</span> ·
             Auth header: <span className="font-mono text-ink">Authorization: Bearer YOUR_KEY</span>
+          </p>
+          <p className="text-xs text-muted mt-2">
+            Also available: removing a single whitelisted IP, and bulk add/remove — see the{' '}
+            <a href="/docs/api" target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">full API docs</a> for those and every parameter.
           </p>
         </div>
       </div>

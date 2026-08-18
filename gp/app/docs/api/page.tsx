@@ -114,7 +114,7 @@ export default function ApiDocsPage() {
             ['402', 'Payment Required', 'Not enough bandwidth in your account for the request (sub-user creation).'],
             ['403', 'Forbidden', 'Account suspended, or API access not enabled on this account.'],
             ['404', 'Not Found', "The resource doesn't exist, or doesn't belong to your account."],
-            ['409', 'Conflict', 'A pending request/state already exists (used outside v1 — see the dashboard-side apply endpoints).'],
+            ['409', 'Conflict', "The sub-user is still being provisioned — try again shortly (whitelist endpoints only)."],
             ['500', 'Internal Server Error', "Something went wrong on our end — safe to retry once; open a support ticket if it persists."],
           ]} />
         </section>
@@ -256,6 +256,124 @@ export default function ApiDocsPage() {
   "port": 9000,
   "username": "geonode_xxx"
 }`}</Code>
+          </Endpoint>
+
+          <Endpoint method="DELETE" path="/api/v1/sub-users/:id" title="Delete sub-user">
+            <p className="text-sm text-ink2 mb-4">
+              Deletes a sub-user and releases whatever portion of its bandwidth reservation was never used
+              back to your account balance. Already-consumed usage isn't refunded — only the unused remainder.
+            </p>
+            <Code>{`curl -X DELETE https://globproxy.com/api/v1/sub-users/SUB_USER_ID \\
+  -H "Authorization: Bearer YOUR_KEY"`}</Code>
+            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <Code>{`{ "success": true }`}</Code>
+            <p className="text-sm text-ink2 mt-4">
+              A sub-user that a reseller allocated to you (rather than one you created yourself) can't be
+              deleted through the API, same as in the dashboard — <span className="font-mono text-ink">403</span>{' '}
+              if you try.
+            </p>
+          </Endpoint>
+
+          <Endpoint method="POST" path="/api/v1/sub-users/:id/topup" title="Top up sub-user">
+            <p className="text-sm text-ink2 mb-4">
+              Adds bandwidth to a sub-user you already have, instead of creating a new one. Reserves the
+              amount from your balance atomically, same guarantee as creation.
+            </p>
+            <Code>{`curl -X POST https://globproxy.com/api/v1/sub-users/SUB_USER_ID/topup \\
+  -H "Authorization: Bearer YOUR_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "gb_amount": 5 }'`}</Code>
+            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Body parameters</p>
+            <Table rows={[
+              ['gb_amount', 'number', 'Required. GB to add, must be > 0.'],
+            ]} />
+            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <Code>{`{ "success": true, "gb_allocated": 10 }`}</Code>
+            <p className="text-sm text-ink2 mt-4">
+              <span className="font-mono text-ink">gb_allocated</span> is the sub-user's new total cap, not
+              the amount just added. <span className="font-mono text-ink">402</span> if your account balance
+              can't cover the top-up.
+            </p>
+          </Endpoint>
+
+          <Endpoint method="PATCH" path="/api/v1/sub-users/:id/auto-topup" title="Configure auto-topup">
+            <p className="text-sm text-ink2 mb-4">
+              Turns automatic top-up on or off for a sub-user — when its remaining bandwidth drops to{' '}
+              <span className="font-mono text-ink">threshold_gb</span>, <span className="font-mono text-ink">amount_gb</span>{' '}
+              is added automatically from your balance, checked on the same cycle that syncs usage.
+            </p>
+            <Code>{`curl -X PATCH https://globproxy.com/api/v1/sub-users/SUB_USER_ID/auto-topup \\
+  -H "Authorization: Bearer YOUR_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "enabled": true, "threshold_gb": 1, "amount_gb": 5 }'`}</Code>
+            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Body parameters</p>
+            <Table rows={[
+              ['enabled', 'boolean', 'Required. Turn auto-topup on or off.'],
+              ['threshold_gb', 'number', 'Required when enabling. Remaining GB that triggers a top-up. Can be 0.'],
+              ['amount_gb', 'number', 'Required when enabling. GB added per trigger, must be > 0.'],
+            ]} />
+            <p className="text-sm text-ink2 mt-4">
+              Send <span className="font-mono text-ink">{`{ "enabled": false }`}</span> to turn it off —{' '}
+              <span className="font-mono text-ink">threshold_gb</span>/<span className="font-mono text-ink">amount_gb</span>{' '}
+              aren't required (or stored) in that case.
+            </p>
+          </Endpoint>
+
+          <Endpoint method="GET" path="/api/v1/sub-users/:id/whitelist" title="List whitelisted IPs">
+            <p className="text-sm text-ink2 mb-4">IP addresses currently allowed to use this sub-user's credentials.</p>
+            <Code>{`curl https://globproxy.com/api/v1/sub-users/SUB_USER_ID/whitelist \\
+  -H "Authorization: Bearer YOUR_KEY"`}</Code>
+            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <Code>{`{
+  "ips": [
+    { "ip": "203.0.113.4", "description": "Office IP" }
+  ]
+}`}</Code>
+          </Endpoint>
+
+          <Endpoint method="POST" path="/api/v1/sub-users/:id/whitelist" title="Add whitelisted IP">
+            <Code>{`curl -X POST https://globproxy.com/api/v1/sub-users/SUB_USER_ID/whitelist \\
+  -H "Authorization: Bearer YOUR_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "ip": "203.0.113.4", "description": "Office IP" }'`}</Code>
+            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Body parameters</p>
+            <Table rows={[
+              ['ip', 'string', 'Required. A single IPv4 or IPv6 address — no CIDR ranges.'],
+              ['description', 'string', 'Required. 1–100 characters, e.g. "Office IP".'],
+            ]} />
+            <p className="text-sm text-ink2 mt-4">Returns the sub-user's full updated whitelist, same shape as the GET above.</p>
+          </Endpoint>
+
+          <Endpoint method="DELETE" path="/api/v1/sub-users/:id/whitelist" title="Remove whitelisted IP">
+            <Code>{`curl -X DELETE "https://globproxy.com/api/v1/sub-users/SUB_USER_ID/whitelist?ip=203.0.113.4" \\
+  -H "Authorization: Bearer YOUR_KEY"`}</Code>
+            <p className="text-sm text-ink2 mt-4">
+              <span className="font-mono text-ink">ip</span> is a query parameter here, not a body field.
+            </p>
+          </Endpoint>
+
+          <Endpoint method="POST" path="/api/v1/sub-users/:id/whitelist/bulk" title="Bulk add whitelisted IPs">
+            <Code>{`curl -X POST https://globproxy.com/api/v1/sub-users/SUB_USER_ID/whitelist/bulk \\
+  -H "Authorization: Bearer YOUR_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "items": [
+      { "ip": "203.0.113.4", "description": "Office IP" },
+      { "ip": "198.51.100.9", "description": "Home IP" }
+    ]
+  }'`}</Code>
+            <p className="text-sm text-ink2 mt-4">Up to 150 IPs per request. All-or-nothing — the first invalid entry rejects the whole batch.</p>
+          </Endpoint>
+
+          <Endpoint method="DELETE" path="/api/v1/sub-users/:id/whitelist/bulk" title="Bulk remove whitelisted IPs">
+            <Code>{`curl -X DELETE https://globproxy.com/api/v1/sub-users/SUB_USER_ID/whitelist/bulk \\
+  -H "Authorization: Bearer YOUR_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "ips": ["203.0.113.4", "198.51.100.9"] }'`}</Code>
+            <p className="text-sm text-ink2 mt-4">
+              A POST-shaped body on a DELETE — deliberate, so it can carry an arbitrary-length list rather
+              than being limited to what fits in a query string.
+            </p>
           </Endpoint>
         </section>
 
