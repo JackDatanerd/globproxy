@@ -1,6 +1,6 @@
 'use client'
 import { useState, useEffect, Suspense } from 'react'
-import { useSearchParams } from 'next/navigation'
+import { useSearchParams, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
 import TwoFactorSettings from '@/components/dashboard/TwoFactorSettings'
@@ -28,10 +28,12 @@ const VOLUME_OPTIONS = [
 ]
 
 function SettingsPageInner() {
+  const router = useRouter()
   const [profile, setProfile] = useState<any>(null)
   const [form, setForm] = useState({ full_name: '', company_name: '' })
   const [pw, setPw] = useState({ next: '', confirm: '' })
   const [loading, setLoading] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   // Default auto-allocate
   const [defaultAuto, setDefaultAuto] = useState({ enabled: false, threshold_gb: 1, amount_gb: 5 })
@@ -113,6 +115,31 @@ function SettingsPageInner() {
       fetch('/api/auth/notify-password-changed', { method: 'POST' }).catch(() => {})
     }
     setLoading(false)
+  }
+
+  // Hits app/api/user/delete-account — was implemented and fully working,
+  // there was just never a button in the UI wired to it. Double
+  // confirmation deliberately: this is one-way anonymisation, everything
+  // else on this page is reversible.
+  async function deleteAccount() {
+    if (!confirm('Permanently delete your GlobProxy account? This cannot be undone.')) return
+    if (!confirm('Really sure? Your proxy credentials will stop working immediately and your data will be anonymised.')) return
+    setDeleting(true)
+    try {
+      const res = await fetch('/api/user/delete-account', { method: 'DELETE' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || data.error) {
+        toast.error(data.error ?? 'Failed to delete account')
+        setDeleting(false)
+        return
+      }
+      await createClient().auth.signOut()
+      toast.success('Account deleted')
+      router.push('/')
+    } catch (err: any) {
+      toast.error(err.message ?? 'Failed to delete account')
+      setDeleting(false)
+    }
   }
 
   async function saveDefaultAuto(e?: React.FormEvent) {
@@ -493,6 +520,22 @@ function SettingsPageInner() {
           </p>
         </div>
       )}
+
+      {/* Danger zone — was previously implemented server-side
+          (app/api/user/delete-account) with no button anywhere to reach
+          it. Kept visually separate (border color, position at the very
+          end) from every reversible action above it. */}
+      <div className="bg-white border border-red-200 rounded-xl p-6 mt-5">
+        <h2 className="font-display font-bold text-base text-red-600 mb-2">Danger zone</h2>
+        <p className="text-sm text-ink2 font-light mb-4">
+          Permanently delete your account. Your proxy credentials stop working immediately and your
+          personal data is anonymised. This cannot be undone.
+        </p>
+        <button onClick={deleteAccount} disabled={deleting}
+          className="border border-red-200 text-red-500 px-6 py-2.5 rounded-xl text-sm font-medium hover:bg-red-50 disabled:opacity-60 transition-all">
+          {deleting ? 'Deleting...' : 'Delete my account'}
+        </button>
+      </div>
     </div>
   )
 }

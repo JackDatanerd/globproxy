@@ -29,8 +29,23 @@ export async function POST(req: Request) {
   const { user_id } = await req.json().catch(() => ({}))
   if (!user_id) return NextResponse.json({ error: 'Missing user_id' }, { status: 400 })
 
-  const { data: target } = await supabase.from('profiles').select('email, full_name').eq('id', user_id).single()
+  // Neither check existed here before — unlike delete-user (which already
+  // blocks admin targets) and the self-service disable/regenerate paths
+  // (which require the current TOTP or a backup code), this route had no
+  // guard at all. That's a real gap: it means an admin's own *session*
+  // alone — no TOTP, no backup code — was enough to strip their own MFA
+  // through this endpoint, bypassing the entire re-auth model the rest of
+  // this system relies on for account-recovery actions. A hijacked admin
+  // session could permanently lock the real owner out by resetting their
+  // own factor and swapping in an attacker-controlled one. Blocking both
+  // self-targeting and any admin target here, matching delete-user.
+  if (user_id === caller.id) {
+    return NextResponse.json({ error: 'Use Settings to manage your own two-factor authentication.' }, { status: 403 })
+  }
+
+  const { data: target } = await supabase.from('profiles').select('email, full_name, role').eq('id', user_id).single()
   if (!target) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+  if (target.role === 'admin') return NextResponse.json({ error: 'Cannot reset MFA on an admin account this way — admins manage their own MFA from Settings.' }, { status: 403 })
 
   await adminResetMfa(user_id)
 

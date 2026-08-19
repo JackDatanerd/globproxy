@@ -24,15 +24,15 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
   if (!auth.ok) return auth.response
   const { user, supabase } = auth
 
-  const { id } = await context.params
-  const cred = await loadOwnedCredential(supabase, id, user.id)
-  if (!cred) return NextResponse.json({ error: 'Sub-user not found' }, { status: 404 })
-
-  if (!cred.geonode_sub_user_id) {
-    return NextResponse.json({ ips: [], provisioning: true })
-  }
-
   try {
+    const { id } = await context.params
+    const cred = await loadOwnedCredential(supabase, id, user.id)
+    if (!cred) return NextResponse.json({ error: 'Sub-user not found' }, { status: 404 })
+
+    if (!cred.geonode_sub_user_id) {
+      return NextResponse.json({ ips: [], provisioning: true })
+    }
+
     const ips = await listWhitelistedIps(cred.geonode_sub_user_id)
     return NextResponse.json({ ips })
   } catch (e) {
@@ -45,24 +45,24 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
   if (!auth.ok) return auth.response
   const { user, supabase } = auth
 
-  const { id } = await context.params
-  const body = await req.json().catch(() => ({}))
-  const ip = typeof body?.ip === 'string' ? body.ip.trim() : ''
-  const description = typeof body?.description === 'string' ? body.description.trim() : ''
-
-  if (!isValidIp(ip)) {
-    return NextResponse.json({ error: `"${ip}" is not a valid IPv4 or IPv6 address.` }, { status: 400 })
-  }
-  const descError = validateDescription(description)
-  if (descError) return NextResponse.json({ error: descError }, { status: 400 })
-
-  const cred = await loadOwnedCredential(supabase, id, user.id)
-  if (!cred) return NextResponse.json({ error: 'Sub-user not found' }, { status: 404 })
-  if (!cred.geonode_sub_user_id) {
-    return NextResponse.json({ error: 'This sub-user is still being provisioned — try again shortly.' }, { status: 409 })
-  }
-
   try {
+    const { id } = await context.params
+    const body = await req.json().catch(() => ({}))
+    const ip = typeof body?.ip === 'string' ? body.ip.trim() : ''
+    const description = typeof body?.description === 'string' ? body.description.trim() : ''
+
+    if (!isValidIp(ip)) {
+      return NextResponse.json({ error: `"${ip}" is not a valid IPv4 or IPv6 address.` }, { status: 400 })
+    }
+    const descError = validateDescription(description)
+    if (descError) return NextResponse.json({ error: descError }, { status: 400 })
+
+    const cred = await loadOwnedCredential(supabase, id, user.id)
+    if (!cred) return NextResponse.json({ error: 'Sub-user not found' }, { status: 404 })
+    if (!cred.geonode_sub_user_id) {
+      return NextResponse.json({ error: 'This sub-user is still being provisioned — try again shortly.' }, { status: 409 })
+    }
+
     const ips = await addWhitelistedIp(cred.geonode_sub_user_id, ip, description)
     return NextResponse.json({ ips }, { status: 201 })
   } catch (e) {
@@ -75,21 +75,21 @@ export async function DELETE(req: Request, context: { params: Promise<{ id: stri
   if (!auth.ok) return auth.response
   const { user, supabase } = auth
 
-  const { id } = await context.params
-  const url = new URL(req.url)
-  const ip = (url.searchParams.get('ip') || '').trim()
-
-  if (!isValidIp(ip)) {
-    return NextResponse.json({ error: `"${ip}" is not a valid IPv4 or IPv6 address.` }, { status: 400 })
-  }
-
-  const cred = await loadOwnedCredential(supabase, id, user.id)
-  if (!cred) return NextResponse.json({ error: 'Sub-user not found' }, { status: 404 })
-  if (!cred.geonode_sub_user_id) {
-    return NextResponse.json({ error: 'This sub-user is still being provisioned — try again shortly.' }, { status: 409 })
-  }
-
   try {
+    const { id } = await context.params
+    const url = new URL(req.url)
+    const ip = (url.searchParams.get('ip') || '').trim()
+
+    if (!isValidIp(ip)) {
+      return NextResponse.json({ error: `"${ip}" is not a valid IPv4 or IPv6 address.` }, { status: 400 })
+    }
+
+    const cred = await loadOwnedCredential(supabase, id, user.id)
+    if (!cred) return NextResponse.json({ error: 'Sub-user not found' }, { status: 404 })
+    if (!cred.geonode_sub_user_id) {
+      return NextResponse.json({ error: 'This sub-user is still being provisioned — try again shortly.' }, { status: 409 })
+    }
+
     const ips = await removeWhitelistedIp(cred.geonode_sub_user_id, ip)
     return NextResponse.json({ ips })
   } catch (e) {

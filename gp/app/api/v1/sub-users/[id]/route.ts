@@ -19,66 +19,71 @@ export async function DELETE(
 
   const { id } = await context.params
 
-  const { data: cred, error: fetchErr } = await supabase
-    .from('proxy_credentials')
-    .select('*')
-    .eq('id', id)
-    .eq('user_id', user.id)
-    .single()
+  try {
+    const { data: cred, error: fetchErr } = await supabase
+      .from('proxy_credentials')
+      .select('*')
+      .eq('id', id)
+      .eq('user_id', user.id)
+      .single()
 
-  if (fetchErr || !cred) {
-    return NextResponse.json({ error: 'Sub-user not found' }, { status: 404 })
-  }
+    if (fetchErr || !cred) {
+      return NextResponse.json({ error: 'Sub-user not found' }, { status: 404 })
+    }
 
-  // Bandwidth a reseller allocated to a client can't be reversed by the
-  // client via the API any more than it can from their dashboard — the
-  // reseller paid for it.
-  if (cred.created_by && cred.created_by !== user.id) {
-    return NextResponse.json({
-      error: 'This allocation was made by your reseller and cannot be deleted. Contact them directly.',
-    }, { status: 403 })
-  }
+    // Bandwidth a reseller allocated to a client can't be reversed by the
+    // client via the API any more than it can from their dashboard — the
+    // reseller paid for it.
+    if (cred.created_by && cred.created_by !== user.id) {
+      return NextResponse.json({
+        error: 'This allocation was made by your reseller and cannot be deleted. Contact them directly.',
+      }, { status: 403 })
+    }
 
-  let liveUsedGb: number | null = null
-  if (cred.geonode_sub_user_id) {
-    try { liveUsedGb = await getSubUserUsage(cred.geonode_sub_user_id) }
-    catch (e) { console.error('[v1 delete] Live usage check failed (non-fatal):', e) }
-  }
+    let liveUsedGb: number | null = null
+    if (cred.geonode_sub_user_id) {
+      try { liveUsedGb = await getSubUserUsage(cred.geonode_sub_user_id) }
+      catch (e) { console.error('[v1 delete] Live usage check failed (non-fatal):', e) }
+    }
 
-  if (cred.geonode_sub_user_id) {
-    try { await deleteSubUser(cred.geonode_sub_user_id) }
-    catch (e) { console.error('[v1 delete] Geonode delete failed (non-fatal):', e) }
-  }
+    if (cred.geonode_sub_user_id) {
+      try { await deleteSubUser(cred.geonode_sub_user_id) }
+      catch (e) { console.error('[v1 delete] Geonode delete failed (non-fatal):', e) }
+    }
 
-  const { data: deletedRows, error: delErr } = await supabase
-    .from('proxy_credentials')
-    .delete()
-    .eq('id', id)
-    .select('id')
+    const { data: deletedRows, error: delErr } = await supabase
+      .from('proxy_credentials')
+      .delete()
+      .eq('id', id)
+      .select('id')
 
-  if (delErr) {
-    return NextResponse.json({ error: delErr.message }, { status: 500 })
-  }
-  if (!deletedRows || deletedRows.length === 0) {
-    return NextResponse.json({ error: 'Delete was blocked — nothing was removed.' }, { status: 500 })
-  }
+    if (delErr) {
+      return NextResponse.json({ error: delErr.message }, { status: 500 })
+    }
+    if (!deletedRows || deletedRows.length === 0) {
+      return NextResponse.json({ error: 'Delete was blocked — nothing was removed.' }, { status: 500 })
+    }
 
-  const usedGb = liveUsedGb ?? cred.gb_used ?? 0
-  const releaseGb = Math.max(0, cred.gb_allocated - usedGb)
+    const usedGb = liveUsedGb ?? cred.gb_used ?? 0
+    const releaseGb = Math.max(0, cred.gb_allocated - usedGb)
 
-  const { error: releaseErr } = await supabase.rpc('release_credential_bandwidth', {
-    p_user_id: user.id,
-    p_gb: releaseGb,
-  })
-  if (releaseErr) console.error('[v1 delete] Failed to release bandwidth reservation:', releaseErr)
-
-  if (usedGb > 0) {
-    const { error: archiveErr } = await supabase.rpc('archive_credential_used_gb', {
+    const { error: releaseErr } = await supabase.rpc('release_credential_bandwidth', {
       p_user_id: user.id,
-      p_gb: usedGb,
+      p_gb: releaseGb,
     })
-    if (archiveErr) console.error('[v1 delete] Failed to archive consumed bandwidth:', archiveErr)
-  }
+    if (releaseErr) console.error('[v1 delete] Failed to release bandwidth reservation:', releaseErr)
 
-  return NextResponse.json({ success: true })
+    if (usedGb > 0) {
+      const { error: archiveErr } = await supabase.rpc('archive_credential_used_gb', {
+        p_user_id: user.id,
+        p_gb: usedGb,
+      })
+      if (archiveErr) console.error('[v1 delete] Failed to archive consumed bandwidth:', archiveErr)
+    }
+
+    return NextResponse.json({ success: true })
+  } catch (e: any) {
+    console.error('[v1 DELETE sub-user] unexpected error:', e)
+    return NextResponse.json({ error: 'Internal error. Please try again.' }, { status: 500 })
+  }
 }

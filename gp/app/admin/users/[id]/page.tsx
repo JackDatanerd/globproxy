@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation'
 import { createAdminClient } from '@/lib/supabase/server'
 import AdminSyncUsageButton from '@/components/admin/AdminSyncUsageButton'
 import AdminMfaResetButton from '@/components/admin/AdminMfaResetButton'
+import AdminDeleteUserButton from '@/components/admin/AdminDeleteUserButton'
 import { formatGb } from '@/lib/format'
 
 export default async function AdminUserDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -53,8 +54,12 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {profile.mfa_enabled && <AdminMfaResetButton userId={id} />}
+          {profile.mfa_enabled && profile.role !== 'admin' && <AdminMfaResetButton userId={id} />}
           <AdminSyncUsageButton userId={id} label="Sync this user's usage now" />
+          {/* Mirrors delete-user's own server-side check — hidden here too
+              so the only way to hit "Cannot delete an admin account" is by
+              editing the request by hand, not by a normal click. */}
+          {profile.role !== 'admin' && <AdminDeleteUserButton userId={id} email={profile.email} />}
         </div>
       </div>
 

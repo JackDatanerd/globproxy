@@ -10,6 +10,11 @@ export async function GET(req: Request) {
   if (!auth.ok) return auth.response
   const { user, supabase } = auth
 
-  const { data: bw } = await supabase.from('bandwidth_accounts').select('total_gb,used_gb,available_gb').eq('user_id', user.id).single()
-  return NextResponse.json({ total_gb: bw?.total_gb ?? 0, used_gb: bw?.used_gb ?? 0, available_gb: bw?.available_gb ?? 0, expires: 'never' })
+  try {
+    const { data: bw } = await supabase.from('bandwidth_accounts').select('total_gb,used_gb,available_gb').eq('user_id', user.id).single()
+    return NextResponse.json({ total_gb: bw?.total_gb ?? 0, used_gb: bw?.used_gb ?? 0, available_gb: bw?.available_gb ?? 0, expires: 'never' })
+  } catch (e: any) {
+    console.error('[v1 GET account/bandwidth] unexpected error:', e)
+    return NextResponse.json({ error: 'Internal error. Please try again.' }, { status: 500 })
+  }
 }
