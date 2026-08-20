@@ -1,6 +1,16 @@
 import type { Metadata } from 'next'
 import './globals.css'
 import { Toaster } from 'react-hot-toast'
+import JsonLd from '@/components/JsonLd'
+
+const organizationSchema = {
+  '@context': 'https://schema.org',
+  '@type': 'Organization',
+  name: 'GlobProxy',
+  url: 'https://globproxy.com',
+  logo: 'https://globproxy.com/android-chrome-512x512.png',
+  description: 'Residential proxy network — non-expiring bandwidth, 195 countries, city-level targeting.',
+}
 
 export const metadata: Metadata = {
   title: 'GlobProxy — Residential Proxies That Never Expire',
@@ -31,6 +41,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body className="antialiased">
+        <JsonLd data={organizationSchema} />
         {children}
         <Toaster position="top-right" toastOptions={{ style: { fontFamily: 'DM Sans, sans-serif', fontSize: '14px' } }} />
       </body>

@@ -1,0 +1,579 @@
+import type { BlogPost } from './types'
+
+export const BLOG_POSTS: BlogPost[] = [
+  {
+    slug: 'non-expiring-proxy-bandwidth',
+    title: 'Why Your Residential Proxy Bandwidth Keeps Expiring (And What It Actually Costs You)',
+    description:
+      'Most residential proxy plans reset unused GB every month. Here is how that math works against you, and how to check whether a provider actually lets bandwidth roll over.',
+    excerpt:
+      'Monthly-reset bandwidth quietly resets your account to zero every 30 days whether you used it or not. Here is the real cost of that model, and how to spot it before you buy.',
+    category: 'Bandwidth & Pricing',
+    publishedAt: '2026-08-03',
+    body: [
+      {
+        type: 'p',
+        text: "Most residential proxy plans are sold as subscriptions: you pay monthly, you get a GB allowance, and at the end of the billing cycle whatever you didn't use disappears. The plan resets to zero and the clock starts again. This is standard in the industry, not a hidden trick — but it's rarely explained in terms of what it actually costs a buyer whose usage isn't perfectly steady month to month.",
+      },
+      { type: 'h2', text: 'The math nobody puts on the pricing page' },
+      {
+        type: 'p',
+        text: "Say you're on a 100 GB/month plan and your actual usage looks like this: 40 GB in a slow month, 140 GB in a busy one, 70 GB the month after. Under a monthly-reset model, the slow month wastes 60 GB outright — gone, non-refundable, non-transferable. The busy month either throttles you or forces an overage purchase at whatever rate the provider charges for going over. You end up paying for peak capacity every month, even in the months you don't use it.",
+      },
+      {
+        type: 'p',
+        text: "Over a year, for anyone whose workload isn't a perfectly flat, predictable 100 GB every single month — which describes most real usage, whether that's seasonal ad verification, sporadic scraping jobs, or client work that ebbs and flows — the wasted allowance adds up to real money spent on bandwidth that was purchased and never touched.",
+      },
+      { type: 'h2', text: 'Why providers default to monthly reset' },
+      {
+        type: 'p',
+        text: "It's not malicious — it's a billing and infrastructure convenience. Subscription billing is predictable revenue, and resetting balances monthly is simpler to account for than tracking a rolling, non-expiring balance per user indefinitely. For the provider, it's the easier system to build. For the buyer, it means the incentive to actually use every GB you paid for resets on a clock you don't control.",
+      },
+      {
+        type: 'callout',
+        tone: 'accent',
+        title: 'What "non-expiring" means on GlobProxy',
+        text: "Bandwidth you buy stays on your account balance indefinitely — there's no monthly reset, no use-it-or-lose-it window, and no overage tier. A 100 GB purchase is 100 GB whenever you draw it down, whether that's this week or eight months from now.",
+      },
+      { type: 'h2', text: 'What to actually check before you buy' },
+      {
+        type: 'ul',
+        items: [
+          "Search the provider's terms or pricing FAQ for the words \"expire,\" \"reset,\" or \"rollover\" — plans that don't expire bandwidth usually say so explicitly, because it's a selling point, not a footnote.",
+          'Ask what happens to unused GB specifically at renewal — a vague "your plan renews monthly" answer is a soft way of saying it resets.',
+          "Check whether pay-as-you-go and subscription tiers are priced differently — some providers only offer non-expiring bandwidth on their most expensive tier, which defeats the purpose for smaller buyers.",
+          'Confirm whether overage bandwidth (going over your allowance mid-cycle) is billed at the same rate as your plan or a punitive top-up rate — this is where a lot of the real cost hides.',
+        ],
+      },
+      {
+        type: 'p',
+        text: "None of this means subscription pricing is a bad model for every use case — if your usage really is flat and predictable every month, the difference is small. But for anyone whose workload varies, non-expiring bandwidth changes the math from \"pay for your peak, every month\" to \"pay for what you actually use, whenever you use it.\"",
+      },
+    ],
+    faq: [
+      {
+        q: 'Does non-expiring proxy bandwidth cost more per GB than subscription plans?',
+        a: 'Not necessarily. Pay-as-you-go and non-expiring models are priced per GB directly, and the per-GB rate typically drops at higher volume tiers just like subscription plans do — the difference is what happens to bandwidth you buy but don\'t use in a given period, not the sticker price.',
+      },
+      {
+        q: 'Can I check my remaining non-expiring balance at any time?',
+        a: 'On GlobProxy, your GB balance is visible in the dashboard at all times and never resets — what you see is what you have, regardless of how long ago you purchased it.',
+      },
+    ],
+  },
+  {
+    slug: 'city-level-proxy-targeting-explained',
+    title: 'City-Level Proxy Targeting: What It Actually Means (And When You Need It vs. Country-Level)',
+    description:
+      'Country-level proxy targeting is enough for most tasks. Here is exactly when city-level targeting matters, how it works technically, and how to tell if a provider\'s "city targeting" is real.',
+    excerpt:
+      'Not every task needs a proxy in a specific city — but for the ones that do, the difference between real and approximate targeting is the whole ballgame.',
+    category: 'Geo-Targeting',
+    publishedAt: '2026-08-05',
+    body: [
+      {
+        type: 'p',
+        text: 'Geo-targeting for residential proxies comes in layers: country, region/state, and city. Most providers cover country-level cleanly. Fewer cover city-level with any real precision, because it requires a much denser, better-mapped IP pool — you need enough residential IPs actually located in a given city to make the targeting meaningful, not just a rough approximation based on the nearest available IP.',
+      },
+      { type: 'h2', text: 'When country-level targeting is genuinely enough' },
+      {
+        type: 'ul',
+        items: [
+          'General web scraping where you need to appear domestic to a country, not a specific region within it',
+          'Market research where regional variation inside a country is not something the task cares about',
+          "Bypassing country-based content restrictions or geo-blocked catalogs",
+          'Most ad verification tasks where the ad platform is only targeting at the country level in the first place',
+        ],
+      },
+      { type: 'h2', text: 'When city-level targeting is the actual requirement' },
+      {
+        type: 'ul',
+        items: [
+          "Local SEO rank tracking — Google's local results (map pack, local organic results) differ block by block in some markets, and a country-level IP will show you the wrong SERP entirely",
+          'Geo-targeted ad verification for campaigns that target specific metro areas, not just a country',
+          'Testing how a site or app behaves for users in a specific market — pricing, inventory, or content that varies city to city',
+          'Account management workflows where consistent, believable location signals matter for trust or fraud systems tied to a metro area',
+        ],
+      },
+      { type: 'h2', text: 'How to tell if "city targeting" is real' },
+      {
+        type: 'p',
+        text: "This is the part worth being skeptical about. Some providers advertise city targeting but are actually assigning the nearest available IP within the country and labeling it with the requested city — functionally country-level targeting with a city name attached. A few checks that separate the real thing from the marketing claim:",
+      },
+      {
+        type: 'ol',
+        items: [
+          "Ask (or check the docs) whether city selection is a dropdown of specific, named cities with real IP density behind each one, or a free-text field that silently falls back to nearest-match",
+          'Check whether the same city selection is reflected consistently across sessions — inconsistent results on repeated requests to the same city is a sign the targeting is approximate',
+          'Look at how many cities are actually listed per country — a handful of major cities per country suggests real density; hundreds of tiny towns listed for every country is often a sign the list was generated from a geography database, not from actual IP coverage',
+        ],
+      },
+      {
+        type: 'callout',
+        tone: 'accent2',
+        title: 'How GlobProxy handles it',
+        text: "City, state, and country selections are structured dropdowns sourced from the underlying network's actual supported locations — not free-text fields that silently fall back to a nearest match. If a city isn't in the list, it isn't offered as an option.",
+      },
+    ],
+    faq: [
+      {
+        q: 'Does city-level targeting cost more than country-level?',
+        a: "On GlobProxy, city and country targeting are priced the same — you're paying for bandwidth, not for the precision of the geo-selection.",
+      },
+      {
+        q: 'How many cities does GlobProxy support?',
+        a: 'Coverage spans 195 countries with city-level selection available in markets where the underlying network has real IP density — see the dashboard\'s location picker for the current list for any given country.',
+      },
+    ],
+  },
+  {
+    slug: 'rotating-vs-sticky-sessions',
+    title: 'Rotating vs. Sticky Proxy Sessions: A Practical Guide to Choosing the Right One',
+    description:
+      'Rotating and sticky residential proxy sessions solve opposite problems. Here is how each one works, when to use which, and what happens if you pick wrong.',
+    excerpt:
+      'One gives you a fresh IP on every request. The other holds one IP for the length of a session. Picking the wrong one is the most common reason a working proxy setup starts failing.',
+    category: 'Guides',
+    publishedAt: '2026-08-07',
+    body: [
+      {
+        type: 'p',
+        text: 'Rotating and sticky sessions are the two basic modes almost every residential proxy task falls into, and they solve opposite problems. Getting this choice wrong is one of the most common reasons a proxy setup that should work starts failing — not because the proxies are bad, but because the session type doesn\'t match what the target site expects to see.',
+      },
+      { type: 'h2', text: 'Rotating sessions: a new IP on every request (or on a timer)' },
+      {
+        type: 'p',
+        text: "A rotating session assigns a different IP address automatically — either on every single request, or on a set interval you configure. The identity behind each request is disposable. This is the right mode when the task is high-volume and stateless: you're not trying to look like one consistent visitor over time, you're trying to spread a large number of requests across many different IPs so no single IP takes on a suspiciously high request volume.",
+      },
+      {
+        type: 'ul',
+        items: [
+          'Large-scale scraping where you need volume more than continuity',
+          'Price monitoring across many product pages where each check is independent',
+          'General market research and data collection where session continuity doesn\'t matter',
+        ],
+      },
+      { type: 'h2', text: 'Sticky sessions: one IP held for the length of a session' },
+      {
+        type: 'p',
+        text: "A sticky session holds a single IP for a defined window — long enough to complete a login, a multi-step checkout, or a full browsing session that a site expects to come from one consistent location. Switching IPs mid-session on a site that tracks session continuity (many login flows, checkout flows, and account-bound platforms do) reads as suspicious — an account login from one city followed by an action from a different one, seconds later, is a common fraud-detection trigger.",
+      },
+      {
+        type: 'ul',
+        items: [
+          'Account management and social media platforms where consistent location signals matter',
+          'Any multi-step flow — login, cart, checkout — that needs to look like one continuous visit',
+          'Sneaker/release automation where a session needs to persist through a full purchase flow',
+        ],
+      },
+      { type: 'h2', text: 'How to decide, in practice' },
+      {
+        type: 'p',
+        text: 'Ask one question: does this task involve more than one request that needs to look like it came from the same visitor? If yes, sticky. If every request stands alone and volume matters more than continuity, rotating. Some workflows genuinely need both — rotating for the discovery/scraping phase, sticky for the account-bound phase that follows — which is why it\'s worth checking a provider supports switching between the two on the same underlying IP pool rather than treating them as separate products.',
+      },
+      {
+        type: 'callout',
+        tone: 'accent',
+        title: 'On GlobProxy',
+        text: 'Every proxy session supports both rotating and sticky modes from the same dashboard — no separate purchase or plan tier required to switch between them.',
+      },
+    ],
+    faq: [
+      {
+        q: 'How long can a sticky session last?',
+        a: 'Sticky session duration is configurable per session from the dashboard, long enough to cover typical login-to-checkout flows without the IP changing mid-task.',
+      },
+      {
+        q: 'Does switching between rotating and sticky cost extra?',
+        a: 'No — both session types draw from the same non-expiring GB balance, priced identically.',
+      },
+    ],
+  },
+  {
+    slug: 'ad-verification-geo-targeted-proxies',
+    title: 'How to Verify Geo-Targeted Ads Are Actually Showing the Right Creative in the Right City',
+    description:
+      'Geo-targeted ad campaigns fail silently more often than advertisers realize. Here is how to actually verify what your ads look like in the markets you are paying to target.',
+    excerpt:
+      'A campaign set to target three cities can be quietly showing the wrong creative, the wrong price, or a competitor\'s ad in one of them — and nothing in the ad platform\'s dashboard will tell you.',
+    category: 'Use Cases',
+    publishedAt: '2026-08-09',
+    body: [
+      {
+        type: 'p',
+        text: "Ad platforms let you set geo-targeting at the campaign level, but what actually renders for a user in a given city depends on more than your targeting settings — creative rotation, competing bids, local inventory, and platform-side serving logic all affect what a real person in that city sees. The only way to know for certain is to actually look from an IP that's really located there.",
+      },
+      { type: 'h2', text: 'What silently goes wrong without verification' },
+      {
+        type: 'ul',
+        items: [
+          "The wrong creative variant serving in a city where a locally-relevant version was supposed to run",
+          "Pricing or promo copy that's stale or mismatched to a local campaign that launched or changed on the platform side without your team seeing it directly",
+          'A competitor outbidding you in a specific metro while your dashboard still shows the campaign as "delivering normally" nationally',
+          "Landing pages that don't localize correctly for users arriving from a specific city, even when the ad itself is correct",
+        ],
+      },
+      {
+        type: 'p',
+        text: 'None of these show up in the ad platform\'s own reporting, because the platform is reporting on delivery and spend, not on what a real user in a real city actually saw when the ad rendered.',
+      },
+      { type: 'h2', text: 'What real verification looks like' },
+      {
+        type: 'ol',
+        items: [
+          'Route a request through a residential IP genuinely located in each target city — not just the target country',
+          'Load the ad (or the platform surface it appears on) exactly as a user in that city would, including any city-dependent personalization',
+          'Screenshot or log what actually renders — creative, price, landing page — per city, on a recurring schedule rather than a one-time check',
+          'Compare across cities in the same campaign to catch inconsistencies that a single-market check would miss entirely',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'This only works if the targeting is real city-level targeting, not an approximation — a proxy that claims a city but is actually serving the nearest available IP in the country will show you the wrong thing and you won\'t know it\'s wrong.',
+      },
+      {
+        type: 'callout',
+        tone: 'accent2',
+        title: 'For recurring verification',
+        text: 'Sticky sessions hold a consistent city-level IP long enough to complete a full page load and any personalization that depends on it, which matters if the verification check involves more than a single request.',
+      },
+    ],
+    faq: [
+      {
+        q: 'Do I need a different proxy for every city I want to verify?',
+        a: 'No — you select the city per session from the same account and balance, so verifying five cities in one campaign is five session configurations, not five separate purchases.',
+      },
+      {
+        q: 'How often should geo-targeted ad verification run?',
+        a: 'For active campaigns, a recurring check (weekly or aligned to creative refresh cycles) catches drift that a one-time launch check will miss.',
+      },
+    ],
+  },
+  {
+    slug: 'local-seo-rank-tracking-proxies',
+    title: 'Local Rank Tracking Without Getting Flagged: A Proxy Setup Guide',
+    description:
+      'Google\'s local search results vary by city, sometimes by neighborhood. Here is how to track local rankings accurately without triggering automated-traffic detection.',
+    excerpt:
+      'The rank your client sees from their office is not the rank a customer sees three miles away. Accurate local tracking means checking from where the customer actually is.',
+    category: 'Use Cases',
+    publishedAt: '2026-08-11',
+    body: [
+      {
+        type: 'p',
+        text: "Local search results are personalized by location down to a granularity that surprises a lot of people running rank tracking for the first time — the map pack and local organic results a business sees ranking for \"plumber near me\" can differ meaningfully across a metro area, not just across countries. Checking rank from one fixed location (an office IP, a home connection, a single datacenter server) gives you an accurate answer for that one point on the map and an inaccurate one for everywhere else.",
+      },
+      { type: 'h2', text: 'Why this trips up rank tracking specifically' },
+      {
+        type: 'ul',
+        items: [
+          "A business's rank in the map pack for its own neighborhood can look completely different from its rank three miles away — exactly the difference a client cares about if they're trying to win customers across a service area, not just next door",
+          "Search engines actively try to detect and rate-limit automated, repetitive query patterns — the same query, run repeatedly from the same IP, at a frequency no real user would search at, is a recognizable pattern",
+          'A tracking setup that gets flagged doesn\'t just fail loudly — it can start returning degraded or inconsistent results before you notice anything is wrong',
+        ],
+      },
+      { type: 'h2', text: 'A setup that holds up' },
+      {
+        type: 'ol',
+        items: [
+          'Track from residential IPs actually located in the geography being measured, at city-level precision — not a datacenter IP with a spoofed location header',
+          'Rotate IPs across check cycles so repeated queries for the same keyword aren\'t all coming from one fixed address',
+          'Space out request timing to resemble how real, distinct users would search — batching hundreds of queries in seconds from one IP is the pattern that gets flagged fastest',
+          'Track the specific cities or neighborhoods that actually matter to the business, not just the metro-wide average — that\'s where the real client-facing insight is',
+        ],
+      },
+      {
+        type: 'p',
+        text: "This is also where non-expiring bandwidth matters in a way that's easy to underestimate: rank tracking volume is naturally uneven — heavier around reporting cycles, lighter between them — and a monthly-reset bandwidth plan penalizes exactly that pattern.",
+      },
+      {
+        type: 'callout',
+        tone: 'accent',
+        title: 'Practical starting point',
+        text: 'Start with rotating sessions for the query volume itself, targeted at city-level, and treat each tracked location as its own configuration rather than one broad country-level setting.',
+      },
+    ],
+    faq: [
+      {
+        q: 'Can I track rankings for multiple cities under one account?',
+        a: 'Yes — city selection happens per session, so tracking ten cities across a service area is ten session configurations against one GB balance, not ten separate accounts or plans.',
+      },
+      {
+        q: 'Does non-expiring bandwidth matter for rank tracking specifically?',
+        a: 'It matters more than for steady-volume tasks — rank tracking load is naturally uneven around reporting cycles, and a plan that resets monthly effectively charges for peak capacity every month regardless of that variance.',
+      },
+    ],
+  },
+  {
+    slug: 'social-media-management-proxies',
+    title: 'Managing Multiple Social Accounts Without Cross-Contamination: The Proxy Layer, Explained',
+    description:
+      'Running several social accounts from one IP is the single fastest way to get them linked and flagged together. Here is how a proper proxy layer actually prevents that.',
+    excerpt:
+      'Platforms link accounts by more than login credentials — shared IPs, shared device fingerprints, and inconsistent location signals are the tells. The proxy layer is where most of that risk lives.',
+    category: 'Use Cases',
+    publishedAt: '2026-08-13',
+    body: [
+      {
+        type: 'p',
+        text: "Social platforms don't need you to log in with the same credentials to connect two accounts as related — a shared IP address across accounts that are supposed to be independent is one of the clearest signals a trust-and-safety system looks for. This is the core reason multi-account management needs a dedicated proxy layer, not a workaround, and it's also the most common place teams get the setup wrong.",
+      },
+      { type: 'h2', text: 'What actually links accounts together' },
+      {
+        type: 'ul',
+        items: [
+          'Multiple accounts logging in or posting from the same IP within a short window of each other',
+          'An account\'s location signal jumping inconsistently between sessions — logged in from one city, active from another, minutes apart',
+          'IP addresses with a known history of high account-creation volume (datacenter ranges and some shared/free proxy pools are heavily flagged for exactly this)',
+          'Session behavior that doesn\'t match a plausible single user — no proxy setup fixes this on its own, but a bad proxy setup makes an otherwise-careful workflow fail anyway',
+        ],
+      },
+      { type: 'h2', text: 'The setup that holds up over time' },
+      {
+        type: 'ol',
+        items: [
+          'One dedicated sticky session per account, held for the length of that account\'s activity window — not shared, not rotated mid-session',
+          'A residential IP, not a datacenter one — residential IPs carry far less of the "known automation source" history that gets flagged on sight',
+          'Consistent city-level location per account across sessions, rather than a different city every login — an account that appears to teleport between cities is its own red flag independent of shared-IP detection',
+          'Enough distinct IPs in rotation across your full account roster that no two managed accounts are ever sharing the same address',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'None of this guarantees an account never gets flagged — platform detection systems weigh many signals beyond IP — but a proxy layer that gets the fundamentals above right removes IP-sharing as a cause, which is one of the most preventable ones.',
+      },
+      {
+        type: 'callout',
+        tone: 'accent2',
+        title: 'Sizing bandwidth for this use case',
+        text: "Account management workloads tend to be steady rather than bursty, which makes them one of the cases where subscription-style plans look fine on paper — but non-expiring bandwidth still avoids paying for idle capacity on accounts that go quiet for a stretch.",
+      },
+    ],
+    faq: [
+      {
+        q: 'How many accounts can one proxy plan support?',
+        a: 'That\'s a function of GB usage, not a hard account cap — each account\'s sticky session draws from the same non-expiring balance, so the practical limit is your total bandwidth, not a per-account fee.',
+      },
+      {
+        q: 'Should every account use a different city?',
+        a: 'Not necessarily — match the city to what\'s plausible for that account\'s actual context, and keep it consistent across sessions rather than changing it session to session.',
+      },
+    ],
+  },
+  {
+    slug: 'iproyal-alternative-non-expiring-bandwidth',
+    title: 'Looking for an IPRoyal Alternative? Here Is How the Non-Expiring Bandwidth Math Compares',
+    description:
+      'A direct, honest comparison of GlobProxy and IPRoyal on the dimension that actually varies most between residential proxy providers: what happens to bandwidth you buy but do not use.',
+    excerpt:
+      'IPRoyal is a solid pay-as-you-go option with a real non-expiring pitch of its own. Here is where GlobProxy differs, and where it does not.',
+    category: 'Comparisons',
+    publishedAt: '2026-08-15',
+    body: [
+      {
+        type: 'p',
+        text: "IPRoyal has built a genuine reputation on accessible, pay-as-you-go residential proxy pricing with non-expiring traffic — it's a real competitor on the exact dimension GlobProxy leads with, not a strawman. This isn't a \"they trap you in subscriptions and we don't\" comparison, because that's not accurate. The honest comparison is narrower: pricing structure, geo-targeting depth, and what's included at entry-level volume.",
+      },
+      { type: 'h2', text: 'Where the two are genuinely similar' },
+      {
+        type: 'p',
+        text: 'Both providers let you buy bandwidth without a recurring subscription and without a use-it-or-lose-it monthly window. If non-expiring bandwidth is the primary thing you\'re shopping for, both are legitimate options — the differences that matter are elsewhere.',
+      },
+      { type: 'h2', text: 'Where to actually compare' },
+      {
+        type: 'table',
+        headers: ['Dimension', 'What to check on either provider', 'GlobProxy specifics'],
+        rows: [
+          ['Entry price point', 'Total cost to get started, not just the headline per-GB rate', 'Micro plan: 1 GB for $4.50 total, no minimum commitment'],
+          ['Per-GB rate at volume', 'Rate at the tier you\'ll actually buy, not the lowest advertised tier', 'Drops to $2.00/GB at the 500 GB Scale tier'],
+          ['Geo-targeting depth', 'Whether city selection is a real dropdown backed by IP density, or an approximate fallback', 'Structured country/state/city selection sourced from actual network coverage, not free text'],
+          ['Session types', 'Whether rotating and sticky are both included, or sticky costs extra', 'Both included on every plan, switchable per session'],
+          ['Payment methods', 'Card-only vs. broader payment support', 'Card and mobile money via Paystack'],
+          ['Reseller/API access', 'Whether white-label reselling is a supported, documented path', 'Dedicated reseller program with a documented API for sub-user and bandwidth management'],
+        ],
+      },
+      {
+        type: 'p',
+        text: "Pricing on any proxy provider moves — check both providers' current pricing pages directly before deciding, rather than relying on a comparison page (this one included) as the final word.",
+      },
+      {
+        type: 'callout',
+        tone: 'accent',
+        title: 'The honest takeaway',
+        text: "If non-expiring bandwidth is the deciding factor, that's not a reason to pick GlobProxy over IPRoyal specifically — both offer it. The deciding factors are geo-targeting precision, session flexibility, payment method support, and whether a reseller path matters to you.",
+      },
+    ],
+    faq: [
+      {
+        q: 'Does GlobProxy support the same payment methods as IPRoyal?',
+        a: 'GlobProxy processes payments through Paystack, supporting both card and mobile money — check IPRoyal\'s current payment page directly for their supported methods, since this varies by provider and region.',
+      },
+      {
+        q: 'Is city-level targeting available on GlobProxy\'s entry-level plan?',
+        a: 'Yes — geo-targeting precision is not gated behind higher-priced tiers; it\'s available on every plan, including Micro.',
+      },
+    ],
+  },
+  {
+    slug: 'dataimpulse-alternative',
+    title: 'DataImpulse Alternative: What to Weigh Beyond the Headline Per-GB Price',
+    description:
+      'DataImpulse is known for aggressive entry-level pay-as-you-go pricing. Here is what else to check before picking a provider on price alone.',
+    excerpt:
+      'The lowest per-GB number on a pricing page is not the whole story — geo-targeting depth, session support, and reseller options often decide the real total cost.',
+    category: 'Comparisons',
+    publishedAt: '2026-08-17',
+    body: [
+      {
+        type: 'p',
+        text: 'DataImpulse has positioned itself around low entry-level, pay-as-you-go pricing on residential bandwidth — a legitimate and appealing pitch for buyers whose main filter is per-GB cost. If price-per-GB in isolation is the only variable that matters to your use case, it deserves to be on your shortlist. Where it\'s worth looking past the headline number:',
+      },
+      { type: 'h2', text: 'What the per-GB number doesn\'t tell you' },
+      {
+        type: 'ul',
+        items: [
+          'Whether geo-targeting goes down to city level with real IP density, or stops at country/region',
+          'Whether both rotating and sticky sessions are included, or one is a separate product',
+          'What payment methods are supported — card-only vs. broader regional options',
+          'Whether there\'s a documented path to reselling under your own brand, if that\'s relevant to how you plan to use the bandwidth',
+        ],
+      },
+      { type: 'h2', text: 'How GlobProxy is positioned instead' },
+      {
+        type: 'p',
+        text: "GlobProxy isn't chasing the absolute lowest advertised per-GB rate — it's priced competitively ($4.50 total to start, down to $2.00/GB at the 500 GB Scale tier) while keeping city-level targeting, both session types, and reseller access included at every tier rather than upsold separately. For workloads where geo-precision or session flexibility is actually part of the requirement, that bundling tends to matter more than shaving another few cents off the per-GB rate.",
+      },
+      {
+        type: 'callout',
+        tone: 'accent2',
+        title: 'Who should actually pick on price alone',
+        text: 'If your task is high-volume, country-level-only, rotating-only scraping where geo-precision genuinely doesn\'t matter, the lowest per-GB rate on the market is a reasonable primary filter. Outside that specific case, it\'s worth checking what else is (or isn\'t) included at that price.',
+      },
+    ],
+    faq: [
+      {
+        q: 'Is GlobProxy the cheapest residential proxy provider?',
+        a: 'No — some providers advertise a lower headline per-GB rate at their lowest tier. GlobProxy is priced competitively while including city-level targeting, both session types, and reseller access at every tier rather than as paid add-ons.',
+      },
+      {
+        q: 'What is the minimum purchase to try GlobProxy?',
+        a: 'The Micro plan is 1 GB for $4.50 total, with no subscription or recurring commitment required.',
+      },
+    ],
+  },
+  {
+    slug: 'proxy-pool-size-explained',
+    title: 'What "35M+ IPs" Actually Means (And Why the Number Alone Doesn\'t Tell You Much)',
+    description:
+      'Every residential proxy provider advertises a large IP pool number. Here is what that figure actually measures, and the questions that matter more than the headline size.',
+    excerpt:
+      'A big pool number is easy to put on a homepage. Whether it\'s the right pool for your task depends on questions the number itself can\'t answer.',
+    category: 'Bandwidth & Pricing',
+    publishedAt: '2026-08-19',
+    body: [
+      {
+        type: 'p',
+        text: 'Every residential proxy provider leads with a pool-size number — tens of millions of IPs, dozens or hundreds of countries. It\'s an easy stat to headline and a genuinely reasonable first filter, but on its own it answers a narrower question than it seems to: it tells you how many IPs exist somewhere in the network, not how many are usable, fresh, or actually located where you need them.',
+      },
+      { type: 'h2', text: 'What the total pool number doesn\'t capture' },
+      {
+        type: 'ul',
+        items: [
+          "Distribution — a 35M-IP pool that's heavily concentrated in a handful of countries is a different product than one spread evenly across 195, depending on where your task actually needs coverage",
+          'Freshness and rotation — a large pool with slow turnover behaves differently under load than a smaller pool that rotates cleanly',
+          'City-level density within that pool — total country coverage and real city-level precision are separate claims, and a provider can have one without the other',
+          'Real concurrent availability — the headline number is typically the full network size, not what\'s available to you specifically at a given moment under your plan',
+        ],
+      },
+      { type: 'h2', text: 'Questions that actually predict whether a pool fits your task' },
+      {
+        type: 'ol',
+        items: [
+          'Does the country or city you need coverage in specifically have real density, not just a presence on the list?',
+          'Does the provider support both rotating and sticky sessions from the same pool, or is that a separate tier?',
+          'What happens under sustained, high-volume use — does performance hold, or does a large advertised pool mask thin coverage once real load hits it?',
+          'Is the pool residential (real ISP-assigned addresses on real devices) or a mix that includes datacenter or lower-trust IPs bundled into the total count?',
+        ],
+      },
+      {
+        type: 'p',
+        text: "GlobProxy's pool sits at 35M+ residential IPs across 195 countries with city-level structured targeting — that number is a starting filter, not the whole evaluation. The more useful question for any provider, this one included, is whether the specific coverage you need is actually dense where you need it.",
+      },
+      {
+        type: 'callout',
+        tone: 'accent',
+        title: 'How to test this before committing to a plan',
+        text: 'Start with the smallest available purchase (GlobProxy\'s Micro plan is $4.50 for 1 GB) and run your actual task against the specific city or country you care about, rather than evaluating a provider on the headline pool number alone.',
+      },
+    ],
+    faq: [
+      {
+        q: 'Is a bigger IP pool always better?',
+        a: 'Not in isolation — density in the specific location you need, freshness, and session support usually matter more for a given task than raw pool size on its own.',
+      },
+      {
+        q: 'Are all of GlobProxy\'s 35M+ IPs residential?',
+        a: 'Yes — the pool is residential IP addresses, distinct from datacenter proxy products.',
+      },
+    ],
+  },
+  {
+    slug: 'proxy-pricing-real-cost-per-gb',
+    title: 'The Real Cost-Per-GB Math: Subscription Proxies vs. Pay-Once Bandwidth',
+    description:
+      'Two plans can list similar per-GB rates and produce very different actual costs once usage variance and unused allowance are factored in. Here is the full math.',
+    excerpt:
+      'The number on the pricing page is the starting point, not the answer. Here is how to work out what a proxy plan actually costs given how you really use it.',
+    category: 'Bandwidth & Pricing',
+    publishedAt: '2026-08-20',
+    body: [
+      {
+        type: 'p',
+        text: "A per-GB rate on a pricing page is only half the input needed to know what a plan will actually cost you. The other half is your own usage pattern — specifically, how much it varies month to month — and that half is almost never on the pricing page at all.",
+      },
+      { type: 'h2', text: 'The two numbers that matter' },
+      {
+        type: 'ul',
+        items: [
+          'Advertised per-GB rate — what\'s printed on the pricing page, usually at a specific volume tier',
+          'Effective per-GB rate — what you actually paid divided by what you actually used, once wasted allowance (subscription plans) or convenience premiums (very small pay-as-you-go purchases) are factored in',
+        ],
+      },
+      {
+        type: 'p',
+        text: "These two numbers are only the same if your usage exactly matches the plan's assumptions every single billing period. For steady, predictable, flat usage, subscription plans can be genuinely competitive. For anything that varies — which is most real workloads — the effective rate on a monthly-reset plan tends to run higher than the advertised rate, because the advertised rate assumes full utilization every cycle.",
+      },
+      { type: 'h2', text: 'A worked example' },
+      {
+        type: 'p',
+        text: "Take a 100 GB/month subscription at a given per-GB rate, and compare it to buying the same 100 GB as non-expiring bandwidth at a comparable rate. If actual usage is 100 GB every month without exception, the two are equivalent. If usage instead looks like 60 GB, 130 GB, 80 GB across three months — a common real-world pattern — the subscription plan wastes 40 GB in month one (unless it allows rollover, which most don't) and forces an overage purchase in month two, typically at a worse rate than the base plan. The non-expiring version simply draws down 60, then 130, then 80 from one running balance, at one consistent per-GB rate throughout.",
+      },
+      { type: 'h2', text: 'How to actually calculate this for your own workload' },
+      {
+        type: 'ol',
+        items: [
+          'Pull your last 3–6 months of actual GB usage, if you have it — from a current provider\'s dashboard, or a reasonable estimate if you\'re new to this',
+          'Calculate the variance — how far the lightest month and heaviest month sit from the average',
+          'If variance is low (usage is consistently close to flat), a well-priced subscription tier can be perfectly competitive',
+          'If variance is meaningful, model the subscription cost including wasted allowance in light months and overage charges in heavy months, then compare that total to a non-expiring plan at a comparable per-GB rate',
+        ],
+      },
+      {
+        type: 'callout',
+        tone: 'accent2',
+        title: 'The short version',
+        text: 'Non-expiring bandwidth is not automatically cheaper — it removes the penalty for uneven usage. The more your workload varies month to month, the more that removal is worth in real terms.',
+      },
+    ],
+    faq: [
+      {
+        q: 'Is non-expiring bandwidth always the cheaper option?',
+        a: 'Not for perfectly flat, predictable usage — subscription plans can be competitive there. It becomes the cheaper option specifically as usage variance increases, because it removes the cost of wasted allowance and overage penalties.',
+      },
+      {
+        q: 'Does GlobProxy charge more for smaller purchases?',
+        a: 'The per-GB rate decreases at higher volume tiers (from $4.50/GB on Micro down to $2.00/GB on Scale), the same shape as most volume-based pricing — there is no separate penalty rate for pay-as-you-go purchases beyond that standard tier structure.',
+      },
+    ],
+  },
+]

@@ -207,13 +207,14 @@ export default async function Home() {
       {/* FOOTER */}
       <footer className="bg-ink border-t border-white/5 pt-14 pb-8">
         <div className="max-w-6xl mx-auto px-6">
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-10 mb-12">
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-10 mb-12">
             <div className="col-span-2 lg:col-span-1">
               <div className="font-display font-black text-2xl text-white mb-3">Glob<span className="text-accent">Proxy</span></div>
               <p className="text-white/30 text-sm font-light leading-relaxed max-w-xs">Residential proxies that never expire. Buy once, use forever. No subscriptions.</p>
             </div>
             {[
               {title:'Product',links:[['/#features','Features'],['/#pricing','Pricing'],['/#reseller','Resellers'],['/#compare','Compare'],['/docs/api','API Docs']]},
+              {title:'Resources',links:[['/blog','Blog'],['/locations','Locations']]},
               {title:'Support',links:[['mailto:support@globproxy.com','Contact us'],['mailto:sales@globproxy.com','Sales']]},
               {title:'Legal',links:[['/terms','Terms of Service'],['/privacy','Privacy Policy'],['/refunds','Refund Policy']]},
             ].map(col=>(
