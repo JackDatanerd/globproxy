@@ -22,7 +22,20 @@ async function sha256Hex(input: string): Promise<string> {
   return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
-const UNAUTHORIZED = NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+// A Response's body is a stream that can only be consumed once. This used
+// to be a single module-level NextResponse instance reused across every
+// unauthorized request — harmless in a fresh Node process per request, but
+// in a Workers runtime that reuses the same isolate (and therefore the same
+// already-constructed object) across many requests, the *first* 401 to
+// actually get serialized consumes that shared stream, and every 401 after
+// it in that isolate's lifetime comes back with an empty body — exactly
+// the "no error, no body, just nothing" behavior seen after fixing the
+// 1101 crash: the crash is what used to mask this, since it never reached
+// a clean return in the failure case being tested. A function that builds
+// a fresh Response per call sidesteps this entirely.
+function unauthorized() {
+  return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+}
 
 // Was previously checked ad-hoc, inconsistently, per-route (present in
 // admin/delete-user, admin/suspend-user, auth/reset, auth/signup,
@@ -58,7 +71,7 @@ export async function requireApiAccess(req: Request): Promise<ApiAuthResult> {
     const supabase = await createAdminClient()
 
     if (!token || !token.startsWith('gp_live_')) {
-      return { ok: false, response: UNAUTHORIZED }
+      return { ok: false, response: unauthorized() }
     }
 
     const key_hash = await sha256Hex(token)
@@ -74,7 +87,7 @@ export async function requireApiAccess(req: Request): Promise<ApiAuthResult> {
     // catch block's 500 rather than being silently treated as "not found."
     if (keyErr && keyErr.code !== 'PGRST116') throw keyErr
     if (!apiKey || apiKey.revoked_at) {
-      return { ok: false, response: UNAUTHORIZED }
+      return { ok: false, response: unauthorized() }
     }
 
     const { data: profile } = await supabase
@@ -84,7 +97,7 @@ export async function requireApiAccess(req: Request): Promise<ApiAuthResult> {
       .single()
 
     if (!profile) {
-      return { ok: false, response: UNAUTHORIZED }
+      return { ok: false, response: unauthorized() }
     }
 
     if (profile.is_suspended) {
