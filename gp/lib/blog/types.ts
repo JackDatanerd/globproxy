@@ -19,6 +19,7 @@ export type BlogCategory =
   | 'Use Cases'
   | 'Comparisons'
   | 'Guides'
+  | 'Reseller'
 
 export interface FaqItem {
   q: string

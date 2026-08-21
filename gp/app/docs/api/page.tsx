@@ -60,6 +60,21 @@ export default function ApiDocsPage() {
           </p>
         </div>
 
+        <div className="border border-border rounded-xl p-6 bg-surface mb-10 flex flex-wrap items-center gap-3">
+          <span className="text-xs font-mono text-muted uppercase tracking-widest">Guides</span>
+          {[
+            ['/blog/how-white-label-proxy-reselling-works', 'How reselling works'],
+            ['/blog/reseller-api-automating-sub-user-provisioning', 'Automating provisioning'],
+            ['/blog/reseller-auto-topup-client-bandwidth', 'Auto-topup'],
+            ['/blog/ip-whitelisting-client-proxy-credentials', 'IP whitelisting'],
+            ['/blog/pricing-your-white-label-proxy-service', 'Pricing your service'],
+          ].map(([href, label]) => (
+            <Link key={href} href={href} className="text-sm text-accent hover:underline">
+              {label} →
+            </Link>
+          ))}
+        </div>
+
         {/* Access */}
         <section className="mb-10">
           <h2 className="font-display font-bold text-xl text-ink mb-3">Getting access</h2>

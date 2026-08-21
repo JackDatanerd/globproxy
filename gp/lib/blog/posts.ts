@@ -576,4 +576,288 @@ export const BLOG_POSTS: BlogPost[] = [
       },
     ],
   },
+  {
+    slug: 'how-white-label-proxy-reselling-works',
+    title: 'How White-Label Residential Proxy Reselling Actually Works',
+    description:
+      'A practical walkthrough of the white-label proxy reseller model: buying bandwidth stock, allocating it to your own clients, and setting your own pricing on top.',
+    excerpt:
+      'Reselling residential proxy bandwidth is simpler than it sounds structurally — the part that actually takes work is everything around the bandwidth itself.',
+    category: 'Reseller',
+    publishedAt: '2026-08-21',
+    body: [
+      {
+        type: 'p',
+        text: "White-label proxy reselling is structurally simple: you buy bandwidth in bulk at wholesale rates, allocate portions of it to your own clients under your own brand, and set whatever price you want on top. The underlying network — GlobProxy's, in this case — is invisible to your clients unless you choose to disclose it. What actually takes work isn't the bandwidth transaction itself; it's everything wrapped around it.",
+      },
+      { type: 'h2', text: 'The mechanics, concretely' },
+      {
+        type: 'ol',
+        items: [
+          "You buy bandwidth into your own account balance, same as any direct buyer — this becomes your \"stock\"",
+          'You create a sub-user (proxy credential) for each client and allocate a specific GB amount to it from your stock',
+          "That sub-user gets its own credentials, its own usage tracking, and its own IP whitelist — independent of your other clients' sub-users",
+          "The client uses those credentials as their proxy endpoint; they never see GlobProxy's name unless you tell them",
+          "You bill the client however you've structured your own pricing — GlobProxy doesn't set or take a cut of what you charge them",
+        ],
+      },
+      { type: 'h2', text: "What's actually hard about it" },
+      {
+        type: 'p',
+        text: "Provisioning a sub-user takes one API call. What takes real work is the same set of things that make any resale business work: pricing that leaves you margin without pricing yourself out of the market, keeping enough stock on hand that a client never hits a wall mid-task, and support — when a client's proxy stops working, they're coming to you, not to GlobProxy.",
+      },
+      {
+        type: 'ul',
+        items: [
+          "Stock management — running out of allocatable bandwidth at the wrong moment is the reseller equivalent of a store running out of inventory during a rush",
+          "Margin — your buy-in rate drops as your own volume tier increases, which is the actual lever for reseller profitability, not client count alone",
+          "Client-facing reliability — auto-topup (covered in a separate guide) exists specifically so a client's allocation doesn't silently run dry without you or them noticing",
+          'Support surface — you own the client relationship entirely, which is the tradeoff for owning the margin entirely',
+        ],
+      },
+      {
+        type: 'callout',
+        tone: 'accent',
+        title: 'On GlobProxy specifically',
+        text: 'The reseller program includes a documented API for sub-user creation, top-up, auto-topup, and IP whitelisting, plus a dashboard (Earnings & Stock) that tracks your available balance and every client allocation\'s status. No separate reseller-tier plan required — reseller access is account-level.',
+      },
+    ],
+    faq: [
+      {
+        q: 'Does GlobProxy take a cut of what I charge my clients?',
+        a: 'No — you buy bandwidth at GlobProxy\'s standard tiered rates and set your own client pricing independently. There is no revenue-share or commission structure on top of that.',
+      },
+      {
+        q: 'Can my clients tell they\'re running on GlobProxy\'s network?',
+        a: 'Not unless you tell them — sub-user credentials are yours to brand and distribute however you choose.',
+      },
+    ],
+  },
+  {
+    slug: 'reseller-api-automating-sub-user-provisioning',
+    title: 'Automating Sub-User Provisioning With the GlobProxy Reseller API',
+    description:
+      'A walkthrough of the reseller API endpoints for creating, topping up, and managing client sub-users programmatically — for resellers who want this off their plate manually.',
+    excerpt:
+      'Once you\'re past a handful of clients, creating sub-users by hand in the dashboard stops scaling. Here is what automating it actually looks like.',
+    category: 'Reseller',
+    publishedAt: '2026-08-21',
+    body: [
+      {
+        type: 'p',
+        text: "Manually creating a sub-user in the dashboard for each new client works fine at small scale. It stops working the moment onboarding needs to happen without you personally clicking through a form — a self-serve signup flow on your own site, a batch of clients onboarded at once, or any workflow where sub-user creation needs to be a side effect of something else happening in your own system. That's what the reseller API is for.",
+      },
+      { type: 'h2', text: 'The core loop' },
+      {
+        type: 'ol',
+        items: [
+          'Create a sub-user with an initial GB allocation via `POST /api/v1/sub-users`',
+          'Store the returned credentials against your own client record',
+          'Track usage via `GET /api/v1/sub-users/:id/usage` — synced live from the upstream network while the credential is active',
+          'Top up via `POST /api/v1/sub-users/:id/topup` when a client needs more, or turn on `PATCH /api/v1/sub-users/:id/auto-topup` so it happens without you in the loop at all',
+          'Delete via `DELETE /api/v1/sub-users/:id` when a client churns — this releases whatever portion of the reservation was never used back to your available stock',
+        ],
+      },
+      { type: 'h2', text: 'A minimal creation call' },
+      {
+        type: 'p',
+        text: 'This is the same request the docs show — worth including here because it\'s genuinely the whole shape of it:',
+      },
+      {
+        type: 'quote',
+        text: 'curl -X POST https://globproxy.com/api/v1/sub-users -H "Authorization: Bearer YOUR_API_KEY" -d \'{"gb_allocated": 5}\'',
+        cite: 'GlobProxy API docs — Create sub-user',
+      },
+      { type: 'h2', text: 'What to actually build around this' },
+      {
+        type: 'ul',
+        items: [
+          'A webhook or polling check on your side that reacts to a client hitting their allocation limit — the API tells you usage, but what you do when it\'s nearly exhausted is your own logic',
+          'A mapping table between your own client IDs and GlobProxy sub-user IDs — the API doesn\'t know your client system, so this join lives entirely on your side',
+          'Error handling for the specific status codes the docs call out — a 402 means your own stock is insufficient for the request, a 409 on whitelist endpoints means the sub-user is still provisioning, not a real conflict',
+          'A deletion hook tied to your own client-churn event, so released bandwidth actually flows back to your available stock instead of sitting allocated to a dead account',
+        ],
+      },
+      {
+        type: 'callout',
+        tone: 'accent2',
+        title: 'Full reference',
+        text: 'This post covers the shape of it — the complete endpoint reference with every parameter and response field lives in the API docs.',
+      },
+    ],
+    faq: [
+      {
+        q: 'Is there a limit to how many sub-users I can create?',
+        a: 'The practical limit is your available bandwidth stock, not a hard cap on sub-user count — each creation call reserves GB from your account balance.',
+      },
+      {
+        q: 'What happens to a sub-user\'s unused bandwidth if I delete it?',
+        a: 'Whatever portion of the reservation was never used is released back to your own available stock.',
+      },
+    ],
+  },
+  {
+    slug: 'reseller-auto-topup-client-bandwidth',
+    title: 'Setting Up Auto-Topup So Client Bandwidth Never Silently Runs Out',
+    description:
+      'A client whose proxy stops working mid-task because their allocation ran dry is a support ticket you can prevent entirely. Here is how auto-topup on the reseller API works.',
+    excerpt:
+      'The worst version of this problem is finding out a client ran dry from an angry message, not from your own dashboard.',
+    category: 'Reseller',
+    publishedAt: '2026-08-21',
+    body: [
+      {
+        type: 'p',
+        text: "A client's sub-user running out of allocated bandwidth mid-task doesn't fail gracefully from their side — it just stops working, usually at the worst possible moment. As a reseller, the first sign of that is often a support message, not a dashboard alert you saw coming. Auto-topup exists specifically to remove that failure mode.",
+      },
+      { type: 'h2', text: 'How it works' },
+      {
+        type: 'p',
+        text: 'Turning on auto-topup for a sub-user via `PATCH /api/v1/sub-users/:id/auto-topup` means that when the sub-user\'s remaining allocation drops to a threshold, additional bandwidth is drawn automatically from your own available stock and added to that sub-user\'s cap — no manual top-up call required, no window where the client\'s proxy is dead while you notice and react.',
+      },
+      { type: 'h2', text: 'What this trades off' },
+      {
+        type: 'ul',
+        items: [
+          'Auto-topup draws from your own stock, not the client\'s payment — if your billing arrangement with a client is prepaid-per-allocation, you need your own logic to reconcile "we auto-topped them up" against "did they actually pay for that yet"',
+          'It prevents the outage failure mode but doesn\'t prevent overspend on your side if a client\'s usage spikes unexpectedly — worth pairing with your own usage alerting, not treating as a fully hands-off setting for every client',
+          "For clients on a fixed monthly allocation you don't want silently exceeded, leaving auto-topup off and instead watching the usage endpoint is the more deliberate choice",
+        ],
+      },
+      {
+        type: 'callout',
+        tone: 'accent',
+        title: 'A reasonable default',
+        text: 'Auto-topup on for clients you bill on ongoing/metered terms, where a live proxy matters more than a hard allocation ceiling. Off for clients on a fixed prepaid GB package, where you want to be the one deciding what happens when they hit the cap.',
+      },
+      { type: 'h2', text: 'The request' },
+      {
+        type: 'quote',
+        text: 'curl -X PATCH https://globproxy.com/api/v1/sub-users/SUB_USER_ID/auto-topup -H "Authorization: Bearer YOUR_API_KEY" -d \'{"enabled": true}\'',
+        cite: 'GlobProxy API docs — Configure auto-topup',
+      },
+    ],
+    faq: [
+      {
+        q: 'Does auto-topup have a maximum, or can it keep drawing from my stock indefinitely?',
+        a: 'It draws from your available stock, which is itself finite — if your own balance runs out, auto-topup has nothing left to draw from, so it functions as bounded by your total stock, not unbounded.',
+      },
+      {
+        q: 'Can I turn auto-topup on or off per client, or is it account-wide?',
+        a: "It's configured per sub-user via the API, so you can set it differently for each client depending on how you've structured billing with them.",
+      },
+    ],
+  },
+  {
+    slug: 'ip-whitelisting-client-proxy-credentials',
+    title: 'IP Whitelisting for Client Proxy Credentials: A Practical Guide',
+    description:
+      'Restricting which IPs can use a sub-user\'s credentials is one of the simplest ways to prevent credential leakage from becoming someone else\'s free bandwidth. Here is how to set it up.',
+    excerpt:
+      'A leaked or shared credential without IP restriction is an open tap. Whitelisting is the cheapest fix available.',
+    category: 'Reseller',
+    publishedAt: '2026-08-21',
+    body: [
+      {
+        type: 'p',
+        text: 'Every sub-user credential you issue to a client is, by default, usable from anywhere by anyone who has it. That\'s fine until a credential leaks — checked into a public repo, pasted in the wrong Slack channel, reused by a client across more infrastructure than they told you about — at which point it\'s effectively free bandwidth for whoever has it, drawn from your stock. IP whitelisting is the direct fix: restrict a sub-user\'s credentials to only work from specific, known IP addresses.',
+      },
+      { type: 'h2', text: 'When this matters most' },
+      {
+        type: 'ul',
+        items: [
+          'Clients running from fixed infrastructure — a known server IP, a static office IP — where the legitimate usage source doesn\'t change',
+          'High-allocation sub-users, where a leaked credential is a meaningfully larger loss than a small one',
+          'Any client relationship where you want a clear, checkable record of exactly which IPs are authorized, rather than trusting the credential string alone as the only control',
+        ],
+      },
+      { type: 'h2', text: 'When it\'s the wrong tool' },
+      {
+        type: 'p',
+        text: "If a client's own usage pattern involves rotating source IPs on their end — running from cloud infrastructure that scales up and down, for instance — a tight whitelist becomes a maintenance burden that breaks their access every time their own IP changes. That's a case for relying on credential secrecy and rotation discipline instead of IP restriction, or for whitelisting a CIDR range if their infrastructure lives in one.",
+      },
+      { type: 'h2', text: 'The three calls' },
+      {
+        type: 'ul',
+        items: [
+          '`GET /api/v1/sub-users/:id/whitelist` — see what\'s currently authorized for a sub-user',
+          '`POST /api/v1/sub-users/:id/whitelist` — add an IP',
+          '`DELETE /api/v1/sub-users/:id/whitelist?ip=...` — remove one, e.g. when a client\'s infrastructure changes',
+        ],
+      },
+      {
+        type: 'callout',
+        tone: 'accent2',
+        title: 'Provisioning timing',
+        text: 'Whitelist endpoints can return a 409 briefly right after a sub-user is first created — the credential is still provisioning upstream. This resolves on its own within moments; retry rather than treating it as a real conflict.',
+      },
+    ],
+    faq: [
+      {
+        q: 'Is there a limit to how many IPs I can whitelist per sub-user?',
+        a: 'The API doesn\'t document a hard cap in typical usage — for clients needing more than a handful of authorized IPs, a CIDR range is usually the more maintainable approach than listing each address individually.',
+      },
+      {
+        q: 'Does whitelisting slow down provisioning a new sub-user?',
+        a: 'No — whitelisting is a separate, optional step you take after creating the sub-user, not a required part of creation itself.',
+      },
+    ],
+  },
+  {
+    slug: 'pricing-your-white-label-proxy-service',
+    title: 'Pricing Your White-Label Proxy Service: What to Actually Charge',
+    description:
+      'There is no universal reseller markup that works for every client base. Here is a framework for setting your own pricing based on your buy-in rate, support overhead, and client segment.',
+    excerpt:
+      'The wrong question is "what markup do other resellers use." The right one is what your specific costs and client base actually support.',
+    category: 'Reseller',
+    publishedAt: '2026-08-21',
+    body: [
+      {
+        type: 'p',
+        text: "There's no single correct reseller markup — anyone offering one is glossing over the fact that it depends heavily on your buy-in rate at your volume tier, how much support and reliability you're actually providing on top of raw bandwidth, and what your specific client segment will bear. What follows is a framework for working it out for your own situation, not a number to copy.",
+      },
+      { type: 'h2', text: 'Start with your real buy-in rate, not the headline rate' },
+      {
+        type: 'p',
+        text: 'GlobProxy\'s per-GB rate drops as your own purchase volume increases — from $4.50 at the smallest tier down to $2.00/GB at the 500 GB Scale tier. Your actual margin math should use whatever tier you\'re realistically buying at given your total client base, not the entry-level number, and should account for the fact that your effective rate improves as your reselling business grows — which is itself a reason to price competitively early and grow into the better tier, rather than pricing for margin you don\'t have yet.',
+      },
+      { type: 'h2', text: 'What you\'re actually charging for beyond the GB' },
+      {
+        type: 'ul',
+        items: [
+          'Convenience — a client who\'d rather pay you a flat monthly rate than deal with GB-based billing themselves',
+          'Support — you\'re the one who answers when something breaks, which has real value even if the underlying network issue is out of your hands',
+          'Bundling — if you\'re packaging proxy access alongside other services (scraping infrastructure, a SaaS product, managed automation), the proxy line item doesn\'t need to be priced in isolation',
+          'Reliability — auto-topup and active stock management mean a client\'s access doesn\'t silently fail, which is worth something distinct from the bandwidth itself',
+        ],
+      },
+      { type: 'h2', text: 'A simple way to sanity-check a price point' },
+      {
+        type: 'ol',
+        items: [
+          'Take your actual buy-in rate at your current volume tier',
+          'Add your real support/overhead cost per client, even roughly — time spent isn\'t free even if it\'s not a line-item expense',
+          'Set your client price meaningfully above that combined number, not just above the raw GB cost',
+          'Check the result against what your specific client segment would realistically pay elsewhere — a freelance scraper and an agency buying for ten client accounts have very different price sensitivity',
+        ],
+      },
+      {
+        type: 'callout',
+        tone: 'accent',
+        title: 'The one number GlobProxy doesn\'t set',
+        text: 'What you charge your clients is entirely yours to decide — there\'s no suggested retail price, no revenue share, and no restriction on how you package or bill it.',
+      },
+    ],
+    faq: [
+      {
+        q: 'Does GlobProxy publish a recommended reseller markup?',
+        a: 'No — pricing to your own clients is entirely up to you. This guide is a framework for working it out, not a fixed recommendation.',
+      },
+      {
+        q: 'Does my buy-in rate improve automatically as I grow?',
+        a: "Yes — GlobProxy's pricing is volume-tiered, so your effective per-GB cost drops as your total purchases increase, independent of any single client's allocation size.",
+      },
+    ],
+  },
 ]
