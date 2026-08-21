@@ -118,3 +118,14 @@ jobs:
           ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL }}
           FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
           STOCK_ALERT_THRESHOLD: ${{ secrets.STOCK_ALERT_THRESHOLD }}
+
+      - name: Notify IndexNow (Bing/Yandex) of current sitemap
+        # Runs only after the deploy step above succeeds (default sequential
+        # step behavior — this step is simply never reached if deploy fails).
+        # continue-on-error is intentional: this pings an external API
+        # that's aggregate/non-critical, not part of the app itself — a
+        # transient IndexNow outage on their end shouldn't mark an otherwise
+        # successful deploy as a failed CI run and page anyone. The step
+        # still logs its own pass/fail in the Actions run either way.
+        run: npm run indexnow
+        continue-on-error: true
