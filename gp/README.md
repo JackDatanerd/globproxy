@@ -1,87 +1,79 @@
-# GlobProxy UI overhaul — Overview, My Proxies, New Session
+# GlobProxy — Wave 2: reseller-facing content
 
-Implements the three mockups (`globproxy-ui-refinements.html`) directly in the real app,
-against a fresh clone at commit `12471f4`. Verified with `npx tsc --noEmit` and a full
-`npx next build` — both clean, zero errors.
+Verified against a fresh pull of `main` (via codeload tarball — `git clone` hit an
+auth quirk against the proxy in my sandbox this session; codeload worked fine
+and is a plain read-only tarball of the same commit, so this is genuinely
+built on top of everything merged so far, including the IndexNow CI step).
 
-## Files in this archive
+Ran the same three checks as every previous package: `npx tsc --noEmit`
+(clean), `npx opennextjs-cloudflare build` (clean — `OpenNext build complete`,
+now shows 15 blog posts total including these 5), and `npx wrangler deploy
+--dry-run` (clean, 47 sitemap URLs — the 42 from before plus these 5 posts).
 
-```
-app/dashboard/page.tsx                      (replaced)
-app/dashboard/proxies/page.tsx               (replaced)
-app/dashboard/proxies/new/NewProxyForm.tsx   (replaced)
-components/dashboard/ProxyCard.tsx           (replaced — same filename, now a
-                                               collapsible row instead of an
-                                               always-open card; takes new
-                                               `expanded`/`onToggle` props)
-components/dashboard/ProxyList.tsx           (new — search/filter toolbar +
-                                               single-expanded-row state,
-                                               wraps ProxyCard)
-```
+## What this ships
 
-Nothing else changed — `SessionManager.tsx`, `lib/proxyEndpoint.ts`, `lib/geoTargeting.ts`,
-and every API route are untouched. All real geo-targeting selects (country/state/city
-sourced from Geonode's actual supported locations, not free text) were preserved exactly
-as they were — my earlier static mockup used plain text inputs for state/city as a
-simplification for the demo, but that's not what got wired in here.
+**3 files changed, all edits — no new files, no new routes:**
+
+- `lib/blog/types.ts` — added `'Reseller'` to the `BlogCategory` union.
+- `lib/blog/posts.ts` — appended 5 reseller-facing articles:
+  1. **How White-Label Residential Proxy Reselling Actually Works** — the
+     business-model explainer (stock, allocation, your own pricing).
+  2. **Automating Sub-User Provisioning With the Reseller API** — walks the
+     real `POST /api/v1/sub-users` → usage → topup → delete loop.
+  3. **Setting Up Auto-Topup So Client Bandwidth Never Silently Runs Out** —
+     covers the real `PATCH .../auto-topup` endpoint, including when *not*
+     to use it (fixed prepaid allocations).
+  4. **IP Whitelisting for Client Proxy Credentials** — the three real
+     whitelist endpoints (GET/POST/DELETE), plus the known 409-during-
+     provisioning quirk already documented in your API docs page.
+  5. **Pricing Your White-Label Proxy Service** — a framework, not a fixed
+     number — deliberately doesn't invent a "recommended markup" since
+     GlobProxy doesn't set one.
+- `app/docs/api/page.tsx` — added one small "Guides" link row right under the
+  intro paragraph, linking to all 5 new posts. This is the one piece of
+  internal-linking work here: reseller-minded visitors are already on this
+  page reading the API reference, so this is the highest-intent place to
+  surface the new content, not just the `/blog` index.
+
+## Accuracy check I did before writing any of this
+
+Read `app/reseller/layout.tsx`, `app/reseller/earnings/page.tsx`, and the
+existing `app/docs/api/page.tsx` (416 lines, already comprehensive) before
+writing a word, specifically to confirm:
+- The real model is stock-purchase-and-allocate via `reseller_transfers`
+  (pending/active status), **not** a revenue-share or commission structure —
+  so none of the posts invent a "you earn X%" claim. They're explicit that
+  GlobProxy doesn't set or take a cut of reseller pricing.
+- Every endpoint referenced (`sub-users`, `usage`, `topup`, `auto-topup`,
+  `whitelist`) and every pricing figure ($4.50 Micro, $2.00/GB at 500 GB
+  Scale) is pulled from the actual `lib/plans.ts` and `app/docs/api/page.tsx`
+  in the repo, not assumed.
 
 ## Apply
 
 ```bash
-git checkout -b ui-overhaul
+cd C:\Users\jackk\Desktop\MyWebApps\globproxy\gp
+tar -xzf ~/Downloads/globproxy-wave2-reseller-content.tar.gz -C .
+git add lib/blog/types.ts lib/blog/posts.ts app/docs/api/page.tsx
+git commit -m "content: 5 reseller-facing articles (white-label model, API automation, auto-topup, whitelisting, pricing) + API docs cross-links"
+git push origin main
 ```
 
-Drop these 5 files into place at the paths shown above (or extract this archive at your
-repo root — the paths match), then:
+Runs from `gp/` as usual — nothing in this package touches `.github/` or the
+repo root.
 
-```bash
-git add app/dashboard/page.tsx app/dashboard/proxies/page.tsx \
-        app/dashboard/proxies/new/NewProxyForm.tsx \
-        components/dashboard/ProxyCard.tsx components/dashboard/ProxyList.tsx
-git commit -m "ui: row-based proxy list, split new-session form, condensed overview"
-git push
-```
+## What I deliberately did not build in this pass
 
-## What changed, and why
+Per your last "unfinished business" rundown, wave 2 had three parts. This
+package is just the first:
 
-**`/dashboard/proxies`** — Every session used to render as a fully-open card. Now each
-is a single-line row (colored left rail = status, no badge-reading needed) that expands
-on click; credentials/endpoints/code are tabs instead of stacked. Added a search box and
-Active/Pending status filter — didn't exist before. Only one row expands at a time.
-A quick-copy icon on the collapsed row covers the most common action (grab the first
-endpoint) without expanding — **rotating credentials only**; sticky credentials don't get
-one since there's no single "the" endpoint until a session is created under
-Sticky Sessions, and copying the bare targeting prefix would be a non-working string
-someone might paste in expecting it to connect.
+- **Reseller content** — done, this package.
+- **More `/vs/[competitor]` comparison pages** beyond the two existing blog
+  posts (IPRoyal, DataImpulse) — held off, same reasoning as before: wait to
+  see if the two live ones get any traction before building more.
+- **Expanding the 28 location pages** based on real impression data — still
+  gated on GSC/Bing actually having data, which you said you'd check back on
+  in a few days. Nothing to build here yet without guessing blind.
 
-**`/dashboard/proxies/new`** — Was 5 stacked bordered boxes + a preview box after all of
-them. Now one continuous card with numbered sections, ASN moved behind an "Advanced
-targeting" disclosure, and a sticky "receipt" panel on the right showing the live
-endpoint preview, running GB math, and the submit button — visible the whole time you're
-configuring, not just after scrolling to the bottom.
-
-One deliberate behavior change worth knowing about: the GB input no longer has a
-browser-level `max` attribute clamping it to your available balance. Instead the receipt
-panel shows *why* it's blocked (red bar + "exceeds your available balance") and disables
-submit. Functionally equivalent, but it's live JS state instead of a static HTML
-attribute — mentioning it since it's slightly more surface area than before.
-
-**`/dashboard`** — Four equal-weight stat tiles + a separate full-width bandwidth bar
-(which mostly duplicated the one on `/proxies`) became one dark "balance" hero card
-carrying the number, the bar, and the buy CTA together, since that's the actual job of
-this page. The other two stats (active proxies, total purchased) step down to quiet
-supporting tiles. The sessions list now uses the same colored-rail status language as
-`/proxies` instead of a dot + text, so status reads the same way on both pages. Orders
-got real paid/pending/failed pills instead of one badge doing double duty as color and
-label.
-
-## Known gaps / not touched this round
-
-- `/dashboard/billing`, `/dashboard/usage`, `/dashboard/settings`, `/dashboard/api-keys`,
-  the admin pages, and the marketing site were **not** touched — no mockup was built for
-  them yet, so I didn't want to freehand a redesign without you seeing it first. Say the
-  word if you want those next.
-- This only covers the UI refinement work from this conversation. It does **not** include
-  fixes for anything from the earlier code-review pass (suspended-user API gap, the
-  `signOut(user_id, ...)` bug, the bandwidth reclaim-via-delete exploit) — those are
-  separate and still open, see `globproxy-audit-findings.md` from earlier in this thread.
+Say the word on either of those once there's real data to point at, or if
+you'd rather build them now on judgment instead of waiting.
