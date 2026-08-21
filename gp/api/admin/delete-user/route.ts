@@ -108,6 +108,19 @@ export async function POST(req: Request) {
       .eq('user_id', user_id)
   }
 
+  // Step 4b: Revoke any outstanding API keys and disable webhooks — see
+  // app/api/user/delete-account/route.ts's Step 6b for the full
+  // rationale (mirrors that route so both deletion paths leave the same
+  // end state).
+  await supabase.from('api_keys')
+    .update({ revoked_at: new Date().toISOString() })
+    .eq('user_id', user_id)
+    .is('revoked_at', null)
+  await supabase.from('webhook_endpoints')
+    .update({ enabled: false })
+    .eq('user_id', user_id)
+    .eq('enabled', true)
+
   // Step 5: Email — best-effort, non-fatal
   if (tp.email && tp.email !== '[deleted]') {
     await sendEmail({

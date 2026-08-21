@@ -3,7 +3,7 @@
 -- Run this entire file in Supabase SQL Editor (fresh project)
 -- ============================================================
 --
--- INCLUDES MIGRATIONS THROUGH: 0029_fix_profiles_rls_recursion_and_signup_check.sql
+-- INCLUDES MIGRATIONS THROUGH: 0030_audit_hardening.sql
 --
 -- This line is the source of truth `scripts/check-schema-sync.mjs` reads
 -- to compare against supabase/migrations/ — it's what CI checks on every
@@ -49,7 +49,8 @@ create table public.profiles (
 );
 
 create or replace function public.handle_new_user()
-returns trigger language plpgsql security definer as $$
+returns trigger language plpgsql security definer set search_path = public, pg_temp
+as $$
 begin
   insert into public.profiles (id, email, full_name)
   values (new.id, new.email, new.raw_user_meta_data->>'full_name');
@@ -94,7 +95,8 @@ create table public.bandwidth_accounts (
 );
 
 create or replace function public.handle_new_profile()
-returns trigger language plpgsql security definer as $$
+returns trigger language plpgsql security definer set search_path = public, pg_temp
+as $$
 begin
   insert into public.bandwidth_accounts (user_id) values (new.id);
   return new;
@@ -253,7 +255,8 @@ create or replace function public.allocate_reseller_bandwidth(
   p_gb numeric
 )
 returns table(new_reseller_allocated_gb numeric)
-language plpgsql security definer as $$
+language plpgsql security definer set search_path = public, pg_temp
+as $$
 declare
   v_updated_allocated numeric;
 begin
@@ -289,7 +292,8 @@ $$;
 -- that could lose a credit if two orders for the same user were paid at
 -- nearly the same instant.
 create or replace function public.credit_bandwidth(p_user_id uuid, p_gb numeric)
-returns void language sql security definer as $$
+returns void language sql security definer set search_path = public, pg_temp
+as $$
   insert into public.bandwidth_accounts (user_id, total_gb, used_gb, allocated_gb)
   values (p_user_id, p_gb, 0, 0)
   on conflict (user_id) do update
@@ -320,6 +324,7 @@ create or replace function public.claim_and_credit_order(
 returns boolean
 language plpgsql
 security definer
+set search_path = public, pg_temp
 as $$
 declare
   v_claimed uuid;
@@ -356,7 +361,8 @@ $$;
 -- this check exists: security definer bypasses RLS, so without it any
 -- logged-in user could pass someone else's user_id here directly.
 create or replace function public.reserve_credential_bandwidth(p_user_id uuid, p_gb numeric)
-returns void language plpgsql security definer as $$
+returns void language plpgsql security definer set search_path = public, pg_temp
+as $$
 declare
   v_updated numeric;
 begin
@@ -381,7 +387,8 @@ end;
 $$;
 
 create or replace function public.release_credential_bandwidth(p_user_id uuid, p_gb numeric)
-returns void language plpgsql security definer as $$
+returns void language plpgsql security definer set search_path = public, pg_temp
+as $$
 begin
   if auth.uid() is not null and auth.uid() <> p_user_id then
     raise exception 'Not authorized to release bandwidth for another account.' using errcode = '42501';
@@ -404,7 +411,8 @@ create or replace function public.topup_credential(
   p_user_id uuid,
   p_gb numeric
 )
-returns numeric language plpgsql security definer as $$
+returns numeric language plpgsql security definer set search_path = public, pg_temp
+as $$
 declare
   v_status text;
   v_created_by uuid;
@@ -472,6 +480,7 @@ create or replace function public.set_auto_topup(
 returns void
 language plpgsql
 security definer
+set search_path = public, pg_temp
 as $$
 declare
   v_status text;
@@ -532,6 +541,7 @@ create or replace function public.set_default_auto_topup(
 returns void
 language plpgsql
 security definer
+set search_path = public, pg_temp
 as $$
 begin
   if p_enabled then
@@ -558,7 +568,8 @@ $$;
 -- Bulk usage-sync helpers — see migration 0010. Only ever called from
 -- lib/usageSync.ts via the admin (service_role) client.
 create or replace function public.bulk_update_credential_usage(updates jsonb)
-returns void language plpgsql security definer as $$
+returns void language plpgsql security definer set search_path = public, pg_temp
+as $$
 begin
   update public.proxy_credentials pc
   set gb_used = (u->>'gb_used')::numeric
@@ -568,7 +579,8 @@ end;
 $$;
 
 create or replace function public.recalculate_bandwidth_accounts()
-returns void language plpgsql security definer as $$
+returns void language plpgsql security definer set search_path = public, pg_temp
+as $$
 begin
   update public.bandwidth_accounts ba
   set used_gb = coalesce(sub.total, 0) + ba.archived_used_gb
@@ -595,7 +607,8 @@ $$;
 -- that releases the credential's unused allocation, so both numbers come
 -- from the same usedGb snapshot and can't drift apart.
 create or replace function public.archive_credential_used_gb(p_user_id uuid, p_gb numeric)
-returns void language plpgsql security definer as $$
+returns void language plpgsql security definer set search_path = public, pg_temp
+as $$
 begin
   if p_gb is null or p_gb <= 0 then
     return;
@@ -811,6 +824,7 @@ create or replace function public.cleanup_expired_mfa_sessions()
 returns void
 language sql
 security definer
+set search_path = public, pg_temp
 as $$
   delete from public.mfa_verified_sessions where expires_at < now();
 $$;
@@ -824,6 +838,7 @@ create or replace function public.wipe_mfa(p_user_id uuid)
 returns void
 language plpgsql
 security definer
+set search_path = public, pg_temp
 as $$
 begin
   delete from public.mfa_totp_factors where user_id = p_user_id;
@@ -845,7 +860,8 @@ create or replace function public.confirm_totp_enrollment(
   p_user_id uuid,
   p_used_counter integer
 )
-returns void language plpgsql security definer as $$
+returns void language plpgsql security definer set search_path = public, pg_temp
+as $$
 declare
   v_updated uuid;
 begin
@@ -957,7 +973,8 @@ revoke all on function public.auth_email_exists(text) from public, anon, authent
 -- reseller_status, api_access, is_deleted) via a direct REST call, since
 -- "Update own profile" above has no column restriction on its own.
 create or replace function public.protect_privileged_profile_columns()
-returns trigger language plpgsql security definer as $$
+returns trigger language plpgsql security definer set search_path = public, pg_temp
+as $$
 declare
   caller_is_admin boolean;
 begin
@@ -1000,7 +1017,8 @@ create trigger protect_privileged_profile_columns
 -- function already grants to service-role/trigger writes. See migration
 -- 0011 for the full rationale.
 create or replace function public.sync_profile_email()
-returns trigger language plpgsql security definer as $$
+returns trigger language plpgsql security definer set search_path = public, pg_temp
+as $$
 begin
   if new.email is distinct from old.email then
     update public.profiles set email = new.email, updated_at = now() where id = new.id;
@@ -1039,7 +1057,8 @@ create policy "Cancel own pending order" on public.orders for update
 -- pins every other column to its previous value for non-admin callers, same
 -- pattern as protect_privileged_profile_columns above. See migration 0006.
 create or replace function public.protect_order_columns()
-returns trigger language plpgsql security definer as $$
+returns trigger language plpgsql security definer set search_path = public, pg_temp
+as $$
 declare
   caller_is_admin boolean;
 begin
@@ -1089,11 +1108,12 @@ create policy "Public plans" on public.plans for select using (true);
 
 -- Settings - admin only
 create policy "Admin settings" on public.platform_settings
-  using (exists (select 1 from public.profiles where id = auth.uid() and role = 'admin'));
+  using (public.is_admin(auth.uid()))
+  with check (public.is_admin(auth.uid()));
 
 -- Banned emails - admin read only
 create policy "Admin can read banned emails" on public.banned_emails for select
-  using (exists (select 1 from public.profiles where id = auth.uid() and role = 'admin'));
+  using (public.is_admin(auth.uid()));
 
 -- ── LOCK DOWN RPC EXECUTE GRANTS ────────────────────────────────
 -- See migration 0012 for the full rationale: every security-definer

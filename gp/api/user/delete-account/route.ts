@@ -97,6 +97,22 @@ export async function DELETE(req: Request) {
         .eq('user_id', user.id)
     }
 
+    // Step 6b: Revoke any outstanding API keys and disable webhooks —
+    // neither was ever touched by deletion before this. A live key kept
+    // authenticating every v1 route indefinitely with no separate
+    // expiry/edge-case needed (see lib/apiAuth.ts / migration 0030); a
+    // still-enabled webhook is lower-risk (nothing left to trigger it
+    // once credentials above are suspended) but shouldn't be left
+    // looking active on a deleted account either.
+    await adminSupabase.from('api_keys')
+      .update({ revoked_at: new Date().toISOString() })
+      .eq('user_id', user.id)
+      .is('revoked_at', null)
+    await adminSupabase.from('webhook_endpoints')
+      .update({ enabled: false })
+      .eq('user_id', user.id)
+      .eq('enabled', true)
+
     // Step 7: Email — best-effort, non-fatal
     if (profile?.email && profile.email !== '[deleted]') {
       await sendEmail({
