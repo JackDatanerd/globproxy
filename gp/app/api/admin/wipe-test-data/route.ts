@@ -7,20 +7,22 @@ import { NextResponse } from 'next/server'
 // clearing out QA/test data before going live. Deliberately NOT the same
 // path as /api/admin/delete-user, which soft-deletes (anonymises +
 // permanently bans, keeps the row) by design — that route exists for real
-// customer deletions where financial/audit records need to survive, and
-// its own comments explain exactly why it avoids auth.admin.deleteUser():
-// reseller_transfers has no ON DELETE CASCADE on either of its foreign
-// keys, so calling that against an account with transfer history throws a
-// raw FK violation and blocks the delete outright.
+// customer deletions where financial/audit records need to survive.
 //
-// This route is for the opposite case — genuinely wiping test data, where
-// there's nothing worth preserving — so it clears reseller_transfers and
-// banned_emails first (both pure test artifacts, nothing else references
-// them), which removes that blocker and lets auth.admin.deleteUser()
-// cascade cleanly through profiles -> bandwidth_accounts, orders,
-// proxy_credentials, proxy_sessions, api_keys, webhook_endpoints, and the
-// three mfa_* tables (all ON DELETE CASCADE from profiles.id, which is
-// itself ON DELETE CASCADE from auth.users.id).
+// IMPORTANT — this route does NOT rely on any ON DELETE CASCADE, despite
+// the schema describing several (profiles -> auth.users, and everything
+// else -> profiles). Investigating why auth.admin.deleteUser() was
+// returning "User not found" for accounts still fully visible in
+// /admin/users turned up real schema drift in production: some accounts'
+// auth.users rows were already gone (most likely from earlier manual
+// cleanup during testing, via the Supabase dashboard or otherwise) while
+// their profiles rows — which are only supposed to be able to exist
+// because of that same FK — were still very much present. Something about
+// how those rows came to exist or got partially cleaned up left the
+// cascade unreliable in practice, however it happened. Given that, this
+// route treats every cascade in the schema as advisory, not guaranteed,
+// and explicitly deletes every table by user_id itself rather than
+// deleting one row and hoping the rest follows.
 //
 // Protected by: admin role, MFA-verified session, and an exact
 // confirmation phrase — plus dry_run defaults to true so a bare call
@@ -77,62 +79,124 @@ export async function POST(req: Request) {
     return NextResponse.json({ success: true, deleted_count: 0, note: 'No non-admin accounts found.' })
   }
 
+  const targetIds = targets.map(t => t.id)
+
   // Step 1: clean up live Geonode sub-users before touching any local
-  // rows — same reasoning as delete-user's own step 1. Skipping this
-  // would leave real, billable sub-users orphaned on Geonode's side with
-  // nothing locally left to find or clean them up once the DB rows are
-  // gone.
+  // rows — skipping this would leave real, billable sub-users orphaned
+  // on Geonode's side with nothing locally left to find or clean them up
+  // once the DB rows are gone.
+  const { data: allCreds } = await supabase
+    .from('proxy_credentials')
+    .select('id, geonode_sub_user_id')
+    .in('user_id', targetIds)
+    .not('geonode_sub_user_id', 'is', null)
+
   let geonodeCleanedUp = 0
   const geonodeFailures: string[] = []
-  for (const t of targets) {
-    const { data: creds } = await supabase
-      .from('proxy_credentials')
-      .select('id, geonode_sub_user_id')
-      .eq('user_id', t.id)
-      .not('geonode_sub_user_id', 'is', null)
-
-    for (const cred of creds ?? []) {
-      if (!cred.geonode_sub_user_id) continue
-      try {
-        await deleteSubUser(cred.geonode_sub_user_id)
-        geonodeCleanedUp++
-      } catch (e) {
-        console.error('[wipe-test-data] Geonode cleanup failed for', cred.id, e)
-        geonodeFailures.push(cred.id)
-      }
+  for (const cred of allCreds ?? []) {
+    if (!cred.geonode_sub_user_id) continue
+    try {
+      await deleteSubUser(cred.geonode_sub_user_id)
+      geonodeCleanedUp++
+    } catch (e) {
+      console.error('[wipe-test-data] Geonode cleanup failed for', cred.id, e)
+      geonodeFailures.push(cred.id)
     }
   }
 
-  // Step 2: clear the two tables that don't cascade from profiles, which
-  // would otherwise block every deleteUser() call below with a raw FK
-  // violation the moment any of these test accounts shows up in either
-  // table's history.
+  // Step 2: reseller_transfers and banned_emails aren't scoped to a
+  // single user_id column the way everything else is (reseller_id +
+  // recipient_id, and a nullable banned_by) — pure test artifacts either
+  // way, so cleared entirely rather than filtered.
   const { error: transfersErr } = await supabase.from('reseller_transfers').delete().neq('id', '00000000-0000-0000-0000-000000000000')
   if (transfersErr) console.error('[wipe-test-data] Failed to clear reseller_transfers:', transfersErr)
 
   const { error: bannedErr } = await supabase.from('banned_emails').delete().neq('id', '00000000-0000-0000-0000-000000000000')
   if (bannedErr) console.error('[wipe-test-data] Failed to clear banned_emails:', bannedErr)
 
-  // Step 3: delete each auth user. This is the real deletion — cascades
-  // through profiles and everything ON DELETE CASCADE from it.
-  let deletedCount = 0
-  const deleteFailures: { email: string; error: string }[] = []
+  // Step 3: explicit, table-by-table deletion for everything else keyed
+  // on user_id — not relying on any cascade from profiles, per the
+  // investigation above. Order matters here only in that proxy_sessions
+  // references proxy_credentials directly (not just user_id), so it goes
+  // first purely for tidiness, though deleting proxy_credentials before
+  // it would still succeed today since that FK IS cascade — this route
+  // just isn't betting on that being true either way.
+  const childTables = [
+    'mfa_verified_sessions',
+    'mfa_backup_codes',
+    'mfa_totp_factors',
+    'webhook_endpoints',
+    'api_keys',
+    'proxy_sessions',
+    'proxy_credentials',
+    'orders',
+    'bandwidth_accounts',
+  ] as const
+
+  const tableErrors: Record<string, string> = {}
+  for (const table of childTables) {
+    const { error } = await supabase.from(table).delete().in('user_id', targetIds)
+    if (error) {
+      console.error(`[wipe-test-data] Failed to clear ${table}:`, error)
+      tableErrors[table] = error.message
+    }
+  }
+
+  // proxy_credentials.created_by can point at one of these accounts even
+  // on a row OWNED by someone who isn't being deleted (e.g. a reseller in
+  // the target list who allocated bandwidth to an account outside it) —
+  // the explicit delete above only catches rows where user_id matches,
+  // so any such row needs created_by nulled out directly rather than
+  // deleted.
+  const { error: createdByErr } = await supabase
+    .from('proxy_credentials')
+    .update({ created_by: null })
+    .in('created_by', targetIds)
+  if (createdByErr) console.error('[wipe-test-data] Failed to clear created_by references:', createdByErr)
+
+  // Step 4: delete the profiles rows themselves, directly — this is the
+  // row /admin/users actually reads, so this is what makes them
+  // disappear from the app regardless of what auth.users looks like.
+  const { error: profilesErr, count: profilesDeleted } = await supabase
+    .from('profiles')
+    .delete({ count: 'exact' })
+    .in('id', targetIds)
+  if (profilesErr) console.error('[wipe-test-data] Failed to clear profiles:', profilesErr)
+
+  // Step 5: delete the auth.users row for each target, best-effort.
+  // "User not found" here is expected and fine for any account whose
+  // auth.users row was already gone before this ran (the orphaned-row
+  // case this whole route was rewritten around) — not a real failure,
+  // since the actual goal (no trace of this account left) is already
+  // satisfied for those. Only a genuinely different error gets counted.
+  let authDeletedCount = 0
+  let alreadyGoneCount = 0
+  const authFailures: { email: string; error: string }[] = []
   for (const t of targets) {
     const { error } = await supabase.auth.admin.deleteUser(t.id)
-    if (error) {
-      console.error('[wipe-test-data] Failed to delete', t.email, error.message)
-      deleteFailures.push({ email: t.email, error: error.message })
+    if (!error) {
+      authDeletedCount++
+    } else if (/not found/i.test(error.message)) {
+      alreadyGoneCount++
     } else {
-      deletedCount++
+      console.error('[wipe-test-data] Failed to delete auth user', t.email, error.message)
+      authFailures.push({ email: t.email, error: error.message })
     }
   }
 
   return NextResponse.json({
-    success: deleteFailures.length === 0,
-    deleted_count: deletedCount,
-    delete_failures: deleteFailures,
+    success: !profilesErr && authFailures.length === 0 && Object.keys(tableErrors).length === 0,
+    profiles_deleted: profilesDeleted ?? 0,
+    profiles_clear_error: profilesErr?.message ?? null,
+    auth_users_deleted: authDeletedCount,
+    auth_users_already_gone: alreadyGoneCount, // orphaned-row cases — expected, not a problem
+    auth_delete_failures: authFailures,
+    child_table_errors: tableErrors, // should be {} — any key here means that table didn't fully clear
     geonode_cleaned_up: geonodeCleanedUp,
     geonode_failures: geonodeFailures,
+    transfers_clear_error: transfersErr?.message ?? null,
+    banned_emails_clear_error: bannedErr?.message ?? null,
+    created_by_clear_error: createdByErr?.message ?? null,
     survivors: (survivors ?? []).map(s => s.email),
   })
 }
