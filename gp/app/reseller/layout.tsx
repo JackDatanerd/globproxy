@@ -15,6 +15,7 @@ export default async function ResellerLayout({ children }: { children: React.Rea
 
   if (profile?.role !== 'reseller' && profile?.role !== 'admin') redirect('/dashboard')
   // Defense-in-depth — see app/dashboard/layout.tsx for rationale.
+  if (profile?.is_deleted) redirect('/auth/login?deleted=1')
   if (profile?.is_suspended) redirect('/auth/login?suspended=1')
 
   // Defense-in-depth for the mandatory-MFA gate — see middleware.ts for

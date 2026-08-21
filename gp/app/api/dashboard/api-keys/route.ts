@@ -38,7 +38,15 @@ export async function POST(req: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const { data: profile } = await supabase.from('profiles').select('role, api_access, is_suspended').eq('id', user.id).single()
+  const { data: profile } = await supabase.from('profiles').select('role, api_access, is_suspended, is_deleted').eq('id', user.id).single()
+  // Middleware excludes /api from its route matcher, so a deleted
+  // account's still-unexpired session token can reach this route
+  // directly even though /dashboard/api-keys itself is blocked (see
+  // migration 0029). The key that would be minted here couldn't actually
+  // authenticate anything afterward — lib/apiAuth.ts's requireApiAccess
+  // checks is_deleted too (migration 0030) — but there's no reason to
+  // hand out a key that's dead on arrival instead of just saying no here.
+  if (profile?.is_deleted) return NextResponse.json({ error: 'This account no longer exists.' }, { status: 403 })
   if (profile?.is_suspended) return NextResponse.json({ error: 'Account suspended' }, { status: 403 })
   if (profile?.role === 'user' || (!profile?.api_access && profile?.role !== 'admin')) {
     return NextResponse.json({ error: 'API access is not enabled for your account.' }, { status: 403 })

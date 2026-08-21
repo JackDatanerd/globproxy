@@ -84,14 +84,22 @@ export async function POST(req: Request) {
 
     // 2. Already registered — don't attempt signup again (Supabase would
     // just error), don't reveal that an account exists either. Whether
-    // suspended or active, the response is identical.
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('id')
-      .eq('email', email.toLowerCase())
-      .single()
+    // suspended, active, OR PREVIOUSLY DELETED, the response is identical.
+    //
+    // Checks auth.users (via auth_email_exists, migration 0029) rather
+    // than profiles.email. Deletion (app/api/user/delete-account,
+    // app/api/admin/delete-user) overwrites profiles.email with the
+    // literal '[deleted]' placeholder but leaves the real auth.users row
+    // in place (banned, not hard-deleted — see delete-account/route.ts).
+    // A profiles.email-only check stops matching the real address the
+    // moment an account is deleted, silently falling through to branch 3
+    // below and re-invoking supabase.auth.signUp() against a dormant
+    // identity that was never meant to be reachable again.
+    const { data: emailExists } = await supabase.rpc('auth_email_exists', {
+      check_email: email.toLowerCase(),
+    })
 
-    if (profile) return respondGeneric(startedAt)
+    if (emailExists) return respondGeneric(startedAt)
 
     // 3. All clear — sign up via Supabase. Errors here (weak password,
     // provider-side validation) are still surfaced directly since they're

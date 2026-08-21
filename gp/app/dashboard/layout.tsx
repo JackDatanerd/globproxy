@@ -21,6 +21,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
   // account can't reach dashboard data via this layout if middleware is ever
   // bypassed or misconfigured for this route group, the same way admin/layout.tsx
   // independently re-checks role rather than relying on middleware alone.
+  if (profile?.is_deleted) redirect('/auth/login?deleted=1')
   if (profile?.is_suspended) redirect('/auth/login?suspended=1')
 
   // Same defense-in-depth reasoning, for the mandatory-MFA gate — see

@@ -104,9 +104,27 @@ export async function middleware(request: NextRequest) {
     // and the MFA-required flag together.
     const { data: profile } = await supabase
       .from('profiles')
-      .select('role, is_suspended, mfa_enabled')
+      .select('role, is_suspended, is_deleted, mfa_enabled')
       .eq('id', user.id)
       .single()
+
+    // Deleted — sign out and redirect. This is the actual enforcement
+    // point referenced throughout the app (lib/apiAuth.ts,
+    // app/dashboard/layout.tsx, app/reseller/layout.tsx, migration 0029's
+    // own comments) as "middleware.ts's is_deleted check" — closing this
+    // here, alongside is_suspended right below, is what makes every one
+    // of /dashboard, /reseller, /admin, /invoice actually stop working
+    // for a deleted account on its very next request, regardless of
+    // whether the access token itself is technically still unexpired.
+    // Layout-level checks on /dashboard and /reseller are a second,
+    // defense-in-depth backstop for the same thing — this is what's
+    // supposed to catch it first, for every protected path at once,
+    // including /admin and /invoice which never got an equivalent
+    // layout-level check of their own.
+    if (profile?.is_deleted && !path.startsWith('/auth')) {
+      await supabase.auth.signOut()
+      return NextResponse.redirect(new URL('/auth/login?deleted=1', request.url))
+    }
 
     // Suspended — sign out and redirect
     if (profile?.is_suspended && !path.startsWith('/auth')) {

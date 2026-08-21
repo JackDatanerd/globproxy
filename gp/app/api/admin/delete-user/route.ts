@@ -78,6 +78,12 @@ export async function POST(req: Request) {
   // violation for any account with reseller_transfers history, blocking
   // deletion entirely. Banning permanently revokes login/API access while
   // leaving the anonymised tombstone and financial/audit records intact.
+  //
+  // This blocks future sign-ins/refreshes, not an already-issued access
+  // token — Supabase has no API to revoke one before natural expiry, and
+  // this route doesn't hold the target user's own JWT to revoke their
+  // refresh token either. middleware.ts's is_deleted check (migration
+  // 0029) is what actually closes that window on the very next request.
   const { error: banError } = await supabase.auth.admin.updateUserById(user_id, {
     ban_duration: '876000h', // ~100 years — effectively permanent
   })
@@ -101,6 +107,19 @@ export async function POST(req: Request) {
       .update({ status: 'suspended' })
       .eq('user_id', user_id)
   }
+
+  // Step 4b: Revoke any outstanding API keys and disable webhooks — see
+  // app/api/user/delete-account/route.ts's Step 6b for the full
+  // rationale (mirrors that route so both deletion paths leave the same
+  // end state).
+  await supabase.from('api_keys')
+    .update({ revoked_at: new Date().toISOString() })
+    .eq('user_id', user_id)
+    .is('revoked_at', null)
+  await supabase.from('webhook_endpoints')
+    .update({ enabled: false })
+    .eq('user_id', user_id)
+    .eq('enabled', true)
 
   // Step 5: Email — best-effort, non-fatal
   if (tp.email && tp.email !== '[deleted]') {

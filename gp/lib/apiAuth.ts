@@ -46,9 +46,18 @@ function unauthorized() {
 // an unexpired access token could hit those three routes directly and
 // keep purchasing bandwidth / creating credentials. Call this at the top
 // of any route that writes on a logged-in user's behalf.
+//
+// Also checks is_deleted, not just is_suspended — the same gap
+// middleware.ts had before migration 0029 existed here too, and unlike
+// the page-routing case there's no signup-side precondition needed: this
+// only requires an unexpired session token for an account that's since
+// been deleted, which is a much easier bar to clear.
 export async function requireActiveUser(userId: string): Promise<NextResponse | null> {
   const supabase = await createAdminClient()
-  const { data } = await supabase.from('profiles').select('is_suspended').eq('id', userId).single()
+  const { data } = await supabase.from('profiles').select('is_suspended, is_deleted').eq('id', userId).single()
+  if (data?.is_deleted) {
+    return NextResponse.json({ error: 'This account no longer exists.' }, { status: 403 })
+  }
   if (data?.is_suspended) {
     return NextResponse.json(
       { error: 'This account has been suspended. Contact support@globproxy.com.' },
@@ -92,11 +101,25 @@ export async function requireApiAccess(req: Request): Promise<ApiAuthResult> {
 
     const { data: profile } = await supabase
       .from('profiles')
-      .select('id, email, role, api_access, is_suspended')
+      .select('id, email, role, api_access, is_suspended, is_deleted')
       .eq('id', apiKey.user_id)
       .single()
 
     if (!profile) {
+      return { ok: false, response: unauthorized() }
+    }
+
+    // Same check as requireActiveUser above, and the same gap
+    // middleware.ts had before migration 0029: neither delete-account nor
+    // admin/delete-user ever revoked a user's existing api_keys rows, so
+    // without this a key generated before deletion just kept
+    // authenticating against every v1 route indefinitely — no expired
+    // token, no signup edge case needed, the key itself never stopped
+    // working. Treated as unauthorized rather than the 403s below since
+    // there's no account left to be "forbidden" for. See migration 0030
+    // for the backfill that revokes every currently-deleted account's
+    // outstanding keys.
+    if (profile.is_deleted) {
       return { ok: false, response: unauthorized() }
     }
 

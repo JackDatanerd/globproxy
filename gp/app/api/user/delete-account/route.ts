@@ -64,6 +64,17 @@ export async function DELETE(req: Request) {
     // cascade and remove the anonymised profile row (and everything hanging
     // off it) we just wrote, and throw an FK error for accounts with
     // reseller_transfers history. See admin/delete-user/route.ts.
+    //
+    // The ban blocks future sign-ins and refreshes, but an access token
+    // issued moments before this runs is a stateless JWT — Supabase has no
+    // API to revoke one before it naturally expires (only refresh tokens
+    // can be revoked, and only via that token owner's own JWT, which
+    // isn't something either this route or admin/delete-user/route.ts
+    // holds for arbitrary calls). middleware.ts's is_deleted check
+    // (migration 0029) is what actually closes that window: it blocks
+    // /dashboard, /reseller, /admin, and /invoice for this profile on the
+    // very next request regardless of whether the access token itself is
+    // technically still "valid".
     const { error: banError } = await adminSupabase.auth.admin.updateUserById(user.id, {
       ban_duration: '876000h',
     })
@@ -85,6 +96,22 @@ export async function DELETE(req: Request) {
         .update({ status: 'suspended' })
         .eq('user_id', user.id)
     }
+
+    // Step 6b: Revoke any outstanding API keys and disable webhooks —
+    // neither was ever touched by deletion before this. A live key kept
+    // authenticating every v1 route indefinitely with no separate
+    // expiry/edge-case needed (see lib/apiAuth.ts / migration 0030); a
+    // still-enabled webhook is lower-risk (nothing left to trigger it
+    // once credentials above are suspended) but shouldn't be left
+    // looking active on a deleted account either.
+    await adminSupabase.from('api_keys')
+      .update({ revoked_at: new Date().toISOString() })
+      .eq('user_id', user.id)
+      .is('revoked_at', null)
+    await adminSupabase.from('webhook_endpoints')
+      .update({ enabled: false })
+      .eq('user_id', user.id)
+      .eq('enabled', true)
 
     // Step 7: Email — best-effort, non-fatal
     if (profile?.email && profile.email !== '[deleted]') {
