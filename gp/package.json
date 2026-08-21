@@ -9,7 +9,8 @@
     "start": "next start",
     "preview": "opennextjs-cloudflare preview",
     "deploy:manual-DANGER": "opennextjs-cloudflare build && npx wrangler deploy",
-    "check:schema": "node scripts/check-schema-sync.mjs"
+    "check:schema": "node scripts/check-schema-sync.mjs",
+    "indexnow": "node scripts/indexnow-submit.mjs"
   },
   "dependencies": {
     "@paystack/inline-js": "^2.24.0",
