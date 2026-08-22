@@ -20,7 +20,7 @@ export default function TermsPage() {
         <div className="space-y-8 text-ink2 leading-relaxed">
           <section>
             <h2 className="font-display font-bold text-xl text-ink mb-3">1. The Service</h2>
-            <p className="text-sm">GlobProxy (operated by Saltern Studio, Kenya) provides access to a network of residential IP addresses on a prepaid basis. Bandwidth does not expire. We act as a reseller of proxy infrastructure provided by third-party suppliers.</p>
+            <p className="text-sm">GlobProxy (operated by Saltern Studio) provides access to a network of residential IP addresses on a prepaid basis. Bandwidth does not expire. We act as a reseller of proxy infrastructure provided by third-party suppliers.</p>
           </section>
           <section>
             <h2 className="font-display font-bold text-xl text-ink mb-3">2. Acceptable Use</h2>
@@ -50,12 +50,12 @@ export default function TermsPage() {
             <h2 className="font-display font-bold text-xl text-ink mb-3">6. Limitation of Liability</h2>
             <p className="text-sm">GlobProxy is provided &quot;as is&quot;. To the fullest extent permitted by law, Saltern Studio shall not be liable for indirect, incidental, or consequential damages. Our total liability shall not exceed the amount paid by you in the 30 days preceding the claim.</p>
           </section>
-          <section>
+          {/* <section>
             <h2 className="font-display font-bold text-xl text-ink mb-3">7. Governing Law</h2>
             <p className="text-sm">These terms are governed by the laws of Kenya. Disputes shall be subject to the jurisdiction of the courts of Nairobi, Kenya.</p>
-          </section>
+          </section> */}
           <section>
-            <h2 className="font-display font-bold text-xl text-ink mb-3">8. Contact</h2>
+            <h2 className="font-display font-bold text-xl text-ink mb-3">7. Contact</h2>
             <p className="text-sm">Questions: <a href="mailto:legal@globproxy.com" className="text-accent hover:underline">legal@globproxy.com</a></p>
           </section>
         </div>

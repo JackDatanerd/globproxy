@@ -16,7 +16,7 @@ export default function PrivacyPage() {
         <div className="space-y-8 text-ink2 leading-relaxed">
           <section>
             <h2 className="font-display font-bold text-xl text-ink mb-3">1. Who We Are</h2>
-            <p className="text-sm">GlobProxy is operated by Saltern Studio, a business registered in Kenya. We provide residential proxy bandwidth services. Contact: <a href="mailto:privacy@globproxy.com" className="text-accent hover:underline">privacy@globproxy.com</a></p>
+            <p className="text-sm">GlobProxy is operated by Saltern Studio. We provide residential proxy bandwidth services. Contact: <a href="mailto:privacy@globproxy.com" className="text-accent hover:underline">privacy@globproxy.com</a></p>
           </section>
           <section>
             <h2 className="font-display font-bold text-xl text-ink mb-3">2. What Data We Collect</h2>
@@ -53,7 +53,7 @@ export default function PrivacyPage() {
           </section>
           <section>
             <h2 className="font-display font-bold text-xl text-ink mb-3">5. Data Retention</h2>
-            <p className="text-sm">We retain account data while your account is active. On account closure, personal data is deleted within 30 days. Financial records are retained for 7 years per Kenyan tax law.</p>
+            <p className="text-sm">We retain account data while your account is active. On account closure, personal data is deleted within 30 days. Financial records are retained for 7 years.</p>
           </section>
           <section>
             <h2 className="font-display font-bold text-xl text-ink mb-3">6. Your Rights</h2>
