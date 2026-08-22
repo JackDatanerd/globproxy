@@ -17,12 +17,20 @@ import { NextResponse } from 'next/server'
 // auth.users rows were already gone (most likely from earlier manual
 // cleanup during testing, via the Supabase dashboard or otherwise) while
 // their profiles rows — which are only supposed to be able to exist
-// because of that same FK — were still very much present. Something about
-// how those rows came to exist or got partially cleaned up left the
-// cascade unreliable in practice, however it happened. Given that, this
-// route treats every cascade in the schema as advisory, not guaranteed,
-// and explicitly deletes every table by user_id itself rather than
-// deleting one row and hoping the rest follows.
+// because of that same FK — were still very much present.
+//
+// That same orphaning turned out to run deeper than just profiles vs.
+// auth.users: revenue/order/GB-sold totals on /admin stayed nonzero
+// after profiles were fully cleared, because those numbers sum every
+// paid order unconditionally — and some orders' owning profile had
+// already been gone before this route ever ran, so they were never in
+// its enumerated target list to begin with. Every table below is now
+// swept by "does not belong to a surviving admin" rather than "belongs to
+// one of the profiles we found just now" — the former has no blind spot
+// for rows whose owner is already gone; the latter can only ever act on
+// what it can currently see. Step 6 closes the mirror-image case too: an
+// auth.users row with no profiles row at all, which no profiles-sourced
+// query could ever enumerate no matter how it's written.
 //
 // Protected by: admin role, MFA-verified session, and an exact
 // confirmation phrase — plus dry_run defaults to true so a bare call
@@ -63,20 +71,44 @@ export async function POST(req: Request) {
 
   if (targetsErr) return NextResponse.json({ error: targetsErr.message }, { status: 500 })
 
-  const { data: survivors } = await supabase.from('profiles').select('email').eq('role', 'admin')
+  const { data: survivors } = await supabase.from('profiles').select('id, email').eq('role', 'admin')
+  const adminIds = (survivors ?? []).map((s: any) => s.id)
+
+  // Shared by both branches — this is the auth-side mirror of the
+  // profiles-side orphan case that started this whole investigation: an
+  // auth.users row with no profiles row behind it at all, invisible to
+  // `targets` no matter how that's queried since it's sourced from
+  // profiles. Computed up front so the dry run can actually preview it
+  // instead of only surfacing it after execution.
+  async function findStrayAuthUsers() {
+    let page = 1
+    const stray: { id: string; email: string }[] = []
+    while (true) {
+      const { data: pageData, error: listErr } = await supabase.auth.admin.listUsers({ page, perPage: 200 })
+      if (listErr) { console.error('[wipe-test-data] listUsers failed:', listErr); break }
+      for (const u of pageData.users) {
+        if (!adminIds.includes(u.id)) stray.push({ id: u.id, email: u.email ?? '(no email)' })
+      }
+      if (pageData.users.length < 200) break
+      page++
+    }
+    return stray
+  }
 
   if (dryRun) {
+    const strayPreview = await findStrayAuthUsers()
     return NextResponse.json({
       dry_run: true,
       would_delete_count: targets?.length ?? 0,
       would_delete_emails: (targets ?? []).map(t => t.email),
       would_survive: (survivors ?? []).map(s => s.email),
+      // Present in auth.users but with no matching profiles row — these
+      // wouldn't show up anywhere in /admin/users, so surfacing them here
+      // specifically rather than folding them silently into the count
+      // above.
+      stray_auth_users_not_in_profiles: strayPreview.map(s => s.email),
       note: 'Nothing was deleted. Re-call with { "confirm": "' + CONFIRM_PHRASE + '", "dry_run": false } to actually run this.',
     })
-  }
-
-  if (!targets || targets.length === 0) {
-    return NextResponse.json({ success: true, deleted_count: 0, note: 'No non-admin accounts found.' })
   }
 
   const targetIds = targets.map(t => t.id)
@@ -84,17 +116,20 @@ export async function POST(req: Request) {
   // Step 1: clean up live Geonode sub-users before touching any local
   // rows — skipping this would leave real, billable sub-users orphaned
   // on Geonode's side with nothing locally left to find or clean them up
-  // once the DB rows are gone.
+  // once the DB rows are gone. Swept by "not admin" rather than "owned by
+  // a current target", same reasoning as every other table below: a
+  // credential can be orphaned (owner profile already gone) and still
+  // have a live, billable Geonode sub-user behind it.
   const { data: allCreds } = await supabase
     .from('proxy_credentials')
-    .select('id, geonode_sub_user_id')
-    .in('user_id', targetIds)
+    .select('id, geonode_sub_user_id, user_id')
     .not('geonode_sub_user_id', 'is', null)
 
   let geonodeCleanedUp = 0
   const geonodeFailures: string[] = []
   for (const cred of allCreds ?? []) {
     if (!cred.geonode_sub_user_id) continue
+    if (adminIds.includes(cred.user_id)) continue // admin's own — not test data, leave it
     try {
       await deleteSubUser(cred.geonode_sub_user_id)
       geonodeCleanedUp++
@@ -116,11 +151,13 @@ export async function POST(req: Request) {
 
   // Step 3: explicit, table-by-table deletion for everything else keyed
   // on user_id — not relying on any cascade from profiles, per the
-  // investigation above. Order matters here only in that proxy_sessions
-  // references proxy_credentials directly (not just user_id), so it goes
-  // first purely for tidiness, though deleting proxy_credentials before
-  // it would still succeed today since that FK IS cascade — this route
-  // just isn't betting on that being true either way.
+  // investigation above. Deliberately "not admin" rather than "owned by
+  // a current target": scoping to targetIds (accounts that still have a
+  // profiles row right now) misses rows belonging to accounts that were
+  // already fully gone from profiles before this ever ran — orphaned
+  // orders being the concrete case that surfaced this. "Not admin" has
+  // no such blind spot; it can't miss a row just because the account
+  // behind it is already gone.
   const childTables = [
     'mfa_verified_sessions',
     'mfa_backup_codes',
@@ -135,23 +172,24 @@ export async function POST(req: Request) {
 
   const tableErrors: Record<string, string> = {}
   for (const table of childTables) {
-    const { error } = await supabase.from(table).delete().in('user_id', targetIds)
+    const query = adminIds.length > 0
+      ? supabase.from(table).delete().not('user_id', 'in', `(${adminIds.join(',')})`)
+      : supabase.from(table).delete().neq('user_id', '00000000-0000-0000-0000-000000000000') // no admin at all — wipe unconditionally
+    const { error } = await query
     if (error) {
       console.error(`[wipe-test-data] Failed to clear ${table}:`, error)
       tableErrors[table] = error.message
     }
   }
 
-  // proxy_credentials.created_by can point at one of these accounts even
-  // on a row OWNED by someone who isn't being deleted (e.g. a reseller in
-  // the target list who allocated bandwidth to an account outside it) —
-  // the explicit delete above only catches rows where user_id matches,
-  // so any such row needs created_by nulled out directly rather than
-  // deleted.
-  const { error: createdByErr } = await supabase
-    .from('proxy_credentials')
-    .update({ created_by: null })
-    .in('created_by', targetIds)
+  // proxy_credentials.created_by can point at a deleted account even on a
+  // row owned (user_id) by admin, or by an already-orphaned account this
+  // sweep never directly enumerated — nulled out by the same "not admin"
+  // rule rather than scoped to targetIds, for the same reason as above.
+  const createdByQuery = adminIds.length > 0
+    ? supabase.from('proxy_credentials').update({ created_by: null }).not('created_by', 'in', `(${adminIds.join(',')})`)
+    : supabase.from('proxy_credentials').update({ created_by: null }).not('created_by', 'is', null)
+  const { error: createdByErr } = await createdByQuery
   if (createdByErr) console.error('[wipe-test-data] Failed to clear created_by references:', createdByErr)
 
   // Step 4: delete the profiles rows themselves, directly — this is the
@@ -184,13 +222,28 @@ export async function POST(req: Request) {
     }
   }
 
+  // Step 6: sweep auth.users directly for anything left over — see
+  // findStrayAuthUsers() above for what this catches and why.
+  const strayAuthUsers = await findStrayAuthUsers()
+
+  let strayAuthDeleted = 0
+  const strayAuthFailures: { email: string; error: string }[] = []
+  for (const u of strayAuthUsers) {
+    const { error } = await supabase.auth.admin.deleteUser(u.id)
+    if (!error) strayAuthDeleted++
+    else if (!/not found/i.test(error.message)) strayAuthFailures.push({ email: u.email, error: error.message })
+  }
+
   return NextResponse.json({
-    success: !profilesErr && authFailures.length === 0 && Object.keys(tableErrors).length === 0,
+    success: !profilesErr && authFailures.length === 0 && Object.keys(tableErrors).length === 0 && strayAuthFailures.length === 0,
     profiles_deleted: profilesDeleted ?? 0,
     profiles_clear_error: profilesErr?.message ?? null,
     auth_users_deleted: authDeletedCount,
     auth_users_already_gone: alreadyGoneCount, // orphaned-row cases — expected, not a problem
     auth_delete_failures: authFailures,
+    stray_auth_users_found: strayAuthUsers.length, // had no matching profiles row at all
+    stray_auth_users_deleted: strayAuthDeleted,
+    stray_auth_failures: strayAuthFailures,
     child_table_errors: tableErrors, // should be {} — any key here means that table didn't fully clear
     geonode_cleaned_up: geonodeCleanedUp,
     geonode_failures: geonodeFailures,
