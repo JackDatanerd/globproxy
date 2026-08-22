@@ -19,18 +19,22 @@ import { NextResponse } from 'next/server'
 // their profiles rows — which are only supposed to be able to exist
 // because of that same FK — were still very much present.
 //
-// That same orphaning turned out to run deeper than just profiles vs.
-// auth.users: revenue/order/GB-sold totals on /admin stayed nonzero
-// after profiles were fully cleared, because those numbers sum every
-// paid order unconditionally — and some orders' owning profile had
-// already been gone before this route ever ran, so they were never in
-// its enumerated target list to begin with. Every table below is now
-// swept by "does not belong to a surviving admin" rather than "belongs to
-// one of the profiles we found just now" — the former has no blind spot
-// for rows whose owner is already gone; the latter can only ever act on
-// what it can currently see. Step 6 closes the mirror-image case too: an
-// auth.users row with no profiles row at all, which no profiles-sourced
-// query could ever enumerate no matter how it's written.
+// This also isn't just "delete every non-admin account" — the goal
+// (a platform with zero purchase/usage history, "we've never sold
+// anything") means admin's own test purchases, credentials, and API keys
+// need to go too, not just other accounts'. Only three tables protect
+// admin's own rows: mfa_verified_sessions, mfa_backup_codes, and
+// mfa_totp_factors — wiping those would force admin to redo 2FA
+// enrollment or otherwise disrupt their own ability to log back in, for
+// no benefit (that's account security config, not platform activity).
+// Every other table — orders, bandwidth_accounts, proxy_credentials,
+// proxy_sessions, api_keys, webhook_endpoints — is cleared completely,
+// unconditionally, no user_id filter at all, including admin's own rows.
+// An unconditional delete also has no possible blind spot the way a
+// "not admin" filter still theoretically could — worth noting a very
+// specific pair of orphaned orders survived exactly that kind of filter
+// on an earlier run of this route, for reasons not fully root-caused;
+// moot now since there's no filter left for that to hide behind.
 //
 // Protected by: admin role, MFA-verified session, and an exact
 // confirmation phrase — plus dry_run defaults to true so a bare call
@@ -116,20 +120,19 @@ export async function POST(req: Request) {
   // Step 1: clean up live Geonode sub-users before touching any local
   // rows — skipping this would leave real, billable sub-users orphaned
   // on Geonode's side with nothing locally left to find or clean them up
-  // once the DB rows are gone. Swept by "not admin" rather than "owned by
-  // a current target", same reasoning as every other table below: a
-  // credential can be orphaned (owner profile already gone) and still
-  // have a live, billable Geonode sub-user behind it.
+  // once the DB rows are gone. Every credential gets swept, including
+  // admin's own — proxy_credentials is fully wiped below regardless of
+  // owner, so any admin-owned sub-user would otherwise be left dangling
+  // on Geonode's side with no local record pointing back to it.
   const { data: allCreds } = await supabase
     .from('proxy_credentials')
-    .select('id, geonode_sub_user_id, user_id')
+    .select('id, geonode_sub_user_id')
     .not('geonode_sub_user_id', 'is', null)
 
   let geonodeCleanedUp = 0
   const geonodeFailures: string[] = []
   for (const cred of allCreds ?? []) {
     if (!cred.geonode_sub_user_id) continue
-    if (adminIds.includes(cred.user_id)) continue // admin's own — not test data, leave it
     try {
       await deleteSubUser(cred.geonode_sub_user_id)
       geonodeCleanedUp++
@@ -149,19 +152,27 @@ export async function POST(req: Request) {
   const { error: bannedErr } = await supabase.from('banned_emails').delete().neq('id', '00000000-0000-0000-0000-000000000000')
   if (bannedErr) console.error('[wipe-test-data] Failed to clear banned_emails:', bannedErr)
 
-  // Step 3: explicit, table-by-table deletion for everything else keyed
-  // on user_id — not relying on any cascade from profiles, per the
-  // investigation above. Deliberately "not admin" rather than "owned by
-  // a current target": scoping to targetIds (accounts that still have a
-  // profiles row right now) misses rows belonging to accounts that were
-  // already fully gone from profiles before this ever ran — orphaned
-  // orders being the concrete case that surfaced this. "Not admin" has
-  // no such blind spot; it can't miss a row just because the account
-  // behind it is already gone.
-  const childTables = [
-    'mfa_verified_sessions',
-    'mfa_backup_codes',
-    'mfa_totp_factors',
+  // Step 3: explicit, table-by-table deletion — not relying on any
+  // cascade from profiles, per the investigation above. Split into two
+  // groups:
+  //
+  //   - fullWipeTables: cleared unconditionally, no user_id filter at
+  //     all, including whatever admin has here too. The point of this
+  //     route is "every record should be fresh, we've never sold
+  //     anything" — that includes admin's own test purchases/credentials,
+  //     not just other accounts'. An unconditional delete also has no
+  //     possible blind spot for orphaned rows the way a "not admin"
+  //     filter still theoretically could (worth investigating separately
+  //     why one very specific pair of orphaned orders survived that
+  //     filter last run) — nothing to investigate if there's no filter
+  //     to have a blind spot in.
+  //
+  //   - adminProtectedTables: admin's own rows are kept here on purpose —
+  //     these are MFA/session tables, and wiping admin's own entries
+  //     would force them to redo 2FA enrollment or otherwise disrupt
+  //     their own ability to log back in, for zero benefit (this isn't
+  //     "test data" in any meaningful sense).
+  const fullWipeTables = [
     'webhook_endpoints',
     'api_keys',
     'proxy_sessions',
@@ -170,8 +181,23 @@ export async function POST(req: Request) {
     'bandwidth_accounts',
   ] as const
 
+  const adminProtectedTables = [
+    'mfa_verified_sessions',
+    'mfa_backup_codes',
+    'mfa_totp_factors',
+  ] as const
+
   const tableErrors: Record<string, string> = {}
-  for (const table of childTables) {
+
+  for (const table of fullWipeTables) {
+    const { error } = await supabase.from(table).delete().neq('id', '00000000-0000-0000-0000-000000000000')
+    if (error) {
+      console.error(`[wipe-test-data] Failed to clear ${table}:`, error)
+      tableErrors[table] = error.message
+    }
+  }
+
+  for (const table of adminProtectedTables) {
     const query = adminIds.length > 0
       ? supabase.from(table).delete().not('user_id', 'in', `(${adminIds.join(',')})`)
       : supabase.from(table).delete().neq('user_id', '00000000-0000-0000-0000-000000000000') // no admin at all — wipe unconditionally
@@ -182,15 +208,9 @@ export async function POST(req: Request) {
     }
   }
 
-  // proxy_credentials.created_by can point at a deleted account even on a
-  // row owned (user_id) by admin, or by an already-orphaned account this
-  // sweep never directly enumerated — nulled out by the same "not admin"
-  // rule rather than scoped to targetIds, for the same reason as above.
-  const createdByQuery = adminIds.length > 0
-    ? supabase.from('proxy_credentials').update({ created_by: null }).not('created_by', 'in', `(${adminIds.join(',')})`)
-    : supabase.from('proxy_credentials').update({ created_by: null }).not('created_by', 'is', null)
-  const { error: createdByErr } = await createdByQuery
-  if (createdByErr) console.error('[wipe-test-data] Failed to clear created_by references:', createdByErr)
+  // No separate created_by nulling needed anymore — proxy_credentials is
+  // now in fullWipeTables above and gets cleared entirely, so there's no
+  // row left for a dangling created_by reference to exist on.
 
   // Step 4: delete the profiles rows themselves, directly — this is the
   // row /admin/users actually reads, so this is what makes them
@@ -249,7 +269,6 @@ export async function POST(req: Request) {
     geonode_failures: geonodeFailures,
     transfers_clear_error: transfersErr?.message ?? null,
     banned_emails_clear_error: bannedErr?.message ?? null,
-    created_by_clear_error: createdByErr?.message ?? null,
     survivors: (survivors ?? []).map(s => s.email),
   })
 }
