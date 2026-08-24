@@ -40,6 +40,26 @@ function resolveFromHeader(): string {
   return raw.includes('<') ? raw : `GlobProxy <${raw}>`
 }
 
+// Shared branded shell for security-relevant account-change notices —
+// same visual shape notify-password-changed/route.ts established, pulled
+// out here since MFA enable/disable/backup-code-regen need the identical
+// wrapper with only the heading and middle paragraph(s) differing. New
+// additions in this family (email-changed, api-key-created, etc.) should
+// build on this rather than re-copying the wrapper markup by hand.
+export function securityNoticeHtml(opts: { heading: string; bodyHtml: string }): string {
+  return `
+    <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
+      <img src="https://globproxy.com/og-image.png" alt="GlobProxy" width="200"
+        style="display:block;margin:0 auto 32px auto;border-radius:12px;"/>
+      <h2 style="text-align:center;color:#111;">${opts.heading}</h2>
+      ${opts.bodyHtml}
+      <p style="color:#bbb;font-size:12px;text-align:center;margin-top:32px;">
+        © 2026 GlobProxy · Residential Proxies That Never Expire
+      </p>
+    </div>
+  `
+}
+
 export async function sendEmail(p: { to: string; subject: string; html: string }) {
   // Enforced here, not just at each call site, so a future caller that
   // interpolates user input into `subject` can't reintroduce this by
