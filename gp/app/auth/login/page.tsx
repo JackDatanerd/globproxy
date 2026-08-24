@@ -14,6 +14,7 @@ function LoginForm() {
   const params = useSearchParams()
   const suspended = params.get('suspended')
   const deleted = params.get('deleted')
+  const linkExpired = params.get('error') === 'link_expired'
 
   useEffect(() => {
     createClient().auth.getSession().then(({ data: { session } }) => {
@@ -33,6 +34,11 @@ function LoginForm() {
     <div className="w-full max-w-md">
       {suspended && <div className="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded-xl mb-5">Your account has been suspended. Contact support@globproxy.com.</div>}
       {deleted && <div className="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded-xl mb-5">This account has been deleted.</div>}
+      {linkExpired && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 text-sm px-4 py-3 rounded-xl mb-5">
+          That link no longer works. If it was a password reset link, <Link href="/auth/reset" className="underline">request a new one</Link>.
+        </div>
+      )}
       <div className="bg-white border border-border rounded-2xl p-10 shadow-sm">
         <h1 className="font-display font-bold text-2xl text-ink mb-1">Welcome back</h1>
         <p className="text-muted text-sm mb-8">Sign in to your GlobProxy dashboard</p>

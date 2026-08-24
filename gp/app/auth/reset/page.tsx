@@ -1,12 +1,21 @@
 'use client'
-import { useState } from 'react'
+import { useState, Suspense } from 'react'
 import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
 import toast from 'react-hot-toast'
 
-export default function ResetPage() {
+function ResetForm() {
   const [email, setEmail] = useState('')
   const [loading, setLoading] = useState(false)
   const [sent, setSent] = useState(false)
+  const params = useSearchParams()
+  // Set by /auth/callback when exchangeCodeForSession fails on a recovery
+  // link — almost always because a newer reset request (or a different
+  // browser) overwrote the single code_verifier cookie this link needed,
+  // not because time actually ran out. Surfacing this here, with the form
+  // right below it, so the fix (request a fresh link) is one click away
+  // instead of a dead end at /auth/login with no explanation.
+  const linkExpired = params.get('error') === 'link_expired'
 
   async function handle(e: React.FormEvent) {
     e.preventDefault()
@@ -34,6 +43,11 @@ export default function ResetPage() {
 
   return (
     <div className="w-full max-w-md">
+      {linkExpired && !sent && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 text-sm px-4 py-3 rounded-xl mb-5">
+          That reset link no longer works — this usually happens when a newer reset link was requested since, or the link was opened in a different browser than the one you started from. Enter your email below to get a fresh one.
+        </div>
+      )}
       <div className="bg-white border border-border rounded-2xl p-10 shadow-sm">
         {sent ? (
           <div className="text-center">
@@ -62,5 +76,13 @@ export default function ResetPage() {
         )}
       </div>
     </div>
+  )
+}
+
+export default function ResetPage() {
+  return (
+    <Suspense fallback={<div className="w-full max-w-md bg-white border border-border rounded-2xl p-10 text-center text-muted text-sm">Loading...</div>}>
+      <ResetForm />
+    </Suspense>
   )
 }

@@ -28,7 +28,16 @@ export async function GET(request: Request) {
     const { data, error } = await s.auth.exchangeCodeForSession(code)
 
     if (error) {
-      return NextResponse.redirect(`${origin}/auth/login?error=link_expired`)
+      // The most common cause here isn't the link actually expiring — it's
+      // the PKCE code_verifier cookie being gone. That cookie is a single
+      // fixed name per browser, overwritten by every subsequent
+      // resetPasswordForEmail()/signUp()/etc. call, so only the most
+      // recently requested recovery/signup link in a given browser can
+      // ever be exchanged. Same symptom if the link is opened in a
+      // different browser/device than the one that submitted the form.
+      console.error('[auth/callback] exchangeCodeForSession failed', { type, error: error.message })
+      const dest = type === 'recovery' ? '/auth/reset' : '/auth/login'
+      return NextResponse.redirect(`${origin}${dest}?error=link_expired`)
     }
 
     // signup/route.ts stores intended_role: 'reseller' in auth user_metadata
