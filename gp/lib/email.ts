@@ -29,6 +29,17 @@ function sanitizeHeaderValue(input: string): string {
   return input.replace(/[\r\n]+/g, ' ').trim()
 }
 
+// Bare address (no display name) is what makes an inbox show
+// "noreply@globproxy.com" instead of "GlobProxy" as the sender. Normalizing
+// here, once, rather than at each of the ~15 call sites, and tolerant of
+// FROM_EMAIL already being set to a full "Name <addr>" string in the
+// environment — only wraps it if it looks like a bare address.
+function resolveFromHeader(): string {
+  const raw = process.env.FROM_EMAIL?.trim()
+  if (!raw) return 'GlobProxy <noreply@globproxy.com>'
+  return raw.includes('<') ? raw : `GlobProxy <${raw}>`
+}
+
 export async function sendEmail(p: { to: string; subject: string; html: string }) {
   // Enforced here, not just at each call site, so a future caller that
   // interpolates user input into `subject` can't reintroduce this by
@@ -37,7 +48,7 @@ export async function sendEmail(p: { to: string; subject: string; html: string }
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ from: process.env.FROM_EMAIL ?? 'noreply@globproxy.com', to: p.to, subject: safeSubject, html: p.html }),
+    body: JSON.stringify({ from: resolveFromHeader(), to: p.to, subject: safeSubject, html: p.html }),
   })
   if (!res.ok) {
     // Previously nothing checked this — every caller in the app (payment
