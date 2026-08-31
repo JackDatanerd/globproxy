@@ -3,7 +3,7 @@
 -- Run this entire file in Supabase SQL Editor (fresh project)
 -- ============================================================
 --
--- INCLUDES MIGRATIONS THROUGH: 0032_network_benchmarks.sql
+-- INCLUDES MIGRATIONS THROUGH: 0033_seed_benchmark_credential_setting.sql
 --
 -- This line is the source of truth `scripts/check-schema-sync.mjs` reads
 -- to compare against supabase/migrations/ — it's what CI checks on every
@@ -408,7 +408,8 @@ insert into public.platform_settings (key, value) values
   ('auto_reload_enabled',    'false'),
   ('auto_reload_threshold_gb','10'),
   ('auto_reload_amount_gb',  '500'),
-  ('geonode_stock',          '{"available_gb":0,"total_gb":0,"last_synced":null}')
+  ('geonode_stock',          '{"available_gb":0,"total_gb":0,"last_synced":null}'),
+  ('benchmark_credential_id', '')
 on conflict (key) do nothing;
 
 -- usage_last_synced_at / usage_sync_stale_alerted_at are written by

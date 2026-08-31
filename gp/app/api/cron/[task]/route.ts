@@ -3,6 +3,7 @@ import { syncAllUsage } from '@/lib/usageSync'
 import { computeStockStatus } from '@/lib/stockStatus'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { dispatchWebhook } from '@/lib/webhooks'
+import { runNetworkProbe } from '@/lib/networkProbe'
 import { NextResponse } from 'next/server'
 
 // Secured with CRON_SECRET env var
@@ -268,18 +269,14 @@ async function runCleanup() {
 }
 
 // ── Network benchmark (public /status page) ────────────────────────
-// This does NOT make live requests through the proxy pool yet — doing
-// that correctly from a Cloudflare Worker (raw TCP via `cloudflare:sockets`,
-// manual HTTP-proxy CONNECT tunneling, picking targets that don't look
-// like scripted abuse of a third-party site's anti-bot system) is a real
-// sub-project of its own, and shipping unverified networking code
-// straight into an unattended production cron job is exactly the kind
-// of thing worth getting right in a follow-up rather than guessing at
-// here. Until that's built, this task is a documented no-op: it exists
-// so the cron wiring (auth, task dispatch, error handling) is already in
-// place, and turning it on later is a matter of filling in the body
-// below, not re-plumbing the route. In the meantime, /api/admin/record-
-// benchmark is the real way to populate the /status page.
+// Runs a small number of requests through a dedicated, admin-configured
+// "house" proxy credential against neutral reachability targets (see
+// lib/networkProbe.ts for exactly which, and why) and records the
+// aggregated result. Skips cleanly — never throws — if unconfigured, not
+// active, or not an 'http' protocol credential: SOCKS5 probing isn't
+// implemented yet, and this task should never be the reason a cron run
+// fails loudly. /api/admin/record-benchmark remains the manual fallback
+// regardless of whether this is configured.
 async function runBenchmark() {
   const supabase = await createAdminClient()
   const { data: setting } = await supabase
@@ -289,15 +286,39 @@ async function runBenchmark() {
     .single()
 
   if (!setting?.value) {
-    return { action: 'skipped', reason: 'benchmark_credential_id not configured — use /api/admin/record-benchmark to publish measurements manually for now' }
+    return { action: 'skipped', reason: 'benchmark_credential_id not configured — see /api/admin/record-benchmark to publish measurements manually' }
   }
 
-  // TODO: once a tested proxy-tunneling implementation exists, use the
-  // credential at setting.value to run a small number of requests
-  // against a short list of neutral, ToS-safe reachability targets (not
-  // commercial anti-bot targets on an unattended schedule) and insert
-  // the aggregated result into network_benchmarks here.
-  return { action: 'skipped', reason: 'live benchmark probe not yet implemented' }
+  const { data: cred } = await supabase
+    .from('proxy_credentials')
+    .select('host, port, protocol, geonode_username, geonode_password, status, gb_allocated, gb_used')
+    .eq('id', setting.value)
+    .single()
+
+  if (!cred) return { action: 'skipped', reason: 'configured benchmark_credential_id does not exist' }
+  if (cred.status !== 'active') return { action: 'skipped', reason: `benchmark credential is not active (status: ${cred.status})` }
+  if (cred.protocol !== 'http') return { action: 'skipped', reason: `benchmark credential uses ${cred.protocol} — only http proxy probing is implemented so far` }
+  if (!cred.geonode_username || !cred.geonode_password) return { action: 'skipped', reason: 'benchmark credential is missing proxy auth' }
+  // Guard against ever burning through the credential's whole allocation on
+  // probe traffic alone — these requests are tiny (a few hundred bytes each)
+  // but this keeps a runaway retry loop or a misconfigured schedule from
+  // being able to silently eat the budget set aside for this.
+  if (Number(cred.gb_used) >= Number(cred.gb_allocated)) {
+    return { action: 'skipped', reason: 'benchmark credential has exhausted its allocated GB' }
+  }
+
+  const results = await runNetworkProbe(cred.host, cred.port, cred.geonode_username, cred.geonode_password)
+
+  for (const r of results) {
+    await supabase.from('network_benchmarks').insert({
+      target_label: r.label,
+      success_rate: r.successRate,
+      avg_latency_ms: r.avgLatencyMs,
+      sample_size: r.sampleSize,
+    })
+  }
+
+  return { action: 'ran', targets: results }
 }
 
 // ── Route handler ─────────────────────────────────────────────────
