@@ -30,7 +30,13 @@
 -- 8-char uppercase alnum, collision-checked in a loop rather than relied
 -- on as statistically-unlikely — this runs once per signup, so the loop
 -- cost is negligible and correctness shouldn't depend on how big the
--- keyspace happens to be.
+-- keyspace happens to be. Uses gen_random_uuid() (a Postgres core
+-- builtin since v13, no extension required) rather than uuid_generate_v4()
+-- — this function pins search_path to public, pg_temp for security like
+-- every other SECURITY DEFINER function in this schema, and uuid-ossp
+-- lives outside that path on this project (it resolves fine as a bare
+-- column DEFAULT elsewhere in this file only because those evaluate
+-- under the session's ambient search_path, not this function's pinned one).
 create or replace function public.generate_unique_referral_code()
 returns text language plpgsql security definer set search_path = public, pg_temp as $$
 declare
@@ -38,7 +44,7 @@ declare
   v_exists boolean;
 begin
   loop
-    v_code := upper(substr(replace(uuid_generate_v4()::text, '-', ''), 1, 8));
+    v_code := upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 8));
     select exists(select 1 from public.profiles where referral_code = v_code) into v_exists;
     exit when not v_exists;
   end loop;

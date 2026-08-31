@@ -74,6 +74,29 @@ export default async function Home() {
         </div>
       </div>
 
+      {/* TRUST — we publish what we can prove, not what sounds good */}
+      <section className="py-20">
+        <div className="max-w-6xl mx-auto px-6">
+          <div className="text-center mb-12">
+            <div className="inline-block bg-accent-light text-accent text-xs font-mono tracking-widest uppercase px-4 py-1.5 rounded-full mb-4">Clean by default</div>
+            <h2 className="font-display text-4xl font-bold tracking-tight text-ink mb-3">We don&apos;t just say clean.<br />We publish it.</h2>
+            <p className="text-ink2 font-light max-w-xl mx-auto leading-relaxed">No inflated claims — just what our own test runs actually find, updated regularly and open for anyone to check.</p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5 max-w-3xl mx-auto">
+            <Link href="/status" className="block border border-border rounded-xl p-7 hover:border-accent hover:shadow-sm transition-all bg-white">
+              <div className="w-10 h-10 rounded-xl bg-accent-light flex items-center justify-center text-accent font-mono text-xs font-medium mb-5">✓</div>
+              <h3 className="font-display font-bold text-lg text-ink mb-2">Live network status</h3>
+              <p className="text-ink2 text-sm font-light leading-relaxed">Success rate and latency, tested on our own pool and published openly — not a marketing number. See current results →</p>
+            </Link>
+            <div className="border border-border rounded-xl p-7 bg-white">
+              <div className="w-10 h-10 rounded-xl bg-accent-light flex items-center justify-center text-accent font-mono text-xs font-medium mb-5">ID</div>
+              <h3 className="font-display font-bold text-lg text-ink mb-2">No ID verification</h3>
+              <p className="text-ink2 text-sm font-light leading-relaxed">Sign up with an email and start using proxies in minutes — no identity documents required to get going.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* FEATURES */}
       <section id="features" className="py-24">
         <div className="max-w-6xl mx-auto px-6">
@@ -214,7 +237,7 @@ export default async function Home() {
             </div>
             {[
               {title:'Product',links:[['/#features','Features'],['/#pricing','Pricing'],['/#reseller','Resellers'],['/#compare','Compare'],['/docs/api','API Docs']]},
-              {title:'Resources',links:[['/blog','Blog'],['/locations','Locations']]},
+              {title:'Resources',links:[['/blog','Blog'],['/locations','Locations'],['/status','Network status']]},
               {title:'Support',links:[['mailto:support@globproxy.com','Contact us'],['mailto:sales@globproxy.com','Sales']]},
               {title:'Legal',links:[['/terms','Terms of Service'],['/privacy','Privacy Policy'],['/refunds','Refund Policy']]},
             ].map(col=>(

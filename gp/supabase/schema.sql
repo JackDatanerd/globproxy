@@ -176,7 +176,7 @@ declare
   v_exists boolean;
 begin
   loop
-    v_code := upper(substr(replace(uuid_generate_v4()::text, '-', ''), 1, 8));
+    v_code := upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 8));
     select exists(select 1 from public.profiles where referral_code = v_code) into v_exists;
     exit when not v_exists;
   end loop;
