@@ -67,6 +67,7 @@ export async function POST(req: Request) {
       user_id: order.user_id,
       gb_amount: Number(order.gb_amount),
       paystack_reference: reference,
+      amount_usd: Number(order.amount_usd),
     })
 
     return NextResponse.json({ success: true })

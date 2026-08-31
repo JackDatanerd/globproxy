@@ -267,6 +267,39 @@ async function runCleanup() {
   return { cleaned: stale?.length ?? 0, mfa_sessions_swept: !mfaErr }
 }
 
+// ── Network benchmark (public /status page) ────────────────────────
+// This does NOT make live requests through the proxy pool yet — doing
+// that correctly from a Cloudflare Worker (raw TCP via `cloudflare:sockets`,
+// manual HTTP-proxy CONNECT tunneling, picking targets that don't look
+// like scripted abuse of a third-party site's anti-bot system) is a real
+// sub-project of its own, and shipping unverified networking code
+// straight into an unattended production cron job is exactly the kind
+// of thing worth getting right in a follow-up rather than guessing at
+// here. Until that's built, this task is a documented no-op: it exists
+// so the cron wiring (auth, task dispatch, error handling) is already in
+// place, and turning it on later is a matter of filling in the body
+// below, not re-plumbing the route. In the meantime, /api/admin/record-
+// benchmark is the real way to populate the /status page.
+async function runBenchmark() {
+  const supabase = await createAdminClient()
+  const { data: setting } = await supabase
+    .from('platform_settings')
+    .select('value')
+    .eq('key', 'benchmark_credential_id')
+    .single()
+
+  if (!setting?.value) {
+    return { action: 'skipped', reason: 'benchmark_credential_id not configured — use /api/admin/record-benchmark to publish measurements manually for now' }
+  }
+
+  // TODO: once a tested proxy-tunneling implementation exists, use the
+  // credential at setting.value to run a small number of requests
+  // against a short list of neutral, ToS-safe reachability targets (not
+  // commercial anti-bot targets on an unattended schedule) and insert
+  // the aggregated result into network_benchmarks here.
+  return { action: 'skipped', reason: 'live benchmark probe not yet implemented' }
+}
+
 // ── Route handler ─────────────────────────────────────────────────
 export async function POST(req: Request, context: { params: Promise<{ task: string }> }) {
   if (!validateCron(req)) {
@@ -276,11 +309,12 @@ export async function POST(req: Request, context: { params: Promise<{ task: stri
   try {
     let result
     switch (task) {
-      case 'stock':   result = await runStockCheck();       break
-      case 'usage':   result = await runUsageSync();        break
-      case 'alerts':  result = await runBandwidthAlerts();  break
-      case 'summary': result = await runDailySummary();     break
-      case 'cleanup': result = await runCleanup();          break
+      case 'stock':     result = await runStockCheck();       break
+      case 'usage':     result = await runUsageSync();        break
+      case 'alerts':    result = await runBandwidthAlerts();  break
+      case 'summary':   result = await runDailySummary();     break
+      case 'cleanup':   result = await runCleanup();          break
+      case 'benchmark': result = await runBenchmark();        break
       default: return NextResponse.json({ error: `Unknown task: ${task}` }, { status: 400 })
     }
     return NextResponse.json({ task, result, timestamp: new Date().toISOString() })

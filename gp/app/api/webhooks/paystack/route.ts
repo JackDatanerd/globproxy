@@ -85,7 +85,7 @@ export async function POST(req: Request) {
       // (not client-mutable), so this wasn't exploitable either way, but two
       // different sources of truth for the same value is worth collapsing
       // into one now that the order row is already in hand.
-      await activateBandwidth({ order_id, user_id, gb_amount: Number(order.gb_amount), paystack_reference: reference })
+      await activateBandwidth({ order_id, user_id, gb_amount: Number(order.gb_amount), paystack_reference: reference, amount_usd: Number(order.amount_usd) })
     }
 
     return NextResponse.json({ received: true })

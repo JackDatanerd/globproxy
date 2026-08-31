@@ -14,6 +14,7 @@ function SignupForm() {
   const router = useRouter()
   const params = useSearchParams()
   const isReseller = params.get('role') === 'reseller'
+  const referralCode = params.get('ref')
 
   function onEmailBlur() {
     if (!email) return
@@ -36,6 +37,7 @@ function SignupForm() {
         full_name: name,
         intended_role: isReseller ? 'reseller' : 'user',
         emailRedirectTo: `${location.origin}/auth/callback`,
+        referral_code: referralCode || undefined,
       }),
     })
 

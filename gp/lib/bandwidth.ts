@@ -1,6 +1,7 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { createSubUser, deleteSubUser } from '@/lib/geonode'
 import { sendEmail, escapeHtml } from '@/lib/email'
+import { processReferralForOrder } from '@/lib/referrals'
 
 function providerConfigured(): boolean {
   return !!(
@@ -14,6 +15,7 @@ export async function activateBandwidth(p: {
   user_id: string
   gb_amount: number
   paystack_reference: string
+  amount_usd: number
 }) {
   const supabase = await createAdminClient()
 
@@ -137,4 +139,14 @@ export async function activateBandwidth(p: {
       `,
     })
   }
+
+  // 6. Referral / affiliate crediting — a pure add-on that runs only after
+  // the buyer's own GB has already been claimed and credited above. Never
+  // allowed to affect the response or roll anything back: see
+  // processReferralForOrder's own doc comment in lib/referrals.ts.
+  await processReferralForOrder(supabase, {
+    user_id: p.user_id,
+    order_id: p.order_id,
+    amount_usd: p.amount_usd,
+  })
 }

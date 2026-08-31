@@ -1,6 +1,7 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { validateEmail } from '@/lib/email-validation'
 import { rateLimited } from '@/lib/rateLimit'
+import { recordReferralSignup } from '@/lib/referrals'
 import { NextResponse } from 'next/server'
 
 // Always the same response shape for "banned", "already registered", and
@@ -45,7 +46,7 @@ export async function POST(req: Request) {
     const limited = await rateLimited(req, 'AUTH_RATE_LIMITER')
     if (limited) return limited
 
-    const { email, password, full_name, intended_role, emailRedirectTo } = await req.json()
+    const { email, password, full_name, intended_role, emailRedirectTo, referral_code } = await req.json()
     if (!email || !password) return NextResponse.json({ error: 'Missing fields' }, { status: 400 })
 
     // emailRedirectTo is client-supplied. Supabase enforces its own
@@ -121,7 +122,7 @@ export async function POST(req: Request) {
     // /auth/callback, which was landing everyone back on
     // /auth/login?error=link_expired instead of /dashboard.
     const ssrClient = await createClient()
-    const { error } = await ssrClient.auth.signUp({
+    const { data, error } = await ssrClient.auth.signUp({
       email,
       password,
       options: {
@@ -131,6 +132,14 @@ export async function POST(req: Request) {
     })
 
     if (error) return NextResponse.json({ error: error.message }, { status: 400 })
+
+    // Best-effort referral attribution — signUp() already returns the new
+    // user's id even though email confirmation is still pending, so this
+    // doesn't need to wait for /auth/callback. Never allowed to affect
+    // this response either way: see recordReferralSignup's doc comment.
+    if (data.user?.id) {
+      await recordReferralSignup(supabase, referral_code, data.user.id)
+    }
 
     return respondGeneric(startedAt)
   } catch (err: any) {

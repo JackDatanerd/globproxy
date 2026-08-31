@@ -3,7 +3,7 @@
 -- Run this entire file in Supabase SQL Editor (fresh project)
 -- ============================================================
 --
--- INCLUDES MIGRATIONS THROUGH: 0030_audit_hardening.sql
+-- INCLUDES MIGRATIONS THROUGH: 0032_network_benchmarks.sql
 --
 -- This line is the source of truth `scripts/check-schema-sync.mjs` reads
 -- to compare against supabase/migrations/ — it's what CI checks on every
@@ -44,6 +44,20 @@ create table public.profiles (
   -- instead of a second round trip on every protected request. Kept in
   -- sync exclusively by lib/mfa.ts. See migration 0020.
   mfa_enabled     boolean not null default false,
+  -- Referral code + affiliate program — see migration 0031. Every profile
+  -- gets a referral_code for free (the default calls
+  -- generate_unique_referral_code(), defined further down, once that
+  -- function exists — see the note at its definition for why this
+  -- column's default is set via ALTER TABLE after the function, not
+  -- inline here). affiliate_status/application follow the exact same
+  -- pending/approved/rejected shape as reseller_status/api_access_status
+  -- above; affiliate_commission_rate(_lifetime) are per-affiliate rates
+  -- an admin sets at approval time.
+  referral_code   text unique,
+  affiliate_status text check (affiliate_status is null or affiliate_status in ('pending','approved','rejected','suspended')),
+  affiliate_application jsonb,
+  affiliate_commission_rate numeric check (affiliate_commission_rate is null or (affiliate_commission_rate >= 0 and affiliate_commission_rate <= 1)),
+  affiliate_commission_rate_lifetime numeric check (affiliate_commission_rate_lifetime is null or (affiliate_commission_rate_lifetime >= 0 and affiliate_commission_rate_lifetime <= 1)),
   created_at      timestamp with time zone default now(),
   updated_at      timestamp with time zone default now()
 );
@@ -146,6 +160,176 @@ create table public.orders (
   -- a pending/cancelled/failed order never has one. See migration 0021.
   invoice_number      text unique
 );
+
+-- ── REFERRALS & AFFILIATE COMMISSIONS ────────────────────────────
+-- See migration 0031 for the full design rationale. Two reward
+-- mechanisms sharing one attribution table (referrals): a free-for-
+-- everyone one-time GB bonus on a referred user's first paid order, and
+-- a per-order cash commission for admin-approved affiliates, decided at
+-- credit-time by the referrer's profiles.affiliate_status rather than
+-- fixed on the referral row itself.
+
+create or replace function public.generate_unique_referral_code()
+returns text language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_code text;
+  v_exists boolean;
+begin
+  loop
+    v_code := upper(substr(replace(uuid_generate_v4()::text, '-', ''), 1, 8));
+    select exists(select 1 from public.profiles where referral_code = v_code) into v_exists;
+    exit when not v_exists;
+  end loop;
+  return v_code;
+end;
+$$;
+
+-- profiles.referral_code (declared above, nullable at CREATE TABLE time
+-- since this function didn't exist yet) gets its default wired up here,
+-- once the function it calls actually exists. A fresh bootstrap via this
+-- file has no existing rows to backfill (unlike migration 0031, which
+-- loops over live data) — every profile created from here on gets a code
+-- for free via this default.
+alter table public.profiles alter column referral_code set default public.generate_unique_referral_code();
+alter table public.profiles alter column referral_code set not null;
+
+create table public.referrals (
+  id                    uuid default uuid_generate_v4() primary key,
+  referrer_id           uuid references public.profiles(id) on delete cascade not null,
+  referred_user_id      uuid references public.profiles(id) on delete cascade not null unique,
+  code_used             text not null,
+  created_at            timestamp with time zone default now(),
+  gb_bonus_credited_at  timestamp with time zone,
+  gb_bonus_amount       numeric,
+  constraint referrals_no_self_referral check (referrer_id <> referred_user_id)
+);
+
+create index if not exists idx_referrals_referrer on public.referrals(referrer_id);
+
+create table public.affiliate_commissions (
+  id                     uuid default uuid_generate_v4() primary key,
+  referral_id            uuid references public.referrals(id) on delete cascade not null,
+  referrer_id            uuid references public.profiles(id) on delete cascade not null,
+  referred_user_id       uuid references public.profiles(id) on delete cascade not null,
+  order_id               uuid references public.orders(id) on delete cascade not null unique,
+  gross_amount_usd       numeric not null,
+  commission_rate        numeric not null,
+  commission_amount_usd  numeric not null,
+  status                 text not null default 'pending' check (status in ('pending','paid','void')),
+  created_at             timestamp with time zone default now(),
+  paid_at                timestamp with time zone
+);
+
+create index if not exists idx_affiliate_commissions_referrer on public.affiliate_commissions(referrer_id);
+create index if not exists idx_affiliate_commissions_status on public.affiliate_commissions(status);
+
+create or replace function public.record_referral_signup(p_code text, p_new_user_id uuid)
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_referrer_id uuid;
+begin
+  if p_code is null or p_new_user_id is null then
+    return;
+  end if;
+
+  select id into v_referrer_id from public.profiles where referral_code = upper(trim(p_code));
+
+  if v_referrer_id is null or v_referrer_id = p_new_user_id then
+    return; -- unknown code, or (defensively) a self-referral
+  end if;
+
+  insert into public.referrals (referrer_id, referred_user_id, code_used)
+  values (v_referrer_id, p_new_user_id, upper(trim(p_code)))
+  on conflict (referred_user_id) do nothing;
+end;
+$$;
+
+create or replace function public.credit_referral_bonus(p_referral_id uuid, p_gb numeric)
+returns boolean language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_referrer_id uuid;
+  v_referred_id uuid;
+  v_claimed uuid;
+begin
+  update public.referrals
+  set gb_bonus_credited_at = now(), gb_bonus_amount = p_gb
+  where id = p_referral_id and gb_bonus_credited_at is null
+  returning id, referrer_id, referred_user_id into v_claimed, v_referrer_id, v_referred_id;
+
+  if v_claimed is null then
+    return false;
+  end if;
+
+  perform public.credit_bandwidth(v_referrer_id, p_gb);
+  perform public.credit_bandwidth(v_referred_id, p_gb);
+
+  return true;
+end;
+$$;
+
+-- Intro rate applies for AFFILIATE_INTRO_WINDOW_DAYS (90, kept in sync
+-- with the same constant in lib/referralConfig.ts) after the referral
+-- was created; lifetime rate after. Defaults (30%/15%) only apply if an
+-- approved affiliate somehow has neither rate set on their profile.
+create or replace function public.record_affiliate_commission(
+  p_referral_id uuid,
+  p_order_id uuid,
+  p_gross_amount numeric
+)
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_referrer_id uuid;
+  v_referred_id uuid;
+  v_created_at timestamptz;
+  v_affiliate_status text;
+  v_intro_rate numeric;
+  v_lifetime_rate numeric;
+  v_rate numeric;
+begin
+  select referrer_id, referred_user_id, created_at
+    into v_referrer_id, v_referred_id, v_created_at
+  from public.referrals where id = p_referral_id;
+
+  if v_referrer_id is null then
+    return;
+  end if;
+
+  select affiliate_status,
+         coalesce(affiliate_commission_rate, 0.30),
+         coalesce(affiliate_commission_rate_lifetime, 0.15)
+    into v_affiliate_status, v_intro_rate, v_lifetime_rate
+  from public.profiles where id = v_referrer_id;
+
+  if v_affiliate_status is distinct from 'approved' then
+    return;
+  end if;
+
+  v_rate := case when now() <= v_created_at + interval '90 days' then v_intro_rate else v_lifetime_rate end;
+
+  insert into public.affiliate_commissions
+    (referral_id, referrer_id, referred_user_id, order_id, gross_amount_usd, commission_rate, commission_amount_usd)
+  values
+    (p_referral_id, v_referrer_id, v_referred_id, p_order_id, p_gross_amount, v_rate, round(p_gross_amount * v_rate, 2))
+  on conflict (order_id) do nothing;
+end;
+$$;
+
+-- ── NETWORK BENCHMARKS (public /status page) ─────────────────────
+-- See migration 0032. RLS below is deliberately public-select — this
+-- backs an unauthenticated page.
+create table public.network_benchmarks (
+  id             uuid default uuid_generate_v4() primary key,
+  target_label   text not null,
+  success_rate   numeric not null check (success_rate >= 0 and success_rate <= 100),
+  avg_latency_ms numeric,
+  sample_size    integer not null default 0 check (sample_size >= 0),
+  measured_at    timestamp with time zone not null default now(),
+  notes          text,
+  created_at     timestamp with time zone not null default now()
+);
+
+create index if not exists idx_network_benchmarks_target_measured
+  on public.network_benchmarks(target_label, measured_at desc);
 
 -- ── PROXY CREDENTIALS ─────────────────────────────────────────
 create table public.proxy_credentials (
@@ -895,6 +1079,9 @@ alter table public.reseller_transfers enable row level security;
 alter table public.platform_settings  enable row level security;
 alter table public.plans              enable row level security;
 alter table public.banned_emails      enable row level security;
+alter table public.referrals             enable row level security;
+alter table public.affiliate_commissions enable row level security;
+alter table public.network_benchmarks    enable row level security;
 
 -- Profiles
 create policy "Own profile" on public.profiles for select using (auth.uid() = id);
@@ -975,30 +1162,28 @@ revoke all on function public.auth_email_exists(text) from public, anon, authent
 create or replace function public.protect_privileged_profile_columns()
 returns trigger language plpgsql security definer set search_path = public, pg_temp
 as $$
-declare
-  caller_is_admin boolean;
 begin
   if auth.uid() is null then
     return new; -- service-role client; app code already gates this
   end if;
 
-  select (role = 'admin') into caller_is_admin
-  from public.profiles where id = auth.uid();
-
-  if coalesce(caller_is_admin, false) then
+  if public.is_admin(auth.uid()) then
     return new;
   end if;
 
-  new.role                  := old.role;
-  new.is_suspended          := old.is_suspended;
-  new.suspended_at          := old.suspended_at;
-  new.suspension_reason     := old.suspension_reason;
-  new.reseller_status       := old.reseller_status;
-  new.api_access            := old.api_access;
-  new.api_access_status     := old.api_access_status;
-  new.is_deleted            := old.is_deleted;
-  new.deleted_at            := old.deleted_at;
-  new.email                 := old.email; -- see migration 0011 — the sync trigger below is how email changes actually land
+  new.role                               := old.role;
+  new.is_suspended                       := old.is_suspended;
+  new.suspended_at                       := old.suspended_at;
+  new.suspension_reason                  := old.suspension_reason;
+  new.reseller_status                    := old.reseller_status;
+  new.api_access                         := old.api_access;
+  new.api_access_status                  := old.api_access_status;
+  new.is_deleted                         := old.is_deleted;
+  new.deleted_at                         := old.deleted_at;
+  new.email                              := old.email; -- see migration 0011 — the sync trigger below is how email changes actually land
+  new.affiliate_status                   := old.affiliate_status; -- see migration 0031
+  new.affiliate_commission_rate          := old.affiliate_commission_rate;
+  new.affiliate_commission_rate_lifetime := old.affiliate_commission_rate_lifetime;
 
   return new;
 end;
@@ -1115,6 +1300,21 @@ create policy "Admin settings" on public.platform_settings
 create policy "Admin can read banned emails" on public.banned_emails for select
   using (public.is_admin(auth.uid()));
 
+-- Referrals / affiliate commissions / network benchmarks — see migrations 0031, 0032
+create policy "Referrer can view own referrals" on public.referrals for select
+  using (auth.uid() = referrer_id);
+create policy "Admins can view all referrals" on public.referrals for select
+  using (public.is_admin(auth.uid()));
+
+create policy "Referrer can view own commissions" on public.affiliate_commissions for select
+  using (auth.uid() = referrer_id);
+create policy "Admins can view all commissions" on public.affiliate_commissions for select
+  using (public.is_admin(auth.uid()));
+
+-- Network benchmarks - public read (backs the unauthenticated /status page)
+create policy "Anyone can view benchmarks" on public.network_benchmarks for select
+  using (true);
+
 -- ── LOCK DOWN RPC EXECUTE GRANTS ────────────────────────────────
 -- See migration 0012 for the full rationale: every security-definer
 -- function above bypasses RLS by design, and Postgres/Supabase both
@@ -1134,6 +1334,18 @@ grant execute on function public.release_credential_bandwidth(uuid, numeric) to 
 
 revoke all on function public.credit_bandwidth(uuid, numeric) from public;
 grant execute on function public.credit_bandwidth(uuid, numeric) to service_role;
+
+revoke all on function public.generate_unique_referral_code() from public;
+grant execute on function public.generate_unique_referral_code() to service_role, authenticated;
+
+revoke all on function public.record_referral_signup(text, uuid) from public;
+grant execute on function public.record_referral_signup(text, uuid) to service_role;
+
+revoke all on function public.credit_referral_bonus(uuid, numeric) from public;
+grant execute on function public.credit_referral_bonus(uuid, numeric) to service_role;
+
+revoke all on function public.record_affiliate_commission(uuid, uuid, numeric) from public;
+grant execute on function public.record_affiliate_commission(uuid, uuid, numeric) to service_role;
 
 revoke all on function public.claim_and_credit_order(uuid, uuid, numeric, text) from public;
 grant execute on function public.claim_and_credit_order(uuid, uuid, numeric, text) to service_role;

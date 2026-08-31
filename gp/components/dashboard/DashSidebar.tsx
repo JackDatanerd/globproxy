@@ -9,6 +9,7 @@ const userNav = [
   { label: 'Buy Bandwidth', href: '/dashboard/buy' },
   { label: 'Usage',         href: '/dashboard/usage' },
   { label: 'Billing',       href: '/dashboard/billing' },
+  { label: 'Referrals',     href: '/dashboard/referrals' },
   { label: 'Settings',      href: '/dashboard/settings' },
 ]
 
@@ -20,6 +21,7 @@ const resellerNav = [
   { label: 'Buy Wholesale', href: '/dashboard/buy' },
   { label: 'Earnings',      href: '/reseller/earnings' },
   { label: 'Billing',       href: '/dashboard/billing' },
+  { label: 'Referrals',     href: '/dashboard/referrals' },
   { label: 'Settings',      href: '/dashboard/settings' },
 ]
 
@@ -32,6 +34,7 @@ const adminNav = [
   { label: 'Orders',      href: '/admin/orders' },
   { label: 'Resellers',   href: '/admin/resellers' },
   { label: 'Credentials', href: '/admin/credentials' },
+  { label: 'Affiliates',  href: '/admin/affiliates' },
   { label: 'Settings',    href: '/admin/settings' },
 ]
 
@@ -56,11 +59,11 @@ export default function DashSidebar({ role, apiAccess = false }: Props) {
     nav = [
       ...resellerNav.slice(0, 6), // up to Earnings
       apiKeyItem,
-      ...resellerNav.slice(6),    // Billing, Settings
+      ...resellerNav.slice(6),    // Billing, Referrals, Settings
     ]
   }
   if (role === 'admin') {
-    nav = [...adminNav.slice(0, 5), apiKeyItem, ...adminNav.slice(5)] // up to Credentials, then API Keys, then Settings
+    nav = [...adminNav.slice(0, 5), apiKeyItem, ...adminNav.slice(5)] // up to Credentials, then API Keys, then Affiliates + Settings
   }
 
   const label = role === 'admin' ? 'Admin Panel' : role === 'reseller' ? 'Reseller Panel' : 'My Account'
