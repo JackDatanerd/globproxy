@@ -4,12 +4,14 @@ import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
 
 // Same Bearer-token pattern as AdminResellerActions.tsx. 'markPaid' takes
-// a commissionId instead of a userId — kept as one component with a
-// discriminated prop shape rather than a separate file, since the
-// fetch/toast/reload plumbing is identical either way.
+// a payoutId — a whole cycle's payout to one affiliate, not a single
+// commission (see migration 0034: affiliate_payouts is the batch, not
+// affiliate_commissions). Kept as one component with a discriminated
+// prop shape rather than a separate file, since the fetch/toast/reload
+// plumbing is identical either way.
 type Props =
-  | { userId: string; action: 'approve' | 'reject'; commissionId?: never }
-  | { commissionId: string; action: 'markPaid'; userId?: never }
+  | { userId: string; action: 'approve' | 'reject'; payoutId?: never }
+  | { payoutId: string; action: 'markPaid'; userId?: never }
 
 export default function AdminAffiliateActions(props: Props) {
   const [loading, setLoading] = useState(false)
@@ -29,8 +31,8 @@ export default function AdminAffiliateActions(props: Props) {
         method: 'POST', headers: authHeaders, body: JSON.stringify({ userId: props.userId }),
       })
     } else {
-      res = await fetch('/api/admin/mark-commission-paid', {
-        method: 'POST', headers: authHeaders, body: JSON.stringify({ commissionId: props.commissionId }),
+      res = await fetch('/api/admin/mark-payout-paid', {
+        method: 'POST', headers: authHeaders, body: JSON.stringify({ payoutId: props.payoutId }),
       })
     }
 

@@ -1,12 +1,14 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import AdminAffiliateActions from '@/components/admin/AdminAffiliateActions'
+import RunPayoutCycleButton from '@/components/admin/RunPayoutCycleButton'
+import { formatCycleLabel } from '@/lib/payoutCycle'
 
 export default async function AdminAffiliatesPage() {
   const supabase = await createAdminClient()
-  const [{ data: applicants }, { data: affiliates }, { data: pendingCommissions }] = await Promise.all([
+  const [{ data: applicants }, { data: affiliates }, { data: pendingPayouts }] = await Promise.all([
     supabase.from('profiles').select('*').eq('affiliate_status', 'pending').order('created_at', { ascending: false }),
     supabase.from('profiles').select('*').eq('affiliate_status', 'approved').order('created_at', { ascending: false }),
-    supabase.from('affiliate_commissions').select('*, referrer:referrer_id(email, full_name)').eq('status', 'pending').order('created_at', { ascending: false }),
+    supabase.from('affiliate_payouts').select('*, referrer:referrer_id(email, full_name)').eq('status', 'pending').order('cycle_start', { ascending: false }),
   ])
 
   const affiliateIds = affiliates?.map(a => a.id) ?? []
@@ -26,7 +28,7 @@ export default async function AdminAffiliatesPage() {
     <div className="max-w-5xl">
       <div className="mb-8">
         <h1 className="font-display font-bold text-2xl text-ink">Affiliates</h1>
-        <p className="text-muted text-sm mt-1">Manage affiliate applications and commission payouts</p>
+        <p className="text-muted text-sm mt-1">Manage affiliate applications and biweekly payouts</p>
       </div>
 
       {/* Pending applications */}
@@ -81,46 +83,58 @@ export default async function AdminAffiliatesPage() {
       )}
 
       {/* Pending payouts */}
-      {pendingCommissions && pendingCommissions.length > 0 && (
-        <div className="mb-8">
-          <h2 className="font-display font-bold text-base text-ink mb-3">
+      <div className="mb-8">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-display font-bold text-base text-ink">
             Pending payouts
-            <span className="ml-2 text-xs font-mono bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full">
-              {pendingCommissions.length}
-            </span>
+            {pendingPayouts && pendingPayouts.length > 0 && (
+              <span className="ml-2 text-xs font-mono bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full">
+                {pendingPayouts.length}
+              </span>
+            )}
           </h2>
+          <RunPayoutCycleButton />
+        </div>
+        {pendingPayouts && pendingPayouts.length > 0 ? (
           <div className="bg-white border border-border rounded-xl overflow-hidden">
             <table className="w-full">
               <thead>
                 <tr className="border-b border-border bg-surface">
-                  {['Affiliate', 'Order amount', 'Rate', 'Commission', 'Earned', 'Actions'].map(h => (
+                  {['Affiliate', 'Cycle', 'Amount', 'Send to', 'Actions'].map(h => (
                     <th key={h} className="text-left px-6 py-3 text-[10px] font-mono text-muted uppercase tracking-widest">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {pendingCommissions.map((c: any, i: number) => (
-                  <tr key={c.id} className={i < pendingCommissions.length - 1 ? 'border-b border-border' : ''}>
+                {pendingPayouts.map((p: any, i: number) => (
+                  <tr key={p.id} className={i < pendingPayouts.length - 1 ? 'border-b border-border' : ''}>
                     <td className="px-6 py-4">
-                      <div className="text-sm font-medium text-ink">{c.referrer?.full_name || '—'}</div>
-                      <div className="text-xs font-mono text-muted">{c.referrer?.email}</div>
+                      <div className="text-sm font-medium text-ink">{p.referrer?.full_name || '—'}</div>
+                      <div className="text-xs font-mono text-muted">{p.referrer?.email}</div>
                     </td>
-                    <td className="px-6 py-4 font-mono text-sm text-ink">${Number(c.gross_amount_usd).toFixed(2)}</td>
-                    <td className="px-6 py-4 font-mono text-sm text-muted">{Math.round(Number(c.commission_rate) * 100)}%</td>
-                    <td className="px-6 py-4 font-mono text-sm text-accent">${Number(c.commission_amount_usd).toFixed(2)}</td>
-                    <td className="px-6 py-4 text-xs font-mono text-muted">
-                      {new Date(c.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
+                    <td className="px-6 py-4 text-xs font-mono text-muted">{formatCycleLabel(p)}</td>
+                    <td className="px-6 py-4 font-mono text-sm text-accent">${Number(p.amount_usd).toFixed(2)}</td>
+                    <td className="px-6 py-4 text-xs font-mono text-ink">
+                      {p.payout_method === 'usdt' ? (
+                        <>USDT (TRC20)<br /><span className="text-muted">{p.payout_wallet_address}</span></>
+                      ) : (
+                        <>{p.payout_bank_details?.bankName}<br /><span className="text-muted">{p.payout_bank_details?.accountName} · {p.payout_bank_details?.accountNumber}</span></>
+                      )}
                     </td>
                     <td className="px-6 py-4">
-                      <AdminAffiliateActions commissionId={c.id} action="markPaid" />
+                      <AdminAffiliateActions payoutId={p.id} action="markPaid" />
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-        </div>
-      )}
+        ) : (
+          <div className="bg-white border border-border rounded-xl p-10 text-center text-muted text-sm font-light">
+            No pending payouts — run a cycle above to batch this period's commissions.
+          </div>
+        )}
+      </div>
 
       {/* Active affiliates */}
       <div className="bg-white border border-border rounded-xl overflow-hidden">
@@ -131,7 +145,7 @@ export default async function AdminAffiliatesPage() {
           <table className="w-full">
             <thead>
               <tr className="border-b border-border bg-surface">
-                {['Affiliate', 'Rate (intro / lifetime)', 'Pending', 'Paid to date', 'Joined'].map(h => (
+                {['Affiliate', 'Rate (intro / lifetime)', 'Accruing', 'Paid to date', 'Joined'].map(h => (
                   <th key={h} className="text-left px-6 py-3 text-[10px] font-mono text-muted uppercase tracking-widest">{h}</th>
                 ))}
               </tr>

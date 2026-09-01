@@ -3,7 +3,7 @@
 -- Run this entire file in Supabase SQL Editor (fresh project)
 -- ============================================================
 --
--- INCLUDES MIGRATIONS THROUGH: 0033_seed_benchmark_credential_setting.sql
+-- INCLUDES MIGRATIONS THROUGH: 0034_affiliate_payout_cycles.sql
 --
 -- This line is the source of truth `scripts/check-schema-sync.mjs` reads
 -- to compare against supabase/migrations/ — it's what CI checks on every
@@ -58,6 +58,16 @@ create table public.profiles (
   affiliate_application jsonb,
   affiliate_commission_rate numeric check (affiliate_commission_rate is null or (affiliate_commission_rate >= 0 and affiliate_commission_rate <= 1)),
   affiliate_commission_rate_lifetime numeric check (affiliate_commission_rate_lifetime is null or (affiliate_commission_rate_lifetime >= 0 and affiliate_commission_rate_lifetime <= 1)),
+  -- Affiliate payout method — see migration 0034. payout_method_updated_at
+  -- is never set directly by the user (protect_privileged_profile_columns
+  -- below enforces this) — only via the update-payout-method route, which
+  -- always sets it server-side. That timestamp is what the 48h hold in
+  -- run_affiliate_payout_cycle checks against.
+  payout_method              text check (payout_method is null or payout_method in ('usdt', 'bank')),
+  payout_wallet_address      text,
+  payout_wallet_network      text check (payout_wallet_network is null or payout_wallet_network = 'TRC20'),
+  payout_bank_details        jsonb,
+  payout_method_updated_at   timestamp with time zone,
   created_at      timestamp with time zone default now(),
   updated_at      timestamp with time zone default now()
 );
@@ -222,6 +232,133 @@ create table public.affiliate_commissions (
 
 create index if not exists idx_affiliate_commissions_referrer on public.affiliate_commissions(referrer_id);
 create index if not exists idx_affiliate_commissions_status on public.affiliate_commissions(status);
+
+-- ── AFFILIATE PAYOUTS (biweekly cycles) ──────────────────────────
+-- See migration 0034 for full rationale. One row per affiliate per cycle
+-- that actually got batched — held/under-minimum affiliates get no row
+-- and their commissions simply stay unbatched until a future cycle
+-- claims them.
+create table public.affiliate_payouts (
+  id                    uuid default uuid_generate_v4() primary key,
+  referrer_id           uuid references public.profiles(id) on delete cascade not null,
+  cycle_start           date not null,
+  cycle_end             date not null,
+  amount_usd            numeric not null,
+  status                text not null default 'pending' check (status in ('pending', 'paid')),
+  payout_method         text not null,
+  payout_wallet_address text,
+  payout_wallet_network text,
+  payout_bank_details   jsonb,
+  created_at            timestamp with time zone default now(),
+  paid_at               timestamp with time zone,
+  notified_at           timestamp with time zone,
+  unique (referrer_id, cycle_start, cycle_end)
+);
+
+create index if not exists idx_affiliate_payouts_referrer on public.affiliate_payouts(referrer_id);
+create index if not exists idx_affiliate_payouts_status on public.affiliate_payouts(status);
+
+alter table public.affiliate_commissions add column payout_id uuid references public.affiliate_payouts(id) on delete set null;
+create index if not exists idx_affiliate_commissions_payout on public.affiliate_commissions(payout_id);
+
+create or replace function public.run_affiliate_payout_cycle(
+  p_cycle_start date,
+  p_cycle_end date,
+  p_min_payout_usd numeric default 20,
+  p_hold_hours integer default 48
+)
+returns table (
+  out_referrer_id uuid,
+  out_status text,
+  out_amount_usd numeric,
+  out_payout_id uuid
+) language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  r record;
+  v_status text;
+  v_new_payout_id uuid;
+  v_method text;
+  v_method_updated timestamptz;
+  v_wallet_address text;
+  v_wallet_network text;
+  v_bank jsonb;
+begin
+  for r in
+    select ac.referrer_id as rid, sum(ac.commission_amount_usd) as total
+    from public.affiliate_commissions ac
+    where ac.payout_id is null
+      and ac.status = 'pending'
+      and ac.created_at::date between p_cycle_start and p_cycle_end
+    group by ac.referrer_id
+  loop
+    select payout_method, payout_method_updated_at, payout_wallet_address, payout_wallet_network, payout_bank_details
+      into v_method, v_method_updated, v_wallet_address, v_wallet_network, v_bank
+    from public.profiles where id = r.rid;
+
+    if v_method is null then
+      v_status := 'no_payout_method';
+    elsif v_method_updated is null or v_method_updated > (now() - (p_hold_hours || ' hours')::interval) then
+      v_status := 'held_recent_method';
+    elsif r.total < p_min_payout_usd then
+      v_status := 'below_minimum';
+    else
+      v_status := 'created';
+    end if;
+
+    v_new_payout_id := null;
+
+    if v_status = 'created' then
+      insert into public.affiliate_payouts
+        (referrer_id, cycle_start, cycle_end, amount_usd, status,
+         payout_method, payout_wallet_address, payout_wallet_network, payout_bank_details)
+      values
+        (r.rid, p_cycle_start, p_cycle_end, r.total, 'pending',
+         v_method, v_wallet_address, v_wallet_network, v_bank)
+      on conflict (referrer_id, cycle_start, cycle_end) do nothing
+      returning id into v_new_payout_id;
+
+      if v_new_payout_id is not null then
+        update public.affiliate_commissions
+        set payout_id = v_new_payout_id
+        where referrer_id = r.rid
+          and payout_id is null
+          and status = 'pending'
+          and created_at::date between p_cycle_start and p_cycle_end;
+      else
+        v_status := 'already_run';
+      end if;
+    end if;
+
+    out_referrer_id := r.rid;
+    out_status := v_status;
+    out_amount_usd := r.total;
+    out_payout_id := v_new_payout_id;
+    return next;
+  end loop;
+end;
+$$;
+
+create or replace function public.mark_affiliate_payout_paid(p_payout_id uuid)
+returns boolean language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_claimed uuid;
+begin
+  update public.affiliate_payouts
+  set status = 'paid', paid_at = now()
+  where id = p_payout_id and status = 'pending'
+  returning id into v_claimed;
+
+  if v_claimed is null then
+    return false;
+  end if;
+
+  update public.affiliate_commissions
+  set status = 'paid', paid_at = now()
+  where payout_id = v_claimed;
+
+  return true;
+end;
+$$;
 
 create or replace function public.record_referral_signup(p_code text, p_new_user_id uuid)
 returns void language plpgsql security definer set search_path = public, pg_temp as $$
@@ -1082,6 +1219,7 @@ alter table public.plans              enable row level security;
 alter table public.banned_emails      enable row level security;
 alter table public.referrals             enable row level security;
 alter table public.affiliate_commissions enable row level security;
+alter table public.affiliate_payouts     enable row level security;
 alter table public.network_benchmarks    enable row level security;
 
 -- Profiles
@@ -1185,6 +1323,11 @@ begin
   new.affiliate_status                   := old.affiliate_status; -- see migration 0031
   new.affiliate_commission_rate          := old.affiliate_commission_rate;
   new.affiliate_commission_rate_lifetime := old.affiliate_commission_rate_lifetime;
+  new.payout_method                      := old.payout_method;
+  new.payout_wallet_address              := old.payout_wallet_address;
+  new.payout_wallet_network              := old.payout_wallet_network;
+  new.payout_bank_details                := old.payout_bank_details;
+  new.payout_method_updated_at           := old.payout_method_updated_at;
 
   return new;
 end;
@@ -1312,6 +1455,11 @@ create policy "Referrer can view own commissions" on public.affiliate_commission
 create policy "Admins can view all commissions" on public.affiliate_commissions for select
   using (public.is_admin(auth.uid()));
 
+create policy "Referrer can view own payouts" on public.affiliate_payouts for select
+  using (auth.uid() = referrer_id);
+create policy "Admins can view all payouts" on public.affiliate_payouts for select
+  using (public.is_admin(auth.uid()));
+
 -- Network benchmarks - public read (backs the unauthenticated /status page)
 create policy "Anyone can view benchmarks" on public.network_benchmarks for select
   using (true);
@@ -1347,6 +1495,12 @@ grant execute on function public.credit_referral_bonus(uuid, numeric) to service
 
 revoke all on function public.record_affiliate_commission(uuid, uuid, numeric) from public;
 grant execute on function public.record_affiliate_commission(uuid, uuid, numeric) to service_role;
+
+revoke all on function public.run_affiliate_payout_cycle(date, date, numeric, integer) from public;
+grant execute on function public.run_affiliate_payout_cycle(date, date, numeric, integer) to service_role;
+
+revoke all on function public.mark_affiliate_payout_paid(uuid) from public;
+grant execute on function public.mark_affiliate_payout_paid(uuid) to service_role;
 
 revoke all on function public.claim_and_credit_order(uuid, uuid, numeric, text) from public;
 grant execute on function public.claim_and_credit_order(uuid, uuid, numeric, text) to service_role;

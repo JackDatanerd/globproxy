@@ -210,6 +210,44 @@ export default async function Home() {
         </div>
       </section>
 
+      {/* AFFILIATES */}
+      <section id="affiliates" className="py-24 bg-surface">
+        <div className="max-w-6xl mx-auto px-6">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-20 items-center">
+            <div>
+              <div className="inline-block bg-accent-light text-accent text-xs font-mono tracking-widest uppercase px-4 py-1.5 rounded-full mb-5">Refer & Earn</div>
+              <h2 className="font-display text-4xl font-bold tracking-tight text-ink leading-tight mb-4">Share GlobProxy.<br />Get paid for it.</h2>
+              <p className="text-ink2 font-light leading-relaxed mb-7">Every account gets a free referral link — refer someone and you both get 1GB free the moment they make their first purchase. Run a blog, a forum presence, or a community that needs proxies? Apply for the affiliate program and earn cash instead.</p>
+              <div className="flex flex-col gap-2.5 mb-8">
+                {['Free referral link, no approval needed — 1GB bonus for both sides','Approved affiliates earn 30% commission for a referral\'s first 90 days','15% recurring commission after that, for as long as they stay active','Paid out biweekly by USDT or bank transfer'].map(p=>(
+                  <div key={p} className="flex items-start gap-3 text-sm text-ink2 font-light">
+                    <span className="text-accent font-bold flex-shrink-0 mt-0.5">→</span>{p}
+                  </div>
+                ))}
+              </div>
+              <Link href="/auth/signup" className="inline-flex items-center gap-2 bg-ink text-white px-7 py-3.5 rounded-xl font-medium hover:-translate-y-0.5 transition-all">Get your referral link →</Link>
+            </div>
+            <div className="border border-border rounded-2xl overflow-hidden shadow-lg bg-white">
+              <div className="px-6 py-4 border-b border-border bg-ink text-white">
+                <div className="text-xs font-mono uppercase tracking-widest text-white/60">How it pays out</div>
+              </div>
+              <div className="flex flex-col divide-y divide-border">
+                {[
+                  ['Anyone you refer', '1GB credit, both sides, on their first order'],
+                  ['Approved affiliates', '30% intro → 15% lifetime commission, per order'],
+                  ['Payout schedule', 'Biweekly — earn 1st–15th, paid by the 20th; earn 16th–end, paid by the 5th'],
+                ].map(([label, val]) => (
+                  <div key={label} className="px-6 py-4">
+                    <div className="text-xs font-mono text-muted uppercase tracking-wider mb-1">{label}</div>
+                    <div className="text-sm text-ink">{val}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* CTA */}
       <section className="py-24 bg-ink relative overflow-hidden">
         <div className="absolute -top-48 -right-24 w-[500px] h-[500px] rounded-full bg-accent/10 blur-3xl" />
