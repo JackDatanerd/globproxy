@@ -1,4 +1,20 @@
-import { connect } from 'cloudflare:sockets'
+// No top-level `import ... from 'cloudflare:sockets'`, and the dynamic
+// import below uses a variable rather than a string literal, on purpose:
+// three separate build stages in this pipeline (webpack's compile,
+// Next's build-time page-data collection, and OpenNext's own esbuild
+// bundle of the Worker) each tried to statically resolve/bundle a literal
+// 'cloudflare:sockets' specifier and failed, since it's a Workers-runtime
+// module that doesn't exist as a real package. None of the three expose a
+// config hook to mark just this one specifier external (esbuild's own
+// external list here is hardcoded inside @opennextjs/cloudflare, not
+// exposed via open-next.config.ts). A variable specifier is the standard
+// way around this: neither webpack nor esbuild statically analyze a
+// dynamic import() whose argument isn't a string literal, so it's left
+// alone as a genuine runtime import — which is exactly what's needed,
+// since 'cloudflare:sockets' does resolve correctly once this code is
+// actually running inside the Worker.
+const CLOUDFLARE_SOCKETS_MODULE = 'cloudflare:sockets'
+type CloudflareSockets = typeof import('cloudflare:sockets')
 
 // Neutral, single-purpose reachability targets — dedicated IP-echo/diagnostic
 // services, not commercial sites with anti-bot systems. Deliberately kept to
@@ -18,6 +34,7 @@ const REQUESTS_PER_TARGET = 5
 const SOCKET_TIMEOUT_MS = 8000
 
 async function probeOnce(
+  connect: CloudflareSockets['connect'],
   proxyHost: string,
   proxyPort: number,
   proxyAuthB64: string,
@@ -94,6 +111,7 @@ export async function runNetworkProbe(
   proxyUsername: string,
   proxyPassword: string
 ): Promise<BenchmarkTargetResult[]> {
+  const { connect } = await import(CLOUDFLARE_SOCKETS_MODULE) as CloudflareSockets
   const auth = btoa(`${proxyUsername}:${proxyPassword}`)
   const results: BenchmarkTargetResult[] = []
 
@@ -102,7 +120,7 @@ export async function runNetworkProbe(
     let totalLatencyMs = 0
 
     for (let i = 0; i < REQUESTS_PER_TARGET; i++) {
-      const { ok, latencyMs } = await probeOnce(proxyHost, proxyPort, auth, target)
+      const { ok, latencyMs } = await probeOnce(connect, proxyHost, proxyPort, auth, target)
       if (ok) {
         successes++
         totalLatencyMs += latencyMs
