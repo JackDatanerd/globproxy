@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
+import ReportIssueButton from './ReportIssueButton'
 
 export default function DashTopbar({ profile }: { profile: any }) {
   const router = useRouter()
@@ -24,6 +25,7 @@ export default function DashTopbar({ profile }: { profile: any }) {
         {profile?.role === 'reseller' && <span className="bg-accent2-light text-accent2 text-[10px] font-mono tracking-widest px-2.5 py-1 rounded-full">RESELLER</span>}
         {profile?.role === 'admin' && <span className="bg-accent-light text-accent text-[10px] font-mono tracking-widest px-2.5 py-1 rounded-full">ADMIN</span>}
         <span className="text-sm text-ink2 hidden md:block">{profile?.email}</span>
+        <ReportIssueButton />
         <button onClick={signOut} className="text-xs text-muted hover:text-ink border border-border px-3 py-1.5 rounded-lg transition-colors">Sign out</button>
       </div>
     </header>

@@ -4,6 +4,7 @@ import { computeStockStatus } from '@/lib/stockStatus'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { dispatchWebhook } from '@/lib/webhooks'
 import { runConfiguredBenchmark } from '@/lib/networkProbe'
+import { chargeAuthorization, generateReference } from '@/lib/paystack'
 import { NextResponse } from 'next/server'
 
 // Secured with CRON_SECRET env var
@@ -221,6 +222,7 @@ async function runDailySummary() {
   const { data: orders } = await supabase.from('orders')
     .select('amount_usd, gb_amount')
     .eq('payment_status', 'paid')
+    .eq('is_canary', false) // canary's daily $0.50 test charge isn't real revenue
     .gte('paid_at', `${yesterday}T00:00:00Z`)
     .lt('paid_at', `${today}T00:00:00Z`)
 
@@ -268,6 +270,92 @@ async function runCleanup() {
   return { cleaned: stale?.length ?? 0, mfa_sessions_swept: !mfaErr }
 }
 
+// ── Canary payment (continuous end-to-end payment test) ────────────
+// Charges a small real amount to a dedicated test account daily, using a
+// saved Paystack authorization_code (captured by webhooks/paystack/route.ts
+// the first time that account pays through the normal checkout) rather
+// than a checkout page — nothing to click, so this can run unattended.
+// A real charge.success/charge.failed still fires for it exactly like a
+// normal customer payment, so the existing webhook logic (credit
+// bandwidth, or mark failed + alert immediately) covers it unchanged.
+// is_canary=true keeps it out of daily-summary revenue and the
+// /admin/orders "is something broken" read.
+//
+// Configuration lives in platform_settings, not env vars, so it can be
+// turned on/off and re-pointed at a different test account from SQL
+// without a redeploy:
+//   canary_user_id            — profiles.id of the dedicated test account
+//   canary_authorization_code — set automatically after that account's
+//                                first successful checkout (see webhook)
+// Skips cleanly (never throws) if either is missing — same shape as
+// runBenchmark's "not configured yet" skip below.
+const CANARY_GB = 0.1
+const CANARY_AMOUNT_USD = 0.5 // Paystack's practical USD minimum — raise if declined for being too small
+
+async function runCanary() {
+  const supabase = await createAdminClient()
+  const { data: settings } = await supabase
+    .from('platform_settings').select('key, value')
+    .in('key', ['canary_user_id', 'canary_authorization_code'])
+  const cfg = Object.fromEntries((settings ?? []).map(r => [r.key, r.value]))
+
+  if (!cfg.canary_user_id || !cfg.canary_authorization_code) {
+    return { skipped: true, reason: 'not_configured' }
+  }
+
+  const { data: profile } = await supabase
+    .from('profiles').select('email').eq('id', cfg.canary_user_id).single()
+  if (!profile?.email) return { skipped: true, reason: 'canary_user_not_found' }
+
+  const reference = generateReference()
+  const { data: order, error: orderErr } = await supabase.from('orders').insert({
+    user_id: cfg.canary_user_id,
+    gb_amount: CANARY_GB,
+    amount_usd: CANARY_AMOUNT_USD,
+    payment_method: 'paystack',
+    payment_status: 'pending',
+    paystack_reference: reference,
+    is_canary: true,
+  }).select().single()
+  if (orderErr || !order) throw new Error(`canary order insert failed: ${orderErr?.message}`)
+
+  try {
+    const result = await chargeAuthorization({
+      email: profile.email,
+      amount_usd: CANARY_AMOUNT_USD,
+      reference,
+      authorization_code: cfg.canary_authorization_code,
+      metadata: { order_id: order.id, user_id: cfg.canary_user_id, gb_amount: String(CANARY_GB) },
+    })
+    // The webhook (charge.success/charge.failed) does the actual crediting
+    // or failure-marking + alert once Paystack's async event lands — this
+    // is just the immediate call result for the cron log.
+    return { initiated: true, reference, gateway_status: result.status }
+  } catch (err: any) {
+    // This is the one canary failure mode the webhook can never catch —
+    // the charge_authorization call itself never reached Paystack (bad/
+    // expired authorization_code, network error), so no charge.failed
+    // event will ever fire for it. Alert directly here instead of relying
+    // on the normal webhook path.
+    await supabase.from('orders').update({
+      payment_status: 'failed',
+      failure_reason: `canary charge call failed: ${err.message}`,
+      failed_at: new Date().toISOString(),
+    }).eq('id', order.id)
+    await sendEmail({
+      to: process.env.ADMIN_EMAIL!,
+      subject: `[CANARY PAYMENT FAILED] charge_authorization call errored`,
+      html: `<p>The daily canary payment test couldn't even reach Paystack — this is
+             separate from a normal card decline and usually means the saved
+             authorization_code is stale/revoked, or Paystack's API is unreachable.</p>
+             <p><strong>Error:</strong> ${escapeHtml(err.message)}</p>
+             <p>Re-run a real checkout on the canary account to refresh the saved
+             authorization_code, or check Paystack's status page.</p>`,
+    }).catch((e) => console.error('[canary] alert email threw', e))
+    return { initiated: false, error: err.message }
+  }
+}
+
 // ── Network benchmark (public /status page) ────────────────────────
 // Runs a small number of requests through a dedicated, admin-configured
 // "house" proxy credential against neutral reachability targets (see
@@ -301,6 +389,7 @@ export async function POST(req: Request, context: { params: Promise<{ task: stri
       case 'alerts':    result = await runBandwidthAlerts();  break
       case 'summary':   result = await runDailySummary();     break
       case 'cleanup':   result = await runCleanup();          break
+      case 'canary':    result = await runCanary();           break
       case 'benchmark': result = await runBenchmark();        break
       default: return NextResponse.json({ error: `Unknown task: ${task}` }, { status: 400 })
     }

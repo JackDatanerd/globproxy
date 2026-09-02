@@ -18,6 +18,7 @@ export default async function AdminOrdersPage() {
     .from('orders')
     .select('amount_usd, gb_amount')
     .eq('payment_status', 'paid')
+    .eq('is_canary', false) // canary's daily $0.50 test charge isn't real revenue
 
   const totalRevenue = allPaid?.reduce((s, o) => s + Number(o.amount_usd), 0) ?? 0
   const totalGb = allPaid?.reduce((s, o) => s + Number(o.gb_amount), 0) ?? 0
@@ -72,8 +73,18 @@ export default async function AdminOrdersPage() {
                   <td className="px-6 py-4 font-mono text-sm text-ink">${o.amount_usd}</td>
                   <td className="px-6 py-4">
                     <span className={`text-[10px] font-mono px-2.5 py-1 rounded-full ${o.payment_status === 'paid' ? 'bg-accent2-light text-accent2' : o.payment_status === 'pending' ? 'bg-yellow-50 text-yellow-600' : 'bg-red-50 text-red-400'}`}>
-                      {o.payment_status}
+                      {/* failure_reason only exists on orders the webhook's new
+                          charge.failed handler touched (migration 0036) — a stale
+                          'pending' order the 24h cleanup cron flips to 'failed'
+                          has no reason recorded, so that case still just shows
+                          plain "failed" rather than a misleading "failed - " */}
+                      {o.payment_status === 'failed' && o.failure_reason
+                        ? `failed - ${o.failure_reason.toLowerCase()}`
+                        : o.payment_status}
                     </span>
+                    {o.is_canary && (
+                      <div className="text-[10px] font-mono text-muted mt-1">canary test</div>
+                    )}
                   </td>
                 </tr>
               )

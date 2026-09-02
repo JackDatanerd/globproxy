@@ -42,6 +42,42 @@ export async function verifyTransaction(reference: string) {
   }
 }
 
+// Charges a previously-saved card via its Paystack authorization_code —
+// no checkout page, no human re-entering card details. Powers the
+// 'canary' cron task (app/api/cron/[task]/route.ts): once the canary
+// account has made one normal checkout, the webhook stores the
+// authorization_code it comes back with (see webhooks/paystack/route.ts),
+// and every canary run afterward reuses it to charge a small real amount
+// end-to-end. Same reference/metadata shape as initializeTransaction so
+// the existing webhook charge.success/charge.failed handling covers this
+// path unchanged.
+export async function chargeAuthorization(params: {
+  email: string
+  amount_usd: number
+  reference: string
+  authorization_code: string
+  metadata: Record<string, string>
+}) {
+  const res = await fetch(`${BASE}/transaction/charge_authorization`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${SECRET}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      email: params.email,
+      amount: Math.round(params.amount_usd * 100),
+      currency: 'USD',
+      reference: params.reference,
+      authorization_code: params.authorization_code,
+      metadata: params.metadata,
+    }),
+  })
+  const data = await res.json()
+  if (!data.status) throw new Error(data.message ?? 'Charge authorization failed')
+  return data.data as { status: string; reference: string; gateway_response?: string }
+}
+
 export function verifyWebhookSignature(body: string, signature: string): boolean {
   const crypto = require('crypto')
   // Paystack signs with your secret key — there is no separate webhook secret
