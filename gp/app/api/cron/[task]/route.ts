@@ -3,7 +3,7 @@ import { syncAllUsage } from '@/lib/usageSync'
 import { computeStockStatus } from '@/lib/stockStatus'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { dispatchWebhook } from '@/lib/webhooks'
-import { runNetworkProbe } from '@/lib/networkProbe'
+import { runConfiguredBenchmark } from '@/lib/networkProbe'
 import { NextResponse } from 'next/server'
 
 // Secured with CRON_SECRET env var
@@ -277,48 +277,14 @@ async function runCleanup() {
 // implemented yet, and this task should never be the reason a cron run
 // fails loudly. /api/admin/record-benchmark remains the manual fallback
 // regardless of whether this is configured.
+// ── Network benchmark (public /status page) ────────────────────────
+// runConfiguredBenchmark (lib/networkProbe.ts) does all the real work —
+// shared with the admin "test now" button on /admin/settings so both
+// paths validate and probe identically. Never throws: skips cleanly if
+// unconfigured, inactive, wrong protocol, or out of budget.
 async function runBenchmark() {
   const supabase = await createAdminClient()
-  const { data: setting } = await supabase
-    .from('platform_settings')
-    .select('value')
-    .eq('key', 'benchmark_credential_id')
-    .single()
-
-  if (!setting?.value) {
-    return { action: 'skipped', reason: 'benchmark_credential_id not configured — see /api/admin/record-benchmark to publish measurements manually' }
-  }
-
-  const { data: cred } = await supabase
-    .from('proxy_credentials')
-    .select('host, port, protocol, geonode_username, geonode_password, status, gb_allocated, gb_used')
-    .eq('id', setting.value)
-    .single()
-
-  if (!cred) return { action: 'skipped', reason: 'configured benchmark_credential_id does not exist' }
-  if (cred.status !== 'active') return { action: 'skipped', reason: `benchmark credential is not active (status: ${cred.status})` }
-  if (cred.protocol !== 'http') return { action: 'skipped', reason: `benchmark credential uses ${cred.protocol} — only http proxy probing is implemented so far` }
-  if (!cred.geonode_username || !cred.geonode_password) return { action: 'skipped', reason: 'benchmark credential is missing proxy auth' }
-  // Guard against ever burning through the credential's whole allocation on
-  // probe traffic alone — these requests are tiny (a few hundred bytes each)
-  // but this keeps a runaway retry loop or a misconfigured schedule from
-  // being able to silently eat the budget set aside for this.
-  if (Number(cred.gb_used) >= Number(cred.gb_allocated)) {
-    return { action: 'skipped', reason: 'benchmark credential has exhausted its allocated GB' }
-  }
-
-  const results = await runNetworkProbe(cred.host, cred.port, cred.geonode_username, cred.geonode_password)
-
-  for (const r of results) {
-    await supabase.from('network_benchmarks').insert({
-      target_label: r.label,
-      success_rate: r.successRate,
-      avg_latency_ms: r.avgLatencyMs,
-      sample_size: r.sampleSize,
-    })
-  }
-
-  return { action: 'ran', targets: results }
+  return runConfiguredBenchmark(supabase)
 }
 
 // ── Route handler ─────────────────────────────────────────────────

@@ -12,7 +12,7 @@ export default async function ReferralsPage() {
 
   const [{ data: profile }, { data: referrals }] = await Promise.all([
     supabase.from('profiles')
-      .select('referral_code, affiliate_status, affiliate_commission_rate, affiliate_commission_rate_lifetime, payout_method, payout_wallet_address, payout_bank_details, payout_method_updated_at')
+      .select('referral_code, affiliate_status, affiliate_commission_rate, affiliate_commission_rate_lifetime, payout_method, payout_wallet_address, payout_bank_details, payout_mpesa_phone, payout_method_updated_at')
       .eq('id', user.id)
       .single(),
     supabase.from('referrals')
@@ -82,9 +82,10 @@ export default async function ReferralsPage() {
       {isAffiliate && (
         <div className="mt-4">
           <PayoutMethodForm
-            currentMethod={profile?.payout_method as 'usdt' | 'bank' | null}
+            currentMethod={profile?.payout_method as 'usdt' | 'bank' | 'mpesa' | null}
             currentWalletAddress={profile?.payout_wallet_address ?? null}
             currentBankDetails={profile?.payout_bank_details as any}
+            currentMpesaPhone={profile?.payout_mpesa_phone ?? null}
             updatedAt={profile?.payout_method_updated_at ?? null}
           />
         </div>

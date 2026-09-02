@@ -3,7 +3,7 @@
 -- Run this entire file in Supabase SQL Editor (fresh project)
 -- ============================================================
 --
--- INCLUDES MIGRATIONS THROUGH: 0034_affiliate_payout_cycles.sql
+-- INCLUDES MIGRATIONS THROUGH: 0035_mpesa_payout_method.sql
 --
 -- This line is the source of truth `scripts/check-schema-sync.mjs` reads
 -- to compare against supabase/migrations/ — it's what CI checks on every
@@ -63,10 +63,11 @@ create table public.profiles (
   -- below enforces this) — only via the update-payout-method route, which
   -- always sets it server-side. That timestamp is what the 48h hold in
   -- run_affiliate_payout_cycle checks against.
-  payout_method              text check (payout_method is null or payout_method in ('usdt', 'bank')),
+  payout_method              text check (payout_method is null or payout_method in ('usdt', 'bank', 'mpesa')),
   payout_wallet_address      text,
   payout_wallet_network      text check (payout_wallet_network is null or payout_wallet_network = 'TRC20'),
   payout_bank_details        jsonb,
+  payout_mpesa_phone         text,
   payout_method_updated_at   timestamp with time zone,
   created_at      timestamp with time zone default now(),
   updated_at      timestamp with time zone default now()
@@ -249,6 +250,7 @@ create table public.affiliate_payouts (
   payout_wallet_address text,
   payout_wallet_network text,
   payout_bank_details   jsonb,
+  payout_mpesa_phone    text,
   created_at            timestamp with time zone default now(),
   paid_at               timestamp with time zone,
   notified_at           timestamp with time zone,
@@ -282,6 +284,7 @@ declare
   v_wallet_address text;
   v_wallet_network text;
   v_bank jsonb;
+  v_mpesa_phone text;
 begin
   for r in
     select ac.referrer_id as rid, sum(ac.commission_amount_usd) as total
@@ -291,8 +294,8 @@ begin
       and ac.created_at::date between p_cycle_start and p_cycle_end
     group by ac.referrer_id
   loop
-    select payout_method, payout_method_updated_at, payout_wallet_address, payout_wallet_network, payout_bank_details
-      into v_method, v_method_updated, v_wallet_address, v_wallet_network, v_bank
+    select payout_method, payout_method_updated_at, payout_wallet_address, payout_wallet_network, payout_bank_details, payout_mpesa_phone
+      into v_method, v_method_updated, v_wallet_address, v_wallet_network, v_bank, v_mpesa_phone
     from public.profiles where id = r.rid;
 
     if v_method is null then
@@ -310,10 +313,10 @@ begin
     if v_status = 'created' then
       insert into public.affiliate_payouts
         (referrer_id, cycle_start, cycle_end, amount_usd, status,
-         payout_method, payout_wallet_address, payout_wallet_network, payout_bank_details)
+         payout_method, payout_wallet_address, payout_wallet_network, payout_bank_details, payout_mpesa_phone)
       values
         (r.rid, p_cycle_start, p_cycle_end, r.total, 'pending',
-         v_method, v_wallet_address, v_wallet_network, v_bank)
+         v_method, v_wallet_address, v_wallet_network, v_bank, v_mpesa_phone)
       on conflict (referrer_id, cycle_start, cycle_end) do nothing
       returning id into v_new_payout_id;
 
@@ -1327,6 +1330,7 @@ begin
   new.payout_wallet_address              := old.payout_wallet_address;
   new.payout_wallet_network              := old.payout_wallet_network;
   new.payout_bank_details                := old.payout_bank_details;
+  new.payout_mpesa_phone                 := old.payout_mpesa_phone;
   new.payout_method_updated_at           := old.payout_method_updated_at;
 
   return new;

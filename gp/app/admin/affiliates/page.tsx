@@ -117,6 +117,8 @@ export default async function AdminAffiliatesPage() {
                     <td className="px-6 py-4 text-xs font-mono text-ink">
                       {p.payout_method === 'usdt' ? (
                         <>USDT (TRC20)<br /><span className="text-muted">{p.payout_wallet_address}</span></>
+                      ) : p.payout_method === 'mpesa' ? (
+                        <>M-Pesa<br /><span className="text-muted">{p.payout_mpesa_phone}</span></>
                       ) : (
                         <>{p.payout_bank_details?.bankName}<br /><span className="text-muted">{p.payout_bank_details?.accountName} · {p.payout_bank_details?.accountNumber}</span></>
                       )}

@@ -3,15 +3,17 @@ import { useState } from 'react'
 import toast from 'react-hot-toast'
 
 type Props = {
-  currentMethod: 'usdt' | 'bank' | null
+  currentMethod: 'usdt' | 'bank' | 'mpesa' | null
   currentWalletAddress: string | null
   currentBankDetails: { bankName?: string; accountName?: string; accountNumber?: string; country?: string; swift?: string } | null
+  currentMpesaPhone: string | null
   updatedAt: string | null
 }
 
-export default function PayoutMethodForm({ currentMethod, currentWalletAddress, currentBankDetails, updatedAt }: Props) {
-  const [method, setMethod] = useState<'usdt' | 'bank'>(currentMethod ?? 'usdt')
+export default function PayoutMethodForm({ currentMethod, currentWalletAddress, currentBankDetails, currentMpesaPhone, updatedAt }: Props) {
+  const [method, setMethod] = useState<'usdt' | 'bank' | 'mpesa'>(currentMethod ?? 'usdt')
   const [walletAddress, setWalletAddress] = useState(currentWalletAddress ?? '')
+  const [mpesaPhone, setMpesaPhone] = useState(currentMpesaPhone ?? '')
   const [bankName, setBankName] = useState(currentBankDetails?.bankName ?? '')
   const [accountName, setAccountName] = useState(currentBankDetails?.accountName ?? '')
   const [accountNumber, setAccountNumber] = useState(currentBankDetails?.accountNumber ?? '')
@@ -23,9 +25,10 @@ export default function PayoutMethodForm({ currentMethod, currentWalletAddress, 
   async function handle(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
-    const body = method === 'usdt'
-      ? { method, walletAddress }
-      : { method, bankDetails: { bankName, accountName, accountNumber, country, swift } }
+    const body =
+      method === 'usdt' ? { method, walletAddress } :
+      method === 'mpesa' ? { method, mpesaPhone } :
+      { method, bankDetails: { bankName, accountName, accountNumber, country, swift } }
 
     const res = await fetch('/api/dashboard/update-payout-method', {
       method: 'POST',
@@ -38,7 +41,7 @@ export default function PayoutMethodForm({ currentMethod, currentWalletAddress, 
       toast.error(data.error ?? 'Failed to save payout method')
       return
     }
-    toast.success('Payout method saved')
+    toast.success('Payout method saved — check your email for confirmation')
     setEditing(false)
     // Reflects the new server-set updated_at without a full page reload —
     // simplest correct thing is just to reload, this isn't a hot path.
@@ -52,9 +55,13 @@ export default function PayoutMethodForm({ currentMethod, currentWalletAddress, 
           <div className="text-sm font-medium text-ink">Payout method</div>
           <button onClick={() => setEditing(true)} className="text-xs font-mono text-accent hover:underline">Change</button>
         </div>
-        {currentMethod === 'usdt' ? (
+        {currentMethod === 'usdt' && (
           <div className="text-xs text-muted font-mono mt-2">USDT (TRC20) · {currentWalletAddress}</div>
-        ) : (
+        )}
+        {currentMethod === 'mpesa' && (
+          <div className="text-xs text-muted font-mono mt-2">M-Pesa · {currentMpesaPhone}</div>
+        )}
+        {currentMethod === 'bank' && (
           <div className="text-xs text-muted font-mono mt-2">
             Bank · {currentBankDetails?.bankName} · ****{currentBankDetails?.accountNumber?.slice(-4)}
           </div>
@@ -74,7 +81,7 @@ export default function PayoutMethodForm({ currentMethod, currentWalletAddress, 
       <div>
         <div className="text-sm font-medium text-ink mb-1">Set your payout method</div>
         <div className="text-xs text-muted">
-          For security, a new or changed payout method takes 48 hours before it's eligible for a payout — this protects you if your account is ever compromised.
+          For security, a new or changed payout method takes 48 hours before it's eligible for a payout — this protects you if your account is ever compromised. We'll also email you every time this changes.
         </div>
       </div>
       <div className="flex gap-2">
@@ -82,13 +89,17 @@ export default function PayoutMethodForm({ currentMethod, currentWalletAddress, 
           className={`text-xs font-mono px-3 py-1.5 rounded-lg border ${method === 'usdt' ? 'bg-accent2 text-white border-accent2' : 'border-border text-muted'}`}>
           USDT (TRC20)
         </button>
+        <button type="button" onClick={() => setMethod('mpesa')}
+          className={`text-xs font-mono px-3 py-1.5 rounded-lg border ${method === 'mpesa' ? 'bg-accent2 text-white border-accent2' : 'border-border text-muted'}`}>
+          M-Pesa
+        </button>
         <button type="button" onClick={() => setMethod('bank')}
           className={`text-xs font-mono px-3 py-1.5 rounded-lg border ${method === 'bank' ? 'bg-accent2 text-white border-accent2' : 'border-border text-muted'}`}>
           Bank transfer
         </button>
       </div>
 
-      {method === 'usdt' ? (
+      {method === 'usdt' && (
         <div>
           <label className="text-[10px] font-mono text-muted uppercase tracking-wider">USDT wallet address (TRC20 / Tron network only)</label>
           <input
@@ -98,7 +109,21 @@ export default function PayoutMethodForm({ currentMethod, currentWalletAddress, 
             className="w-full mt-1 text-sm font-mono text-ink bg-surface border border-border rounded-lg px-3 py-2"
           />
         </div>
-      ) : (
+      )}
+
+      {method === 'mpesa' && (
+        <div>
+          <label className="text-[10px] font-mono text-muted uppercase tracking-wider">M-Pesa phone number (Safaricom)</label>
+          <input
+            value={mpesaPhone}
+            onChange={(e) => setMpesaPhone(e.target.value)}
+            placeholder="07XX XXX XXX"
+            className="w-full mt-1 text-sm font-mono text-ink bg-surface border border-border rounded-lg px-3 py-2"
+          />
+        </div>
+      )}
+
+      {method === 'bank' && (
         <div className="flex flex-col gap-2">
           <input value={bankName} onChange={(e) => setBankName(e.target.value)} placeholder="Bank name"
             className="text-sm text-ink bg-surface border border-border rounded-lg px-3 py-2" />
