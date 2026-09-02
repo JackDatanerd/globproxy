@@ -64,10 +64,23 @@ import { default as handler } from './.open-next/worker.js'
 //     order, each step only running if the previous one succeeded
 //     (cron-daily.yml used GitHub Actions' `needs:` for this exact
 //     chain — replicated below rather than dropped).
+//   - benchmark: every 6 hours. New, not replacing anything — this is
+//     the network-probe task that backs /status, previously only
+//     runnable by hand via the "Run test now" button in
+//     /admin/settings. Picked 6h as a starting cadence since each run
+//     is a handful of tiny requests (see lib/networkProbe.ts) against a
+//     small dedicated credential's GB allowance; tighten or loosen once
+//     there's a sense of how fast that budget actually depletes.
+//
+// canary (migration 0036, app/api/cron/[task]/route.ts) is NOT included
+// here yet — it exists as a task but was never wired to any scheduler,
+// cron-job.org included, so this isn't a regression, just something
+// still worth deciding on separately.
 const CRON_TASKS: Record<string, string[]> = {
   '*/5 * * * *': ['usage'],
   '0 * * * *': ['stock'],
   '0 8 * * *': ['alerts', 'summary', 'cleanup'],
+  '0 */6 * * *': ['benchmark'],
 }
 
 export default {

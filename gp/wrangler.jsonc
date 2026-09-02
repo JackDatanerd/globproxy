@@ -13,7 +13,8 @@
     "crons": [
       "*/5 * * * *",
       "0 * * * *",
-      "0 8 * * *"
+      "0 8 * * *",
+      "0 */6 * * *"
     ]
   },
   // Cloudflare's native rate-limiting binding — auto-provisioned on deploy,
