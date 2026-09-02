@@ -71,16 +71,26 @@ import { default as handler } from './.open-next/worker.js'
 //     is a handful of tiny requests (see lib/networkProbe.ts) against a
 //     small dedicated credential's GB allowance; tighten or loosen once
 //     there's a sense of how fast that budget actually depletes.
+//   - canary: once a day at 8:05am UTC — deliberately its own entry, 5
+//     minutes after the alerts/summary/cleanup chain rather than folded
+//     into it. runCanary makes a real ~$0.50 Paystack charge against a
+//     saved authorization to exercise the full payment pipeline
+//     end-to-end; chaining it after cleanup would mean an unrelated
+//     cleanup failure silently skips the one check that exists
+//     specifically to catch payment-pipeline outages — the opposite of
+//     what canary is for. It stays a no-op (see runCanary's own
+//     not_configured check) until canary_user_id and
+//     canary_authorization_code are set in platform_settings.
 //
-// canary (migration 0036, app/api/cron/[task]/route.ts) is NOT included
-// here yet — it exists as a task but was never wired to any scheduler,
-// cron-job.org included, so this isn't a regression, just something
-// still worth deciding on separately.
+// canary (migration 0036, app/api/cron/[task]/route.ts) is now scheduled
+// below alongside benchmark — both were added after the original three-
+// workflow replacement this file's header comment describes.
 const CRON_TASKS: Record<string, string[]> = {
   '*/5 * * * *': ['usage'],
   '0 * * * *': ['stock'],
   '0 8 * * *': ['alerts', 'summary', 'cleanup'],
   '0 */6 * * *': ['benchmark'],
+  '5 8 * * *': ['canary'],
 }
 
 export default {

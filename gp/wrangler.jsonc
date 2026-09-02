@@ -14,7 +14,8 @@
       "*/5 * * * *",
       "0 * * * *",
       "0 8 * * *",
-      "0 */6 * * *"
+      "0 */6 * * *",
+      "5 8 * * *"
     ]
   },
   // Cloudflare's native rate-limiting binding — auto-provisioned on deploy,
