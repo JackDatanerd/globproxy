@@ -1,30 +1,26 @@
-// No top-level `import ... from 'cloudflare:sockets'`, and the dynamic
-// import below uses a variable rather than a string literal, on purpose:
-// three separate build stages in this pipeline (webpack's compile,
-// Next's build-time page-data collection, and OpenNext's own esbuild
-// bundle of the Worker) each tried to statically resolve/bundle a literal
-// 'cloudflare:sockets' specifier and failed, since it's a Workers-runtime
-// module that doesn't exist as a real package. None of the three expose a
-// config hook to mark just this one specifier external (esbuild's own
-// external list here is hardcoded inside @opennextjs/cloudflare, not
-// exposed via open-next.config.ts). A variable specifier is the standard
-// way around this: neither webpack nor esbuild statically analyze a
-// dynamic import() whose argument isn't a string literal, so it's left
-// alone as a genuine runtime import — which is exactly what's needed,
-// since 'cloudflare:sockets' does resolve correctly once this code is
-// actually running inside the Worker.
-const CLOUDFLARE_SOCKETS_MODULE = 'cloudflare:sockets'
-type CloudflareSockets = typeof import('cloudflare:sockets')
+// Uses node:net rather than importing 'cloudflare:sockets' directly.
+// This project already runs with the nodejs_compat compatibility flag
+// (see wrangler.jsonc), and Cloudflare's own docs are explicit that in
+// that mode, node:net's Socket is the documented, supported way to open
+// a raw TCP connection — net.Socket is a wrapper around the same
+// cloudflare:sockets connect() functionality underneath, but resolves
+// correctly through the Node-compat module layer this app's OpenNext
+// "cloudflare-node" wrapper runs under, where a direct dynamic import of
+// 'cloudflare:sockets' does not (confirmed: it threw "Cannot find
+// module 'cloudflare:sockets'" at runtime in production, despite
+// building cleanly — the build succeeding was never proof the import
+// would actually resolve at request time in this specific wrapper mode).
+import net from 'node:net'
 
 // Neutral, single-purpose reachability targets — dedicated IP-echo/diagnostic
 // services, not commercial sites with anti-bot systems. Deliberately kept to
 // two, low request-per-target volume (see REQUESTS_PER_TARGET below), and
 // plain HTTP rather than HTTPS: an HTTP proxy relays a plain HTTP request
 // directly (absolute-URI request line), so this needs a raw TCP write/read
-// over the Workers `connect()` socket and nothing else — no CONNECT tunnel,
-// no TLS handshake to reimplement. That's a deliberate scope cut to keep this
-// first version something we can actually be confident is correct, not a
-// full HTTPS-through-proxy test harness.
+// and nothing else — no CONNECT tunnel, no TLS handshake to reimplement.
+// That's a deliberate scope cut to keep this first version something we
+// can actually be confident is correct, not a full HTTPS-through-proxy
+// test harness.
 const PROBE_TARGETS: { label: string; host: string; path: string }[] = [
   { label: 'General reachability', host: 'icanhazip.com', path: '/' },
   { label: 'Proxy exit confirmation', host: 'api.ipify.org', path: '/' },
@@ -33,64 +29,55 @@ const PROBE_TARGETS: { label: string; host: string; path: string }[] = [
 const REQUESTS_PER_TARGET = 5
 const SOCKET_TIMEOUT_MS = 8000
 
-async function probeOnce(
-  connect: CloudflareSockets['connect'],
+function probeOnce(
   proxyHost: string,
   proxyPort: number,
   proxyAuthB64: string,
   target: { host: string; path: string }
 ): Promise<{ ok: boolean; latencyMs: number }> {
-  const started = Date.now()
-  let socket
-  try {
-    socket = connect({ hostname: proxyHost, port: proxyPort })
+  return new Promise((resolve) => {
+    const started = Date.now()
+    const socket = new net.Socket()
+    let settled = false
+    let buffer = ''
 
-    const writer = socket.writable.getWriter()
-    const reader = socket.readable.getReader()
+    const finish = (ok: boolean) => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      resolve({ ok, latencyMs: Date.now() - started })
+    }
 
-    // Standard "HTTP proxy forward request" form: absolute-URI in the
-    // request line, sent straight to the proxy — this is what tells an
-    // HTTP proxy (as opposed to an origin server) to relay the request,
-    // no CONNECT needed since the target is plain HTTP.
-    const request =
-      `GET http://${target.host}${target.path} HTTP/1.1\r\n` +
-      `Host: ${target.host}\r\n` +
-      `Proxy-Authorization: Basic ${proxyAuthB64}\r\n` +
-      `Connection: close\r\n\r\n`
+    socket.setTimeout(SOCKET_TIMEOUT_MS)
+    socket.on('timeout', () => finish(false))
+    socket.on('error', () => finish(false))
+    socket.on('close', () => finish(false)) // closed before headers ever arrived
 
-    await writer.write(new TextEncoder().encode(request))
-    writer.releaseLock()
+    socket.connect(proxyPort, proxyHost, () => {
+      // Standard "HTTP proxy forward request" form: absolute-URI in the
+      // request line, sent straight to the proxy — this is what tells an
+      // HTTP proxy (as opposed to an origin server) to relay the request,
+      // no CONNECT needed since the target is plain HTTP.
+      const request =
+        `GET http://${target.host}${target.path} HTTP/1.1\r\n` +
+        `Host: ${target.host}\r\n` +
+        `Proxy-Authorization: Basic ${proxyAuthB64}\r\n` +
+        `Connection: close\r\n\r\n`
+      socket.write(request)
+    })
 
-    const readHeaders = (async () => {
-      let received = ''
-      const decoder = new TextDecoder()
+    socket.on('data', (chunk: Buffer) => {
       // Headers are all we need for a pass/fail + latency signal — no
       // reason to wait for the full body of an already-successful response.
-      while (!received.includes('\r\n\r\n')) {
-        const { value, done } = await reader.read()
-        if (done) break
-        received += decoder.decode(value, { stream: true })
+      buffer += chunk.toString('utf-8')
+      if (buffer.includes('\r\n\r\n')) {
+        const statusLine = buffer.split('\r\n')[0] ?? ''
+        const statusMatch = statusLine.match(/^HTTP\/1\.[01]\s+(\d{3})/)
+        const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0
+        finish(statusCode >= 200 && statusCode < 400)
       }
-      return received
-    })()
-
-    const timeout = new Promise<string>((_, reject) =>
-      setTimeout(() => reject(new Error('probe timeout')), SOCKET_TIMEOUT_MS)
-    )
-
-    const result = await Promise.race([readHeaders, timeout])
-    const statusLine = result.split('\r\n')[0] ?? ''
-    const statusMatch = statusLine.match(/^HTTP\/1\.[01]\s+(\d{3})/)
-    const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0
-
-    reader.releaseLock()
-    await socket.close().catch(() => {})
-
-    return { ok: statusCode >= 200 && statusCode < 400, latencyMs: Date.now() - started }
-  } catch {
-    await socket?.close().catch(() => {})
-    return { ok: false, latencyMs: Date.now() - started }
-  }
+    })
+  })
 }
 
 export type BenchmarkTargetResult = {
@@ -102,16 +89,16 @@ export type BenchmarkTargetResult = {
 
 // Runs REQUESTS_PER_TARGET probes against each target, through the given
 // HTTP proxy credentials, and returns aggregated per-target results. Caller
-// (runBenchmark in the cron route) is responsible for writing these into
-// network_benchmarks and for everything upstream of "we have a working http
-// proxy credential to test with" (protocol check, active-status check, etc).
+// (runConfiguredBenchmark below) is responsible for writing these into
+// network_benchmarks and for everything upstream of "we have a working
+// http proxy credential to test with" (protocol check, active-status
+// check, etc).
 export async function runNetworkProbe(
   proxyHost: string,
   proxyPort: number,
   proxyUsername: string,
   proxyPassword: string
 ): Promise<BenchmarkTargetResult[]> {
-  const { connect } = await import(CLOUDFLARE_SOCKETS_MODULE) as CloudflareSockets
   const auth = btoa(`${proxyUsername}:${proxyPassword}`)
   const results: BenchmarkTargetResult[] = []
 
@@ -120,7 +107,7 @@ export async function runNetworkProbe(
     let totalLatencyMs = 0
 
     for (let i = 0; i < REQUESTS_PER_TARGET; i++) {
-      const { ok, latencyMs } = await probeOnce(connect, proxyHost, proxyPort, auth, target)
+      const { ok, latencyMs } = await probeOnce(proxyHost, proxyPort, auth, target)
       if (ok) {
         successes++
         totalLatencyMs += latencyMs
