@@ -3,7 +3,7 @@
 -- Run this entire file in Supabase SQL Editor (fresh project)
 -- ============================================================
 --
--- INCLUDES MIGRATIONS THROUGH: 0035_mpesa_payout_method.sql
+-- INCLUDES MIGRATIONS THROUGH: 0036_payment_alerting_canary_support.sql
 --
 -- This line is the source of truth `scripts/check-schema-sync.mjs` reads
 -- to compare against supabase/migrations/ — it's what CI checks on every
@@ -169,7 +169,15 @@ create table public.orders (
   -- Assigned exactly once, atomically, inside claim_and_credit_order()
   -- below when an order is claimed as paid — never at order-creation, so
   -- a pending/cancelled/failed order never has one. See migration 0021.
-  invoice_number      text unique
+  invoice_number      text unique,
+  -- Migration 0036: populated by webhooks/paystack's charge.failed handler
+  -- the moment a decline happens, instead of the 24h cleanup cron flipping
+  -- payment_status to 'failed' with no reason recorded, hours later.
+  failure_reason      text,
+  failed_at           timestamp with time zone,
+  -- Migration 0036: marks the daily automated end-to-end payment test
+  -- (cron 'canary' task) so it's excluded from revenue/summary numbers.
+  is_canary           boolean not null default false
 );
 
 -- ── REFERRALS & AFFILIATE COMMISSIONS ────────────────────────────
@@ -1062,6 +1070,39 @@ create policy "Users can view own webhook endpoints"
 -- against the URL, which RLS has no way to do. All writes go through
 -- /api/dashboard/webhooks/* using the service role after an explicit
 -- ownership check.
+
+-- ── SUPPORT REPORTS ────────────────────────────────────────────
+-- Migration 0036. Backs the in-app "Report an issue" button
+-- (components/dashboard/ReportIssueButton.tsx) added after payments
+-- silently failed with no visibility — /api/support/report writes here
+-- and emails admin immediately, same as the payment-failure alert.
+create table public.support_reports (
+  id            uuid default uuid_generate_v4() primary key,
+  user_id       uuid references public.profiles(id) on delete set null,
+  email         text not null,
+  page_url      text,
+  message       text not null,
+  status        text not null default 'open' check (status in ('open','resolved')),
+  created_at    timestamptz default now(),
+  resolved_at   timestamptz
+);
+
+create index idx_support_reports_status on public.support_reports(status);
+
+alter table public.support_reports enable row level security;
+
+-- No insert policy for anon/authenticated — the API route always writes
+-- through the admin client (same pattern as orders/checkout), same reason
+-- referrals has no direct-write policy either. These two are read-only
+-- policies for users viewing their own submitted reports.
+create policy "User can view own reports" on public.support_reports for select
+  using (auth.uid() = user_id);
+
+create policy "Admins can view all reports" on public.support_reports for select
+  using (public.is_admin(auth.uid()));
+
+create policy "Admins can update reports" on public.support_reports for update
+  using (public.is_admin(auth.uid()));
 
 -- ── TWO-FACTOR AUTHENTICATION (MFA) ───────────────────────────
 -- See migration 0020. Mandatory for admin and reseller roles (enforced
