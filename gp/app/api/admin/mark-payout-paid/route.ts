@@ -59,7 +59,7 @@ export async function POST(req: Request) {
               Hi ${escapeHtml(referrer.full_name?.split(' ')[0]) || 'there'}, your affiliate payout of
               <strong>$${Number(payout.amount_usd).toFixed(2)}</strong> for
               ${escapeHtml(formatCycleLabel(payout))} has been sent via
-              ${payout.payout_method === 'usdt' ? 'USDT (TRC20)' : 'bank transfer'}.
+              ${payout.payout_method === 'usdt' ? 'USDT (TRC20)' : payout.payout_method === 'mpesa' ? 'M-Pesa' : 'bank transfer'}.
             </p>
             <div style="text-align:center;margin:32px 0;">
               <a href="${process.env.NEXT_PUBLIC_APP_URL}/dashboard/referrals"

@@ -2,6 +2,7 @@ import { createAdminClient } from '@/lib/supabase/server'
 import Link from 'next/link'
 import AdminStockPanel from '@/components/admin/AdminStockPanel'
 import { formatGb } from '@/lib/format'
+import { GEONODE_COST_PER_GB_USD } from '@/lib/constants'
 
 export default async function AdminPage() {
   const supabase = await createAdminClient()
@@ -49,7 +50,7 @@ export default async function AdminPage() {
           {label:'Regular users',value:String(totalUsers??0),color:'text-ink'},
           {label:'Resellers',value:String(totalResellers??0),color:'text-accent2'},
           {label:'Total accounts',value:String((totalUsers??0)+(totalResellers??0)),color:'text-ink'},
-          {label:'Cost per GB',value:'$0.49',color:'text-muted',sub:'Geonode wholesale'},
+          {label:'Cost per GB',value:`$${GEONODE_COST_PER_GB_USD}`,color:'text-muted',sub:'Geonode wholesale'},
         ].map(m=>(
           <div key={m.label} className="bg-white border border-border rounded-xl p-5">
             <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-2">{m.label}</div>

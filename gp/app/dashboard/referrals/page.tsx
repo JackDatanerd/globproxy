@@ -105,7 +105,7 @@ export default async function ReferralsPage() {
                 <div className="flex flex-col gap-2">
                   {payouts.map(p => (
                     <div key={p.id} className="flex items-center justify-between text-xs border-b border-border last:border-0 pb-2 last:pb-0">
-                      <span className="text-muted">{formatCycleLabel(p)} · {p.payout_method === 'usdt' ? 'USDT' : 'Bank'}</span>
+                      <span className="text-muted">{formatCycleLabel(p)} · {p.payout_method === 'usdt' ? 'USDT' : p.payout_method === 'mpesa' ? 'M-Pesa' : 'Bank'}</span>
                       <span className={`font-mono ${p.status === 'paid' ? 'text-green-600' : 'text-ink'}`}>
                         ${Number(p.amount_usd).toFixed(2)} {p.status === 'paid' ? '· paid' : '· scheduled'}
                       </span>

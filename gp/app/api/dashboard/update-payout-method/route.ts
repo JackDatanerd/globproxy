@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { sendEmail } from '@/lib/email'
+import { sendEmail, escapeHtml } from '@/lib/email'
 import { normalizeMpesaPhone } from '@/lib/mpesa'
 
 // TRC20 (Tron) addresses are base58, start with 'T', 34 characters —
@@ -104,7 +104,7 @@ export async function POST(req: Request) {
               style="display:block;margin:0 auto 32px auto;border-radius:12px;"/>
             <h2 style="text-align:center;color:#111;">Payout details updated</h2>
             <p style="color:#444;text-align:center;">
-              Hi ${profile.full_name?.split(' ')[0] || 'there'}, your affiliate payout method was just set to:
+              Hi ${escapeHtml(profile.full_name?.split(' ')[0]) || 'there'}, your affiliate payout method was just set to:
             </p>
             <p style="text-align:center;font-family:monospace;font-size:13px;color:#111;background:#f5f5f5;padding:12px 16px;border-radius:8px;">
               ${maskDestination(method, update)}

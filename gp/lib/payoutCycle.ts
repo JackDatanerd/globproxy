@@ -62,6 +62,55 @@ export function lastCompletedCycle(date: Date = new Date()): PayoutCycle {
   return { cycleStart: ymd(year, month, 1), cycleEnd: ymd(year, month, 15), payableFrom: ymd(year, month, 20) }
 }
 
+// Reconstructs a full cycle purely from its start date — cycleEnd and
+// payableFrom are always DERIVED, never trusted as separate input. Used
+// by the admin cycle-sales report to turn a `?start=` query param into
+// a real cycle without letting the URL hand it an arbitrary/mismatched
+// end date. Only valid for a start date that's actually the 1st or the
+// 16th of a month — callers should validate that before calling this.
+export function cycleFromStart(cycleStart: string): PayoutCycle {
+  const [year, month, day] = cycleStart.split('-').map(Number)
+  if (day === 1) {
+    return { cycleStart: ymd(year, month, 1), cycleEnd: ymd(year, month, 15), payableFrom: ymd(year, month, 20) }
+  }
+  const lastDay = daysInMonth(year, month)
+  const nextMonthYear = month === 12 ? year + 1 : year
+  const nextMonth = month === 12 ? 1 : month + 1
+  return { cycleStart: ymd(year, month, 16), cycleEnd: ymd(year, month, lastDay), payableFrom: ymd(nextMonthYear, nextMonth, 5) }
+}
+
+// The cycle immediately before / after a given cycle — same
+// 1st–15th / 16th–end split as everywhere else in this file, just
+// walked from an arbitrary cycle instead of from "today". Used for
+// Prev/Next navigation on the admin cycle-sales report.
+export function cycleBefore(cycle: PayoutCycle): PayoutCycle {
+  const [year, month, day] = cycle.cycleStart.split('-').map(Number)
+  if (day === 1) {
+    // This cycle was 1st–15th — the previous one is 16th–end of the prior month.
+    const prevMonthYear = month === 1 ? year - 1 : year
+    const prevMonth = month === 1 ? 12 : month - 1
+    const lastDay = daysInMonth(prevMonthYear, prevMonth)
+    return { cycleStart: ymd(prevMonthYear, prevMonth, 16), cycleEnd: ymd(prevMonthYear, prevMonth, lastDay), payableFrom: ymd(year, month, 5) }
+  }
+  // This cycle was 16th–end — the previous one is 1st–15th of the same month.
+  return { cycleStart: ymd(year, month, 1), cycleEnd: ymd(year, month, 15), payableFrom: ymd(year, month, 20) }
+}
+
+export function cycleAfter(cycle: PayoutCycle): PayoutCycle {
+  const [year, month, day] = cycle.cycleStart.split('-').map(Number)
+  if (day === 1) {
+    // This cycle was 1st–15th — the next one is 16th–end of the same month.
+    const lastDay = daysInMonth(year, month)
+    const nextMonthYear = month === 12 ? year + 1 : year
+    const nextMonth = month === 12 ? 1 : month + 1
+    return { cycleStart: ymd(year, month, 16), cycleEnd: ymd(year, month, lastDay), payableFrom: ymd(nextMonthYear, nextMonth, 5) }
+  }
+  // This cycle was 16th–end — the next one is 1st–15th of the following month.
+  const nextMonthYear = month === 12 ? year + 1 : year
+  const nextMonth = month === 12 ? 1 : month + 1
+  return { cycleStart: ymd(nextMonthYear, nextMonth, 1), cycleEnd: ymd(nextMonthYear, nextMonth, 15), payableFrom: ymd(nextMonthYear, nextMonth, 20) }
+}
+
 export function formatCycleLabel(cycle: { cycle_start: string; cycle_end: string } | PayoutCycle): string {
   const start = 'cycleStart' in cycle ? cycle.cycleStart : cycle.cycle_start
   const end = 'cycleEnd' in cycle ? cycle.cycleEnd : cycle.cycle_end

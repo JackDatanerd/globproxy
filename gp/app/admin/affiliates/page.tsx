@@ -1,3 +1,4 @@
+import Link from 'next/link'
 import { createAdminClient } from '@/lib/supabase/server'
 import AdminAffiliateActions from '@/components/admin/AdminAffiliateActions'
 import RunPayoutCycleButton from '@/components/admin/RunPayoutCycleButton'
@@ -26,9 +27,14 @@ export default async function AdminAffiliatesPage() {
 
   return (
     <div className="max-w-5xl">
-      <div className="mb-8">
-        <h1 className="font-display font-bold text-2xl text-ink">Affiliates</h1>
-        <p className="text-muted text-sm mt-1">Manage affiliate applications and biweekly payouts</p>
+      <div className="mb-8 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="font-display font-bold text-2xl text-ink">Affiliates</h1>
+          <p className="text-muted text-sm mt-1">Manage affiliate applications and biweekly payouts</p>
+        </div>
+        <Link href="/admin/cycles" className="text-xs font-mono text-accent hover:underline whitespace-nowrap mt-1">
+          Sales &amp; profit per cycle →
+        </Link>
       </div>
 
       {/* Pending applications */}

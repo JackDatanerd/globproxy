@@ -35,6 +35,7 @@ const adminNav = [
   { label: 'Resellers',   href: '/admin/resellers' },
   { label: 'Credentials', href: '/admin/credentials' },
   { label: 'Affiliates',  href: '/admin/affiliates' },
+  { label: 'Sales Cycles', href: '/admin/cycles' },
   { label: 'Settings',    href: '/admin/settings' },
 ]
 
@@ -63,7 +64,7 @@ export default function DashSidebar({ role, apiAccess = false }: Props) {
     ]
   }
   if (role === 'admin') {
-    nav = [...adminNav.slice(0, 5), apiKeyItem, ...adminNav.slice(5)] // up to Credentials, then API Keys, then Affiliates + Settings
+    nav = [...adminNav.slice(0, 5), apiKeyItem, ...adminNav.slice(5)] // up to Credentials, then API Keys, then Affiliates + Sales Cycles + Settings
   }
 
   const label = role === 'admin' ? 'Admin Panel' : role === 'reseller' ? 'Reseller Panel' : 'My Account'
