@@ -171,18 +171,23 @@ async function runBandwidthAlerts() {
     }
 
     const { data: profile } = await supabase
-      .from('profiles').select('email, full_name').eq('id', acc.user_id).single()
+      .from('profiles').select('email, full_name, referral_code').eq('id', acc.user_id).single()
     if (!profile?.email) continue
 
     const firstName = escapeHtml(profile.full_name?.split(' ')[0]) || 'there'
     const avail = acc.available_gb
+    const referralLine = profile.referral_code
+      ? `<p style="margin-top:16px;font-size:13px;color:#666;">Tip: refer a friend and you both get 1GB free —
+           <a href="${process.env.NEXT_PUBLIC_APP_URL}/auth/signup?ref=${profile.referral_code}">your link</a>.</p>`
+      : ''
 
     if (pct >= 95 && !acc.alerted_95_at) {
       await sendEmail({
         to: profile.email,
         subject: `🚨 Only ${avail.toFixed(1)}GB remaining — GlobProxy`,
         html: `<p>Hi ${firstName}, you've used ${pct.toFixed(0)}% of your bandwidth. Only ${avail.toFixed(1)}GB remains.</p>
-               <a href="${process.env.NEXT_PUBLIC_APP_URL}/dashboard/buy">Top up now →</a>`,
+               <a href="${process.env.NEXT_PUBLIC_APP_URL}/dashboard/buy">Top up now →</a>
+               ${referralLine}`,
       })
       // Same trigger, same data, as a webhook — fired from right here
       // rather than a separate scan so there's exactly one place deciding
@@ -199,7 +204,8 @@ async function runBandwidthAlerts() {
         to: profile.email,
         subject: `Heads up: ${avail.toFixed(1)}GB bandwidth remaining`,
         html: `<p>Hi ${firstName}, you've used ${pct.toFixed(0)}% of your bandwidth. ${avail.toFixed(1)}GB remains.</p>
-               <a href="${process.env.NEXT_PUBLIC_APP_URL}/dashboard/buy">Buy more →</a>`,
+               <a href="${process.env.NEXT_PUBLIC_APP_URL}/dashboard/buy">Buy more →</a>
+               ${referralLine}`,
       })
       await dispatchWebhook(acc.user_id, 'bandwidth_threshold_crossed', {
         threshold_pct: 80, used_pct: pct, available_gb: avail, total_gb: acc.total_gb,

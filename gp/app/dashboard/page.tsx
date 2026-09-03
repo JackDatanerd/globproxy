@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { Suspense } from 'react'
 import PaymentVerifier from '@/components/PaymentVerifier'
+import ReferralLinkCard from '@/components/dashboard/ReferralLinkCard'
 import { formatGb, formatPct } from '@/lib/format'
 
 export default async function DashboardPage() {
@@ -16,7 +17,7 @@ export default async function DashboardPage() {
     supabase.from('orders').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(4),
   ])
 
-  const { data: profile } = await supabase.from('profiles').select('full_name').eq('id', user.id).single()
+  const { data: profile } = await supabase.from('profiles').select('full_name, referral_code').eq('id', user.id).single()
   const available = bw?.available_gb ?? 0
   const used = bw?.used_gb ?? 0
   const total = bw?.total_gb ?? 0
@@ -87,6 +88,12 @@ export default async function DashboardPage() {
           </div>
         </div>
       </div>
+
+      {profile?.referral_code && (
+        <div className="mb-4">
+          <ReferralLinkCard code={profile.referral_code} />
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-[1.15fr_1fr] gap-4">
         {/* Sessions — reuses the same colored-rail status language as the

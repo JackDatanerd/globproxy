@@ -108,11 +108,21 @@ export async function activateBandwidth(p: {
   // 5. Send confirmation email
   const { data: profile } = await supabase
     .from('profiles')
-    .select('email, full_name')
+    .select('email, full_name, referral_code')
     .eq('id', p.user_id)
     .single()
 
   if (profile?.email) {
+    const referralLine = profile.referral_code
+      ? `<p style="color:#444;text-align:center;font-size:13px;margin-top:20px;">
+           Know someone who could use this? Share your link and you both get
+           <strong>1GB free</strong> when they make their first purchase:
+           <br/>
+           <a href="${process.env.NEXT_PUBLIC_APP_URL}/auth/signup?ref=${profile.referral_code}" style="color:#2563eb;">
+             ${process.env.NEXT_PUBLIC_APP_URL}/auth/signup?ref=${profile.referral_code}
+           </a>
+         </p>`
+      : ''
     await sendEmail({
       to: profile.email,
       subject: `Your ${p.gb_amount}GB is ready — GlobProxy`,
@@ -132,6 +142,7 @@ export async function activateBandwidth(p: {
               Create your first proxy session →
             </a>
           </div>
+          ${referralLine}
           <p style="color:#bbb;font-size:12px;text-align:center;margin-top:32px;">
             © 2026 GlobProxy · Residential Proxies That Never Expire
           </p>
