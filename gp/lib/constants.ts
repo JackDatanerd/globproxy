@@ -4,4 +4,4 @@
 
 // Geonode wholesale cost per GB, in USD. Used to estimate COGS on both
 // /admin (all-time) and /admin/cycles (per biweekly cycle).
-export const GEONODE_COST_PER_GB_USD = 0.49
+export const GEONODE_COST_PER_GB_USD = 0.66
