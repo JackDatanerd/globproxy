@@ -3,7 +3,7 @@
 -- Run this entire file in Supabase SQL Editor (fresh project)
 -- ============================================================
 --
--- INCLUDES MIGRATIONS THROUGH: 0036_payment_alerting_canary_support.sql
+-- INCLUDES MIGRATIONS THROUGH: 0037_verified_operators.sql
 --
 -- This line is the source of truth `scripts/check-schema-sync.mjs` reads
 -- to compare against supabase/migrations/ — it's what CI checks on every
@@ -69,6 +69,12 @@ create table public.profiles (
   payout_bank_details        jsonb,
   payout_mpesa_phone         text,
   payout_method_updated_at   timestamp with time zone,
+  -- Verified Operators — see migration 0037. A hand-picked subset of
+  -- already-approved affiliates given a distinguishing flag plus a
+  -- higher rate (set directly on affiliate_commission_rate(_lifetime)
+  -- above via the grant route — no separate rate columns needed here).
+  is_verified_operator       boolean not null default false,
+  verified_operator_since    timestamp with time zone,
   created_at      timestamp with time zone default now(),
   updated_at      timestamp with time zone default now()
 );
@@ -1373,6 +1379,8 @@ begin
   new.payout_bank_details                := old.payout_bank_details;
   new.payout_mpesa_phone                 := old.payout_mpesa_phone;
   new.payout_method_updated_at           := old.payout_method_updated_at;
+  new.is_verified_operator               := old.is_verified_operator; -- see migration 0037
+  new.verified_operator_since            := old.verified_operator_since;
 
   return new;
 end;
