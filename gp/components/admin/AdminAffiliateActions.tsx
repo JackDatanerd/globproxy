@@ -12,6 +12,7 @@ import toast from 'react-hot-toast'
 type Props =
   | { userId: string; action: 'approve' | 'reject'; payoutId?: never }
   | { payoutId: string; action: 'markPaid'; userId?: never }
+  | { userId: string; action: 'grantVerifiedOperator' | 'revokeVerifiedOperator'; payoutId?: never }
 
 export default function AdminAffiliateActions(props: Props) {
   const [loading, setLoading] = useState(false)
@@ -30,9 +31,15 @@ export default function AdminAffiliateActions(props: Props) {
       res = await fetch('/api/admin/reject-affiliate', {
         method: 'POST', headers: authHeaders, body: JSON.stringify({ userId: props.userId }),
       })
-    } else {
+    } else if (props.action === 'markPaid') {
       res = await fetch('/api/admin/mark-payout-paid', {
         method: 'POST', headers: authHeaders, body: JSON.stringify({ payoutId: props.payoutId }),
+      })
+    } else {
+      // grantVerifiedOperator / revokeVerifiedOperator — same route, `revoke` flag distinguishes them
+      res = await fetch('/api/admin/grant-verified-operator', {
+        method: 'POST', headers: authHeaders,
+        body: JSON.stringify({ userId: props.userId, revoke: props.action === 'revokeVerifiedOperator' }),
       })
     }
 
@@ -41,21 +48,30 @@ export default function AdminAffiliateActions(props: Props) {
       toast.error(data.error ?? 'Action failed')
     } else {
       toast.success(
-        props.action === 'approve' ? 'Affiliate approved' : props.action === 'reject' ? 'Application rejected' : 'Marked as paid'
+        props.action === 'approve' ? 'Affiliate approved'
+        : props.action === 'reject' ? 'Application rejected'
+        : props.action === 'markPaid' ? 'Marked as paid'
+        : props.action === 'grantVerifiedOperator' ? 'Granted Verified Operator'
+        : 'Verified Operator revoked'
       )
       window.location.reload()
     }
     setLoading(false)
   }
 
-  const label = loading ? '...' : props.action === 'approve' ? 'Approve' : props.action === 'reject' ? 'Reject' : 'Mark paid'
+  const label = loading ? '...'
+    : props.action === 'approve' ? 'Approve'
+    : props.action === 'reject' ? 'Reject'
+    : props.action === 'markPaid' ? 'Mark paid'
+    : props.action === 'grantVerifiedOperator' ? 'Make Verified Operator'
+    : 'Revoke'
 
   return (
     <button
       onClick={handle}
       disabled={loading}
       className={`text-xs font-mono px-3 py-1.5 rounded-lg border transition-all disabled:opacity-50 ${
-        props.action === 'reject'
+        props.action === 'reject' || props.action === 'revokeVerifiedOperator'
           ? 'border-red-200 text-red-400 hover:bg-red-50'
           : 'bg-accent2 text-white border-accent2 hover:opacity-90'
       }`}

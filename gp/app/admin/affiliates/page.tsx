@@ -153,7 +153,7 @@ export default async function AdminAffiliatesPage() {
           <table className="w-full">
             <thead>
               <tr className="border-b border-border bg-surface">
-                {['Affiliate', 'Rate (intro / lifetime)', 'Accruing', 'Paid to date', 'Joined'].map(h => (
+                {['Affiliate', 'Rate (intro / lifetime)', 'Accruing', 'Paid to date', 'Joined', 'Verified Operator'].map(h => (
                   <th key={h} className="text-left px-6 py-3 text-[10px] font-mono text-muted uppercase tracking-widest">{h}</th>
                 ))}
               </tr>
@@ -164,7 +164,12 @@ export default async function AdminAffiliatesPage() {
                 return (
                   <tr key={a.id} className={i < (affiliates?.length ?? 0) - 1 ? 'border-b border-border' : ''}>
                     <td className="px-6 py-4">
-                      <div className="text-sm font-medium text-ink">{a.full_name || '—'}</div>
+                      <div className="flex items-center gap-2">
+                        <div className="text-sm font-medium text-ink">{a.full_name || '—'}</div>
+                        {a.is_verified_operator && (
+                          <span className="text-[10px] font-mono bg-accent2/10 text-accent2 px-2 py-0.5 rounded-full">✓ Verified Operator</span>
+                        )}
+                      </div>
                       <div className="text-xs font-mono text-muted">{a.email}</div>
                     </td>
                     <td className="px-6 py-4 font-mono text-sm text-ink">
@@ -174,6 +179,9 @@ export default async function AdminAffiliatesPage() {
                     <td className="px-6 py-4 font-mono text-sm text-accent">${earnings.paid.toFixed(2)}</td>
                     <td className="px-6 py-4 text-xs font-mono text-muted">
                       {new Date(a.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
+                    </td>
+                    <td className="px-6 py-4">
+                      <AdminAffiliateActions userId={a.id} action={a.is_verified_operator ? 'revokeVerifiedOperator' : 'grantVerifiedOperator'} />
                     </td>
                   </tr>
                 )

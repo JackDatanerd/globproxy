@@ -12,7 +12,7 @@ export default async function ReferralsPage() {
 
   const [{ data: profile }, { data: referrals }] = await Promise.all([
     supabase.from('profiles')
-      .select('referral_code, affiliate_status, affiliate_commission_rate, affiliate_commission_rate_lifetime, payout_method, payout_wallet_address, payout_bank_details, payout_mpesa_phone, payout_method_updated_at')
+      .select('referral_code, affiliate_status, affiliate_commission_rate, affiliate_commission_rate_lifetime, is_verified_operator, payout_method, payout_wallet_address, payout_bank_details, payout_mpesa_phone, payout_method_updated_at')
       .eq('id', user.id)
       .single(),
     supabase.from('referrals')
@@ -51,7 +51,12 @@ export default async function ReferralsPage() {
   return (
     <div className="max-w-3xl">
       <div className="mb-8">
-        <h1 className="font-display font-bold text-2xl text-ink">Referrals</h1>
+        <div className="flex items-center gap-2.5">
+          <h1 className="font-display font-bold text-2xl text-ink">Referrals</h1>
+          {profile?.is_verified_operator && (
+            <span className="text-xs font-mono bg-accent2/10 text-accent2 px-2.5 py-1 rounded-full">✓ Verified Operator</span>
+          )}
+        </div>
         <p className="text-muted text-sm mt-1">Share GlobProxy, earn free bandwidth — or cash as an affiliate</p>
       </div>
 
