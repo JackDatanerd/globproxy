@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { PLANS } from '@/lib/plans'
 import { verifyPayment } from '@/lib/verifyPayment'
+import { formatUsd } from '@/lib/format'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
@@ -123,8 +124,8 @@ export default function BuyPage() {
                   <div className="text-xs text-muted mt-0.5">{p.gb} GB</div>
                 </div>
                 <div className="text-right">
-                  <div className="font-display font-bold text-lg text-ink">${p.total}</div>
-                  <div className="text-[11px] font-mono text-muted">${p.price}/GB</div>
+                  <div className="font-display font-bold text-lg text-ink">{formatUsd(p.total)}</div>
+                  <div className="text-[11px] font-mono text-muted">{formatUsd(p.price)}/GB</div>
                 </div>
               </div>
               {p.gb === 1 && <div className="mt-2 text-[10px] font-mono text-accent bg-accent-light px-2 py-0.5 rounded-full inline-block">pay-as-you-go</div>}
@@ -136,7 +137,7 @@ export default function BuyPage() {
 
       <div className="bg-white border border-border rounded-xl p-6 mb-5">
         <h2 className="font-display font-bold text-base text-ink mb-4">Order summary</h2>
-        {[['Plan',plan.name],['Bandwidth',`${plan.gb} GB`],['Price per GB',`$${plan.price.toFixed(2)}`],['Bandwidth expiry','Never'],['Payment','Paystack (Card / Mobile Money)']].map(([l,v])=>(
+        {[['Plan',plan.name],['Bandwidth',`${plan.gb} GB`],['Price per GB',formatUsd(plan.price)],['Bandwidth expiry','Never'],['Payment','Paystack (secure checkout)']].map(([l,v])=>(
           <div key={l} className="flex justify-between text-sm py-2 border-b border-border last:border-none">
             <span className="text-muted font-light">{l}</span>
             <span className="text-ink font-medium">{v}</span>
@@ -144,13 +145,13 @@ export default function BuyPage() {
         ))}
         <div className="flex justify-between mt-4">
           <span className="font-medium text-ink">Total</span>
-          <span className="font-display font-bold text-xl text-ink">${plan.total.toFixed(2)}</span>
+          <span className="font-display font-bold text-xl text-ink">{formatUsd(plan.total)}</span>
         </div>
       </div>
 
       <button onClick={handleBuy} disabled={loading}
         className="w-full bg-accent text-white py-4 rounded-xl font-medium text-base shadow-[0_2px_12px_rgba(0,87,255,.25)] hover:-translate-y-0.5 hover:shadow-[0_4px_20px_rgba(0,87,255,.35)] transition-all disabled:opacity-60 disabled:transform-none">
-        {loading ? (statusText || 'Please wait...') : plan.custom ? 'Contact sales →' : `Pay $${plan.total.toFixed(2)} via Paystack →`}
+        {loading ? (statusText || 'Please wait...') : plan.custom ? 'Contact sales →' : `Pay ${formatUsd(plan.total)} via Paystack →`}
       </button>
       <p className="text-center text-xs text-muted mt-3 font-mono">Secured by Paystack · No subscription · GB never expires</p>
     </div>

@@ -86,7 +86,7 @@ import { default as handler } from './.open-next/worker.js'
 // below alongside benchmark — both were added after the original three-
 // workflow replacement this file's header comment describes.
 const CRON_TASKS: Record<string, string[]> = {
-  '*/5 * * * *': ['usage'],
+  '*/5 * * * *': ['reconcile', 'usage'], // reconcile (payments safety net) never throws, so it can't block usage
   '0 * * * *': ['stock'],
   '0 8 * * *': ['alerts', 'summary', 'cleanup'],
   '0 */6 * * *': ['benchmark'],

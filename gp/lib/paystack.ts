@@ -28,18 +28,21 @@ export async function initializeTransaction(params: {
   return data.data as { authorization_url: string; reference: string; access_code: string }
 }
 
-export async function verifyTransaction(reference: string) {
-  const res = await fetch(`${BASE}/transaction/verify/${reference}`, {
+export interface PaystackTransaction {
+  status: string
+  reference: string
+  amount: number
+  currency?: string
+  metadata: Record<string, string>
+}
+
+export async function verifyTransaction(reference: string): Promise<PaystackTransaction> {
+  const res = await fetch(`${BASE}/transaction/verify/${encodeURIComponent(reference)}`, {
     headers: { 'Authorization': `Bearer ${SECRET}` },
   })
   const data = await res.json()
   if (!data.status) throw new Error(data.message ?? 'Verification failed')
-  return data.data as {
-    status: string
-    reference: string
-    amount: number
-    metadata: Record<string, string>
-  }
+  return data.data as PaystackTransaction
 }
 
 // Charges a previously-saved card via its Paystack authorization_code —
@@ -92,11 +95,32 @@ export function verifyWebhookSignature(body: string, signature: string): boolean
 }
 
 // Returns true if the amount Paystack actually charged (in cents) matches
-// what the order expects. Neither the webhook nor verify-payment checked
-// this before — both trusted `status === 'success'` plus whatever gb_amount
-// was in metadata, with nothing tying the two together.
+// what the order expects.
 export function amountMatchesOrder(paidAmountCents: number, orderAmountUsd: number): boolean {
-  return paidAmountCents === Math.round(orderAmountUsd * 100)
+  return Number(paidAmountCents) === Math.round(Number(orderAmountUsd) * 100)
+}
+
+// Single source of truth for "does this Paystack payment actually pay for
+// this order?" — shared by the webhook, /api/verify-payment and the
+// reconcile cron so the three can't drift. Returns null when everything
+// lines up, otherwise a short human-readable reason. Currency is only
+// rejected when Paystack states one and it isn't USD (checkout always
+// initializes in USD); a missing field is not treated as a mismatch so a
+// payload-shape quirk can never strand a genuine payment.
+export function paymentMismatchReason(
+  paid: { amount: number; currency?: string | null; reference?: string | null },
+  order: { amount_usd: number | string; paystack_reference: string | null },
+): string | null {
+  if (paid.currency && String(paid.currency).toUpperCase() !== 'USD') {
+    return `currency ${paid.currency} (expected USD)`
+  }
+  if (!amountMatchesOrder(paid.amount, Number(order.amount_usd))) {
+    return `amount ${paid.amount} cents (expected ${Math.round(Number(order.amount_usd) * 100)})`
+  }
+  if (paid.reference && order.paystack_reference && paid.reference !== order.paystack_reference) {
+    return `reference ${paid.reference} does not match the order's ${order.paystack_reference}`
+  }
+  return null
 }
 
 export function generateReference(): string {

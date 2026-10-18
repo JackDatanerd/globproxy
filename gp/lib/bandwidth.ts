@@ -10,13 +10,24 @@ function providerConfigured(): boolean {
   )
 }
 
+export type ActivateResult =
+  | { status: 'credited' }
+  | { status: 'already_credited' } // nothing to do: credited earlier, refunded, or not claimable
+  | { status: 'error'; error: string } // nothing committed — safe to retry
+
+// Callers must act on the result: 'error' means the order is still
+// uncredited (the claim rolled back), so the webhook answers non-200 to get
+// redelivery and verify-payment tells the user it's still being processed.
+// Everything after the claim is best-effort and can never turn a committed
+// credit into an error.
 export async function activateBandwidth(p: {
   order_id: string
   user_id: string
   gb_amount: number
   paystack_reference: string
   amount_usd: number
-}) {
+  is_canary?: boolean
+}): Promise<ActivateResult> {
   const supabase = await createAdminClient()
 
   // 1 & 2. Atomically claim the order AND credit the GB in one call — see
@@ -43,15 +54,32 @@ export async function activateBandwidth(p: {
     // Surfaced loudly since this is the one path where staying silent
     // previously turned into a permanent, unrecoverable non-credit.
     console.error('[bandwidth] claim_and_credit_order RPC failed — order left unclaimed, safe to retry', p.order_id, claimErr)
-    return
+    return { status: 'error', error: claimErr.message ?? 'claim_and_credit_order failed' }
   }
 
   if (!claimed) {
     // Already credited by a concurrent call (or a retry) — nothing to do.
     console.log('[bandwidth] order already credited, skipping', p.order_id)
-    return
+    return { status: 'already_credited' }
   }
 
+  // The GB is credited and committed. Nothing below may throw out of this
+  // function — a failed follow-up must not make the caller believe the
+  // credit itself failed.
+  try {
+    await postCreditSteps(supabase, p)
+  } catch (e) {
+    console.error('[bandwidth] post-credit steps threw (credit itself is committed)', p.order_id, e)
+  }
+  return { status: 'credited' }
+}
+
+async function postCreditSteps(
+  supabase: Awaited<ReturnType<typeof createAdminClient>>,
+  p: { order_id: string; user_id: string; gb_amount: number; amount_usd: number; is_canary?: boolean },
+) {
+
+  try {
   // 3. Activate pending proxy credentials — only when provider is configured
   if (providerConfigured()) {
     const { data: pending } = await supabase
@@ -104,7 +132,11 @@ export async function activateBandwidth(p: {
   } else {
     console.log('[bandwidth] No provider configured — skipping credential activation for order', p.order_id)
   }
+  } catch (e) {
+    console.error('[bandwidth] credential activation failed (credit is committed)', p.order_id, e)
+  }
 
+  try {
   // 5. Send confirmation email
   const { data: profile } = await supabase
     .from('profiles')
@@ -112,7 +144,7 @@ export async function activateBandwidth(p: {
     .eq('id', p.user_id)
     .single()
 
-  if (profile?.email) {
+  if (profile?.email && !p.is_canary) {
     const referralLine = profile.referral_code
       ? `<p style="color:#444;text-align:center;font-size:13px;margin-top:20px;">
            Know someone who could use this? Share your link and you both get
@@ -150,14 +182,24 @@ export async function activateBandwidth(p: {
       `,
     })
   }
+  } catch (e) {
+    console.error('[bandwidth] confirmation email failed (credit is committed)', p.order_id, e)
+  }
 
+  try {
   // 6. Referral / affiliate crediting — a pure add-on that runs only after
   // the buyer's own GB has already been claimed and credited above. Never
   // allowed to affect the response or roll anything back: see
   // processReferralForOrder's own doc comment in lib/referrals.ts.
-  await processReferralForOrder(supabase, {
-    user_id: p.user_id,
-    order_id: p.order_id,
-    amount_usd: p.amount_usd,
-  })
+  // The daily canary test charge is synthetic — never a referral/affiliate event.
+  if (!p.is_canary) {
+    await processReferralForOrder(supabase, {
+      user_id: p.user_id,
+      order_id: p.order_id,
+      amount_usd: p.amount_usd,
+    })
+  }
+  } catch (e) {
+    console.error('[bandwidth] referral processing failed (credit is committed)', p.order_id, e)
+  }
 }

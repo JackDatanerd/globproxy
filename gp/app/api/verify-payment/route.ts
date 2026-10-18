@@ -1,78 +1,95 @@
 import { NextResponse } from 'next/server'
-import { verifyTransaction, amountMatchesOrder } from '@/lib/paystack'
+import { verifyTransaction, paymentMismatchReason } from '@/lib/paystack'
 import { activateBandwidth } from '@/lib/bandwidth'
 import { createAdminClient } from '@/lib/supabase/server'
+import { alertAdminPayment } from '@/lib/paymentAlerts'
 
 export async function POST(req: Request) {
   try {
-    const { reference } = await req.json()
-    if (!reference) return NextResponse.json({ error: 'No reference' }, { status: 400 })
+    let reference: unknown
+    try {
+      ;({ reference } = await req.json())
+    } catch {
+      return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
+    }
+    if (typeof reference !== 'string' || !reference || reference.length > 100) {
+      return NextResponse.json({ error: 'No reference' }, { status: 400 })
+    }
 
     const supabase = await createAdminClient()
 
     // No user-auth check here, intentionally: this is the browser-redirect
-    // fallback path for verifying a payment when the webhook hasn't landed
-    // yet, so the caller isn't necessarily logged back in at the moment it
-    // fires. It's still safe without one — `reference` only unlocks the one
-    // order it belongs to, the amount is re-verified server-to-server with
-    // Paystack (not trusted from the client), and activateBandwidth()'s
-    // atomic bandwidth_credited claim makes a repeated or racing call a
-    // no-op rather than a double-credit. No rate limiting either — nothing
-    // else in this app has any (no rate-limit infra exists yet), and a
-    // valid reference here can only replay the same already-idempotent
-    // credit, so throttling wouldn't change the exposure. If real
-    // rate-limiting infra gets added for other routes, this one should get
-    // it too as a defense-in-depth measure, not because of a known gap.
+    // fallback for verifying a payment when the webhook hasn't landed yet, so
+    // the caller isn't necessarily logged back in when it fires. It is safe
+    // without one — `reference` only unlocks the one order it belongs to, the
+    // payment is re-verified server-to-server with Paystack (status, amount,
+    // currency, reference — nothing is trusted from the client), the credit
+    // always goes to the order's own user, and activateBandwidth()'s atomic
+    // claim makes a repeated or racing call a no-op rather than a
+    // double-credit. The Cloudflare rate-limit binding (lib/rateLimit.ts) now
+    // exists; if abuse ever shows up here it can be applied, but a valid
+    // reference can only replay the same idempotent credit.
     const { data: order, error } = await supabase
       .from('orders')
-      .select('*')
+      .select('id, user_id, payment_status, amount_usd, gb_amount, paystack_reference, bandwidth_credited, is_canary')
       .eq('paystack_reference', reference)
-      .single()
+      .maybeSingle()
 
-    if (error || !order) return NextResponse.json({ error: 'Order not found' }, { status: 404 })
+    if (error) {
+      console.error('[verify-payment] order lookup failed', error)
+      return NextResponse.json({ error: 'Could not look up your order. Please try again.' }, { status: 500 })
+    }
+    if (!order) return NextResponse.json({ error: 'Order not found' }, { status: 404 })
 
     // Already processed — don't double credit
-    if (order.payment_status === 'paid') {
+    if (order.payment_status === 'paid' || order.bandwidth_credited) {
       return NextResponse.json({ success: true, already_paid: true })
     }
 
-    // Same gap as the webhook had (see app/api/webhooks/paystack/route.ts):
-    // only a 'pending' order should ever be creditable. Without this, a
-    // 'cancelled' or 'failed' order whose stale Paystack reference still
-    // verifies as successful would get credited here too, leaving it
-    // permanently mislabeled in billing history despite being paid.
-    if (order.payment_status !== 'pending') {
-      console.error('[verify-payment] order is not pending — refusing to credit', {
-        order_id: order.id, status: order.payment_status,
-      })
-      return NextResponse.json({ error: 'This order is no longer available for payment.' }, { status: 400 })
+    // Only a refunded order is final. 'cancelled'/'failed' are local labels
+    // (new checkout auto-cancel, Cancel button, a declined first attempt, the
+    // 24h cleanup) — if Paystack confirms the money arrived, it is credited,
+    // exactly as the webhook does.
+    if (order.payment_status === 'refunded') {
+      return NextResponse.json({ error: 'This order has been refunded.' }, { status: 400 })
     }
 
-    // Verify with Paystack directly
     const txn = await verifyTransaction(reference)
     if (txn.status !== 'success') {
       return NextResponse.json({ error: 'Payment not successful' }, { status: 400 })
     }
 
-    if (!amountMatchesOrder(txn.amount, order.amount_usd)) {
-      console.error('[verify-payment] amount mismatch', {
-        order_id: order.id, paid_cents: txn.amount, expected_usd: order.amount_usd,
+    const mismatch = paymentMismatchReason(txn, order)
+    if (mismatch) {
+      console.error('[verify-payment] payment does not match order', { order_id: order.id, mismatch })
+      await alertAdminPayment('verify-payment: payment does not match its order — NOT credited', {
+        order_id: order.id, reference, problem: mismatch,
       })
-      return NextResponse.json({ error: 'Amount mismatch' }, { status: 400 })
+      return NextResponse.json({ error: 'Payment amount mismatch. Please contact support.' }, { status: 400 })
     }
 
-    // Activate bandwidth
-    await activateBandwidth({
+    const result = await activateBandwidth({
       order_id: order.id,
       user_id: order.user_id,
       gb_amount: Number(order.gb_amount),
       paystack_reference: reference,
       amount_usd: Number(order.amount_usd),
+      is_canary: !!order.is_canary,
     })
 
-    return NextResponse.json({ success: true })
+    if (result.status === 'error') {
+      // Money is confirmed but the credit didn't commit. Don't claim success.
+      // Nothing was changed, so the webhook redelivery / reconcile cron will
+      // complete it within minutes.
+      return NextResponse.json({
+        success: false,
+        error: "Your payment is confirmed, but we couldn't credit it just yet. It will be credited automatically within a few minutes — contact support if it doesn't appear.",
+      }, { status: 503 })
+    }
+
+    return NextResponse.json({ success: true, already_paid: result.status === 'already_credited' })
   } catch (err: any) {
     console.error('[verify-payment]', err)
-    return NextResponse.json({ error: err.message }, { status: 500 })
+    return NextResponse.json({ error: 'Could not verify payment right now. Please try again shortly.' }, { status: 500 })
   }
 }

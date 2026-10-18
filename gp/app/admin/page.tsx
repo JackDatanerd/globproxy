@@ -14,14 +14,15 @@ export default async function AdminPage() {
   ] = await Promise.all([
     supabase.from('profiles').select('*',{count:'exact',head:true}).eq('role','user'),
     supabase.from('profiles').select('*',{count:'exact',head:true}).eq('role','reseller'),
-    supabase.from('orders').select('amount_usd,payment_status,gb_amount,created_at').eq('payment_status','paid'),
+    // Canary (synthetic daily test charge) is not revenue; paid orders are net of partial refunds.
+    supabase.from('orders').select('amount_usd,refunded_usd,payment_status,gb_amount,created_at').eq('payment_status','paid').eq('is_canary',false),
     supabase.from('profiles').select('email,full_name,role,created_at').order('created_at',{ascending:false}).limit(5),
   ])
 
-  const totalRevenue = orders?.reduce((s,o)=>s+o.amount_usd,0)??0
+  const totalRevenue = orders?.reduce((s,o)=>s+Number(o.amount_usd)-Number(o.refunded_usd??0),0)??0
   const totalGbSold = orders?.reduce((s,o)=>s+o.gb_amount,0)??0
   const now = new Date()
-  const thisMonth = orders?.filter(o=>{const d=new Date(o.created_at);return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()}).reduce((s,o)=>s+o.amount_usd,0)??0
+  const thisMonth = orders?.filter(o=>{const d=new Date(o.created_at);return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()}).reduce((s,o)=>s+Number(o.amount_usd)-Number(o.refunded_usd??0),0)??0
 
   return (
     <div className="max-w-6xl">

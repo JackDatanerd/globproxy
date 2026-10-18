@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { PLANS as plans } from '@/lib/plans'
+import { formatUsd } from '@/lib/format'
 
 export default function PricingPlans({ buyHref = '/auth/signup' }: { buyHref?: string }) {
   return (
@@ -10,10 +11,10 @@ export default function PricingPlans({ buyHref = '/auth/signup' }: { buyHref?: s
           <div className="font-display font-bold text-xl text-ink mb-1">{p.name}</div>
           <div className="text-sm text-muted font-light mb-5">{p.tagline}</div>
           <div className="mb-1">
-            <span className="font-display text-5xl font-bold text-ink tracking-tight">${p.price.toFixed(2)}</span>
+            <span className="font-display text-5xl font-bold text-ink tracking-tight">{formatUsd(p.price)}</span>
             <span className="text-muted text-base">/GB</span>
           </div>
-          <div className="text-xs font-mono text-muted mb-3">{p.gb} GB · ${p.total.toLocaleString()} total</div>
+          <div className="text-xs font-mono text-muted mb-3">{p.gb} GB · {formatUsd(p.total)} total</div>
           {'savings' in p && p.savings && <div className="inline-block bg-accent2-light text-accent2 text-xs font-mono px-3 py-1 rounded-full mb-5">{p.savings}</div>}
           {'badge' in p && p.badge && <div className="inline-block bg-accent-light text-accent text-xs font-mono px-3 py-1 rounded-full mb-5">{p.badge}</div>}
           <div className="h-px bg-border my-5" />

@@ -4,7 +4,9 @@ import { computeStockStatus } from '@/lib/stockStatus'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { dispatchWebhook } from '@/lib/webhooks'
 import { runConfiguredBenchmark } from '@/lib/networkProbe'
-import { chargeAuthorization, generateReference } from '@/lib/paystack'
+import { chargeAuthorization, generateReference, verifyTransaction, paymentMismatchReason } from '@/lib/paystack'
+import { activateBandwidth } from '@/lib/bandwidth'
+import { alertAdminPayment } from '@/lib/paymentAlerts'
 import { NextResponse } from 'next/server'
 
 // Secured with CRON_SECRET env var
@@ -254,6 +256,81 @@ async function runDailySummary() {
   return { revenue: rev, gb_sold: gb, new_users: newUsers }
 }
 
+// ── Reconcile uncredited orders against Paystack ──────────────────
+// Safety net for the webhook: if a charge.success never arrived or its
+// processing failed, any order that isn't credited yet (pending, or locally
+// cancelled/failed) is re-verified directly with Paystack and credited if the
+// money really arrived. First look is ~5 min after creation, then at most
+// hourly, for 3 days — bounded so abandoned checkouts don't cost Paystack
+// calls forever. Never throws: it runs ahead of 'usage' in the same cron
+// chain and a failure here must not block that.
+async function runReconcile() {
+  try {
+    const supabase = await createAdminClient()
+    const now = Date.now()
+    const minAge = new Date(now - 5 * 60 * 1000).toISOString()
+    const maxAge = new Date(now - 3 * 24 * 60 * 60 * 1000).toISOString()
+    const recheck = new Date(now - 60 * 60 * 1000).toISOString()
+
+    const { data: candidates, error } = await supabase.from('orders')
+      .select('id, user_id, payment_status, amount_usd, gb_amount, paystack_reference, is_canary')
+      .eq('bandwidth_credited', false)
+      .in('payment_status', ['pending', 'cancelled', 'failed'])
+      .not('paystack_reference', 'is', null)
+      .lt('created_at', minAge)
+      .gt('created_at', maxAge)
+      .or(`reconcile_checked_at.is.null,reconcile_checked_at.lt.${recheck}`)
+      .order('reconcile_checked_at', { ascending: true, nullsFirst: true })
+      .limit(10)
+    if (error) return { error: error.message }
+
+    let recovered = 0, mismatched = 0, errors = 0
+    for (const o of candidates ?? []) {
+      let settled = true // whether to push the next look out by an hour
+      try {
+        const txn = await verifyTransaction(o.paystack_reference!)
+        if (txn.status === 'success') {
+          const mismatch = paymentMismatchReason(txn, o)
+          if (mismatch) {
+            mismatched++
+            await alertAdminPayment('Reconcile: paid transaction does not match its order — NOT credited', {
+              order_id: o.id, reference: o.paystack_reference, problem: mismatch,
+            })
+          } else {
+            const result = await activateBandwidth({
+              order_id: o.id, user_id: o.user_id, gb_amount: Number(o.gb_amount),
+              paystack_reference: o.paystack_reference!, amount_usd: Number(o.amount_usd),
+              is_canary: !!o.is_canary,
+            })
+            if (result.status === 'credited') {
+              recovered++
+              await alertAdminPayment('Reconcile recovered an uncredited payment', {
+                order_id: o.id, reference: o.paystack_reference, previous_status: o.payment_status,
+                amount_usd: o.amount_usd, gb: o.gb_amount,
+              })
+            } else if (result.status === 'error') {
+              errors++
+              settled = false // retry on the next run
+            }
+          }
+        }
+      } catch (e: any) {
+        // A reference Paystack has never seen is a normal, permanent answer
+        // for an abandoned checkout; anything else (outage, network) is
+        // retried next run rather than deferred an hour.
+        if (!/not found/i.test(String(e?.message))) { errors++; settled = false }
+      }
+      if (settled) {
+        await supabase.from('orders').update({ reconcile_checked_at: new Date().toISOString() }).eq('id', o.id)
+      }
+    }
+    return { checked: candidates?.length ?? 0, recovered, mismatched, errors }
+  } catch (e: any) {
+    console.error('[reconcile] failed', e)
+    return { error: e?.message ?? 'reconcile failed' }
+  }
+}
+
 // ── Cleanup stale orders ──────────────────────────────────────────
 async function runCleanup() {
   const supabase = await createAdminClient()
@@ -262,7 +339,11 @@ async function runCleanup() {
     .select('id').eq('payment_status', 'pending').lt('created_at', cutoff)
 
   for (const o of stale ?? []) {
-    await supabase.from('orders').update({ payment_status: 'failed' }).eq('id', o.id)
+    await supabase.from('orders').update({
+      payment_status: 'failed',
+      failure_reason: 'Abandoned — not paid within 24h',
+      failed_at: new Date().toISOString(),
+    }).eq('id', o.id)
   }
 
   // Expired MFA "verified this browser" tokens (migration 0020). Already
@@ -396,6 +477,7 @@ export async function POST(req: Request, context: { params: Promise<{ task: stri
       case 'summary':   result = await runDailySummary();     break
       case 'cleanup':   result = await runCleanup();          break
       case 'canary':    result = await runCanary();           break
+      case 'reconcile': result = await runReconcile();        break
       case 'benchmark': result = await runBenchmark();        break
       default: return NextResponse.json({ error: `Unknown task: ${task}` }, { status: 400 })
     }

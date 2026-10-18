@@ -20,7 +20,7 @@ function escapeCsvCell(value: unknown): string {
   if (FORMULA_TRIGGER_RE.test(s)) {
     s = `'${s}`
   }
-  if (/[",\n]/.test(s)) {
+  if (/[",\r\n]/.test(s)) {
     return `"${s.replace(/"/g, '""')}"`
   }
   return s

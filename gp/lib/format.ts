@@ -31,3 +31,13 @@ export function formatPct(used: number, total: number, decimals = 1): string {
   if (!total || total <= 0) return (0).toFixed(decimals)
   return Math.min((used / total) * 100, 100).toFixed(decimals)
 }
+
+/**
+ * Canonical USD display: always two decimals with thousands separators
+ * ("$4.50", "$35.00", "$1,000.00"). Billing, buy and pricing used to each
+ * print raw numbers ("$4.5", "$35") next to toFixed(2) figures elsewhere.
+ */
+export function formatUsd(value: number | string | null | undefined): string {
+  const n = Number(value ?? 0)
+  return '$' + (Number.isFinite(n) ? n : 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}

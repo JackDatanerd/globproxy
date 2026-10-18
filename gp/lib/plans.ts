@@ -55,7 +55,7 @@ export const PLANS: Plan[] = [
     tagline: 'For agencies & power users',
     savings: 'Save 20%',
     featured: true,
-    features: ['100 GB non-expiring bandwidth', 'City-level targeting', 'Full API access (resellers)', 'Sub-user management', 'Priority support'],
+    features: ['100 GB non-expiring bandwidth', 'City-level targeting', 'Reseller API & sub-user management (by application)', 'Priority support'],
   },
   {
     slug: 'scale',

@@ -19,18 +19,36 @@ export async function GET() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const { data: orders } = await supabase
-    .from('orders')
-    .select('created_at, invoice_number, gb_amount, amount_usd, payment_status, paystack_reference')
-    .eq('user_id', user.id)
-    .order('created_at', { ascending: false })
+  // Page through everything: PostgREST silently truncates a single response
+  // (1000 rows by default), and a failed query must be an error, not a
+  // header-only CSV that looks like "no billing history".
+  const PAGE = 1000
+  const orders: any[] = []
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase
+      .from('orders')
+      .select('created_at, paid_at, invoice_number, gb_amount, amount_usd, refunded_usd, payment_status, paystack_reference')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
+      .range(from, from + PAGE - 1)
+    if (error) {
+      console.error('[billing-export] query failed', error)
+      return NextResponse.json({ error: 'Could not export billing history. Please try again.' }, { status: 500 })
+    }
+    orders.push(...(data ?? []))
+    if ((data?.length ?? 0) < PAGE) break
+  }
 
-  const csv = toCsv(orders ?? [], [
-    { header: 'date', value: o => new Date(o.created_at).toISOString().slice(0, 10) },
+  // `date` matches the invoice: the day it was paid, falling back to creation
+  // for orders that never were (pending/cancelled/failed).
+  const csv = toCsv(orders, [
+    { header: 'date', value: o => new Date(o.paid_at ?? o.created_at).toISOString().slice(0, 10) },
     { header: 'invoice_number', value: o => o.invoice_number ?? '' },
     { header: 'description', value: o => `${o.gb_amount} GB residential proxy bandwidth` },
     { header: 'gb', value: o => o.gb_amount },
     { header: 'amount_usd', value: o => Number(o.amount_usd).toFixed(2) },
+    { header: 'refunded_usd', value: o => Number(o.refunded_usd ?? 0).toFixed(2) },
     { header: 'status', value: o => o.payment_status },
     { header: 'payment_reference', value: o => o.paystack_reference ?? '' },
   ])

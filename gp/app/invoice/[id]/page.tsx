@@ -146,6 +146,12 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
               <td className="pt-4 text-sm font-semibold text-ink text-right">Total (USD)</td>
               <td className="pt-4 text-sm font-semibold text-ink text-right font-mono">${Number(order.amount_usd).toFixed(2)}</td>
             </tr>
+            {Number(order.refunded_usd ?? 0) > 0 && (
+              <tr>
+                <td className="pt-2 text-sm text-red-500 text-right">Refunded{order.refunded_at ? ` (${formatDate(order.refunded_at)})` : ''}</td>
+                <td className="pt-2 text-sm text-red-500 text-right font-mono">−${Number(order.refunded_usd).toFixed(2)}</td>
+              </tr>
+            )}
           </tfoot>
         </table>
 
