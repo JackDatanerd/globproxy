@@ -1,23 +1,14 @@
-import { revokeVerifiedSession, MFA_COOKIE_NAME } from '@/lib/mfa'
+import { revokeVerifiedSession, getMfaCookieFromRequest } from '@/lib/mfa'
 import { clearMfaCookie } from '../_cookie'
 import { NextResponse } from 'next/server'
 
-// Supabase's own auth.signOut() (called client-side, see DashTopbar) has
-// no idea our separate gp_mfa cookie exists, so it never clears it. Left
-// alone, a shared/public machine would keep the browser "MFA-verified"
-// for up to the cookie's remaining TTL even after the account itself
-// signed out — whoever signs back in (same account or, worse, a
-// different one after a password reset on the same device) would skip
-// the second factor entirely until the cookie's natural expiry.
+// Supabase's own auth.signOut() (called client-side) has no idea our separate
+// gp_mfa cookie exists, so it never clears it. Left alone, a shared/public
+// machine would keep the browser "MFA-verified" for up to the cookie's
+// remaining TTL (up to 30 days with "trust this browser") even after the
+// account signed out. Every sign-out path calls this first.
 export async function POST(req: Request) {
-  const cookieToken = req.headers.get('cookie')
-    ?.split(';')
-    .map(c => c.trim())
-    .find(c => c.startsWith(`${MFA_COOKIE_NAME}=`))
-    ?.slice(MFA_COOKIE_NAME.length + 1)
-
-  await revokeVerifiedSession(cookieToken)
-
+  await revokeVerifiedSession(getMfaCookieFromRequest(req))
   const res = NextResponse.json({ success: true })
   return clearMfaCookie(res)
 }

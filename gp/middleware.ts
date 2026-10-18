@@ -94,19 +94,44 @@ export async function middleware(request: NextRequest) {
   // "go verify" → "go verify" → ...
   const isMfaFlowPath = path === '/auth/mfa-setup' || path === '/auth/mfa-verify'
 
-  // Not logged in — redirect to login
+  // Where to come back to after signing in. Path + query, same-site only —
+  // the login page and callback both re-validate it with safeNextPath().
+  const here = path + request.nextUrl.search
+
+  // Not logged in — redirect to login, remembering where they were headed.
   if ((isProtected || isMfaFlowPath) && !user) {
-    return NextResponse.redirect(new URL('/auth/login', request.url))
+    const loginUrl = new URL('/auth/login', request.url)
+    if (isProtected) loginUrl.searchParams.set('next', here)
+    return NextResponse.redirect(loginUrl)
   }
 
   if (user) {
     // Single profile fetch covers the admin/reseller/suspension checks
     // and the MFA-required flag together.
-    const { data: profile } = await supabase
+    const { data: profile, error: profileError } = await supabase
       .from('profiles')
       .select('role, is_suspended, is_deleted, mfa_enabled')
       .eq('id', user.id)
-      .single()
+      .maybeSingle()
+
+    // Fail CLOSED. This query used to ignore its error, so any transient
+    // failure left `profile` null — and every check below (deleted,
+    // suspended, role gates, MFA step-up) is written as `profile?.x`, which
+    // silently evaluates to "all clear". A hiccup therefore let suspended
+    // and MFA-protected accounts straight through for that request. On a
+    // protected path, an unreadable profile is a temporary outage, not a
+    // pass. (Plain 503, deliberately not a redirect to /auth/login: the
+    // login page bounces signed-in users back to /dashboard, which would
+    // loop.)
+    if (profileError && (isProtected || isMfaFlowPath)) {
+      console.error('[middleware] profile lookup failed — failing closed', user.id, profileError.message)
+      return new NextResponse(
+        '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Temporarily unavailable</title>' +
+        '<body style="font-family:sans-serif;max-width:420px;margin:15vh auto;padding:0 24px;text-align:center;color:#111">' +
+        '<h2>Temporarily unavailable</h2><p style="color:#555">We couldn\'t verify your account just now. Please refresh in a few seconds.</p></body>',
+        { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Retry-After': '5' } }
+      )
+    }
 
     // Deleted — sign out and redirect. This is the actual enforcement
     // point referenced throughout the app (lib/apiAuth.ts,
@@ -143,33 +168,22 @@ export async function middleware(request: NextRequest) {
     }
 
     // ── MFA step-up ──────────────────────────────────────────────────
-    // Two separate things bundled here:
-    //  1. *Mandatory* for admin & reseller — applies to every protected
-    //     path for these roles, not just /admin and /reseller, since a
-    //     reseller's own bandwidth/billing lives under /dashboard too, so
-    //     gating only /reseller would leave that reachable MFA-free. If
-    //     they haven't enrolled yet, they're forced into setup before
-    //     anything else.
-    //  2. *Opt-in* for plain 'user' accounts — profiles.mfa_enabled can be
-    //     true for any role, not just admin/reseller (Settings lets any
-    //     signed-in user turn it on for themselves). Previously this whole
-    //     block was gated on `mfaRequired` (admin/reseller only), so a
-    //     regular user who'd deliberately enabled 2FA still sailed straight
-    //     into /dashboard on password alone — the verify step only ever
-    //     ran for the two roles it was mandatory for. mfa_enabled=true
-    //     needs the same step-up check regardless of role; the only thing
-    //     that's role-specific is whether NOT having it enabled forces you
-    //     into setup.
-    const mfaMandatoryForRole = profile?.role === 'admin' || profile?.role === 'reseller'
-    if (isProtected && !isMfaFlowPath) {
-      if (mfaMandatoryForRole && !profile?.mfa_enabled) {
-        return NextResponse.redirect(new URL(`/auth/mfa-setup?next=${encodeURIComponent(path)}`, request.url))
-      }
-      if (profile?.mfa_enabled) {
-        const verified = await hasValidMfaSession(request, user.id)
-        if (!verified) {
-          return NextResponse.redirect(new URL(`/auth/mfa-verify?next=${encodeURIComponent(path)}`, request.url))
-        }
+    // MFA is OPTIONAL for every role (admin and reseller included): the app
+    // recommends it (see MfaRecommendBanner) but never forces enrollment.
+    // What IS enforced is the other direction — once an account has turned
+    // it on, a password alone no longer gets into any protected page: the
+    // browser must hold a valid verified-session cookie, else it is sent to
+    // /auth/mfa-verify.
+    //
+    // This only guards PAGES (the matcher excludes /api). Routes that can
+    // spend money, mint credentials, move payouts, delete data or act as an
+    // admin enforce the same rule themselves via requireMfaVerified() in
+    // lib/mfa.ts — see that file. profiles.mfa_enabled is not user-writable
+    // (migration 0039 pins it), so trusting it here is sound.
+    if (isProtected && !isMfaFlowPath && profile?.mfa_enabled) {
+      const verified = await hasValidMfaSession(request, user.id)
+      if (!verified) {
+        return NextResponse.redirect(new URL(`/auth/mfa-verify?next=${encodeURIComponent(here)}`, request.url))
       }
     }
   }

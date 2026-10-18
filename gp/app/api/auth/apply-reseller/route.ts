@@ -1,6 +1,11 @@
 import { NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { sendEmail, escapeHtml } from '@/lib/email'
+import { rateLimited } from '@/lib/rateLimit'
+
+function cleanStr(v: unknown, max: number): string {
+  return typeof v === 'string' ? v.trim().slice(0, max) : ''
+}
 
 export async function POST(req: Request) {
   try {
@@ -12,10 +17,20 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const { full_name, country, phone, monthly_volume } = await req.json()
+    const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', `apply:${user.id}`)
+    if (limited) return limited
+
+    const body = await req.json().catch(() => ({}))
+    const full_name = cleanStr(body.full_name, 100)
+    const country = cleanStr(body.country, 80)
+    const phone = cleanStr(body.phone, 30)
+    const monthly_volume = cleanStr(body.monthly_volume, 80)
 
     if (!full_name || !country || !phone || !monthly_volume) {
       return NextResponse.json({ error: 'All fields are required' }, { status: 400 })
+    }
+    if (!/^[+\d][\d\s().-]{5,}$/.test(phone)) {
+      return NextResponse.json({ error: 'Enter a valid phone number.' }, { status: 400 })
     }
 
     const application = {
@@ -35,16 +50,33 @@ export async function POST(req: Request) {
     // this way. Using the session client here silently no-ops the status
     // column: no error, no applicant ever shows up in /admin/resellers.
     const adminSupabase = await createAdminClient()
-    const { error: updateError } = await adminSupabase
+    //
+    // Only an ordinary account that never applied (or was rejected) may
+    // (re)apply. This used to write 'pending' unconditionally, so an
+    // approved or suspended reseller re-submitting the form had their
+    // status regressed, and anyone could spam the admin inbox with
+    // unlimited applications. The role/status guard is part of the UPDATE
+    // itself so a double-submit can't race it.
+    const { data: updated, error: updateError } = await adminSupabase
       .from('profiles')
       .update({
         reseller_status: 'pending',
         reseller_application: application,
       })
       .eq('id', user.id)
+      .eq('role', 'user')
+      .or('reseller_status.is.null,reseller_status.eq.rejected')
+      .select('id')
 
     if (updateError) {
-      return NextResponse.json({ error: updateError.message }, { status: 500 })
+      console.error('[auth/apply-reseller] update failed', updateError.message)
+      return NextResponse.json({ error: 'Could not submit your application. Please try again.' }, { status: 500 })
+    }
+    if (!updated || updated.length === 0) {
+      return NextResponse.json(
+        { error: 'You already have a reseller application or account on file. Contact support if something looks wrong.' },
+        { status: 409 }
+      )
     }
 
     // Notify admin — best-effort, non-fatal
@@ -82,6 +114,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ success: true, message: 'Application submitted successfully' })
 
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 })
+    console.error('[auth/apply-reseller] unexpected error', err)
+    return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
   }
 }

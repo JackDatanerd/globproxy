@@ -1,9 +1,10 @@
 import { redirect } from 'next/navigation'
 import { cookies } from 'next/headers'
 import { createClient } from '@/lib/supabase/server'
-import { mfaRequiredForRole, checkVerifiedSession, MFA_COOKIE_NAME } from '@/lib/mfa'
+import { checkVerifiedSession, MFA_COOKIE_NAME } from '@/lib/mfa'
 import DashSidebar from '@/components/dashboard/DashSidebar'
 import DashTopbar from '@/components/dashboard/DashTopbar'
+import MfaRecommendBanner from '@/components/dashboard/MfaRecommendBanner'
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const supabase = await createClient()
@@ -24,10 +25,10 @@ export default async function DashboardLayout({ children }: { children: React.Re
   if (profile?.is_deleted) redirect('/auth/login?deleted=1')
   if (profile?.is_suspended) redirect('/auth/login?suspended=1')
 
-  // Same defense-in-depth reasoning, for the mandatory-MFA gate — see
-  // middleware.ts for the primary enforcement and full rationale.
-  if (mfaRequiredForRole(profile?.role)) {
-    if (!profile?.mfa_enabled) redirect('/auth/mfa-setup?next=/dashboard')
+  // Same defense-in-depth reasoning, for the MFA step-up — see middleware.ts
+  // for the primary enforcement. MFA is optional for every role; an account
+  // that HAS enabled it must hold a verified-session cookie.
+  if (profile?.mfa_enabled) {
     const token = (await cookies()).get(MFA_COOKIE_NAME)?.value
     if (!(await checkVerifiedSession(token, user.id))) redirect('/auth/mfa-verify?next=/dashboard')
   }
@@ -37,7 +38,10 @@ export default async function DashboardLayout({ children }: { children: React.Re
       <DashTopbar profile={profile} />
       <div className="flex flex-1 overflow-hidden">
         <DashSidebar role={profile?.role ?? 'user'} apiAccess={profile?.api_access ?? false} />
-        <main className="flex-1 p-8 overflow-y-auto">{children}</main>
+        <main className="flex-1 p-8 overflow-y-auto">
+          {!profile?.mfa_enabled && <MfaRecommendBanner role={profile?.role ?? 'user'} />}
+          {children}
+        </main>
       </div>
     </div>
   )

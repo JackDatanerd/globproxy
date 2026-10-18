@@ -82,3 +82,20 @@ export async function sendEmail(p: { to: string; subject: string; html: string }
   }
   return res
 }
+
+// For security-notice emails sent from inside a request handler. Awaiting is
+// deliberate: on Cloudflare Workers an un-awaited fetch can be cancelled the
+// moment the response is returned (see the waitUntil note in lib/apiAuth.ts),
+// which silently dropped the "2FA was turned off" tripwire emails. This
+// awaits, swallows (and logs) any failure — a notice that can't be delivered
+// must never fail or roll back the account change it describes — and reports
+// whether the provider accepted the message.
+export async function sendEmailSafe(p: { to: string; subject: string; html: string }): Promise<boolean> {
+  try {
+    const res = await sendEmail(p)
+    return res.ok
+  } catch (e) {
+    console.error('[email] send threw', { to: p.to, subject: p.subject }, e)
+    return false
+  }
+}

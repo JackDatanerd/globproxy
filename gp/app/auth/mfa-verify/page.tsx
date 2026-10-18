@@ -2,19 +2,35 @@
 import { useState, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { safeNextPath } from '@/lib/safeNext'
 import toast from 'react-hot-toast'
+
+// Same normalisation the server applies (lib/mfa.ts parseMfaCode) so the
+// button only enables for something the server will actually accept — a
+// malformed paste must never reach the server and burn an attempt.
+function normalize(raw: string): string {
+  return raw.replace(/[\s-]/g, '').toUpperCase()
+}
+function isValidCode(raw: string): boolean {
+  const c = normalize(raw)
+  return /^\d{6}$/.test(c) || /^[A-Z2-9]{8}$/.test(c)
+}
 
 function MfaVerifyFlow() {
   const router = useRouter()
   const params = useSearchParams()
-  const next = params.get('next') || '/dashboard'
+  // `next` is a raw query param — validated so this page can't be used as an
+  // open redirect (?next=https://evil.example) right after a successful 2FA step.
+  const next = safeNextPath(params.get('next'))
 
   const [code, setCode] = useState('')
   const [useBackupCode, setUseBackupCode] = useState(false)
+  const [remember, setRemember] = useState(false)
   const [submitting, setSubmitting] = useState(false)
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    if (!isValidCode(code)) { toast.error('Enter the 6-digit code, or a backup code like ABCD-2345.'); return }
     setSubmitting(true)
     try {
       const { data: { session } } = await createClient().auth.getSession()
@@ -22,9 +38,9 @@ function MfaVerifyFlow() {
       const res = await fetch('/api/auth/mfa/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
-        body: JSON.stringify({ code }),
+        body: JSON.stringify({ code, remember }),
       })
-      const data = await res.json()
+      const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || 'Incorrect code.')
       if (data.used_backup_code && typeof data.backup_codes_remaining === 'number') {
         if (data.backup_codes_remaining <= 3) {
@@ -41,6 +57,8 @@ function MfaVerifyFlow() {
   }
 
   async function signOut() {
+    // Our own gp_mfa cookie is invisible to Supabase's signOut — revoke it too.
+    await fetch('/api/auth/mfa/logout', { method: 'POST' }).catch(() => {})
     await createClient().auth.signOut()
     router.push('/auth/login')
   }
@@ -59,21 +77,25 @@ function MfaVerifyFlow() {
           {useBackupCode ? (
             <input
               type="text" autoComplete="off" required value={code}
-              onChange={e => setCode(e.target.value.toUpperCase())}
+              onChange={e => setCode(e.target.value.toUpperCase().slice(0, 12))}
               placeholder="XXXX-XXXX"
               className="w-full bg-surface border border-border text-ink placeholder-muted px-4 py-3 rounded-xl text-lg font-mono tracking-widest text-center focus:outline-none focus:border-accent transition-colors"
             />
           ) : (
             <input
-              type="text" inputMode="numeric" autoComplete="one-time-code" required maxLength={6}
-              value={code} onChange={e => setCode(e.target.value.replace(/\D/g, ''))}
+              type="text" inputMode="numeric" autoComplete="one-time-code" required
+              value={code} onChange={e => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
               placeholder="000000"
               className="w-full bg-surface border border-border text-ink placeholder-muted px-4 py-3 rounded-xl text-lg font-mono tracking-[0.3em] text-center focus:outline-none focus:border-accent transition-colors"
             />
           )}
         </div>
+        <label className="flex items-start gap-2 text-xs text-ink2 cursor-pointer">
+          <input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} className="mt-0.5" />
+          <span>Trust this browser for 30 days <span className="text-muted">(skip this step on this device — don’t tick on a shared computer; not available for admin accounts)</span></span>
+        </label>
         <button
-          type="submit" disabled={submitting || (useBackupCode ? code.length < 8 : code.length !== 6)}
+          type="submit" disabled={submitting || !isValidCode(code)}
           className="w-full bg-accent text-white py-3 rounded-xl font-medium text-sm hover:opacity-90 disabled:opacity-60 transition-opacity"
         >
           {submitting ? 'Verifying…' : 'Verify →'}

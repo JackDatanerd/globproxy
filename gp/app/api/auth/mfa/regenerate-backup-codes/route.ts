@@ -1,9 +1,14 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { regenerateBackupCodes } from '@/lib/mfa'
-import { sendEmail, securityNoticeHtml, escapeHtml } from '@/lib/email'
+import { rateLimited } from '@/lib/rateLimit'
+import { sendEmailSafe, securityNoticeHtml, escapeHtml } from '@/lib/email'
+import { logSecurityEvent } from '@/lib/securityEvents'
 import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
+  const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', 'mfa')
+  if (limited) return limited
+
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user?.email) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -14,13 +19,14 @@ export async function POST(req: Request) {
   }
 
   try {
-    const backup_codes = await regenerateBackupCodes(user.id, user.email, code)
-    // Lower urgency than enable/disable — 2FA itself stays on either way —
-    // but still a silent invalidation of every existing backup code, so
-    // still worth the same trip-wire pattern. Fire-and-forget.
+    const backup_codes = await regenerateBackupCodes(user.id, user.email, code, req)
+    await logSecurityEvent({ userId: user.id, event: 'mfa_backup_regenerated', req })
+
+    // Lower urgency than enable/disable, but still a silent invalidation of
+    // every existing backup code — same trip-wire pattern, awaited.
     const admin = await createAdminClient()
-    const { data: profile } = await admin.from('profiles').select('full_name').eq('id', user.id).single()
-    sendEmail({
+    const { data: profile } = await admin.from('profiles').select('full_name').eq('id', user.id).maybeSingle()
+    await sendEmailSafe({
       to: user.email,
       subject: 'Your GlobProxy backup codes were regenerated',
       html: securityNoticeHtml({
@@ -38,7 +44,7 @@ export async function POST(req: Request) {
             <a href="mailto:support@globproxy.com" style="color:#2563eb;">Contact support</a>.
           </p>`,
       }),
-    }).catch(() => {})
+    })
     return NextResponse.json({ backup_codes })
   } catch (e: any) {
     return NextResponse.json({ error: e.message ?? 'Could not regenerate backup codes.' }, { status: 400 })

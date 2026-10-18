@@ -3,7 +3,7 @@
 -- Run this entire file in Supabase SQL Editor (fresh project)
 -- ============================================================
 --
--- INCLUDES MIGRATIONS THROUGH: 0038_payments_recovery_refunds.sql
+-- INCLUDES MIGRATIONS THROUGH: 0039_auth_mfa_hardening.sql
 --
 -- This line is the source of truth `scripts/check-schema-sync.mjs` reads
 -- to compare against supabase/migrations/ — it's what CI checks on every
@@ -1201,6 +1201,30 @@ alter table public.support_reports enable row level security;
 -- through the admin client (same pattern as orders/checkout), same reason
 -- referrals has no direct-write policy either. These two are read-only
 -- policies for users viewing their own submitted reports.
+-- Admin check lives in a SECURITY DEFINER function rather than an inline
+-- subquery on profiles. A profiles policy that subqueries profiles is the
+-- textbook trigger for "infinite recursion detected in policy for
+-- relation 'profiles'" — Postgres has to resolve profiles' own RLS to
+-- answer the inner SELECT, which is exactly what this policy is trying to
+-- answer in the first place. SECURITY DEFINER functions run as their
+-- owner (postgres), which bypasses RLS, breaking the cycle. See migration
+-- 0029 — this bug fired on every profile UPDATE, not just admin ones,
+-- since all permissive policies on the command are evaluated together.
+create or replace function public.is_admin(check_uid uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1 from public.profiles where id = check_uid and role = 'admin'
+  );
+$$;
+
+revoke all on function public.is_admin(uuid) from public, anon, authenticated;
+grant execute on function public.is_admin(uuid) to authenticated;
+
 create policy "User can view own reports" on public.support_reports for select
   using (auth.uid() = user_id);
 
@@ -1390,29 +1414,10 @@ create policy "Resellers can view own client profiles" on public.profiles for se
     )
   );
 
--- Admin check lives in a SECURITY DEFINER function rather than an inline
--- subquery on profiles. A profiles policy that subqueries profiles is the
--- textbook trigger for "infinite recursion detected in policy for
--- relation 'profiles'" — Postgres has to resolve profiles' own RLS to
--- answer the inner SELECT, which is exactly what this policy is trying to
--- answer in the first place. SECURITY DEFINER functions run as their
--- owner (postgres), which bypasses RLS, breaking the cycle. See migration
--- 0029 — this bug fired on every profile UPDATE, not just admin ones,
--- since all permissive policies on the command are evaluated together.
-create or replace function public.is_admin(check_uid uuid)
-returns boolean
-language sql
-stable
-security definer
-set search_path = public
-as $$
-  select exists (
-    select 1 from public.profiles where id = check_uid and role = 'admin'
-  );
-$$;
-
-revoke all on function public.is_admin(uuid) from public, anon, authenticated;
-grant execute on function public.is_admin(uuid) to authenticated;
+-- (public.is_admin() is defined much earlier in this file — see the block
+-- just above the support_reports policies. It used to live here, AFTER the
+-- support_reports policies that call it, so a fresh run of this file failed
+-- to create those two admin policies.)
 
 -- Admins can update any profile (needed for suspend/reinstate,
 -- reseller approve/reject, API-access toggle done from the admin UI).
@@ -1481,6 +1486,7 @@ begin
   new.payout_method_updated_at           := old.payout_method_updated_at;
   new.is_verified_operator               := old.is_verified_operator; -- see migration 0037
   new.verified_operator_since            := old.verified_operator_since;
+  new.mfa_enabled                        := old.mfa_enabled; -- see migration 0039
 
   return new;
 end;
@@ -1713,3 +1719,172 @@ create table if not exists public.schema_migrations (
 alter table public.schema_migrations enable row level security;
 -- No policies granted — service_role bypasses RLS, and there's no
 -- legitimate reason for any client-side role to read or write this.
+
+-- ── 0039: Auth & MFA hardening (sections 2–5; section 1 is folded into protect_privileged_profile_columns above) ──
+-- ── 2. Atomic attempt budget / TOTP consumption ─────────────────
+-- Returns: 'ok'     — slot reserved, go ahead and check the code
+--          'ok_last'— slot reserved and it was the last one; the factor is
+--                     now locked for p_lock_seconds unless this attempt succeeds
+--          'locked' — currently locked, do not check the code
+--          'missing'— no factor row
+create or replace function public.mfa_begin_attempt(
+  p_user_id uuid,
+  p_max integer,
+  p_lock_seconds integer
+)
+returns text language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_row public.mfa_totp_factors%rowtype;
+  v_attempts integer;
+begin
+  select * into v_row from public.mfa_totp_factors where user_id = p_user_id for update;
+  if not found then
+    return 'missing';
+  end if;
+
+  if v_row.locked_until is not null and v_row.locked_until > now() then
+    return 'locked';
+  end if;
+
+  -- An expired lock starts a fresh budget.
+  v_attempts := case when v_row.locked_until is not null then 1 else v_row.failed_attempts + 1 end;
+
+  if v_attempts >= p_max then
+    update public.mfa_totp_factors
+      set failed_attempts = 0,
+          locked_until = now() + make_interval(secs => p_lock_seconds)
+      where user_id = p_user_id;
+    return 'ok_last';
+  end if;
+
+  update public.mfa_totp_factors
+    set failed_attempts = v_attempts,
+        locked_until = null
+    where user_id = p_user_id;
+  return 'ok';
+end;
+$$;
+
+revoke all on function public.mfa_begin_attempt(uuid, integer, integer) from public;
+grant execute on function public.mfa_begin_attempt(uuid, integer, integer) to service_role;
+
+-- Compare-and-set: succeeds only if p_counter is strictly newer than the
+-- last consumed one. A success also clears the failure counter and lock.
+create or replace function public.mfa_consume_totp(p_user_id uuid, p_counter bigint)
+returns boolean language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  update public.mfa_totp_factors
+    set last_used_counter = p_counter,
+        last_used_at = now(),
+        failed_attempts = 0,
+        locked_until = null
+    where user_id = p_user_id
+      and (last_used_counter is null or last_used_counter < p_counter);
+  return found;
+end;
+$$;
+
+revoke all on function public.mfa_consume_totp(uuid, bigint) from public;
+grant execute on function public.mfa_consume_totp(uuid, bigint) to service_role;
+
+-- Clears failures after a successful BACKUP-code check (which has its own
+-- single-use protection via mfa_backup_codes.used_at).
+create or replace function public.mfa_clear_failures(p_user_id uuid)
+returns void language sql security definer set search_path = public, pg_temp as $$
+  update public.mfa_totp_factors
+    set failed_attempts = 0, locked_until = null, last_used_at = now()
+    where user_id = p_user_id;
+$$;
+
+revoke all on function public.mfa_clear_failures(uuid) from public;
+grant execute on function public.mfa_clear_failures(uuid) to service_role;
+
+create or replace function public.mfa_refund_attempt(p_user_id uuid)
+returns void language sql security definer set search_path = public, pg_temp as $$
+  update public.mfa_totp_factors
+    set failed_attempts = greatest(failed_attempts - 1, 0)
+    where user_id = p_user_id and failed_attempts > 0;
+$$;
+
+revoke all on function public.mfa_refund_attempt(uuid) from public;
+grant execute on function public.mfa_refund_attempt(uuid) to service_role;
+
+-- ── 3. Security events ──────────────────────────────────────────
+create table if not exists public.security_events (
+  id           uuid default uuid_generate_v4() primary key,
+  user_id      uuid not null references public.profiles(id) on delete cascade,
+  actor_id     uuid,                       -- set when someone other than the user caused it (admin MFA reset)
+  event        text not null,
+  ip           text,
+  user_agent   text,
+  meta         jsonb not null default '{}'::jsonb,
+  notify       boolean not null default false,   -- an email is owed for this event
+  notified_at  timestamptz,
+  created_at   timestamptz not null default now()
+);
+
+create index if not exists security_events_user_created_idx
+  on public.security_events(user_id, created_at desc);
+create index if not exists security_events_pending_notice_idx
+  on public.security_events(created_at) where notify and notified_at is null;
+create index if not exists security_events_login_ua_idx
+  on public.security_events(user_id, (meta->>'ua_hash')) where event = 'login';
+
+alter table public.security_events enable row level security;
+
+drop policy if exists "Own security events" on public.security_events;
+create policy "Own security events" on public.security_events
+  for select using (auth.uid() = user_id);
+-- No insert/update/delete policies: every write goes through the
+-- service-role client (lib/securityEvents.ts) or the triggers below.
+
+create or replace function public.cleanup_old_security_events()
+returns integer language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_deleted integer;
+begin
+  delete from public.security_events where created_at < now() - interval '365 days';
+  get diagnostics v_deleted = row_count;
+  return v_deleted;
+end;
+$$;
+
+revoke all on function public.cleanup_old_security_events() from public, anon, authenticated;
+grant execute on function public.cleanup_old_security_events() to service_role;
+
+-- ── 4. Password-change trigger ──────────────────────────────────
+create or replace function public.on_auth_password_changed()
+returns trigger language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  if new.encrypted_password is distinct from old.encrypted_password
+     and old.encrypted_password is not null then
+    delete from public.mfa_verified_sessions where user_id = new.id;
+    insert into public.security_events (user_id, event, notify, meta)
+    select new.id, 'password_changed', true, jsonb_build_object('source', 'db_trigger')
+    where exists (select 1 from public.profiles where id = new.id);
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists on_auth_user_password_changed on auth.users;
+create trigger on_auth_user_password_changed
+  after update of encrypted_password on auth.users
+  for each row execute procedure public.on_auth_password_changed();
+
+-- ── 5. Unconfirmed-account lookup ───────────────────────────────
+create or replace function public.auth_email_unconfirmed(check_email text)
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1 from auth.users
+    where lower(email) = lower(check_email)
+      and email_confirmed_at is null
+      and (banned_until is null or banned_until < now())
+  );
+$$;
+
+revoke all on function public.auth_email_unconfirmed(text) from public, anon, authenticated;
+grant execute on function public.auth_email_unconfirmed(text) to service_role;
+
+insert into public.schema_migrations (filename) values
+  ('0039_auth_mfa_hardening.sql')
+on conflict do nothing;

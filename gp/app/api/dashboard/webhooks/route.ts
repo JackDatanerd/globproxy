@@ -2,6 +2,7 @@ import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { validateWebhookUrl } from '@/lib/ssrfGuard'
 import { NextResponse } from 'next/server'
+import { requireMfaVerified } from '@/lib/mfa'
 
 const ALLOWED_EVENTS = ['session_created', 'bandwidth_threshold_crossed'] as const
 
@@ -35,6 +36,12 @@ export async function POST(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  // 2FA step-up: an account that enabled two-factor must hold a verified
+  // session for this action — a password alone isn't enough. See lib/mfa.ts.
+  const mfaGate = await requireMfaVerified(req, user.id)
+  if (mfaGate) return mfaGate
+
 
   const suspended = await requireActiveUser(user.id)
   if (suspended) return suspended

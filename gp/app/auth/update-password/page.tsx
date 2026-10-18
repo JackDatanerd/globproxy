@@ -63,15 +63,37 @@ export default function UpdatePasswordPage() {
       return
     }
 
-    const { error } = await sb.auth.updateUser({ password: pw })
-    if (error) { toast.error(error.message); setLoading(false); return }
-
-    // Best-effort — a failure here shouldn't block the redirect, the
-    // password change itself already succeeded above.
-    fetch('/api/auth/notify-password-changed', { method: 'POST' }).catch(() => {})
-
-    toast.success('Password updated!')
-    router.push('/dashboard')
+    // Server-side change: enforces the password policy, revokes every other
+    // session, revokes MFA "verified browser" tokens, and sends the
+    // "password changed" notice — none of which a browser-side
+    // updateUser() could guarantee.
+    try {
+      const res = await fetch('/api/auth/password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pw }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        // A plain signed-in session (not one that just came from an email
+        // link) has to prove the current password — that lives in Settings.
+        if (res.status === 400 && /current password/i.test(data.error ?? '')) {
+          toast.error('This page is only for reset links. To change your password while signed in, use Settings.')
+        } else {
+          toast.error(data.error ?? 'Could not update your password. Please try again.')
+        }
+        setLoading(false)
+        return
+      }
+      toast.success('Password updated!')
+      // Hard navigation: accounts with 2FA are routed on to /auth/mfa-verify
+      // by middleware; everyone else lands on the dashboard.
+      router.push('/dashboard')
+      router.refresh()
+    } catch {
+      toast.error('Network error. Please try again.')
+      setLoading(false)
+    }
   }
 
   return (
@@ -82,7 +104,7 @@ export default function UpdatePasswordPage() {
         <form onSubmit={handle} className="flex flex-col gap-5">
           <div>
             <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">New password</label>
-            <input type="password" required minLength={8} value={pw} onChange={e => setPw(e.target.value)} placeholder="Min. 8 characters"
+            <input type="password" required minLength={8} maxLength={72} autoComplete="new-password" value={pw} onChange={e => setPw(e.target.value)} placeholder="Min. 8 characters"
               className="w-full bg-surface border border-border text-ink placeholder-muted px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-accent transition-colors" />
           </div>
           <div>

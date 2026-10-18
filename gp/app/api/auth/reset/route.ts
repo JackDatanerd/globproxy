@@ -1,5 +1,6 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { rateLimited } from '@/lib/rateLimit'
+import { verifyTurnstile } from '@/lib/turnstile'
 import { NextResponse } from 'next/server'
 
 // Always the exact same response, whatever happened internally. Previously
@@ -31,7 +32,7 @@ function genericResponse() {
 // collapses the gap from trivially measurable to buried in jitter —
 // not a cryptographic guarantee, since real network latency varies, but
 // the realistic bar for this mitigation.
-const RESPONSE_FLOOR_MS = 500
+const RESPONSE_FLOOR_MS = 1000
 
 async function respondGeneric(startedAt: number) {
   const elapsed = Date.now() - startedAt
@@ -44,11 +45,17 @@ async function respondGeneric(startedAt: number) {
 export async function POST(req: Request) {
   const startedAt = Date.now()
   try {
-    const limited = await rateLimited(req, 'AUTH_RATE_LIMITER')
+    const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', 'reset')
     if (limited) return limited
 
-    const { email, redirectTo } = await req.json()
-    if (!email) return NextResponse.json({ error: 'Email required' }, { status: 400 })
+    const { email: rawEmail, redirectTo, turnstileToken } = await req.json().catch(() => ({}))
+    if (typeof rawEmail !== 'string' || !rawEmail.trim() || rawEmail.length > 320) {
+      return NextResponse.json({ error: 'Email required' }, { status: 400 })
+    }
+    const email = rawEmail.trim()
+
+    const human = await verifyTurnstile(req, turnstileToken)
+    if (!human.ok) return NextResponse.json({ error: human.error }, { status: 400 })
 
     // redirectTo is client-supplied. Supabase enforces its own project-level
     // redirect URL allow-list, but that's an external config, not something
@@ -77,7 +84,7 @@ export async function POST(req: Request) {
       .from('banned_emails')
       .select('id')
       .eq('email', email.toLowerCase())
-      .single()
+      .maybeSingle()
 
     if (banned) return respondGeneric(startedAt)
 
@@ -86,7 +93,7 @@ export async function POST(req: Request) {
       .from('profiles')
       .select('is_suspended')
       .eq('email', email.toLowerCase())
-      .single()
+      .maybeSingle()
 
     if (!profile) return respondGeneric(startedAt)
 
@@ -116,6 +123,7 @@ export async function POST(req: Request) {
 
     return respondGeneric(startedAt)
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 })
+    console.error('[auth/reset] unexpected error', err)
+    return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
   }
 }

@@ -1,5 +1,5 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { mfaRequiredForRole, checkVerifiedSession, countRemainingBackupCodes, MFA_COOKIE_NAME } from '@/lib/mfa'
+import { checkVerifiedSession, countRemainingBackupCodes, getMfaCookieFromRequest } from '@/lib/mfa'
 import { NextResponse } from 'next/server'
 
 export async function GET(req: Request) {
@@ -8,25 +8,29 @@ export async function GET(req: Request) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const admin = await createAdminClient()
-  const [{ data: profile }, { data: factor }] = await Promise.all([
-    admin.from('profiles').select('role, mfa_enabled').eq('id', user.id).single(),
-    admin.from('mfa_totp_factors').select('confirmed').eq('user_id', user.id).maybeSingle(),
-  ])
+  const { data: factor, error } = await admin
+    .from('mfa_totp_factors').select('confirmed').eq('user_id', user.id).maybeSingle()
 
-  const cookieToken = req.headers.get('cookie')
-    ?.split(';')
-    .map(c => c.trim())
-    .find(c => c.startsWith(`${MFA_COOKIE_NAME}=`))
-    ?.slice(MFA_COOKIE_NAME.length + 1)
+  // An infrastructure failure must NOT be reported as "not enrolled": the UI
+  // would show a healthy, enrolled account an Enable button, and enrolling
+  // would then fail with "already enabled".
+  if (error) {
+    console.error('[mfa/status] factor lookup failed', user.id, error)
+    return NextResponse.json({ error: 'Could not load your two-factor status right now.' }, { status: 503 })
+  }
 
-  const verified = await checkVerifiedSession(cookieToken, user.id)
   const confirmed = !!factor?.confirmed
+  const verified = await checkVerifiedSession(getMfaCookieFromRequest(req), user.id)
+
+  let backupRemaining: number | null = null
+  if (confirmed) {
+    try { backupRemaining = await countRemainingBackupCodes(user.id) } catch { backupRemaining = null }
+  }
 
   return NextResponse.json({
     enrolled: !!factor,
     confirmed,
-    required: mfaRequiredForRole(profile?.role),
     verified,
-    backup_codes_remaining: confirmed ? await countRemainingBackupCodes(user.id) : null,
+    backup_codes_remaining: backupRemaining,
   })
 }

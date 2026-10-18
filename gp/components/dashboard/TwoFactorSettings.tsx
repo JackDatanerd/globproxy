@@ -7,7 +7,6 @@ import toast from 'react-hot-toast'
 interface Status {
   enrolled: boolean
   confirmed: boolean
-  required: boolean
   verified: boolean
   backup_codes_remaining: number | null
 }
@@ -21,18 +20,31 @@ async function authedFetch(path: string, body?: object) {
   })
 }
 
-export default function TwoFactorSettings({ role }: { role: string }) {
+export default function TwoFactorSettings({ role: _role }: { role?: string } = {}) {
   const router = useRouter()
   const [status, setStatus] = useState<Status | null>(null)
   const [mode, setMode] = useState<'idle' | 'disable' | 'regenerate'>('idle')
   const [code, setCode] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [newCodes, setNewCodes] = useState<string[] | null>(null)
+  const [loadError, setLoadError] = useState('')
 
   async function loadStatus() {
-    const { data: { session } } = await createClient().auth.getSession()
-    const res = await fetch('/api/auth/mfa/status', { headers: { Authorization: `Bearer ${session?.access_token}` } })
-    if (res.ok) setStatus(await res.json())
+    setLoadError('')
+    try {
+      const { data: { session } } = await createClient().auth.getSession()
+      const res = await fetch('/api/auth/mfa/status', { headers: { Authorization: `Bearer ${session?.access_token}` } })
+      if (res.ok) {
+        setStatus(await res.json())
+      } else {
+        // Never fall back to showing "NOT ENABLED" when the lookup itself
+        // failed — an enrolled account would be offered an Enable button.
+        const data = await res.json().catch(() => ({}))
+        setLoadError(data.error ?? 'Could not load your two-factor status right now.')
+      }
+    } catch {
+      setLoadError('Could not load your two-factor status right now.')
+    }
   }
 
   useEffect(() => { loadStatus() }, [])
@@ -42,13 +54,9 @@ export default function TwoFactorSettings({ role }: { role: string }) {
     setSubmitting(true)
     try {
       const res = await authedFetch('/api/auth/mfa/disable', { code })
-      const data = await res.json()
+      const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error)
-      toast.success(
-        role === 'admin' || role === 'reseller'
-          ? "Two-factor authentication disabled. You'll be asked to set it up again on your next visit."
-          : 'Two-factor authentication disabled.'
-      )
+      toast.success('Two-factor authentication disabled. We recommend turning it back on.')
       setMode('idle'); setCode('')
       await loadStatus()
       router.refresh()
@@ -64,7 +72,7 @@ export default function TwoFactorSettings({ role }: { role: string }) {
     setSubmitting(true)
     try {
       const res = await authedFetch('/api/auth/mfa/regenerate-backup-codes', { code })
-      const data = await res.json()
+      const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error)
       setNewCodes(data.backup_codes)
       setMode('idle'); setCode('')
@@ -83,6 +91,16 @@ export default function TwoFactorSettings({ role }: { role: string }) {
     const a = document.createElement('a')
     a.href = url; a.download = 'globproxy-backup-codes.txt'; a.click()
     URL.revokeObjectURL(url)
+  }
+
+  if (!status && loadError) {
+    return (
+      <div className="bg-white border border-border rounded-xl p-6 mb-5">
+        <h2 className="font-display font-bold text-base text-ink mb-2">Two-factor authentication</h2>
+        <p className="text-sm text-red-500 mb-3">{loadError}</p>
+        <button onClick={loadStatus} className="text-xs font-mono border border-border rounded-lg px-4 py-2 hover:border-accent hover:text-accent transition-colors">Retry</button>
+      </div>
+    )
   }
 
   if (!status) {
@@ -121,13 +139,13 @@ export default function TwoFactorSettings({ role }: { role: string }) {
         {status.confirmed ? (
           <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-accent2-light text-accent2">ENABLED</span>
         ) : (
-          <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-red-50 text-red-500">NOT ENABLED</span>
+          <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">NOT ENABLED</span>
         )}
       </div>
 
-      {!status.confirmed && status.required && (
+      {!status.confirmed && (
         <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 mb-4">
-          Required for {role} accounts — you'll be asked to set it up the next time you visit your dashboard.
+          Recommended. Two-factor authentication means a stolen password alone can’t get into your proxies, billing or API keys.
         </p>
       )}
 

@@ -7,6 +7,7 @@ import { runConfiguredBenchmark } from '@/lib/networkProbe'
 import { chargeAuthorization, generateReference, verifyTransaction, paymentMismatchReason } from '@/lib/paystack'
 import { activateBandwidth } from '@/lib/bandwidth'
 import { alertAdminPayment } from '@/lib/paymentAlerts'
+import { flushSecurityNotices } from '@/lib/securityEvents'
 import { NextResponse } from 'next/server'
 
 // Secured with CRON_SECRET env var
@@ -357,6 +358,33 @@ async function runCleanup() {
   return { cleaned: stale?.length ?? 0, mfa_sessions_swept: !mfaErr }
 }
 
+// ── Security notices + audit-log retention (migration 0039) ──────────
+// password_changed events are written by a database trigger however the
+// password changed — including direct Supabase API calls that never touch
+// our routes — so this sweep is what guarantees the owner is told. Events
+// younger than 2 minutes are left alone so the request that caused them
+// can send its own notice first (flushSecurityNotices claims each event
+// before sending, so the two can't double-email anyway). Must never throw:
+// it runs in the same */5 chain as 'usage', which stops at the first failure.
+async function runSecurity() {
+  let noticesSent = 0
+  let purged: number | null = null
+  try {
+    noticesSent = await flushSecurityNotices(undefined, 2 * 60 * 1000)
+  } catch (e) {
+    console.error('[cron security] notice flush failed', e)
+  }
+  try {
+    const supabase = await createAdminClient()
+    const { data, error } = await supabase.rpc('cleanup_old_security_events')
+    if (error) console.error('[cron security] cleanup_old_security_events failed', error)
+    else purged = typeof data === 'number' ? data : null
+  } catch (e) {
+    console.error('[cron security] cleanup threw', e)
+  }
+  return { notices_sent: noticesSent, events_purged: purged }
+}
+
 // ── Canary payment (continuous end-to-end payment test) ────────────
 // Charges a small real amount to a dedicated test account daily, using a
 // saved Paystack authorization_code (captured by webhooks/paystack/route.ts
@@ -478,6 +506,7 @@ export async function POST(req: Request, context: { params: Promise<{ task: stri
       case 'cleanup':   result = await runCleanup();          break
       case 'canary':    result = await runCanary();           break
       case 'reconcile': result = await runReconcile();        break
+      case 'security':  result = await runSecurity();         break
       case 'benchmark': result = await runBenchmark();        break
       default: return NextResponse.json({ error: `Unknown task: ${task}` }, { status: 400 })
     }

@@ -3,6 +3,7 @@ import { useState, Suspense } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { validateEmail } from '@/lib/email-validation'
+import Turnstile, { turnstileConfigured } from '@/components/auth/Turnstile'
 import toast from 'react-hot-toast'
 
 function SignupForm() {
@@ -11,6 +12,8 @@ function SignupForm() {
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [emailErr, setEmailErr] = useState('')
+  const [captcha, setCaptcha] = useState<string | null>(null)
+  const [captchaReset, setCaptchaReset] = useState(0)
   const router = useRouter()
   const params = useSearchParams()
   const isReseller = params.get('role') === 'reseller'
@@ -26,6 +29,7 @@ function SignupForm() {
     e.preventDefault()
     const { valid, error } = validateEmail(email)
     if (!valid) { setEmailErr(error ?? ''); return }
+    if (turnstileConfigured && !captcha) { toast.error('Please complete the verification check.'); return }
     setLoading(true)
 
     const res = await fetch('/api/auth/signup', {
@@ -38,10 +42,11 @@ function SignupForm() {
         intended_role: isReseller ? 'reseller' : 'user',
         emailRedirectTo: `${location.origin}/auth/callback`,
         referral_code: referralCode || undefined,
+        turnstileToken: captcha,
       }),
     })
 
-    const data = await res.json()
+    const data = await res.json().catch(() => ({}))
 
     if (!res.ok) {
       // These are genuine input errors (missing fields, invalid email,
@@ -50,13 +55,15 @@ function SignupForm() {
       // brand-new all return the same success response below, same
       // pattern as the password-reset flow, so this can't be used to
       // enumerate registered emails.
-      toast.error(data.error)
+      toast.error(data.error ?? 'Could not create your account. Please try again.')
       setLoading(false)
+      setCaptcha(null)
+      setCaptchaReset(n => n + 1)
       return
     }
 
     toast.success('Check your email to confirm your account!')
-    router.push('/auth/verify')
+    router.push(`/auth/verify?email=${encodeURIComponent(email)}`)
   }
 
   return (
@@ -88,9 +95,10 @@ function SignupForm() {
           </div>
           <div>
             <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">Password</label>
-            <input type="password" required minLength={8} value={password} onChange={e => setPassword(e.target.value)} placeholder="Min. 8 characters"
+            <input type="password" required minLength={8} maxLength={72} autoComplete="new-password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Min. 8 characters"
               className="w-full bg-surface border border-border text-ink placeholder-muted px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-accent transition-colors" />
           </div>
+          <Turnstile onToken={setCaptcha} resetSignal={captchaReset} />
           <button type="submit" disabled={loading || !!emailErr}
             className="w-full bg-accent text-white py-3 rounded-xl font-medium text-sm hover:opacity-90 disabled:opacity-60 transition-opacity">
             {loading ? 'Creating account...' : isReseller ? 'Apply to resell →' : 'Create account →'}

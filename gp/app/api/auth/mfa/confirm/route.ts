@@ -1,10 +1,15 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { confirmEnrollment } from '@/lib/mfa'
+import { rateLimited } from '@/lib/rateLimit'
 import { withMfaCookie } from '../_cookie'
-import { sendEmail, securityNoticeHtml, escapeHtml } from '@/lib/email'
+import { sendEmailSafe, securityNoticeHtml, escapeHtml } from '@/lib/email'
+import { logSecurityEvent } from '@/lib/securityEvents'
 import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
+  const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', 'mfa')
+  if (limited) return limited
+
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user?.email) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -15,18 +20,18 @@ export async function POST(req: Request) {
   }
 
   try {
-    const { backup_codes, session_token } = await confirmEnrollment(user.id, user.email, code)
-    // Security-relevant account change, same family as the disable/
-    // password-changed notices — but the remedy differs: if this wasn't
-    // the account owner, it means someone else already has both the
-    // password AND now controls the second factor (their own
-    // authenticator app is what just got enrolled), so a self-service
-    // password reset alone won't lock them back out the way it does for
-    // "password changed" or "2FA disabled". Point to support instead of
-    // a reset link. Fire-and-forget — doesn't block the response.
+    const { backup_codes, session_token, session_ttl_s } = await confirmEnrollment(user.id, user.email, code, req)
+
+    await logSecurityEvent({ userId: user.id, event: 'mfa_enabled', req })
+
+    // Security-relevant account change. If this wasn't the account owner,
+    // someone else already has the password AND now controls the second
+    // factor, so a password reset alone won't lock them out — point to
+    // support. Awaited (not fire-and-forget): on Workers an un-awaited
+    // fetch can be cancelled when the response returns.
     const admin = await createAdminClient()
-    const { data: profile } = await admin.from('profiles').select('full_name').eq('id', user.id).single()
-    sendEmail({
+    const { data: profile } = await admin.from('profiles').select('full_name').eq('id', user.id).maybeSingle()
+    await sendEmailSafe({
       to: user.email,
       subject: 'Two-factor authentication was enabled',
       html: securityNoticeHtml({
@@ -45,9 +50,9 @@ export async function POST(req: Request) {
             <a href="mailto:support@globproxy.com" style="color:#2563eb;">Contact support</a>.
           </p>`,
       }),
-    }).catch(() => {})
+    })
     const res = NextResponse.json({ backup_codes })
-    return withMfaCookie(res, session_token)
+    return withMfaCookie(res, session_token, session_ttl_s)
   } catch (e: any) {
     return NextResponse.json({ error: e.message ?? 'Could not confirm code.' }, { status: 400 })
   }

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { deleteSubUser } from '@/lib/geonode'
 import { sendEmail, escapeHtml } from '@/lib/email'
+import { requireMfaVerified } from '@/lib/mfa'
 
 export async function DELETE(req: Request) {
   try {
@@ -11,6 +12,11 @@ export async function DELETE(req: Request) {
     if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
+
+    // 2FA step-up — account deletion is irreversible, so an enrolled account
+    // needs a verified session, not just a password. See lib/mfa.ts.
+    const mfaGate = await requireMfaVerified(req, user.id)
+    if (mfaGate) return mfaGate
 
     const adminSupabase = await createAdminClient()
 

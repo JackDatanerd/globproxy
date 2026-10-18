@@ -16,8 +16,8 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   // Belt-and-suspenders: middleware.ts already gates this path (it's in
-  // isProtected) for the not-logged-in and mandatory-MFA-for-admin/
-  // reseller cases, the same way dashboard/layout.tsx re-checks
+  // isProtected) for the not-logged-in and MFA-step-up (for accounts that
+  // enabled 2FA) cases, the same way dashboard/layout.tsx re-checks
   // suspension/MFA despite middleware already handling it.
   if (!user) redirect(`/auth/login?next=/invoice/${id}`)
 

@@ -2,12 +2,15 @@
 import { useState, Suspense } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
+import Turnstile, { turnstileConfigured } from '@/components/auth/Turnstile'
 import toast from 'react-hot-toast'
 
 function ResetForm() {
   const [email, setEmail] = useState('')
   const [loading, setLoading] = useState(false)
   const [sent, setSent] = useState(false)
+  const [captcha, setCaptcha] = useState<string | null>(null)
+  const [captchaReset, setCaptchaReset] = useState(0)
   const params = useSearchParams()
   // Set by /auth/callback when exchangeCodeForSession fails on a recovery
   // link — almost always because a newer reset request (or a different
@@ -19,6 +22,7 @@ function ResetForm() {
 
   async function handle(e: React.FormEvent) {
     e.preventDefault()
+    if (turnstileConfigured && !captcha) { toast.error('Please complete the verification check.'); return }
     setLoading(true)
 
     const res = await fetch('/api/auth/reset', {
@@ -27,14 +31,17 @@ function ResetForm() {
       body: JSON.stringify({
         email,
         redirectTo: `${location.origin}/auth/callback?type=recovery`,
+        turnstileToken: captcha,
       }),
     })
 
-    const data = await res.json()
+    const data = await res.json().catch(() => ({}))
 
     if (!res.ok) {
-      toast.error(data.error)
+      toast.error(data.error ?? 'Something went wrong. Please try again.')
       setLoading(false)
+      setCaptcha(null)
+      setCaptchaReset(n => n + 1)
       return
     }
 
@@ -53,7 +60,7 @@ function ResetForm() {
           <div className="text-center">
             <div className="text-3xl mb-4">📬</div>
             <h1 className="font-display font-bold text-2xl text-ink mb-2">Check your inbox</h1>
-            <p className="text-muted text-sm font-light mb-6">Reset link sent to <span className="text-ink font-medium">{email}</span>.</p>
+            <p className="text-muted text-sm font-light mb-6">If an account exists for <span className="text-ink font-medium">{email}</span>, a reset link is on its way.</p>
             <Link href="/auth/login" className="text-accent text-sm hover:underline">Back to sign in</Link>
           </div>
         ) : (
@@ -66,6 +73,7 @@ function ResetForm() {
                 <input type="email" required value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com"
                   className="w-full bg-surface border border-border text-ink placeholder-muted px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-accent transition-colors" />
               </div>
+              <Turnstile onToken={setCaptcha} resetSignal={captchaReset} />
               <button type="submit" disabled={loading}
                 className="w-full bg-accent text-white py-3 rounded-xl font-medium text-sm hover:opacity-90 disabled:opacity-60 transition-opacity">
                 {loading ? 'Sending...' : 'Send reset link →'}

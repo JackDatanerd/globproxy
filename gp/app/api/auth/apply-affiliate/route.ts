@@ -1,6 +1,11 @@
 import { NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { sendEmail, escapeHtml } from '@/lib/email'
+import { rateLimited } from '@/lib/rateLimit'
+
+function cleanStr(v: unknown, max: number): string {
+  return typeof v === 'string' ? v.trim().slice(0, max) : ''
+}
 
 export async function POST(req: Request) {
   try {
@@ -12,7 +17,16 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const { channel, audience, plan } = await req.json()
+    const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', `apply:${user.id}`)
+    if (limited) return limited
+
+    const body = await req.json().catch(() => ({}))
+    // Bounded, trimmed strings only — these end up in a jsonb column AND in
+    // an email to the admin, so unbounded input was a storage / inbox-
+    // flooding lever for any signed-up account.
+    const channel = cleanStr(body.channel, 120)
+    const audience = cleanStr(body.audience, 600)
+    const plan = cleanStr(body.plan, 1200)
 
     if (!channel || !audience || !plan) {
       return NextResponse.json({ error: 'All fields are required' }, { status: 400 })
@@ -33,16 +47,33 @@ export async function POST(req: Request) {
     // privileges, and it's scoped to exactly this user's row with a
     // hardcoded value ('pending'), so there's no escalation risk here.
     const adminSupabase = await createAdminClient()
-    const { error: updateError } = await adminSupabase
+    //
+    // Only a never-applied or previously REJECTED account may (re)apply.
+    // This used to write 'pending' unconditionally, so an APPROVED affiliate
+    // (or Verified Operator) who re-submitted the form was silently knocked
+    // back to 'pending' — and commissions only credit while affiliate_status
+    // = 'approved', so their earnings stopped until an admin noticed. It also
+    // let a suspended affiliate regress themselves to 'pending'. The
+    // condition is part of the UPDATE itself so a double-submit can't race it.
+    const { data: updated, error: updateError } = await adminSupabase
       .from('profiles')
       .update({
         affiliate_status: 'pending',
         affiliate_application: application,
       })
       .eq('id', user.id)
+      .or('affiliate_status.is.null,affiliate_status.eq.rejected')
+      .select('id')
 
     if (updateError) {
-      return NextResponse.json({ error: updateError.message }, { status: 500 })
+      console.error('[auth/apply-affiliate] update failed', updateError.message)
+      return NextResponse.json({ error: 'Could not submit your application. Please try again.' }, { status: 500 })
+    }
+    if (!updated || updated.length === 0) {
+      return NextResponse.json(
+        { error: 'You already have an affiliate application or account on file. Contact support if something looks wrong.' },
+        { status: 409 }
+      )
     }
 
     // Notify admin — best-effort, non-fatal
@@ -79,6 +110,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ success: true, message: 'Application submitted successfully' })
 
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 })
+    console.error('[auth/apply-affiliate] unexpected error', err)
+    return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
   }
 }

@@ -1,24 +1,32 @@
 import * as OTPAuth from 'otpauth'
 import { renderQrSvg } from '@/lib/qrSvg'
 import { createAdminClient } from '@/lib/supabase/server'
+import {
+  encryptSecret, decryptSecret, needsReencrypt,
+  hashBackupCode, backupCodeHashCandidates,
+} from '@/lib/mfaCrypto'
+import { sendLockoutNotice, logSecurityEvent } from '@/lib/securityEvents'
 import { NextResponse } from 'next/server'
 
 type AdminClient = Awaited<ReturnType<typeof createAdminClient>>
 
 const ISSUER = 'GlobProxy'
-const MFA_SESSION_TTL_MS = 12 * 60 * 60 * 1000 // 12h — re-verify roughly once a working session
 const MAX_FAILED_ATTEMPTS = 5
-const LOCKOUT_MS = 15 * 60 * 1000
+const LOCKOUT_S = 15 * 60
 const BACKUP_CODE_COUNT = 10
+
+// How long a completed second-factor check keeps a browser "verified".
+//  - default: 12h, roughly one working session
+//  - "trust this browser": 30 days — never offered to admin accounts
+export const MFA_SESSION_TTL_MS = 12 * 60 * 60 * 1000
+export const MFA_REMEMBER_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
 export const MFA_COOKIE_NAME = 'gp_mfa'
 export const MFA_COOKIE_MAX_AGE_S = Math.floor(MFA_SESSION_TTL_MS / 1000)
 
 // ── small crypto helpers ──────────────────────────────────────────────
-// Intentionally duplicated from lib/apiAuth.ts rather than shared —
-// these are two independently security-sensitive surfaces (API-key auth
-// vs. MFA), and a four-line hash helper isn't worth coupling their
-// blast radius together for.
+// Intentionally independent of lib/apiAuth.ts — two separately
+// security-sensitive surfaces, not worth coupling.
 async function sha256Hex(input: string): Promise<string> {
   const data = new TextEncoder().encode(input)
   const digest = await crypto.subtle.digest('SHA-256', data)
@@ -35,19 +43,38 @@ function randomHexToken(bytes = 32): string {
 // sheet or read aloud doesn't get mistyped.
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
 function randomBackupCode(): string {
-  const arr = new Uint8Array(8)
-  crypto.getRandomValues(arr)
-  const chars = Array.from(arr, b => CODE_ALPHABET[b % CODE_ALPHABET.length])
+  // Rejection sampling so every character is uniform (256 % 31 != 0).
+  const limit = 256 - (256 % CODE_ALPHABET.length)
+  const chars: string[] = []
+  while (chars.length < 8) {
+    const buf = new Uint8Array(16)
+    crypto.getRandomValues(buf)
+    for (const b of buf) {
+      if (b < limit && chars.length < 8) chars.push(CODE_ALPHABET[b % CODE_ALPHABET.length])
+    }
+  }
   return `${chars.slice(0, 4).join('')}-${chars.slice(4, 8).join('')}`
 }
 
-export function isBackupCodeFormat(code: string): boolean {
-  return /^[A-Z2-9]{4}-[A-Z2-9]{4}$/i.test(code.trim())
+// ── code parsing ──────────────────────────────────────────────────────
+// Accepts what people actually type/paste: "123 456", "123-456",
+// "abcd-2345", "ABCD2345", " abcd 2345 ". Anything that is neither a 6-digit
+// TOTP nor an 8-char backup code is rejected BEFORE it touches the attempt
+// budget — a malformed paste must not count toward a lockout.
+export type ParsedMfaCode = { kind: 'totp' | 'backup'; code: string }
+
+export function parseMfaCode(raw: string): ParsedMfaCode | null {
+  const compact = raw.replace(/[\s-]/g, '').toUpperCase()
+  if (/^\d{6}$/.test(compact)) return { kind: 'totp', code: compact }
+  if (/^[A-Z2-9]{8}$/.test(compact)) return { kind: 'backup', code: `${compact.slice(0, 4)}-${compact.slice(4)}` }
+  return null
 }
 
-export function mfaRequiredForRole(role: string | null | undefined): boolean {
-  return role === 'admin' || role === 'reseller'
+export function isBackupCodeFormat(code: string): boolean {
+  return parseMfaCode(code)?.kind === 'backup'
 }
+
+const BAD_FORMAT_MSG = 'Enter the 6-digit code from your authenticator app, or a backup code (XXXX-XXXX).'
 
 function buildTotp(email: string, base32Secret: string): OTPAuth.TOTP {
   return new OTPAuth.TOTP({
@@ -75,27 +102,14 @@ async function getFactor(supabase: AdminClient, userId: string): Promise<FactorR
     .select('user_id, secret, confirmed, failed_attempts, locked_until, last_used_counter')
     .eq('user_id', userId)
     .maybeSingle()
-  // Previously this only destructured `data` — a query failure for ANY
-  // reason (bad/stale service-role credentials, a transient network
-  // error, anything) came back as data=null indistinguishable from "this
-  // user genuinely has no factor row," and every caller (verifyFactor,
-  // disableMfa, regenerateBackupCodes, confirmEnrollment) treats null the
-  // same as "not set up." That's the exact misleading error a healthy,
-  // confirmed account can end up seeing: the real row exists (visible
-  // directly in Postgres), but this read silently failed for an unrelated
-  // reason and got reported as "never enrolled." Throwing here instead
-  // makes an infra failure loud and distinguishable from a real "not set
-  // up" — check server logs for the actual `error` reason (e.g. an
-  // invalid API key) rather than assuming enrollment state next time.
+  // A query failure must not be indistinguishable from "this user has no
+  // factor": every caller treats null as "not set up". Throwing makes an
+  // infra failure loud — check server logs for the real `error`.
   if (error) {
-    console.error('[mfa] getFactor query failed — NOT the same as "not set up", see error below', userId, error)
+    console.error('[mfa] getFactor query failed — NOT the same as "not set up"', userId, error)
     throw new Error('Could not verify your account right now. Please try again in a moment.')
   }
   return (data as FactorRow) ?? null
-}
-
-function isLocked(factor: FactorRow | null): boolean {
-  return !!factor?.locked_until && new Date(factor.locked_until).getTime() > Date.now()
 }
 
 const TOTP_PERIOD_S = 30
@@ -104,55 +118,115 @@ function currentPeriodCounter(): number {
   return Math.floor(Date.now() / 1000 / TOTP_PERIOD_S)
 }
 
-// Validates a TOTP code AND enforces one-time use per 30s period. otpauth's
-// validate() alone only checks whether the code is correct for some period
-// within the window — it says nothing about whether that exact code was
-// already accepted once already. Without this, the same 6-digit code
-// (shoulder-surfed, grabbed from a compromised authenticator app, replayed
-// from a captured request) could be submitted twice in a row and succeed
-// both times, for as long as it stays within its ~30-90s validity window.
-// Returns the absolute period counter the code corresponds to (to persist
-// as last_used_counter on success), or null if the code is wrong OR is a
-// replay of an already-consumed code.
-function validateTotpOnce(factor: FactorRow, totp: OTPAuth.TOTP, code: string): number | null {
-  const delta = totp.validate({ token: code, window: 1 })
+// Returns the absolute period counter the code belongs to (window ±1), or
+// null if the code is wrong. One-time use is NOT decided here — that is an
+// atomic compare-and-set in the database (mfa_consume_totp), because a
+// read-then-write check let two concurrent submissions of the same code
+// both succeed.
+async function matchTotpCounter(factor: FactorRow, email: string, code: string): Promise<number | null> {
+  const secret = await decryptSecret(factor.secret)
+  const delta = buildTotp(email, secret).validate({ token: code, window: 1 })
   if (delta === null) return null
-  const usedCounter = currentPeriodCounter() + delta
-  if (factor.last_used_counter != null && usedCounter <= factor.last_used_counter) {
-    return null // replay of the last-consumed code, or an older one
+  return currentPeriodCounter() + delta
+}
+
+// ── Attempt budget (atomic) ───────────────────────────────────────────
+// Every "check a code" path (confirm, verify, disable, rotate backup codes,
+// change password / email step-up) first RESERVES one slot in the shared
+// budget via mfa_begin_attempt, in a single row-locked SQL function, and
+// only then looks at the code. Reserving before checking is what makes the
+// limit hold under parallel requests: N simultaneous guesses used to all
+// read failed_attempts = 0 and all write 1, so the lock never tripped.
+// 5 slots per window; the 5th reservation locks the factor for 15 minutes
+// unless that very attempt succeeds. A success resets the budget.
+type AttemptGate = 'ok' | 'ok_last'
+
+const LOCKED_MSG = 'Too many incorrect attempts. Try again in a few minutes.'
+
+async function beginAttempt(supabase: AdminClient, userId: string): Promise<AttemptGate> {
+  const { data, error } = await supabase.rpc('mfa_begin_attempt', {
+    p_user_id: userId,
+    p_max: MAX_FAILED_ATTEMPTS,
+    p_lock_seconds: LOCKOUT_S,
+  })
+  if (error) {
+    console.error('[mfa] mfa_begin_attempt failed', userId, error)
+    throw new Error('Could not verify your account right now. Please try again in a moment.')
   }
-  return usedCounter
+  if (data === 'locked') throw new Error(LOCKED_MSG)
+  if (data === 'missing') throw new Error('Two-factor authentication is not set up on this account.')
+  return data === 'ok_last' ? 'ok_last' : 'ok'
 }
 
-// Shared by every "check a code" path (confirm, verify, disable, rotate
-// backup codes) so lockout behaves identically everywhere: 5 consecutive
-// failures locks the factor for 15 minutes, full stop, regardless of
-// which flow the failures came from. A code split across a TOTP-guess
-// pass here and a backup-code-guess pass there still counts toward the
-// same counter — there's no separate, smaller budget to bypass by
-// switching code type mid-attack.
-async function registerFailedAttempt(supabase: AdminClient, userId: string, factor: FactorRow): Promise<void> {
-  const attempts = factor.failed_attempts + 1
-  const locked = attempts >= MAX_FAILED_ATTEMPTS
-  await supabase
-    .from('mfa_totp_factors')
-    .update({
-      failed_attempts: locked ? 0 : attempts,
-      locked_until: locked ? new Date(Date.now() + LOCKOUT_MS).toISOString() : factor.locked_until,
-    })
-    .eq('user_id', userId)
+async function refundAttempt(supabase: AdminClient, userId: string): Promise<void> {
+  await supabase.rpc('mfa_refund_attempt', { p_user_id: userId }).then(() => {}, () => {})
 }
 
-async function clearFailedAttempts(supabase: AdminClient, userId: string, usedCounter?: number): Promise<void> {
-  const update: Record<string, unknown> = { failed_attempts: 0, locked_until: null, last_used_at: new Date().toISOString() }
-  // Only present for a TOTP success (undefined for a backup-code success,
-  // which has its own independent single-use protection via used_at) —
-  // don't overwrite a real last_used_counter with null in that case.
-  if (usedCounter !== undefined) update.last_used_counter = usedCounter
-  await supabase
-    .from('mfa_totp_factors')
-    .update(update)
-    .eq('user_id', userId)
+class WrongCode extends Error {}
+
+// Shared by every flow. Returns which kind of code was accepted.
+async function checkCode(
+  supabase: AdminClient,
+  userId: string,
+  email: string,
+  factor: FactorRow,
+  rawCode: string,
+  wrongMsg: { totp: string; backup: string },
+  ctx?: { req?: Request },
+): Promise<'totp' | 'backup'> {
+  const parsed = parseMfaCode(rawCode)
+  if (!parsed) throw new Error(BAD_FORMAT_MSG)
+
+  const gate = await beginAttempt(supabase, userId)
+  try {
+    let ok = false
+    if (parsed.kind === 'backup') {
+      ok = await consumeBackupCode(supabase, userId, parsed.code)
+      if (ok) {
+        await supabase.rpc('mfa_clear_failures', { p_user_id: userId })
+        await logSecurityEvent({ userId, event: 'mfa_backup_code_used', req: ctx?.req, admin: supabase })
+      }
+    } else {
+      const counter = await matchTotpCounter(factor, email, parsed.code)
+      ok = counter !== null && (await consumeTotp(supabase, userId, counter))
+      if (ok && needsReencrypt(factor.secret)) {
+        // Lazy upgrade of a legacy plaintext secret now that a key is set.
+        const plain = await decryptSecret(factor.secret)
+        await supabase.from('mfa_totp_factors').update({ secret: await encryptSecret(plain) }).eq('user_id', userId)
+      }
+    }
+    if (!ok) throw new WrongCode()
+    return parsed.kind
+  } catch (e) {
+    if (e instanceof WrongCode) {
+      if (gate === 'ok_last') await announceLockout(supabase, userId, ctx?.req)
+      throw new Error(parsed.kind === 'backup' ? wrongMsg.backup : wrongMsg.totp)
+    }
+    // Infrastructure failure, not the user's fault — don't let it eat budget.
+    await refundAttempt(supabase, userId)
+    throw e
+  }
+}
+
+async function announceLockout(supabase: AdminClient, userId: string, req?: Request) {
+  try {
+    await logSecurityEvent({ userId, event: 'mfa_locked', req, admin: supabase })
+    const { data: profile } = await supabase.from('profiles').select('email, full_name').eq('id', userId).maybeSingle()
+    if (profile?.email && profile.email !== '[deleted]') {
+      await sendLockoutNotice(profile.email, profile.full_name, req?.headers.get('cf-connecting-ip') ?? null)
+    }
+  } catch (e) {
+    console.error('[mfa] announceLockout failed', e)
+  }
+}
+
+async function consumeTotp(supabase: AdminClient, userId: string, counter: number): Promise<boolean> {
+  const { data, error } = await supabase.rpc('mfa_consume_totp', { p_user_id: userId, p_counter: counter })
+  if (error) {
+    console.error('[mfa] mfa_consume_totp failed', userId, error)
+    throw new Error('Could not verify your account right now. Please try again in a moment.')
+  }
+  return data === true
 }
 
 // ── Enrollment ────────────────────────────────────────────────────────
@@ -162,13 +236,11 @@ export interface EnrollmentStart {
   qr_svg: string
 }
 
-// Idempotent while unconfirmed (re-running this before confirm just
-// issues a fresh secret + QR — handles the "I scanned it into the wrong
-// app, let me restart" case without leaving orphaned rows). Once
-// confirmed=true, this refuses: an account with MFA already on must go
-// through disableMfa() (which requires a valid code) before it can
-// re-enroll, so a hijacked-but-not-yet-MFA'd session can't silently
-// swap in a new secret on top of a factor the real owner already set up.
+// Idempotent while unconfirmed (re-running this before confirm just issues
+// a fresh secret + QR). Once confirmed, this refuses: an account with MFA
+// already on must go through disableMfa() (which requires a valid code)
+// before it can re-enroll. The upsert deliberately does NOT touch
+// failed_attempts / locked_until — restarting setup must not reset a lock.
 export async function startEnrollment(userId: string, email: string): Promise<EnrollmentStart> {
   const supabase = await createAdminClient()
 
@@ -183,10 +255,9 @@ export async function startEnrollment(userId: string, email: string): Promise<En
   const { error } = await supabase.from('mfa_totp_factors').upsert(
     {
       user_id: userId,
-      secret: secret.base32,
+      secret: await encryptSecret(secret.base32),
       confirmed: false,
-      failed_attempts: 0,
-      locked_until: null,
+      last_used_counter: null,
     },
     { onConflict: 'user_id' }
   )
@@ -201,29 +272,34 @@ export async function startEnrollment(userId: string, email: string): Promise<En
 export interface ConfirmResult {
   backup_codes: string[]
   session_token: string
+  session_ttl_s: number
 }
 
-export async function confirmEnrollment(userId: string, email: string, code: string): Promise<ConfirmResult> {
+export async function confirmEnrollment(userId: string, email: string, code: string, req?: Request): Promise<ConfirmResult> {
   const supabase = await createAdminClient()
   const factor = await getFactor(supabase, userId)
   if (!factor) throw new Error('No pending MFA setup found — start setup again.')
   if (factor.confirmed) throw new Error('Two-factor authentication is already enabled on this account.')
-  if (isLocked(factor)) throw new Error('Too many incorrect attempts. Try again in a few minutes.')
 
-  const totp = buildTotp(email, factor.secret)
-  const usedCounter = validateTotpOnce(factor, totp, code.trim())
+  // Enrollment is TOTP-only (there are no backup codes yet).
+  const parsed = parseMfaCode(code)
+  if (!parsed || parsed.kind !== 'totp') throw new Error('Enter the 6-digit code from your authenticator app.')
+
+  const gate = await beginAttempt(supabase, userId)
+  let usedCounter: number | null
+  try {
+    usedCounter = await matchTotpCounter(factor, email, parsed.code)
+  } catch (e) {
+    await refundAttempt(supabase, userId)
+    throw e
+  }
   if (usedCounter === null) {
-    await registerFailedAttempt(supabase, userId, factor)
+    if (gate === 'ok_last') await announceLockout(supabase, userId, req)
     throw new Error('Incorrect code. Check your authenticator app and try again.')
   }
 
-  // Atomic — see migration 0026. Previously this was two separate
-  // unchecked writes (factor.confirmed, then profiles.mfa_enabled); if
-  // the first one silently failed, the second still ran unconditionally
-  // and left the account in a state where middleware routes to
-  // mfa-verify (mfa_enabled=true) but verifyFactor() rejects every code,
-  // including backup codes, because the underlying factor was never
-  // actually confirmed. Now either both flip together or neither does.
+  // Atomic — see migration 0026: factor.confirmed and profiles.mfa_enabled
+  // flip together or not at all.
   const { error: confirmErr } = await supabase.rpc('confirm_totp_enrollment', {
     p_user_id: userId,
     p_used_counter: usedCounter,
@@ -231,130 +307,99 @@ export async function confirmEnrollment(userId: string, email: string, code: str
   if (confirmErr) throw new Error('Could not confirm MFA setup. Please try again.')
 
   const backupCodes = await regenerateBackupCodesInternal(supabase, userId)
-  const sessionToken = await createVerifiedSession(supabase, userId)
+  const { token, ttlS } = await createVerifiedSession(supabase, userId, MFA_SESSION_TTL_MS)
 
-  return { backup_codes: backupCodes, session_token: sessionToken }
+  return { backup_codes: backupCodes, session_token: token, session_ttl_s: ttlS }
 }
 
 // ── Step-up verification (login / re-verify) ────────────────────────────
 export interface VerifyResult {
   session_token: string
+  session_ttl_s: number
   used_backup_code: boolean
   backup_codes_remaining?: number
 }
 
-export async function verifyFactor(userId: string, email: string, code: string): Promise<VerifyResult> {
+export async function verifyFactor(
+  userId: string,
+  email: string,
+  code: string,
+  opts: { remember?: boolean; req?: Request } = {},
+): Promise<VerifyResult> {
   const supabase = await createAdminClient()
   const factor = await getFactor(supabase, userId)
   if (!factor?.confirmed) throw new Error('Two-factor authentication is not set up on this account.')
-  if (isLocked(factor)) throw new Error('Too many incorrect attempts. Try again in a few minutes.')
 
-  const trimmed = code.trim()
-  const usedBackupCode = isBackupCodeFormat(trimmed)
-  let usedCounter: number | null = null
-  const ok = usedBackupCode
-    ? await consumeBackupCode(supabase, userId, trimmed)
-    : (usedCounter = validateTotpOnce(factor, buildTotp(email, factor.secret), trimmed)) !== null
+  const kind = await checkCode(supabase, userId, email, factor, code, {
+    totp: 'Incorrect code. Try again.',
+    backup: 'That backup code is invalid or has already been used.',
+  }, { req: opts.req })
 
-  if (!ok) {
-    await registerFailedAttempt(supabase, userId, factor)
-    throw new Error(usedBackupCode ? 'That backup code is invalid or has already been used.' : 'Incorrect code. Try again.')
+  // "Trust this browser" is never offered to admin accounts.
+  let ttl = MFA_SESSION_TTL_MS
+  if (opts.remember) {
+    const { data: profile } = await supabase.from('profiles').select('role').eq('id', userId).maybeSingle()
+    if (profile?.role !== 'admin') ttl = MFA_REMEMBER_TTL_MS
   }
 
-  await clearFailedAttempts(supabase, userId, usedCounter ?? undefined)
-  const sessionToken = await createVerifiedSession(supabase, userId)
+  const { token, ttlS } = await createVerifiedSession(supabase, userId, ttl)
 
-  const result: VerifyResult = { session_token: sessionToken, used_backup_code: usedBackupCode }
-  if (usedBackupCode) {
+  const result: VerifyResult = { session_token: token, session_ttl_s: ttlS, used_backup_code: kind === 'backup' }
+  if (kind === 'backup') {
     result.backup_codes_remaining = await countRemainingBackupCodes(userId, supabase)
   }
   return result
 }
 
 // ── Backup codes ──────────────────────────────────────────────────────
-// Deletes any still-unused codes from a previous batch before minting a
-// fresh set — a rotate/regenerate always fully replaces the outstanding
-// set rather than appending to it, so a user is never holding a mix of
-// "these are current" and "these are stale" codes with no way to tell
-// which is which.
+// A rotate/regenerate always fully replaces the outstanding set.
 async function regenerateBackupCodesInternal(supabase: AdminClient, userId: string): Promise<string[]> {
-  await supabase.from('mfa_backup_codes').delete().eq('user_id', userId).is('used_at', null)
+  const { error: delErr } = await supabase.from('mfa_backup_codes').delete().eq('user_id', userId).is('used_at', null)
+  if (delErr) throw new Error('Could not generate backup codes. Please try again.')
 
   const codes: string[] = []
   const rows: { user_id: string; code_hash: string }[] = []
   for (let i = 0; i < BACKUP_CODE_COUNT; i++) {
     const code = randomBackupCode()
     codes.push(code)
-    rows.push({ user_id: userId, code_hash: await sha256Hex(code) })
+    rows.push({ user_id: userId, code_hash: await hashBackupCode(code) })
   }
   const { error } = await supabase.from('mfa_backup_codes').insert(rows)
   if (error) throw new Error('Could not generate backup codes. Please try again.')
   return codes
 }
 
-// Requires a fresh valid code — same bar as disabling MFA entirely — since
-// a full replacement set invalidates every code the user currently holds,
-// including ones they might still need. Accepts either a TOTP code or a
-// backup code, same as disableMfa() below: someone down to their last
-// backup code because they lost their authenticator device still has a
-// legitimate reason to rotate in a fresh set (rather than their only
-// remaining option being "disable 2FA entirely, then re-enroll from
-// scratch") — this previously only accepted TOTP, which meant "lost phone,
-// still have a backup code" had no self-service way to top up before
-// running out, only the all-or-nothing disable-and-restart path.
-export async function regenerateBackupCodes(userId: string, email: string, code: string): Promise<string[]> {
+// Requires a fresh valid code (TOTP or backup) — a full replacement set
+// invalidates every code the user currently holds.
+export async function regenerateBackupCodes(userId: string, email: string, code: string, req?: Request): Promise<string[]> {
   const supabase = await createAdminClient()
   const factor = await getFactor(supabase, userId)
   if (!factor?.confirmed) throw new Error('Two-factor authentication is not set up on this account.')
-  if (isLocked(factor)) throw new Error('Too many incorrect attempts. Try again in a few minutes.')
 
-  const trimmed = code.trim()
-  if (isBackupCodeFormat(trimmed)) {
-    if (!(await consumeBackupCode(supabase, userId, trimmed))) {
-      await registerFailedAttempt(supabase, userId, factor)
-      throw new Error('Incorrect code.')
-    }
-    // No usedCounter for a backup-code success — same reasoning as
-    // disableMfa/verifyFactor: don't overwrite the TOTP factor's real
-    // last_used_counter with undefined based on an unrelated code type.
-    await clearFailedAttempts(supabase, userId)
-  } else {
-    const usedCounter = validateTotpOnce(factor, buildTotp(email, factor.secret), trimmed)
-    if (usedCounter === null) {
-      await registerFailedAttempt(supabase, userId, factor)
-      throw new Error('Incorrect code.')
-    }
-    await clearFailedAttempts(supabase, userId, usedCounter)
-  }
-
+  await checkCode(supabase, userId, email, factor, code, { totp: 'Incorrect code.', backup: 'Incorrect code.' }, { req })
   return regenerateBackupCodesInternal(supabase, userId)
 }
 
 async function consumeBackupCode(supabase: AdminClient, userId: string, code: string): Promise<boolean> {
-  const hash = await sha256Hex(code.trim().toUpperCase())
+  const hashes = await backupCodeHashCandidates(code.trim().toUpperCase())
   const { data, error } = await supabase
     .from('mfa_backup_codes')
     .select('id')
     .eq('user_id', userId)
-    .eq('code_hash', hash)
+    .in('code_hash', hashes)
     .is('used_at', null)
+    .limit(1)
     .maybeSingle()
-  // Same reasoning as getFactor() above: a query failure here previously
-  // looked identical to "that code doesn't exist," which — via the
-  // caller's registerFailedAttempt() — would even count against the
-  // account's lockout threshold for a problem that was never the user's
-  // fault. Throwing keeps an infra failure from masquerading as an
-  // incorrect code (and from silently eating into their attempt budget).
+  // A lookup failure must not look like "that code doesn't exist" (and
+  // silently eat the attempt budget): throw — checkCode refunds the slot.
   if (error) {
     console.error('[mfa] consumeBackupCode lookup failed', userId, error)
     throw new Error('Could not verify your account right now. Please try again in a moment.')
   }
   if (!data) return false
 
-  // Re-check is_null in the UPDATE itself (not just the SELECT above) so
-  // two concurrent requests racing to redeem the exact same code can't
-  // both succeed — only the update that actually flips used_at from null
-  // wins, the loser's .select() comes back empty.
+  // Re-check used_at is null in the UPDATE itself so two concurrent
+  // requests racing to redeem the same code can't both succeed.
   const { data: updated, error: updateErr } = await supabase
     .from('mfa_backup_codes')
     .update({ used_at: new Date().toISOString() })
@@ -371,29 +416,36 @@ async function consumeBackupCode(supabase: AdminClient, userId: string, code: st
 
 export async function countRemainingBackupCodes(userId: string, supabase?: AdminClient): Promise<number> {
   const client = supabase ?? (await createAdminClient())
-  const { count } = await client
+  const { count, error } = await client
     .from('mfa_backup_codes')
     .select('id', { count: 'exact', head: true })
     .eq('user_id', userId)
     .is('used_at', null)
+  if (error) {
+    console.error('[mfa] countRemainingBackupCodes failed', userId, error)
+    throw new Error('Could not load your backup codes right now.')
+  }
   return count ?? 0
 }
 
-// ── API-layer enforcement ────────────────────────────────────────────────
-// middleware.ts's mandatory-MFA gate only runs on page navigation — it
-// explicitly excludes /api (see apiAuth.ts's own comment on the same gap
-// for is_suspended). Every /api/admin/* and /api/reseller/* route was
-// authenticating with role-check-off-a-Bearer-token alone, with nothing
-// checking the gp_mfa cookie at all. That Bearer token is the Supabase
-// access_token, read client-side via getSession() — it's ordinary
-// JS-readable state, not httpOnly like gp_mfa is. Concretely: an admin's
-// access_token leaking (XSS anywhere in the app, a malicious browser
-// extension, a token caught in logs) was enough on its own to call
-// delete-user, suspend-user, mfa-reset on another admin, or drain a
-// reseller's stock via allocate — completely bypassing the TOTP step-up
-// the mandatory-2FA feature exists to require. This is the actual gate;
-// call it in every admin/reseller route right after the role check.
-function getMfaCookieFromRequest(req: Request): string | undefined {
+// ── Enrollment state & API-layer enforcement ───────────────────────────
+// MFA is OPTIONAL for everyone (admin and reseller included) — recommended,
+// never forced. What is enforced is the other direction: once an account HAS
+// a confirmed factor, the second factor must be honoured everywhere, not
+// just on page navigations. middleware.ts only guards pages (it excludes
+// /api), so every route that can spend money, mint credentials, redirect
+// payouts, delete data or perform admin actions calls requireMfaVerified().
+//
+// "Enrolled" is read from mfa_totp_factors (service-role only), NOT from
+// profiles.mfa_enabled, so the answer can't be influenced by anything a
+// user can write.
+export async function isMfaEnrolled(userId: string, supabase?: AdminClient): Promise<boolean> {
+  const client = supabase ?? (await createAdminClient())
+  const factor = await getFactor(client, userId)
+  return !!factor?.confirmed
+}
+
+export function getMfaCookieFromRequest(req: Request): string | undefined {
   const header = req.headers.get('cookie')
   if (!header) return undefined
   for (const part of header.split(';')) {
@@ -401,23 +453,37 @@ function getMfaCookieFromRequest(req: Request): string | undefined {
     if (eq === -1) continue
     const name = part.slice(0, eq).trim()
     if (name === MFA_COOKIE_NAME) {
-      try { return decodeURIComponent(part.slice(eq + 1).trim()) } catch { return part.slice(eq + 1).trim() }
+      const raw = part.slice(eq + 1).trim()
+      try { return decodeURIComponent(raw) } catch { return raw }
     }
   }
   return undefined
 }
 
-// Returns a 403 NextResponse if the caller hasn't completed TOTP step-up
-// (or has, but the gp_mfa session expired/was revoked) — or null to
-// continue. Callers already know the request needs this (they've already
-// confirmed the caller's role is admin/reseller before calling it), so
-// this doesn't re-check role itself.
+// Returns a NextResponse to send back (403 if an enrolled account hasn't
+// completed — or has let expire — its TOTP step-up; 503 if enrollment state
+// can't be determined, failing closed), or null to continue. Accounts that
+// never enrolled pass straight through.
 export async function requireMfaVerified(req: Request, userId: string): Promise<NextResponse | null> {
-  const cookie = getMfaCookieFromRequest(req)
-  const verified = await checkVerifiedSession(cookie, userId)
+  let enrolled: boolean
+  try {
+    enrolled = await isMfaEnrolled(userId)
+  } catch {
+    return NextResponse.json(
+      { error: 'Could not verify your account right now. Please try again in a moment.' },
+      { status: 503 }
+    )
+  }
+  if (!enrolled) return null
+
+  const verified = await checkVerifiedSession(getMfaCookieFromRequest(req), userId)
   if (!verified) {
     return NextResponse.json(
-      { error: 'Two-factor verification required. Please verify in the dashboard, then retry.' },
+      {
+        error: 'Two-factor verification required. Please verify your code, then retry.',
+        code: 'mfa_required',
+        redirect: '/auth/mfa-verify',
+      },
       { status: 403 }
     )
   }
@@ -425,22 +491,23 @@ export async function requireMfaVerified(req: Request, userId: string): Promise<
 }
 
 // ── Verified sessions (custom step-up cookie) ────────────────────────────
-// Supabase's own session cookie has no idea our TOTP step-up happened —
-// this is a second, independent short-lived proof, checked by
-// middleware.ts on every protected request for admin/reseller accounts.
-// Opaque random token in the cookie, only its SHA-256 hash stored server
-// side — identical shape to how api_keys (migration 0005) handles bearer
-// tokens, so a leaked cookie value alone can't be reverse-matched against
-// the DB.
-async function createVerifiedSession(supabase: AdminClient, userId: string): Promise<string> {
+// Supabase's own session has no idea our TOTP step-up happened — this is a
+// second, independent proof. Opaque random token in the cookie, only its
+// SHA-256 hash stored server side.
+async function createVerifiedSession(supabase: AdminClient, userId: string, ttlMs: number): Promise<{ token: string; ttlS: number }> {
   const token = randomHexToken()
   const tokenHash = await sha256Hex(token)
-  const expiresAt = new Date(Date.now() + MFA_SESSION_TTL_MS).toISOString()
+  const expiresAt = new Date(Date.now() + ttlMs).toISOString()
   const { error } = await supabase
     .from('mfa_verified_sessions')
     .insert({ token_hash: tokenHash, user_id: userId, expires_at: expiresAt })
   if (error) throw new Error('Could not complete verification. Please try again.')
-  return token
+  return { token, ttlS: Math.floor(ttlMs / 1000) }
+}
+
+/** Mint a fresh verified session for a caller who just re-proved the factor (or just changed their password while verified). */
+export async function issueVerifiedSession(userId: string, ttlMs = MFA_SESSION_TTL_MS): Promise<{ token: string; ttlS: number }> {
+  return createVerifiedSession(await createAdminClient(), userId, ttlMs)
 }
 
 export async function checkVerifiedSession(token: string | undefined, userId: string): Promise<boolean> {
@@ -452,15 +519,9 @@ export async function checkVerifiedSession(token: string | undefined, userId: st
     .select('user_id, expires_at')
     .eq('token_hash', tokenHash)
     .maybeSingle()
-  // Unlike getFactor()/consumeBackupCode() above, this stays fail-closed
-  // on error (still returns false) rather than throwing — this runs on
-  // every protected page load via dashboard/layout.tsx, not inside an API
-  // route's try/catch, so throwing here would surface as a hard Next.js
-  // error page instead of the existing "go re-verify" redirect. Logging
-  // the real reason is what matters: previously a query failure here was
-  // indistinguishable from "session genuinely expired," so the same
-  // infra problem that breaks getFactor() would just look like an
-  // endless mfa-verify loop with nothing in the app pointing at why.
+  // Fail-closed on error (returns false) rather than throwing — this runs on
+  // protected page loads via the layouts. The log is what matters: a query
+  // failure here is otherwise indistinguishable from "session expired".
   if (error) {
     console.error('[mfa] checkVerifiedSession query failed — treating as unverified, check this reason before assuming the session actually expired', userId, error)
     return false
@@ -476,51 +537,38 @@ export async function revokeVerifiedSession(token: string | undefined): Promise<
   await supabase.from('mfa_verified_sessions').delete().eq('token_hash', tokenHash)
 }
 
+/** Revoke every verified browser for the user except (optionally) the one holding `keepToken`. */
+export async function revokeOtherVerifiedSessions(userId: string, keepToken?: string): Promise<void> {
+  const supabase = await createAdminClient()
+  let q = supabase.from('mfa_verified_sessions').delete().eq('user_id', userId)
+  if (keepToken) q = q.neq('token_hash', await sha256Hex(keepToken))
+  const { error } = await q
+  if (error) console.error('[mfa] revokeOtherVerifiedSessions failed', userId, error)
+}
+
 // ── Disable / reset ──────────────────────────────────────────────────
 // Self-service disable requires proof of a currently-valid code (TOTP or
-// backup) — the same bar as any other MFA action, so a hijacked
-// already-authenticated browser session can't unilaterally turn MFA off
-// without also possessing the second factor. Note: for admin/reseller
-// accounts this doesn't actually get them out from under the requirement
-// — the very next protected request re-enrolls them via the mandatory
-// setup gate in middleware.ts. This exists for legitimate device-reset
-// scenarios (switching authenticator apps, etc.), not as an opt-out.
-export async function disableMfa(userId: string, email: string, code: string): Promise<void> {
+// backup), so a hijacked already-authenticated browser can't unilaterally
+// turn MFA off without also possessing the second factor.
+export async function disableMfa(userId: string, email: string, code: string, req?: Request): Promise<void> {
   const supabase = await createAdminClient()
   const factor = await getFactor(supabase, userId)
   if (!factor?.confirmed) throw new Error('Two-factor authentication is not currently enabled.')
-  if (isLocked(factor)) throw new Error('Too many incorrect attempts. Try again in a few minutes.')
 
-  const trimmed = code.trim()
-  const ok = isBackupCodeFormat(trimmed)
-    ? await consumeBackupCode(supabase, userId, trimmed)
-    : validateTotpOnce(factor, buildTotp(email, factor.secret), trimmed) !== null
-
-  if (!ok) {
-    await registerFailedAttempt(supabase, userId, factor)
-    throw new Error('Incorrect code.')
-  }
-
+  await checkCode(supabase, userId, email, factor, code, { totp: 'Incorrect code.', backup: 'Incorrect code.' }, { req })
   await wipeMfa(supabase, userId)
 }
 
-// Support-desk recovery path: a user who lost both their authenticator
-// and every backup code has no self-service way back in by design (that's
-// what makes backup codes meaningful). An admin with out-of-band identity
-// verification is the intended escape hatch — see
-// app/api/admin/mfa-reset/route.ts. This performs the same full wipe as
-// self-service disable, just without requiring a code, since the caller
-// has already been authorized at the route level (admin role check).
+// Support-desk recovery path: a user who lost both their authenticator and
+// every backup code has no self-service way back in by design. An admin with
+// out-of-band identity verification is the escape hatch — see
+// app/api/admin/mfa-reset/route.ts.
 export async function adminResetMfa(userId: string): Promise<void> {
   const supabase = await createAdminClient()
   await wipeMfa(supabase, userId)
 }
 
-// Runs as a single Postgres transaction via wipe_mfa() (migration 0024) —
-// see that migration's header for why this can't safely be four separate
-// sequential calls from here. An error thrown by this RPC propagates to
-// the caller (disableMfa / adminResetMfa), which is deliberate: better a
-// visible failure here than a silent partial wipe.
+// One Postgres transaction via wipe_mfa() (migration 0024).
 async function wipeMfa(supabase: AdminClient, userId: string): Promise<void> {
   const { error } = await supabase.rpc('wipe_mfa', { p_user_id: userId })
   if (error) throw new Error('Could not reset MFA. Please try again.')

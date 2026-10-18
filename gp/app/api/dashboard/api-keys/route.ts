@@ -1,5 +1,6 @@
 import { createAdminClient, createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
+import { requireMfaVerified } from '@/lib/mfa'
 
 const PREFIX = 'gp_live_'
 
@@ -37,6 +38,12 @@ export async function POST(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  // 2FA step-up: an account that enabled two-factor must hold a verified
+  // session for this action — a password alone isn't enough. See lib/mfa.ts.
+  const mfaGate = await requireMfaVerified(req, user.id)
+  if (mfaGate) return mfaGate
+
 
   const { data: profile } = await supabase.from('profiles').select('role, api_access, is_suspended, is_deleted').eq('id', user.id).single()
   // Middleware excludes /api from its route matcher, so a deleted

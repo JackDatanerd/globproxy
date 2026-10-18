@@ -1,10 +1,15 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { disableMfa } from '@/lib/mfa'
+import { rateLimited } from '@/lib/rateLimit'
 import { clearMfaCookie } from '../_cookie'
-import { sendEmail, securityNoticeHtml, escapeHtml } from '@/lib/email'
+import { sendEmailSafe, securityNoticeHtml, escapeHtml } from '@/lib/email'
+import { logSecurityEvent } from '@/lib/securityEvents'
 import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
+  const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', 'mfa')
+  if (limited) return limited
+
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user?.email) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -15,17 +20,15 @@ export async function POST(req: Request) {
   }
 
   try {
-    await disableMfa(user.id, user.email, code)
-    // Security-relevant account change — same reasoning as
-    // notify-password-changed: this is the exact move an attacker who's
-    // gained password access makes right before locking the real owner
-    // out, so the owner needs a trip-wire even though they weren't the
-    // one who clicked anything. Fire-and-forget: a delivery failure here
-    // shouldn't block or fail the disable itself (sendEmail() already
-    // logs failures server-side).
+    await disableMfa(user.id, user.email, code, req)
+    await logSecurityEvent({ userId: user.id, event: 'mfa_disabled', req })
+
+    // The exact move an attacker with password access makes right before
+    // locking the real owner out, so the owner needs a trip-wire. Awaited so
+    // the Workers runtime can't cancel it after the response goes out.
     const admin = await createAdminClient()
-    const { data: profile } = await admin.from('profiles').select('full_name').eq('id', user.id).single()
-    sendEmail({
+    const { data: profile } = await admin.from('profiles').select('full_name').eq('id', user.id).maybeSingle()
+    await sendEmailSafe({
       to: user.email,
       subject: 'Two-factor authentication was turned off',
       html: securityNoticeHtml({
@@ -36,8 +39,8 @@ export async function POST(req: Request) {
             turned off on your GlobProxy account (${escapeHtml(user.email)}). If you made this change, no action is needed.
           </p>
           <p style="color:#444;text-align:center;">
-            If you didn't make this change, reset your password right away — that also re-enters admin/reseller
-            accounts into mandatory 2FA setup on their next sign-in, and is faster than waiting on a reply from us.
+            If you didn't make this change, reset your password right away and turn two-factor authentication
+            back on — that is faster than waiting on a reply from us.
           </p>
           <div style="text-align:center;margin:32px 0;">
             <a href="${process.env.NEXT_PUBLIC_APP_URL}/auth/reset"
@@ -50,11 +53,7 @@ export async function POST(req: Request) {
             <a href="mailto:support@globproxy.com" style="color:#2563eb;">Contact support</a>.
           </p>`,
       }),
-    }).catch(() => {})
-    // Note for admin/reseller accounts: this doesn't grant lasting access
-    // without MFA — middleware.ts re-routes them into mandatory setup on
-    // the very next protected request, since profiles.mfa_enabled is now
-    // false and their role requires it.
+    })
     const res = NextResponse.json({ success: true })
     return clearMfaCookie(res)
   } catch (e: any) {

@@ -1,7 +1,8 @@
 'use client'
-import { useEffect, useState, Suspense } from 'react'
+import { useEffect, useRef, useState, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { safeNextPath } from '@/lib/safeNext'
 import toast from 'react-hot-toast'
 
 type Step = 'loading' | 'scan' | 'confirm' | 'backup_codes' | 'error'
@@ -9,7 +10,8 @@ type Step = 'loading' | 'scan' | 'confirm' | 'backup_codes' | 'error'
 function MfaSetupFlow() {
   const router = useRouter()
   const params = useSearchParams()
-  const next = params.get('next') || '/dashboard'
+  // `next` is a raw query param — validated so setup can't be used as an open redirect.
+  const next = safeNextPath(params.get('next'))
 
   const [step, setStep] = useState<Step>('loading')
   const [secret, setSecret] = useState('')
@@ -19,9 +21,16 @@ function MfaSetupFlow() {
   const [errorMsg, setErrorMsg] = useState('')
   const [backupCodes, setBackupCodes] = useState<string[]>([])
   const [savedAck, setSavedAck] = useState(false)
-  const [role, setRole] = useState<string | null>(null)
+  const [alreadyEnabled, setAlreadyEnabled] = useState(false)
+  // Each enroll call issues a brand-new secret, so it must run exactly once
+  // per visit (React StrictMode double-invokes effects in dev, which would
+  // otherwise race two secrets and leave the DB holding the one the QR
+  // code doesn't show).
+  const started = useRef(false)
 
   useEffect(() => {
+    if (started.current) return
+    started.current = true
     let cancelled = false
     ;(async () => {
       const { data: { session } } = await createClient().auth.getSession()
@@ -31,15 +40,18 @@ function MfaSetupFlow() {
           method: 'POST',
           headers: { Authorization: `Bearer ${session.access_token}` },
         })
-        const data = await res.json()
+        const data = await res.json().catch(() => ({}))
         if (!res.ok) throw new Error(data.error || 'Could not start MFA setup.')
         if (cancelled) return
         setSecret(data.secret)
         setQrSvg(data.qr_svg)
-        setRole(data.role ?? null)
         setStep('scan')
       } catch (e: any) {
-        if (!cancelled) { setErrorMsg(e.message); setStep('error') }
+        if (!cancelled) {
+          setAlreadyEnabled(/already enabled/i.test(e.message))
+          setErrorMsg(e.message)
+          setStep('error')
+        }
       }
     })()
     return () => { cancelled = true }
@@ -55,7 +67,7 @@ function MfaSetupFlow() {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
         body: JSON.stringify({ code }),
       })
-      const data = await res.json()
+      const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || 'Incorrect code.')
       setBackupCodes(data.backup_codes)
       setStep('backup_codes')
@@ -90,7 +102,11 @@ function MfaSetupFlow() {
     return (
       <div className="w-full max-w-md bg-white border border-border rounded-2xl p-10 text-center">
         <p className="text-sm text-red-500 mb-4">{errorMsg}</p>
-        <button onClick={() => window.location.reload()} className="text-sm text-accent hover:underline">Try again</button>
+        {alreadyEnabled ? (
+          <button onClick={() => router.push('/dashboard/settings')} className="text-sm text-accent hover:underline">Manage two-factor authentication in Settings</button>
+        ) : (
+          <button onClick={() => window.location.reload()} className="text-sm text-accent hover:underline">Try again</button>
+        )}
       </div>
     )
   }
@@ -116,7 +132,7 @@ function MfaSetupFlow() {
         </label>
         <button
           disabled={!savedAck}
-          onClick={() => router.push(next)}
+          onClick={() => { router.push(next); router.refresh() }}
           className="w-full bg-accent text-white py-3 rounded-xl font-medium text-sm hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
         >
           Continue →
@@ -130,9 +146,7 @@ function MfaSetupFlow() {
     <div className="w-full max-w-md bg-white border border-border rounded-2xl p-10 shadow-sm">
       <h1 className="font-display font-bold text-2xl text-ink mb-1">Set up two-factor authentication</h1>
       <p className="text-muted text-sm mb-6">
-        {role === 'reseller'
-          ? 'Required for reseller accounts. Scan this with an authenticator app —'
-          : 'Required for this account. Scan this with an authenticator app —'}
+        Adds a second step when you sign in, so a stolen password alone isn’t enough. Scan this with an authenticator app —
         {' '}Google Authenticator, Authy, 1Password, or similar.
       </p>
       <div className="flex justify-center mb-4">
@@ -147,8 +161,8 @@ function MfaSetupFlow() {
           <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">6-digit code</label>
           <input
             type="text" inputMode="numeric" autoComplete="one-time-code" required
-            maxLength={6} value={code}
-            onChange={e => setCode(e.target.value.replace(/\D/g, ''))}
+            value={code}
+            onChange={e => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
             placeholder="000000"
             className="w-full bg-surface border border-border text-ink placeholder-muted px-4 py-3 rounded-xl text-lg font-mono tracking-[0.3em] text-center focus:outline-none focus:border-accent transition-colors"
           />

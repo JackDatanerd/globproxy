@@ -2,6 +2,8 @@ import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { validateEmail } from '@/lib/email-validation'
 import { rateLimited } from '@/lib/rateLimit'
 import { recordReferralSignup } from '@/lib/referrals'
+import { validatePassword } from '@/lib/passwordPolicy'
+import { verifyTurnstile } from '@/lib/turnstile'
 import { NextResponse } from 'next/server'
 
 // Always the same response shape for "banned", "already registered", and
@@ -30,7 +32,10 @@ function genericResponse() {
 // cryptographic guarantee — but it collapses the gap from "trivially
 // measurable" to "buried in normal jitter," which is what this class of
 // mitigation can realistically promise.
-const RESPONSE_FLOOR_MS = 700
+// Raised from 700: a real signUp() (which dispatches an email) routinely
+// takes longer than 700ms, so the old floor sat BELOW the slow branch and
+// the timing oracle survived.
+const RESPONSE_FLOOR_MS = 1500
 
 async function respondGeneric(startedAt: number) {
   const elapsed = Date.now() - startedAt
@@ -43,11 +48,25 @@ async function respondGeneric(startedAt: number) {
 export async function POST(req: Request) {
   const startedAt = Date.now()
   try {
-    const limited = await rateLimited(req, 'AUTH_RATE_LIMITER')
+    const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', 'signup')
     if (limited) return limited
 
-    const { email, password, full_name, intended_role, emailRedirectTo, referral_code } = await req.json()
-    if (!email || !password) return NextResponse.json({ error: 'Missing fields' }, { status: 400 })
+    const body = await req.json().catch(() => ({}))
+    const { email, password, emailRedirectTo, referral_code, turnstileToken } = body
+    if (typeof email !== 'string' || typeof password !== 'string' || !email || !password) {
+      return NextResponse.json({ error: 'Missing fields' }, { status: 400 })
+    }
+
+    const human = await verifyTurnstile(req, turnstileToken)
+    if (!human.ok) return NextResponse.json({ error: human.error }, { status: 400 })
+
+    // Server-side password policy — the form's minLength is only a hint.
+    const policy = validatePassword(password, email)
+    if (!policy.ok) return NextResponse.json({ error: policy.error }, { status: 400 })
+
+    // Free-text / enum metadata gets normalised instead of stored as sent.
+    const full_name = typeof body.full_name === 'string' ? body.full_name.trim().slice(0, 100) : ''
+    const intended_role = body.intended_role === 'reseller' ? 'reseller' : undefined
 
     // emailRedirectTo is client-supplied. Supabase enforces its own
     // project-level redirect URL allow-list, but mirror the same
@@ -78,8 +97,8 @@ export async function POST(req: Request) {
     const { data: banned } = await supabase
       .from('banned_emails')
       .select('id')
-      .eq('email', email.toLowerCase())
-      .single()
+      .eq('email', email.trim().toLowerCase())
+      .maybeSingle()
 
     if (banned) return respondGeneric(startedAt)
 
@@ -97,10 +116,29 @@ export async function POST(req: Request) {
     // below and re-invoking supabase.auth.signUp() against a dormant
     // identity that was never meant to be reachable again.
     const { data: emailExists } = await supabase.rpc('auth_email_exists', {
-      check_email: email.toLowerCase(),
+      check_email: email.trim().toLowerCase(),
     })
 
-    if (emailExists) return respondGeneric(startedAt)
+    if (emailExists) {
+      // An address that signed up but never confirmed (email in spam, link
+      // lost) used to be a dead end: this branch answered "check your
+      // email" and sent nothing, so the visitor waited forever. Quietly
+      // re-send the confirmation in that case. The response is identical
+      // either way, so nothing about the account's state leaks.
+      const { data: unconfirmed } = await supabase.rpc('auth_email_unconfirmed', {
+        check_email: email.trim().toLowerCase(),
+      })
+      if (unconfirmed) {
+        const ssr = await createClient()
+        const { error: resendErr } = await ssr.auth.resend({
+          type: 'signup',
+          email: email.trim().toLowerCase(),
+          options: { emailRedirectTo: safeEmailRedirectTo },
+        })
+        if (resendErr) console.error('[auth/signup] resend for unconfirmed account failed:', resendErr.message)
+      }
+      return respondGeneric(startedAt)
+    }
 
     // 3. All clear — sign up via Supabase. Errors here (weak password,
     // provider-side validation) are still surfaced directly since they're
@@ -123,7 +161,7 @@ export async function POST(req: Request) {
     // /auth/login?error=link_expired instead of /dashboard.
     const ssrClient = await createClient()
     const { data, error } = await ssrClient.auth.signUp({
-      email,
+      email: email.trim(),
       password,
       options: {
         data: { full_name, intended_role },
@@ -143,6 +181,7 @@ export async function POST(req: Request) {
 
     return respondGeneric(startedAt)
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 })
+    console.error('[auth/signup] unexpected error', err)
+    return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
   }
 }

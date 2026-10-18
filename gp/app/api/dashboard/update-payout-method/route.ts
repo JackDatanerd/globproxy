@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { normalizeMpesaPhone } from '@/lib/mpesa'
+import { requireMfaVerified } from '@/lib/mfa'
 
 // TRC20 (Tron) addresses are base58, start with 'T', 34 characters —
 // this is a format sanity check, not a checksum validator. Catches the
@@ -31,6 +32,12 @@ export async function POST(req: Request) {
     if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
+
+    // 2FA step-up — redirecting payouts is the classic account-takeover
+    // cash-out, so an enrolled account needs a verified session, not just a
+    // password. See lib/mfa.ts.
+    const mfaGate = await requireMfaVerified(req, user.id)
+    if (mfaGate) return mfaGate
 
     const { method, walletAddress, bankDetails, mpesaPhone } = await req.json()
 

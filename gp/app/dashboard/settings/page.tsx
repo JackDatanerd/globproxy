@@ -4,6 +4,7 @@ import { useSearchParams, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
 import TwoFactorSettings from '@/components/dashboard/TwoFactorSettings'
+import { ChangePasswordCard, ChangeEmailCard, SecurityActivityCard } from '@/components/dashboard/AccountSecurityCards'
 
 const COUNTRIES = [
   'Afghanistan','Albania','Algeria','Angola','Argentina','Australia','Austria','Bangladesh',
@@ -31,7 +32,6 @@ function SettingsPageInner() {
   const router = useRouter()
   const [profile, setProfile] = useState<any>(null)
   const [form, setForm] = useState({ full_name: '', company_name: '' })
-  const [pw, setPw] = useState({ next: '', confirm: '' })
   const [loading, setLoading] = useState(false)
   const [deleting, setDeleting] = useState(false)
 
@@ -99,21 +99,6 @@ function SettingsPageInner() {
     const { error } = await createClient().from('profiles').update(form).eq('id', profile.id)
     if (error) toast.error(error.message)
     else toast.success('Profile updated')
-    setLoading(false)
-  }
-
-  async function changePassword(e: React.FormEvent) {
-    e.preventDefault()
-    if (pw.next !== pw.confirm) { toast.error('Passwords do not match'); return }
-    setLoading(true)
-    const { error } = await createClient().auth.updateUser({ password: pw.next })
-    if (error) toast.error(error.message)
-    else {
-      toast.success('Password updated')
-      setPw({ next: '', confirm: '' })
-      // Best-effort — password change already succeeded above regardless.
-      fetch('/api/auth/notify-password-changed', { method: 'POST' }).catch(() => {})
-    }
     setLoading(false)
   }
 
@@ -265,24 +250,11 @@ function SettingsPageInner() {
         </form>
       </div>
 
-      {/* Change password */}
-      <div className="bg-white border border-border rounded-xl p-6 mb-5">
-        <h2 className="font-display font-bold text-base text-ink mb-5">Change password</h2>
-        <form onSubmit={changePassword} className="flex flex-col gap-4">
-          {([['New password', 'next', 'Min. 8 characters'], ['Confirm password', 'confirm', 'Repeat new password']] as const).map(([l, k, p]) => (
-            <div key={k}>
-              <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">{l}</label>
-              <input type="password" placeholder={p} value={(pw as any)[k]}
-                onChange={e => setPw({ ...pw, [k]: e.target.value })}
-                className="w-full bg-surface border border-border px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-accent transition-colors" />
-            </div>
-          ))}
-          <button type="submit" disabled={loading}
-            className="self-start border border-border text-ink2 px-6 py-2.5 rounded-xl text-sm font-medium hover:border-ink2 hover:text-ink disabled:opacity-60 transition-all">
-            {loading ? 'Updating...' : 'Update password'}
-          </button>
-        </form>
-      </div>
+      {/* Change password — server-side: current password + 2FA step-up, revokes other sessions */}
+      <ChangePasswordCard />
+
+      {/* Change email — current password + 2FA step-up, double confirmation, notice to old address */}
+      <ChangeEmailCard currentEmail={profile?.email} />
 
       {/* Default auto-allocate */}
       <div className="bg-white border border-border rounded-xl p-6 mb-5">
@@ -427,6 +399,8 @@ function SettingsPageInner() {
       </div>
 
       {profile && <TwoFactorSettings role={profile.role ?? 'user'} />}
+
+      <SecurityActivityCard />
 
       {/* Reseller application */}
       {profile?.role === 'user' && profile?.reseller_status !== 'pending' && (

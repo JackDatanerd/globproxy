@@ -1,20 +1,22 @@
 import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
+import { safeNextPath } from '@/lib/safeNext'
+import { RECOVERY_COOKIE_NAME, RECOVERY_TTL_S, makeRecoveryCookieValue } from '@/lib/recoveryCookie'
 
-// Only ever allow redirecting somewhere on our own site. A bare query param
-// like `next` must never be trusted as-is — `next=https://evil.com@x` or
-// `next=//evil.com` are both valid open-redirect payloads that would send an
-// authenticated user off-platform straight from a trusted globproxy.com link.
-// Anything that doesn't look like a single internal path falls back to
-// '/dashboard'.
-function safeNextPath(raw: string | null): string {
-  if (!raw) return '/dashboard'
-  // Must start with exactly one '/', never '//' (protocol-relative) or a
-  // backslash (some URL parsers normalise '\' to '/'), and must not contain
-  // '@' (host-confusion trick: "https://real-origin@evil.com") or a scheme.
-  if (!/^\/(?!\/)[^\s\\]*$/.test(raw)) return '/dashboard'
-  if (raw.includes('@') || raw.includes('://')) return '/dashboard'
-  return raw
+// Marks THIS session as having just arrived via an emailed link (recovery or
+// invite), so /api/auth/password lets it set a new password without the
+// current one. See lib/recoveryCookie.ts.
+async function withEmailProofCookie(res: NextResponse, userId: string | null): Promise<NextResponse> {
+  if (userId) {
+    res.cookies.set(RECOVERY_COOKIE_NAME, await makeRecoveryCookieValue(userId), {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      path: '/',
+      maxAge: RECOVERY_TTL_S,
+    })
+  }
+  return res
 }
 
 export async function GET(request: Request) {
@@ -22,6 +24,8 @@ export async function GET(request: Request) {
   const code = searchParams.get('code')
   const type = searchParams.get('type')
   const next = safeNextPath(searchParams.get('next'))
+
+  let recoveryUserId: string | null = null
 
   if (code) {
     const s = await createClient()
@@ -35,22 +39,24 @@ export async function GET(request: Request) {
       // recently requested recovery/signup link in a given browser can
       // ever be exchanged. Same symptom if the link is opened in a
       // different browser/device than the one that submitted the form.
+      //
+      // For a SIGNUP link that matters less than it sounds: GoTrue confirms
+      // the address when the link is first opened, BEFORE redirecting here,
+      // so the email is very likely already confirmed even though this
+      // browser can't pick up the session. The login page says so.
       console.error('[auth/callback] exchangeCodeForSession failed', { type, error: error.message })
       const dest = type === 'recovery' ? '/auth/reset' : '/auth/login'
-      return NextResponse.redirect(`${origin}${dest}?error=link_expired`)
+      return NextResponse.redirect(`${origin}${dest}?error=link_expired${type === 'recovery' ? '' : '&kind=confirm'}`)
     }
 
+    if ((type === 'recovery' || type === 'invite') && data.user) recoveryUserId = data.user.id
+
     // signup/route.ts stores intended_role: 'reseller' in auth user_metadata
-    // for the "Apply to resell" signup variant, but nothing downstream ever
-    // read it back — the profiles row it creates always defaults to
-    // role:'user' with reseller_status:null, so that signup silently became
-    // an ordinary account with no application on file. The actual working
-    // application flow lives in app/api/auth/apply-reseller/route.ts,
-    // reachable from Settings, and needs fields (country, phone, monthly
-    // volume) the signup form never collected — so redirect there with the
-    // form pre-opened instead of trying to submit an application here with
-    // incomplete data. Only do this when the caller didn't ask for a
-    // specific `next` destination, and only if there isn't already an
+    // for the "Apply to resell" signup variant. The working application flow
+    // lives in app/api/auth/apply-reseller/route.ts, reachable from
+    // Settings, and needs fields the signup form never collected — so
+    // redirect there with the form pre-opened. Only when the caller didn't
+    // ask for a specific `next`, and only if there isn't already an
     // application/role on file (so this doesn't re-trigger on every login).
     if (!searchParams.get('next') && data.user?.user_metadata?.intended_role === 'reseller') {
       const { data: profile } = await s
@@ -64,18 +70,17 @@ export async function GET(request: Request) {
     }
   }
 
-  // --- FIX: Prevent Hash Stripping on Password Reset ---
   if (type === 'recovery') {
     if (!code) {
-      // If there's no code, it means we are using implicit flow with a #hash.
-      // A standard 302 redirect will drop the hash. We use an HTML redirect instead.
-      return new NextResponse(`
-        <html><body><script>
-          window.location.href = '${origin}/auth/update-password' + window.location.hash;
-        </script></body></html>
-      `, { headers: { 'Content-Type': 'text/html' } })
+      // No code means the implicit flow with a #hash. A standard 302 would
+      // drop the hash, so use an HTML redirect that re-appends it.
+      const target = JSON.stringify(`${origin}/auth/update-password`)
+      return new NextResponse(
+        `<html><body><script>window.location.href = ${target} + window.location.hash;</script></body></html>`,
+        { headers: { 'Content-Type': 'text/html' } }
+      )
     }
-    return NextResponse.redirect(`${origin}/auth/update-password`)
+    return withEmailProofCookie(NextResponse.redirect(`${origin}/auth/update-password`), recoveryUserId)
   }
 
   if (type === 'email_change') {
@@ -83,7 +88,17 @@ export async function GET(request: Request) {
   }
 
   if (type === 'invite') {
-    return NextResponse.redirect(`${origin}/auth/update-password`)
+    // An invited user is setting their very first password — same
+    // email-proof situation as a recovery link.
+    return withEmailProofCookie(NextResponse.redirect(`${origin}/auth/update-password`), recoveryUserId)
+  }
+
+  // A bare hit with neither a code nor a type is what the implicit-flow
+  // confirmation link produces (resend-confirmation links carry no PKCE
+  // challenge): the address is already confirmed, the browser just has no
+  // session. Send them to sign in rather than bouncing off middleware.
+  if (!code) {
+    return NextResponse.redirect(`${origin}/auth/login?notice=confirmed`)
   }
 
   return NextResponse.redirect(`${origin}${next}`)
