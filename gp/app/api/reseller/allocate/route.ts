@@ -1,9 +1,14 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { requireMfaVerified } from '@/lib/mfa'
+import { rateLimited } from '@/lib/rateLimit'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { dispatchWebhook } from '@/lib/webhooks'
+import { cleanText, cleanNumber } from '@/lib/validation'
+import { formatGb } from '@/lib/format'
 import { NextResponse } from 'next/server'
+
+const MIN_ALLOCATION_GB = 0.1
 
 export async function POST(req: Request) {
   try {
@@ -21,133 +26,114 @@ export async function POST(req: Request) {
     const mfaCheck = await requireMfaVerified(req, user.id)
     if (mfaCheck) return mfaCheck
 
-    // Wasn't checked at all before — neither for the sender nor the
-    // recipient below — despite is_suspended being enforced on nearly
-    // every other write route. A suspended reseller could otherwise keep
-    // allocating their existing stock to clients indefinitely.
     const senderSuspended = await requireActiveUser(user.id)
     if (senderSuspended) return senderSuspended
 
+    // Per-reseller throttle. Each call can email an arbitrary registered
+    // address, so without this a reseller could use dust-sized allocations as
+    // an unmetered email cannon, or probe which emails are registered.
+    const limited = await rateLimited(req, 'RESELLER_RATE_LIMITER', `allocate:${user.id}`)
+    if (limited) return limited
+
     // ── Payload validation ──────────────────────────────────────────────────
-    const { recipient_email, gb_allocated } = await req.json()
-    if (!recipient_email || !gb_allocated || gb_allocated <= 0) {
-      return NextResponse.json(
-        { error: 'Recipient email and a positive GB amount are required' },
-        { status: 400 }
-      )
+    // The old check was `!gb_allocated || gb_allocated <= 0`, which let strings
+    // and NaN through to the database cast and threw on non-string emails.
+    let body: any
+    try { body = await req.json() } catch { body = null }
+    const recipientEmail = cleanText(body?.recipient_email, 254)?.toLowerCase() ?? null
+    const gb = cleanNumber(body?.gb_allocated)
+    const note = body?.note === undefined || body?.note === null || body?.note === '' ? null : cleanText(body.note, 200)
+
+    if (!recipientEmail || !recipientEmail.includes('@')) {
+      return NextResponse.json({ error: 'A valid recipient email is required' }, { status: 400 })
     }
+    if (gb === null || gb < MIN_ALLOCATION_GB) {
+      return NextResponse.json({ error: `Enter an amount of at least ${MIN_ALLOCATION_GB} GB` }, { status: 400 })
+    }
+    if (gb > 1_000_000 || Math.abs(gb * 1000 - Math.round(gb * 1000)) > 1e-6) {
+      return NextResponse.json({ error: 'Use at most 3 decimal places (and a sensible amount)' }, { status: 400 })
+    }
+    if (body?.note !== undefined && body?.note !== null && body?.note !== '' && note === null) {
+      return NextResponse.json({ error: 'Note must be text up to 200 characters' }, { status: 400 })
+    }
+    const gbAmount = Math.round(gb * 1000) / 1000
 
     const adminSupabase = await createAdminClient()
 
     // ── 1. Find recipient ───────────────────────────────────────────────────
-    const { data: recipientProfile, error: recipientError } = await adminSupabase
+    const { data: recipientProfile } = await adminSupabase
       .from('profiles')
       .select('id, email, full_name, is_deleted, is_suspended')
-      .eq('email', recipient_email.toLowerCase())
-      .single()
+      .eq('email', recipientEmail)
+      .maybeSingle()
 
-    if (recipientError || !recipientProfile) {
+    // One answer for missing / deleted / suspended: the three distinct messages
+    // used to let any reseller learn exactly which emails are registered and
+    // which of those accounts are suspended.
+    if (!recipientProfile || recipientProfile.is_deleted || recipientProfile.is_suspended) {
       return NextResponse.json(
-        { error: 'Recipient not found. They must sign up at GlobProxy first.' },
+        { error: 'No active GlobProxy account found for that email. They must sign up first, and their account must be in good standing.' },
         { status: 404 }
       )
-    }
-    if (recipientProfile.is_deleted) {
-      return NextResponse.json({ error: 'Recipient account no longer exists.' }, { status: 404 })
-    }
-    // Low risk either way (worst case a suspended recipient just can't use
-    // the bandwidth until reinstated), but inconsistent with the
-    // suspension model everywhere else if left unchecked, and it avoids a
-    // reseller burning real stock on an account that can't act on it yet.
-    if (recipientProfile.is_suspended) {
-      return NextResponse.json({ error: 'Recipient account is currently suspended.' }, { status: 403 })
     }
     if (recipientProfile.id === user.id) {
       return NextResponse.json({ error: 'Cannot allocate bandwidth to yourself.' }, { status: 400 })
     }
 
-    // ── 2 & 3. Atomically check balance, deduct, and credit the recipient ──
-    // Previously this read total_gb/used_gb, computed the new value in JS,
-    // then wrote it back as a separate statement — a classic check-then-act
-    // race. Two concurrent allocation calls (double-click, retry, two tabs)
-    // could both pass the balance check before either write landed,
-    // over-allocating stock. The rollback path had its own bug too: on
-    // failure it reset used_gb to the value read *before* this call, which
-    // could stomp a legitimate concurrent write that happened in between.
-    //
-    // allocate_reseller_bandwidth() (migration 0004) does the balance check
-    // and both writes inside a single locked Postgres transaction, so
-    // there's no window for either problem. It also writes to the new
-    // allocated_gb column instead of used_gb — used_gb is exclusively
-    // consumption data owned by the usage-sync cron; overloading it with
-    // "GB committed to clients" meant the cron silently erased every
-    // allocation on its next run, letting resellers re-allocate the same
-    // stock repeatedly.
+    // ── 2. Atomically check stock, move it, and write the history row ───────
+    // allocate_reseller_bandwidth_tx (migration 0039) does all three in ONE
+    // transaction. History used to be a separate, "non-fatal" insert, so a
+    // failed write left bandwidth moved with no record of it.
     const { data: rpcResult, error: rpcError } = await adminSupabase
-      .rpc('allocate_reseller_bandwidth', {
+      .rpc('allocate_reseller_bandwidth_tx', {
         p_reseller_id: user.id,
         p_recipient_id: recipientProfile.id,
-        p_gb: gb_allocated,
+        p_gb: gbAmount,
+        p_note: note,
       })
 
     if (rpcError) {
-      const message = rpcError.message?.includes('Not enough bandwidth')
-        ? 'Not enough bandwidth in your stock.'
-        : rpcError.message?.includes('yourself')
-        ? 'Cannot allocate bandwidth to yourself.'
-        : 'Failed to complete transfer.'
-      const status = rpcError.message?.includes('Not enough') || rpcError.message?.includes('yourself') ? 400 : 500
-      return NextResponse.json({ error: message }, { status })
+      const msg = rpcError.message ?? ''
+      if (msg.includes('Not enough bandwidth')) return NextResponse.json({ error: 'Not enough bandwidth in your stock.' }, { status: 400 })
+      if (msg.includes('yourself')) return NextResponse.json({ error: 'Cannot allocate bandwidth to yourself.' }, { status: 400 })
+      if (msg.includes('Minimum allocation') || msg.includes('decimal places') || msg.includes('too large')) {
+        return NextResponse.json({ error: msg }, { status: 400 })
+      }
+      console.error('[reseller/allocate] RPC failed', rpcError)
+      return NextResponse.json({ error: 'Failed to complete transfer.' }, { status: 500 })
     }
-    void rpcResult
+    const transferId = Array.isArray(rpcResult) ? rpcResult[0]?.transfer_id : (rpcResult as any)?.transfer_id
 
-    // ── 4. Record transfer history ──────────────────────────────────────────
-    // Non-fatal: if this insert fails, the bandwidth transfer already succeeded.
-    // Log it but don't roll back a completed transfer over a history write.
-    const { error: historyError } = await adminSupabase
-      .from('reseller_transfers')
-      .insert({
-        reseller_id: user.id,
-        recipient_id: recipientProfile.id,
-        gb_amount: gb_allocated,
-        status: 'active',
-        activated_at: new Date().toISOString(),
-      })
-
-    if (historyError) {
-      console.error('Transfer history write failed (transfer itself succeeded):', historyError.message)
-    }
-
-    // Webhook for the recipient: bandwidth landed on their account. Awaited
-    // and never throws (see lib/webhooks.ts).
+    // Webhook for the recipient: bandwidth landed on their account. Awaited and
+    // never throws (see lib/webhooks.ts).
     await dispatchWebhook(recipientProfile.id, 'bandwidth_credited', {
-      gb_credited: gb_allocated, source: 'reseller_allocation',
+      gb_credited: gbAmount, source: 'reseller_allocation',
     })
 
-    // Notify both sides — previously a transfer completed silently for
-    // everyone: the recipient had no way to know new bandwidth had landed
-    // on their account short of noticing it themselves in the dashboard,
-    // and the sender had no durable confirmation beyond the toast on
-    // screen at the moment of the transfer. Best-effort: the transfer
-    // itself already succeeded above regardless of whether either email
-    // goes out.
+    // ── 3. Notify both sides (best-effort; the transfer is already committed)
+    const gbLabel = escapeHtml(formatGb(gbAmount))
     const senderName = escapeHtml(profile?.full_name?.split(' ')[0]) || 'there'
-    if (profile?.email) {
-      await sendEmail({
-        to: profile.email,
-        subject: `Confirmed: ${gb_allocated}GB transferred to ${recipient_email}`,
-        html: `
+    const safeRecipient = escapeHtml(recipientEmail)
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL
+
+    await Promise.allSettled([
+      profile?.email
+        ? sendEmail({
+            to: profile.email,
+            subject: `Confirmed: ${formatGb(gbAmount)} transferred to ${recipientEmail}`,
+            html: `
           <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
             <img src="https://globproxy.com/og-image.png" alt="GlobProxy" width="200"
               style="display:block;margin:0 auto 32px auto;border-radius:12px;"/>
             <h2 style="text-align:center;color:#111;">Transfer confirmed ✓</h2>
             <p style="color:#444;text-align:center;">
-              Hi ${senderName}, you've transferred <strong>${gb_allocated}GB</strong> to
-              ${escapeHtml(recipient_email)}. It's been deducted from your available stock
-              and is now active on their account.
+              Hi ${senderName}, you've transferred <strong>${gbLabel}</strong> to
+              ${safeRecipient}. It's been deducted from your available stock
+              and is now active on their account. If it was a mistake, you can reclaim any part
+              they haven't used yet from your transfer history.
             </p>
             <div style="text-align:center;margin:32px 0;">
-              <a href="${process.env.NEXT_PUBLIC_APP_URL}/reseller/transfers"
+              <a href="${appUrl}/reseller/transfers"
                  style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">
                 View transfer history →
               </a>
@@ -157,26 +143,25 @@ export async function POST(req: Request) {
             </p>
           </div>
         `,
-      }).catch((e) => console.error('[reseller/allocate] sender confirmation email failed:', e))
-    }
-
-    if (recipientProfile.email) {
-      await sendEmail({
-        to: recipientProfile.email,
-        subject: `${gb_allocated}GB of bandwidth was added to your account`,
-        html: `
+          })
+        : Promise.resolve(),
+      recipientProfile.email
+        ? sendEmail({
+            to: recipientProfile.email,
+            subject: `${formatGb(gbAmount)} of bandwidth was added to your account`,
+            html: `
           <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
             <img src="https://globproxy.com/og-image.png" alt="GlobProxy" width="200"
               style="display:block;margin:0 auto 32px auto;border-radius:12px;"/>
             <h2 style="text-align:center;color:#111;">Bandwidth added ✓</h2>
             <p style="color:#444;text-align:center;">
               Hi ${escapeHtml(recipientProfile.full_name?.split(' ')[0]) || 'there'},
-              <strong>${gb_allocated}GB</strong> has been added to your GlobProxy account by
+              <strong>${gbLabel}</strong> has been added to your GlobProxy account by
               ${escapeHtml(profile?.full_name) || escapeHtml(user.email) || 'your reseller'}.
               It's ready to use now.
             </p>
             <div style="text-align:center;margin:32px 0;">
-              <a href="${process.env.NEXT_PUBLIC_APP_URL}/dashboard"
+              <a href="${appUrl}/dashboard"
                  style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">
                 Go to dashboard →
               </a>
@@ -186,17 +171,18 @@ export async function POST(req: Request) {
             </p>
           </div>
         `,
-      }).catch((e) => console.error('[reseller/allocate] recipient notification email failed:', e))
-    }
+          })
+        : Promise.resolve(),
+    ]).then(results => results.forEach(r => { if (r.status === 'rejected') console.error('[reseller/allocate] email failed:', r.reason) }))
 
     return NextResponse.json({
       success: true,
-      message: `Successfully transferred ${gb_allocated}GB to ${recipient_email}`,
+      transfer_id: transferId ?? null,
+      message: `Successfully transferred ${formatGb(gbAmount)} to ${recipientEmail}`,
     })
 
   } catch (err: any) {
     console.error('Allocation error:', err)
-    console.error('[reseller/allocate] unexpected error:', err)
-    return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
+    return NextResponse.json({ error: 'Failed to complete transfer.' }, { status: 500 })
   }
 }

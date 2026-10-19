@@ -2,6 +2,7 @@ import { authorizeAdmin, readJson, badRequest, isUuid } from '@/lib/adminAuth'
 import { resolvePendingApplication } from '@/lib/adminApplications'
 import { appUrl } from '@/lib/adminEmail'
 import { NextResponse } from 'next/server'
+import { formatRatePct } from '@/lib/referrals'
 
 // Affiliate status is an independent flag alongside whatever role the
 // account already has — approving never touches profiles.role.
@@ -28,7 +29,7 @@ export async function POST(req: Request) {
     email: {
       subject: 'Your GlobProxy affiliate application was approved',
       heading: 'Affiliate application approved ✓',
-      body: (n) => `Hi ${n}, your affiliate application has been approved. You'll earn ${Math.round(rate1 * 100)}% on your referrals' orders for their first 90 days, then ${Math.round(rate2 * 100)}% for as long as they stay active.`,
+      body: (n) => `Hi ${n}, your affiliate application has been approved. You'll earn ${formatRatePct(rate1)} on your referrals' orders for their first 90 days, then ${formatRatePct(rate2)} on all their later orders.`,
       cta: { href: `${appUrl()}/dashboard/referrals`, label: 'Get your referral link →' },
     },
   })

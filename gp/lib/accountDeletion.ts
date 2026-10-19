@@ -83,4 +83,10 @@ export async function purgeAccountSecrets(supabase: AdminSupabase, userId: strin
     .update({ revoked_at: new Date().toISOString() })
     .eq('user_id', userId)
     .is('revoked_at', null)
+
+  // Affiliate side (migration 0044): suspend the affiliate status so nothing new
+  // accrues to a deleted account, and forfeit UNBATCHED earnings. Already-batched
+  // / paid payout rows are kept — they're financial records. Idempotent.
+  const { error: scrubErr } = await supabase.rpc('scrub_affiliate_data', { p_user_id: userId })
+  if (scrubErr) console.error('[accountDeletion] scrub_affiliate_data failed', userId, scrubErr)
 }

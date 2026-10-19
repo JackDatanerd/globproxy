@@ -3,6 +3,7 @@ import { logAdminAction } from '@/lib/adminAudit'
 import { adminNoticeHtml, appUrl } from '@/lib/adminEmail'
 import { sendEmailSafe, escapeHtml } from '@/lib/email'
 import { NextResponse } from 'next/server'
+import { formatRatePct } from '@/lib/referrals'
 
 // Verified Operator is a status on top of an already-approved affiliate,
 // not a replacement for the application flow. Rates are fixed (not
@@ -118,7 +119,7 @@ export async function POST(req: Request) {
       subject: "You're a GlobProxy Verified Operator",
       html: adminNoticeHtml({
         heading: 'Verified Operator ✓',
-        bodyHtml: `Hi ${escapeHtml(operator.full_name?.split(' ')[0]) || 'there'}, we've upgraded your affiliate account to Verified Operator. You'll now earn ${Math.round(newIntro * 100)}% on your referrals' orders for their first 90 days, then ${Math.round(newLifetime * 100)}% for as long as they stay active.`,
+        bodyHtml: `Hi ${escapeHtml(operator.full_name?.split(' ')[0]) || 'there'}, we've upgraded your affiliate account to Verified Operator. You'll now earn ${formatRatePct(newIntro)} on your referrals' orders for their first 90 days, then ${formatRatePct(newLifetime)} on all their later orders.`,
         cta: { href: `${appUrl()}/dashboard/referrals`, label: 'View your dashboard →' },
       }),
     })

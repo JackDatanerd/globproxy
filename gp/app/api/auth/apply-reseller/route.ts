@@ -54,6 +54,22 @@ export async function POST(req: Request) {
     // this way. Using the session client here silently no-ops the status
     // column: no error, no applicant ever shows up in /admin/resellers.
     const adminSupabase = await createAdminClient()
+
+    // A rejected applicant may re-apply, but not immediately — otherwise a single
+    // account can flood the admin queue and ADMIN_EMAIL inbox (each submit emails
+    // an admin). 7 days is what the rejection email promises. Uses the
+    // application's own timestamps; the atomic UPDATE below still decides.
+    {
+      const { data: prior } = await adminSupabase
+        .from('profiles').select('reseller_status, reseller_application').eq('id', user.id).maybeSingle()
+      if (prior?.reseller_status === 'rejected') {
+        const app = (prior.reseller_application ?? {}) as { rejected_at?: string; applied_at?: string }
+        const since = Date.parse(app.rejected_at ?? app.applied_at ?? '')
+        if (Number.isFinite(since) && Date.now() - since < 7 * 24 * 60 * 60 * 1000) {
+          return NextResponse.json({ error: 'You can re-apply 7 days after your application was reviewed.' }, { status: 429 })
+        }
+      }
+    }
     //
     // Only an ordinary account that never applied (or was rejected) may
     // (re)apply. This used to write 'pending' unconditionally, so an

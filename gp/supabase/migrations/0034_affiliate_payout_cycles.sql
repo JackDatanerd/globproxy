@@ -97,7 +97,7 @@ $$;
 -- details are snapshotted onto the row at batch time, not a live
 -- reference to the profile — so a later payout-method change never
 -- retroactively edits where a past, already-batched payout is headed.
-create table public.affiliate_payouts (
+create table if not exists public.affiliate_payouts (
   id                    uuid default uuid_generate_v4() primary key,
   referrer_id           uuid references public.profiles(id) on delete cascade not null,
   cycle_start           date not null,
@@ -119,8 +119,10 @@ create index if not exists idx_affiliate_payouts_status on public.affiliate_payo
 
 alter table public.affiliate_payouts enable row level security;
 
+drop policy if exists "Referrer can view own payouts" on public.affiliate_payouts;
 create policy "Referrer can view own payouts" on public.affiliate_payouts for select
   using (auth.uid() = referrer_id);
+drop policy if exists "Admins can view all payouts" on public.affiliate_payouts;
 create policy "Admins can view all payouts" on public.affiliate_payouts for select
   using (public.is_admin(auth.uid()));
 

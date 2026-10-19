@@ -1,63 +1,94 @@
-import { createClient } from '@/lib/supabase/server'
+import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
+import Link from 'next/link'
 import ReferralLinkCard from '@/components/dashboard/ReferralLinkCard'
 import AffiliateApplyForm from '@/components/dashboard/AffiliateApplyForm'
 import PayoutMethodForm from '@/components/dashboard/PayoutMethodForm'
-import { currentAccruingCycle, formatCycleLabel } from '@/lib/payoutCycle'
-import { REFERRAL_GB_BONUS } from '@/lib/referrals'
+import ClaimReferralForm from '@/components/dashboard/ClaimReferralForm'
+import { currentAccruingCycle, lastCompletedCycle, cycleIsPayable, formatCycleLabel } from '@/lib/payoutCycle'
 import { formatUsd } from '@/lib/format'
+import {
+  REFERRAL_GB_BONUS, REFERRAL_MIN_ORDER_USD, AFFILIATE_MIN_PAYOUT_USD, AFFILIATE_HOLD_HOURS,
+  formatRatePct,
+} from '@/lib/referrals'
 
-export default async function ReferralsPage() {
+const FUNNEL_PAGE = 25
+const usd = formatUsd
+const shortDate = (s: string) => new Date(s).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: 'UTC' })
+
+export default async function ReferralsPage({ searchParams }: { searchParams: Promise<{ page?: string }> }) {
+  const sp = await searchParams
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/auth/login')
 
-  const [{ data: profile, error: profileError }, { data: referrals, error: referralsError }] = await Promise.all([
-    supabase.from('profiles')
-      .select('referral_code, affiliate_status, affiliate_commission_rate, affiliate_commission_rate_lifetime, is_verified_operator, payout_method, payout_wallet_address, payout_bank_details, payout_mpesa_phone, payout_method_updated_at')
-      .eq('id', user.id)
-      .single(),
-    supabase.from('referrals')
-      .select('id, created_at, gb_bonus_credited_at')
-      .eq('referrer_id', user.id)
-      .order('created_at', { ascending: false }),
+  const page = Math.max(1, Math.min(100_000, parseInt(sp.page ?? '1', 10) || 1))
+  const accruing = currentAccruingCycle()
+
+  const { data: profile } = await supabase.from('profiles')
+    .select('referral_code, affiliate_status, affiliate_commission_rate, affiliate_commission_rate_lifetime, is_verified_operator, payout_method, payout_wallet_address, payout_bank_details, payout_mpesa_phone, payout_method_updated_at')
+    .eq('id', user.id)
+    .single()
+
+  const status = profile?.affiliate_status ?? null
+  const isAffiliate = status === 'approved'
+
+  // Aggregates are computed in SQL (my_affiliate_summary / my_referral_funnel,
+  // service-role only, called here with the SESSION's own user id) — summing a client-fetched list silently capped
+  // at 1000 rows, and "this cycle so far" used to be summed from only the
+  // latest 20 commissions.
+  const admin = await createAdminClient()
+  const [{ data: summaryRows, error: summaryErr }, { data: funnel, error: funnelErr }, { data: commissions, error: commissionsErr }, { data: payouts, error: payoutsErr }, { count: referredByAnyone }] = await Promise.all([
+    admin.rpc('my_affiliate_summary', { p_user_id: user.id, p_cycle_start: accruing.cycleStart, p_cycle_end: accruing.cycleEnd }),
+    admin.rpc('my_referral_funnel', { p_user_id: user.id, p_limit: FUNNEL_PAGE, p_offset: (page - 1) * FUNNEL_PAGE }),
+    isAffiliate
+      ? supabase.from('affiliate_commissions')
+          .select('id, gross_amount_usd, commission_rate, commission_amount_usd, status, created_at, payout_id')
+          .eq('referrer_id', user.id).order('created_at', { ascending: false }).limit(15)
+      : Promise.resolve({ data: [] as any[], error: null }),
+    isAffiliate
+      ? supabase.from('affiliate_payouts')
+          .select('id, cycle_start, cycle_end, amount_usd, status, payout_method, paid_at, payment_reference')
+          .eq('referrer_id', user.id).order('created_at', { ascending: false }).limit(24)
+      : Promise.resolve({ data: [] as any[], error: null }),
+    // The referred user can't read their own `referrals` row through RLS
+    // (policies are referrer/admin only), so this one existence check uses the
+    // service role, scoped to the signed-in user's id.
+    admin.from('referrals').select('id', { count: 'exact', head: true }).eq('referred_user_id', user.id),
   ])
 
-  const isAffiliate = profile?.affiliate_status === 'approved'
+  const loadFailed = !!(summaryErr || funnelErr || commissionsErr || payoutsErr)
+  const s = (summaryRows as any[])?.[0] ?? {}
+  const payable = Number(s.accruing_usd ?? 0)
+  const inPayout = Number(s.in_payout_usd ?? 0)
+  const paidTotal = Number(s.paid_usd ?? 0)
+  const thisCycle = Number(s.this_cycle_usd ?? 0)
+  const referralCount = Number(s.referral_count ?? 0)
+  const convertedCount = Number(s.converted_count ?? 0)
+  const clicks = Number(s.clicks_total ?? 0)
+  const bonusGb = Number(s.bonus_gb_total ?? 0)
+  const flaggedCount = Number(s.flagged_count ?? 0)
 
-  const cycle = currentAccruingCycle()
+  const lc = lastCompletedCycle()
+  const nextPayoutDate = cycleIsPayable(lc) ? accruing.payableFrom : lc.payableFrom
+  const holdEndsAt = profile?.payout_method_updated_at
+    ? new Date(new Date(profile.payout_method_updated_at).getTime() + AFFILIATE_HOLD_HOURS * 3600 * 1000)
+    : null
+  const holdActive = !!holdEndsAt && holdEndsAt.getTime() > Date.now()
+  const belowMin = payable < AFFILIATE_MIN_PAYOUT_USD
+  const minProgress = Math.max(0, Math.min(100, (payable / AFFILIATE_MIN_PAYOUT_USD) * 100))
 
-  const [{ data: commissions, error: commissionsError }, { data: payouts, error: payoutsError }, { data: cycleRows, error: cycleError }] = isAffiliate
-    ? await Promise.all([
-        supabase.from('affiliate_commissions')
-          .select('id, gross_amount_usd, commission_rate, commission_amount_usd, status, created_at, payout_id')
-          .eq('referrer_id', user.id)
-          .order('created_at', { ascending: false })
-          .limit(20),
-        supabase.from('affiliate_payouts')
-          .select('id, cycle_start, cycle_end, amount_usd, status, payout_method, created_at, paid_at')
-          .eq('referrer_id', user.id)
-          .order('cycle_start', { ascending: false }),
-        // "This cycle so far" needs EVERY unbatched commission in the cycle.
-        // It was summed from the 20 most recent commissions of all time, so a
-        // busy cycle (or a quiet one with older rows pushed out) misreported it.
-        supabase.from('affiliate_commissions')
-          .select('commission_amount_usd')
-          .eq('referrer_id', user.id)
-          .is('payout_id', null)
-          .gte('created_at', `${cycle.cycleStart}T00:00:00.000Z`)
-          .lte('created_at', `${cycle.cycleEnd}T23:59:59.999Z`),
-      ])
-    : [{ data: [], error: null }, { data: [], error: null }, { data: [], error: null }]
-  const loadFailed = !!(profileError || referralsError || commissionsError || payoutsError || cycleError)
+  const funnelRows = (funnel as any[]) ?? []
+  const funnelTotal = Number(funnelRows[0]?.total_count ?? 0)
+  const funnelPages = Math.max(1, Math.ceil(funnelTotal / FUNNEL_PAGE))
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'https://globproxy.com'
 
-  const referredCount = referrals?.length ?? 0
-  const gbEarned = (referrals ?? []).filter(r => r.gb_bonus_credited_at).length * REFERRAL_GB_BONUS
-
-  const allCommissions = commissions ?? []
-  const totalPaidUsd = (payouts ?? []).filter(p => p.status === 'paid').reduce((sum, p) => sum + Number(p.amount_usd), 0)
-
-  const thisCycleUsd = (cycleRows ?? []).reduce((sum, c) => sum + Number(c.commission_amount_usd), 0)
+  const commissionState = (c: any) => {
+    if (c.status === 'void') return 'reversed'
+    if (c.status === 'paid') return 'paid'
+    if (c.payout_id) return 'scheduled'
+    return 'payable'
+  }
 
   return (
     <div className="max-w-3xl">
@@ -76,29 +107,50 @@ export default async function ReferralsPage() {
         <p className="text-muted text-sm mt-1">Share GlobProxy, earn free bandwidth — or cash as an affiliate</p>
       </div>
 
-      {profile?.referral_code && <ReferralLinkCard code={profile.referral_code} />}
+      {profile?.referral_code && (
+        <ReferralLinkCard code={profile.referral_code} baseUrl={baseUrl} isAffiliate={isAffiliate}
+          bonusGb={REFERRAL_GB_BONUS} minOrderUsd={REFERRAL_MIN_ORDER_USD} />
+      )}
 
-      <div className={`grid gap-4 mt-4 grid-cols-1 ${isAffiliate ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>
-        <div className="bg-white border border-border rounded-xl p-5">
-          <div className="text-[10px] font-mono text-muted uppercase tracking-wider">People referred</div>
-          <div className="text-2xl font-display font-bold text-ink mt-1">{referredCount}</div>
-        </div>
-        {isAffiliate && (
-          <div className="bg-white border border-border rounded-xl p-5">
-            <div className="text-[10px] font-mono text-muted uppercase tracking-wider">This cycle so far</div>
-            <div className="text-2xl font-display font-bold text-ink mt-1">{formatUsd(thisCycleUsd)}</div>
-            <div className="text-[10px] text-muted mt-1">Payable from {new Date(cycle.payableFrom + 'T00:00:00Z').toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}</div>
-          </div>
+      <div className={`grid gap-4 mt-4 ${isAffiliate ? 'grid-cols-2 md:grid-cols-4' : 'grid-cols-1 sm:grid-cols-3'}`}>
+        <Tile label="Link clicks" value={String(clicks)} />
+        <Tile label="Signed up" value={String(referralCount)} sub={`${convertedCount} purchased`} />
+        {isAffiliate ? (
+          <>
+            <Tile label="Payable" value={usd(payable)} accent sub="awaiting the next payout run" />
+            <Tile label="Paid to date" value={usd(paidTotal)} sub={inPayout > 0 ? `${usd(inPayout)} scheduled` : undefined} />
+          </>
+        ) : (
+          <Tile label="GB bonuses earned" value={`${bonusGb} GB`} accent />
         )}
-        <div className="bg-white border border-border rounded-xl p-5">
-          <div className="text-[10px] font-mono text-muted uppercase tracking-wider">
-            {isAffiliate ? 'Total paid to date' : 'GB bonuses earned'}
-          </div>
-          <div className="text-2xl font-display font-bold text-accent mt-1">
-            {isAffiliate ? formatUsd(totalPaidUsd) : `${gbEarned} GB`}
-          </div>
-        </div>
       </div>
+
+      {isAffiliate && (
+        <div className="bg-white border border-border rounded-xl p-5 mt-4">
+          <div className="flex items-center justify-between text-xs mb-2">
+            <span className="text-ink font-medium">
+              {belowMin ? `${usd(payable)} of ${usd(AFFILIATE_MIN_PAYOUT_USD)} minimum` : 'Above the payout minimum'}
+            </span>
+            <span className="text-muted">Next payout run: {shortDate(nextPayoutDate + 'T00:00:00Z')} · this cycle so far {usd(thisCycle)}</span>
+          </div>
+          <div className="h-1.5 bg-surface rounded-full overflow-hidden">
+            <div className="h-full bg-accent2 rounded-full" style={{ width: `${minProgress}%` }} />
+          </div>
+          <ul className="text-[11px] text-muted mt-3 space-y-1 list-disc pl-4">
+            <li>If a referred order is refunded, its commission is reduced to match. (If it was already paid out, we&apos;ll be in touch.)</li>
+            <li>Anything under the {usd(AFFILIATE_MIN_PAYOUT_USD)} minimum, or earned before you add a payout method, stays in your balance and is paid in the first run where it qualifies.</li>
+            {flaggedCount > 0 && <li>{flaggedCount} referral{flaggedCount === 1 ? ' is' : 's are'} under manual review and not earning yet.</li>}
+          </ul>
+        </div>
+      )}
+
+      {isAffiliate && holdActive && (
+        <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 text-xs rounded-xl p-4 mt-4">
+          Your payout details changed recently, so payouts are on a {AFFILIATE_HOLD_HOURS}-hour security hold until{' '}
+          <strong>{holdEndsAt!.toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })} UTC</strong>.
+          If you didn&apos;t make that change, contact support now.
+        </div>
+      )}
 
       {isAffiliate && (
         <div className="mt-4">
@@ -112,77 +164,133 @@ export default async function ReferralsPage() {
         </div>
       )}
 
+      {!referredByAnyone && <ClaimReferralForm />}
+
       <div className="mt-4">
-        {profile?.affiliate_status === 'approved' ? (
+        {isAffiliate ? (
           <div className="flex flex-col gap-4">
             <div className="bg-white border border-border rounded-xl p-5">
               <div className="flex items-center justify-between mb-3">
                 <div className="text-sm font-medium text-ink">Payout history</div>
                 <span className="text-[10px] font-mono bg-green-50 text-green-600 px-2 py-0.5 rounded-full">
-                  {Math.round(Number(profile.affiliate_commission_rate ?? 0.3) * 100)}% intro · {Math.round(Number(profile.affiliate_commission_rate_lifetime ?? 0.15) * 100)}% lifetime
+                  {formatRatePct(profile?.affiliate_commission_rate ?? 0.3)} intro · {formatRatePct(profile?.affiliate_commission_rate_lifetime ?? 0.15)} lifetime
                 </span>
               </div>
               {payouts && payouts.length > 0 ? (
                 <div className="flex flex-col gap-2">
-                  {payouts.map(p => (
-                    <div key={p.id} className="flex items-center justify-between text-xs border-b border-border last:border-0 pb-2 last:pb-0">
-                      <span className="text-muted">{formatCycleLabel(p)} · {p.payout_method === 'usdt' ? 'USDT' : p.payout_method === 'mpesa' ? 'M-Pesa' : 'Bank'}</span>
-                      <span className={`font-mono ${p.status === 'paid' ? 'text-green-600' : 'text-ink'}`}>
-                        {formatUsd(p.amount_usd)} {p.status === 'paid' ? '· paid' : '· scheduled'}
-                      </span>
+                  {payouts.map((p: any) => (
+                    <div key={p.id} className="text-xs border-b border-border last:border-0 pb-2 last:pb-0">
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted">{formatCycleLabel(p)} · {p.payout_method === 'usdt' ? 'USDT' : p.payout_method === 'mpesa' ? 'M-Pesa' : 'Bank'}</span>
+                        <span className={`font-mono ${p.status === 'paid' ? 'text-green-600' : 'text-ink'}`}>
+                          {usd(Number(p.amount_usd))} {p.status === 'paid' ? '· paid' : '· scheduled'}
+                        </span>
+                      </div>
+                      {p.status === 'paid' && p.payment_reference && (
+                        <div className="text-[10px] font-mono text-muted mt-0.5 break-all">ref {p.payment_reference}</div>
+                      )}
                     </div>
                   ))}
                 </div>
               ) : (
-                <div className="text-xs text-muted">
-                  No payouts yet — earnings under the $20 minimum or without a payout method on file roll forward automatically until they clear.
-                </div>
+                <div className="text-xs text-muted">No payouts yet — your first one is created once your payable balance reaches {usd(AFFILIATE_MIN_PAYOUT_USD)} with a payout method on file.</div>
               )}
             </div>
 
             <div className="bg-white border border-border rounded-xl p-5">
               <div className="text-sm font-medium text-ink mb-3">Recent commissions</div>
-              {allCommissions.length > 0 ? (
+              {commissions && commissions.length > 0 ? (
                 <div className="flex flex-col gap-2">
-                  {allCommissions.slice(0, 10).map(c => (
-                    <div key={c.id} className="flex items-center justify-between text-xs border-b border-border last:border-0 pb-2 last:pb-0">
-                      <span className="text-muted">
-                        {new Date(c.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
-                        {' · '}{formatUsd(c.gross_amount_usd)} order at {Math.round(Number(c.commission_rate) * 100)}%
-                      </span>
-                      <span className="font-mono text-ink">
-                        {formatUsd(c.commission_amount_usd)} {c.payout_id ? '· batched' : '· accruing'}
-                      </span>
-                    </div>
-                  ))}
+                  {commissions.map((c: any) => {
+                    const st = commissionState(c)
+                    const net = Number(c.commission_amount_usd)
+                    return (
+                      <div key={c.id} className="flex items-center justify-between text-xs border-b border-border last:border-0 pb-2 last:pb-0">
+                        <span className="text-muted">
+                          {new Date(c.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
+                          {' · '}{usd(Number(c.gross_amount_usd))} order at {formatRatePct(c.commission_rate)}
+                        </span>
+                        <span className={`font-mono ${st === 'reversed' ? 'text-red-500 line-through' : 'text-ink'}`}>
+                          {usd(net)} · {st}
+                        </span>
+                      </div>
+                    )
+                  })}
                 </div>
               ) : (
-                <div className="text-xs text-muted">No commissions yet — they'll show up here as your referrals order.</div>
+                <div className="text-xs text-muted">No commissions yet — they&apos;ll show up here as your referrals order.</div>
               )}
             </div>
           </div>
-        ) : profile?.affiliate_status === 'pending' ? (
+        ) : status === 'pending' ? (
           <div className="bg-white border border-border rounded-xl p-5">
             <div className="text-sm font-medium text-ink mb-1">Affiliate application pending</div>
-            <div className="text-xs text-muted">We'll review it and follow up by email.</div>
+            <div className="text-xs text-muted">We&apos;ll review it and follow up by email.</div>
           </div>
-        ) : profile?.affiliate_status === 'suspended' ? (
-          // 'suspended' used to fall through to the blank apply form, inviting a
-          // suspended affiliate to re-apply (and, before the server-side guard,
-          // knocking themselves back to 'pending').
-          <div className="bg-white border border-border rounded-xl p-5">
-            <div className="text-sm font-medium text-ink mb-1">Affiliate account suspended</div>
-            <div className="text-xs text-muted">Commissions aren&apos;t accruing while your affiliate account is suspended. Contact support to find out why. The standard GB bonus above still applies.</div>
+        ) : status === 'suspended' ? (
+          <div className="bg-white border border-red-200 rounded-xl p-5">
+            <div className="text-sm font-medium text-ink mb-1">Affiliate access suspended</div>
+            <div className="text-xs text-muted">New referrals aren&apos;t earning commission and payouts are paused. Contact support@globproxy.com to discuss.</div>
           </div>
-        ) : profile?.affiliate_status === 'rejected' ? (
+        ) : status === 'rejected' ? (
           <div className="bg-white border border-border rounded-xl p-5">
             <div className="text-sm font-medium text-ink mb-1">Affiliate application not approved</div>
-            <div className="text-xs text-muted">You can still earn the standard GB bonus above. Reach out to support to discuss reapplying.</div>
+            <div className="text-xs text-muted mb-3">You can still earn the standard GB bonus above, and you&apos;re welcome to apply again 7 days after your last application.</div>
+            <AffiliateApplyForm />
           </div>
         ) : (
           <AffiliateApplyForm />
         )}
       </div>
+
+      {funnelRows.length > 0 && (
+        <div className="bg-white border border-border rounded-xl p-5 mt-4">
+          <div className="text-sm font-medium text-ink mb-3">Your referrals <span className="text-muted font-mono font-normal">({funnelTotal})</span></div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left text-[10px] font-mono text-muted uppercase tracking-wider">
+                  <th className="pb-2 pr-3">Who</th><th className="pb-2 pr-3">Joined</th>
+                  {isAffiliate && <th className="pb-2 pr-3">Tag</th>}
+                  <th className="pb-2 pr-3">First purchase</th><th className="pb-2 pr-3 text-right">Orders</th>
+                  <th className="pb-2 text-right">{isAffiliate ? 'Earned' : 'Bonus'}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {funnelRows.map((r: any, i: number) => (
+                  <tr key={i} className="border-t border-border">
+                    <td className="py-2 pr-3 font-mono text-ink">{r.referred_label}{r.flagged && <span className="ml-1.5 text-[10px] text-yellow-600">· review</span>}</td>
+                    <td className="py-2 pr-3 text-muted whitespace-nowrap">{shortDate(r.joined_at)}</td>
+                    {isAffiliate && <td className="py-2 pr-3 font-mono text-muted">{r.sub_id ?? '—'}</td>}
+                    <td className="py-2 pr-3 text-muted whitespace-nowrap">{r.first_purchase_at ? shortDate(r.first_purchase_at) : '—'}</td>
+                    <td className="py-2 pr-3 text-right font-mono">{Number(r.orders_count)}</td>
+                    <td className="py-2 text-right font-mono text-ink">
+                      {isAffiliate ? usd(Number(r.earned_usd)) : (r.bonus_credited ? `${REFERRAL_GB_BONUS} GB` : '—')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {funnelPages > 1 && (
+            <div className="flex items-center justify-between mt-4 text-xs font-mono text-muted">
+              {page > 1 ? <Link href={`/dashboard/referrals?page=${page - 1}`} className="text-accent hover:underline">← Newer</Link> : <span />}
+              <span>Page {page} of {funnelPages}</span>
+              {page < funnelPages ? <Link href={`/dashboard/referrals?page=${page + 1}`} className="text-accent hover:underline">Older →</Link> : <span />}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Tile({ label, value, sub, accent }: { label: string; value: string; sub?: string; accent?: boolean }) {
+  return (
+    <div className="bg-white border border-border rounded-xl p-5">
+      <div className="text-[10px] font-mono text-muted uppercase tracking-wider">{label}</div>
+      <div className={`text-2xl font-display font-bold mt-1 ${accent ? 'text-accent' : 'text-ink'}`}>{value}</div>
+      {sub && <div className="text-[10px] text-muted mt-1">{sub}</div>}
     </div>
   )
 }

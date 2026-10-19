@@ -114,6 +114,11 @@ export function cycleAfter(cycle: PayoutCycle): PayoutCycle {
 export function formatCycleLabel(cycle: { cycle_start: string; cycle_end: string } | PayoutCycle): string {
   const start = 'cycleStart' in cycle ? cycle.cycleStart : cycle.cycle_start
   const end = 'cycleEnd' in cycle ? cycle.cycleEnd : cycle.cycle_end
-  const fmt = (s: string) => new Date(s + 'T00:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+  const fmt = (s: string) => new Date(s + 'T00:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
   return `${fmt(start)} – ${fmt(end)}`
+}
+
+// True once the published "payable from" date has arrived.
+export function cycleIsPayable(cycle: { payableFrom: string }, now: Date = new Date()): boolean {
+  return cycle.payableFrom <= now.toISOString().slice(0, 10)
 }

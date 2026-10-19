@@ -1,27 +1,32 @@
 import { NextResponse } from 'next/server'
-import { requireActiveUser } from '@/lib/apiAuth'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { normalizeMpesaPhone } from '@/lib/mpesa'
+import { isValidTronAddress } from '@/lib/tron'
 import { requireMfaVerified } from '@/lib/mfa'
+import { requireActiveUser } from '@/lib/apiAuth'
+import { rateLimited } from '@/lib/rateLimit'
+import { cleanText } from '@/lib/validation'
+import { AFFILIATE_HOLD_HOURS } from '@/lib/referrals'
 
-// TRC20 (Tron) addresses are base58, start with 'T', 34 characters —
-// this is a format sanity check, not a checksum validator. Catches the
-// obvious "pasted the wrong thing" mistakes without pretending to fully
-// validate the address.
-const TRON_ADDRESS_RE = /^T[1-9A-HJ-NP-Za-km-z]{33}$/
+type BankDetails = { bankName: string; accountName: string; accountNumber: string; country: string; swift: string | null }
 
-function maskDestination(method: string, update: Record<string, unknown>): string {
+// Everything below runs on VALIDATED strings only. The previous version
+// built this display string from raw request values AFTER the database write
+// — a numeric accountNumber threw inside the email template, so the change
+// was saved (hold timer started) but the security notification never went
+// out, which let a hijacked session change a destination silently. It also
+// interpolated bankName into the email HTML unescaped.
+function maskDestination(method: string, d: { wallet?: string; phone?: string; bank?: BankDetails }): string {
   if (method === 'usdt') {
-    const addr = String(update.payout_wallet_address ?? '')
+    const addr = d.wallet ?? ''
     return `USDT (TRC20) · ${addr.slice(0, 6)}…${addr.slice(-4)}`
   }
   if (method === 'mpesa') {
-    const phone = String(update.payout_mpesa_phone ?? '')
+    const phone = d.phone ?? ''
     return `M-Pesa · ${phone.slice(0, 6)}***${phone.slice(-2)}`
   }
-  const bank = update.payout_bank_details as { bankName?: string; accountNumber?: string } | null
-  return `Bank transfer · ${bank?.bankName ?? ''} · ****${(bank?.accountNumber ?? '').slice(-4)}`
+  return `Bank transfer · ${d.bank?.bankName ?? ''} · ****${(d.bank?.accountNumber ?? '').slice(-4)}`
 }
 
 export async function POST(req: Request) {
@@ -34,6 +39,8 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
+    const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', 'payout-method')
+    if (limited) return limited
     const inactive = await requireActiveUser(user.id)
     if (inactive) return inactive
 
@@ -43,7 +50,16 @@ export async function POST(req: Request) {
     const mfaGate = await requireMfaVerified(req, user.id)
     if (mfaGate) return mfaGate
 
-    const { method, walletAddress, bankDetails, mpesaPhone } = await req.json()
+    const adminSupabase = await createAdminClient()
+    const { data: me } = await adminSupabase
+      .from('profiles')
+      .select('payout_method, payout_wallet_address, payout_mpesa_phone, payout_bank_details')
+      .eq('id', user.id)
+      .single()
+
+    let body: any
+    try { body = await req.json() } catch { body = null }
+    const method = body?.method
 
     if (method !== 'usdt' && method !== 'bank' && method !== 'mpesa') {
       return NextResponse.json({ error: 'method must be "usdt", "bank", or "mpesa"' }, { status: 400 })
@@ -52,43 +68,71 @@ export async function POST(req: Request) {
     // Base object nulls every method's fields; the branch below fills in
     // only the ones for the method actually being set. Keeps "switching
     // from bank to usdt" from leaving stale bank details sitting around.
-    let update: Record<string, unknown> = {
+    const update: Record<string, unknown> = {
       payout_method: method,
       payout_wallet_address: null,
       payout_wallet_network: null,
       payout_bank_details: null,
       payout_mpesa_phone: null,
     }
+    const display: { wallet?: string; phone?: string; bank?: BankDetails } = {}
 
     if (method === 'usdt') {
-      if (typeof walletAddress !== 'string' || !TRON_ADDRESS_RE.test(walletAddress.trim())) {
-        return NextResponse.json({ error: 'That doesn\'t look like a valid TRC20 (Tron) wallet address' }, { status: 400 })
+      const wallet = cleanText(body?.walletAddress, 64)
+      if (!wallet || !(await isValidTronAddress(wallet))) {
+        return NextResponse.json(
+          { error: "That isn't a valid TRC20 (Tron) wallet address — check it for typos (the address checksum failed)." },
+          { status: 400 }
+        )
       }
-      update.payout_wallet_address = walletAddress.trim()
+      update.payout_wallet_address = wallet
       update.payout_wallet_network = 'TRC20'
+      display.wallet = wallet
     } else if (method === 'mpesa') {
-      const normalized = typeof mpesaPhone === 'string' ? normalizeMpesaPhone(mpesaPhone) : null
-      if (!normalized) {
-        return NextResponse.json({ error: 'That doesn\'t look like a valid Safaricom M-Pesa number' }, { status: 400 })
+      const phone = typeof body?.mpesaPhone === 'string' ? normalizeMpesaPhone(body.mpesaPhone) : null
+      if (!phone) {
+        return NextResponse.json({ error: "That doesn't look like a valid Kenyan mobile (M-Pesa) number" }, { status: 400 })
       }
-      update.payout_mpesa_phone = normalized
+      update.payout_mpesa_phone = phone
+      display.phone = phone
     } else {
-      const { bankName, accountName, accountNumber, country, swift } = bankDetails ?? {}
-      if (!bankName || !accountName || !accountNumber || !country) {
-        return NextResponse.json({ error: 'Bank name, account name, account number, and country are required' }, { status: 400 })
+      const raw = body?.bankDetails
+      const bank: BankDetails | null = raw && typeof raw === 'object' && !Array.isArray(raw)
+        ? {
+            bankName: cleanText(raw.bankName, 100) ?? '',
+            accountName: cleanText(raw.accountName, 120) ?? '',
+            accountNumber: cleanText(raw.accountNumber, 64) ?? '',
+            country: cleanText(raw.country, 80) ?? '',
+            swift: cleanText(raw.swift, 20) ?? null,
+          }
+        : null
+      if (!bank || !bank.bankName || !bank.accountName || !bank.accountNumber || !bank.country) {
+        return NextResponse.json(
+          { error: 'Bank name, account name, account number, and country are required (text, within the length limits)' },
+          { status: 400 }
+        )
       }
-      update.payout_bank_details = { bankName, accountName, accountNumber, country, swift: swift || null }
+      update.payout_bank_details = bank
+      display.bank = bank
+    }
+
+    // A re-save of the details already on file must not restart the 48h hold
+    // (it would let anyone with a stale tab — or an attacker griefing a
+    // legitimate user — keep a payout permanently "recently changed").
+    const unchanged = !!me &&
+      me.payout_method === method &&
+      ((method === 'usdt' && me.payout_wallet_address === update.payout_wallet_address) ||
+        (method === 'mpesa' && me.payout_mpesa_phone === update.payout_mpesa_phone) ||
+        (method === 'bank' && JSON.stringify(me.payout_bank_details ?? null) === JSON.stringify(update.payout_bank_details)))
+    if (unchanged) {
+      return NextResponse.json({ success: true, unchanged: true })
     }
 
     // payout_method_updated_at is set here, server-side, unconditionally —
-    // never accepted from the request body. protect_privileged_profile_
-    // columns (migrations 0034/0035) would reset it anyway on a direct
-    // client write, but this route is the actual intended path regardless:
-    // it's what the 48h hold in run_affiliate_payout_cycle checks against,
-    // so it must reflect exactly when the change really happened.
+    // never accepted from the request body. It's what the hold in
+    // run_affiliate_payout_cycle checks against.
     update.payout_method_updated_at = new Date().toISOString()
 
-    const adminSupabase = await createAdminClient()
     const { data: profile, error: updateError } = await adminSupabase
       .from('profiles')
       .update(update)
@@ -100,16 +144,15 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: updateError.message }, { status: 500 })
     }
 
-    // Security notification — this is the other half of the 48h hold:
-    // the hold buys time, this is what actually gives the real affiliate
-    // a chance to notice a change they didn't make and act on it before
-    // the hold expires. Sent to the account's own verified email, best
-    // effort, never allowed to affect this response.
+    // Security notification — the other half of the hold. Failure to build or
+    // send it is logged loudly but never turns the (already committed) change
+    // into an error response.
     if (profile?.email) {
-      await sendEmail({
-        to: profile.email,
-        subject: 'Your GlobProxy payout details were changed',
-        html: `
+      try {
+        await sendEmail({
+          to: profile.email,
+          subject: 'Your GlobProxy payout details were changed',
+          html: `
           <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
             <img src="https://globproxy.com/og-image.png" alt="GlobProxy" width="200"
               style="display:block;margin:0 auto 32px auto;border-radius:12px;"/>
@@ -118,10 +161,10 @@ export async function POST(req: Request) {
               Hi ${escapeHtml(profile.full_name?.split(' ')[0]) || 'there'}, your affiliate payout method was just set to:
             </p>
             <p style="text-align:center;font-family:monospace;font-size:13px;color:#111;background:#f5f5f5;padding:12px 16px;border-radius:8px;">
-              ${maskDestination(method, update)}
+              ${escapeHtml(maskDestination(method, display))}
             </p>
             <p style="color:#444;text-align:center;">
-              For security, this takes 48 hours before it's eligible for a payout.
+              For security, this takes ${AFFILIATE_HOLD_HOURS} hours before it's eligible for a payout.
               <strong>If you didn't make this change, contact support immediately</strong> — someone else may have access to your account.
             </p>
             <div style="text-align:center;margin:32px 0;">
@@ -135,7 +178,10 @@ export async function POST(req: Request) {
             </p>
           </div>
         `,
-      }).catch(() => {})
+        })
+      } catch (e) {
+        console.error('[payout-method] SECURITY NOTIFICATION FAILED — change is saved', user.id, e)
+      }
     }
 
     return NextResponse.json({ success: true })

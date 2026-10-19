@@ -20,7 +20,7 @@ import { NextResponse } from 'next/server'
 // Fails open, not closed: if the binding isn't present (local dev outside
 // wrangler, or the binding name changes) this returns null and the request
 // proceeds normally rather than 500ing every request in that environment.
-export type RateLimiterBinding = 'AUTH_RATE_LIMITER' | 'API_RATE_LIMITER' | 'API_WRITE_RATE_LIMITER' | 'API_HISTORY_RATE_LIMITER'
+export type RateLimiterBinding = 'AUTH_RATE_LIMITER' | 'RESELLER_RATE_LIMITER' | 'API_RATE_LIMITER' | 'API_WRITE_RATE_LIMITER' | 'API_HISTORY_RATE_LIMITER'
 
 export async function rateLimited(
   req: Request,

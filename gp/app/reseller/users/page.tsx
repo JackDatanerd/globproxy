@@ -1,23 +1,42 @@
-import { createClient } from '@/lib/supabase/server'
+import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import ResellerUsersList from '@/components/reseller/ResellerUsersList'
 import { formatGb } from '@/lib/format'
 
-export default async function ResellerUsersPage() {
+const PAGE_SIZE = 25
+
+export default async function ResellerUsersPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ q?: string; page?: string }>
+}) {
+  const sp = await searchParams
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/auth/login')
 
-  // ResellerUsersList's "Your Clients" roster is built from transfer history
-  // (recipient_id, gb_amount, joined profiles) — it was previously fed
-  // proxy_credentials rows instead, which have neither of those fields, so
-  // every client collapsed into a single broken entry with a 0 GB total.
-  // reseller_transfers is the correct source, same as /reseller/transfers
-  // and /reseller/earnings already use.
-  const [{ data: bw }, { data: subUsers }] = await Promise.all([
-    supabase.from('bandwidth_accounts').select('*').eq('user_id',user.id).single(),
-    supabase.from('reseller_transfers').select('*, profiles!reseller_transfers_recipient_id_fkey(email,full_name)').eq('reseller_id',user.id).order('created_at',{ascending:false}),
+  const q = (sp.q ?? '').trim().slice(0, 100)
+  const page = Math.max(1, Math.min(10_000, parseInt(sp.page ?? '1', 10) || 1))
+
+  // The roster comes from a narrow SECURITY DEFINER RPC (id, email, name,
+  // totals — nothing else). Resellers used to read clients' whole profile
+  // rows through an RLS policy, which exposed payout bank details, M-Pesa
+  // numbers and application data (migration 0039 drops that policy). The RPC
+  // is scoped to the authenticated reseller here, server-side, and paginated
+  // in SQL — the old client-side fold over an unpaginated query silently
+  // truncated at 1000 transfers.
+  const admin = await createAdminClient()
+  const [{ data: bw }, { data: clients }] = await Promise.all([
+    supabase.from('bandwidth_accounts').select('available_gb').eq('user_id', user.id).maybeSingle(),
+    admin.rpc('reseller_client_roster', {
+      p_reseller_id: user.id,
+      p_search: q || null,
+      p_limit: PAGE_SIZE,
+      p_offset: (page - 1) * PAGE_SIZE,
+    }),
   ])
+  const total = Number((clients as any[])?.[0]?.total_count ?? 0)
+
   return (
     <div className="max-w-5xl">
       <div className="flex items-center justify-between mb-8">
@@ -30,7 +49,14 @@ export default async function ResellerUsersPage() {
           <div className="font-display font-bold text-accent">{formatGb(bw?.available_gb)} GB</div>
         </div>
       </div>
-      <ResellerUsersList subUsers={subUsers??[]} availableGb={bw?.available_gb??0} resellerId={user.id} />
+      <ResellerUsersList
+        clients={(clients as any[]) ?? []}
+        availableGb={Number(bw?.available_gb ?? 0)}
+        total={total}
+        page={page}
+        pageSize={PAGE_SIZE}
+        query={q}
+      />
     </div>
   )
 }

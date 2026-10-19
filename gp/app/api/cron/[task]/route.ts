@@ -9,6 +9,7 @@ import { chargeAuthorization, generateReference, verifyTransaction, paymentMisma
 import { activateBandwidth, retryPostCredit } from '@/lib/bandwidth'
 import { alertAdminPayment } from '@/lib/paymentAlerts'
 import { flushSecurityNotices } from '@/lib/securityEvents'
+import { REFERRAL_GB_BONUS } from '@/lib/referrals'
 import { NextResponse } from 'next/server'
 
 // Secured with CRON_SECRET env var
@@ -175,14 +176,16 @@ async function runBandwidthAlerts() {
     }
 
     const { data: profile } = await supabase
-      .from('profiles').select('email, full_name, referral_code').eq('id', acc.user_id).single()
+      .from('profiles').select('email, full_name, referral_code, affiliate_status').eq('id', acc.user_id).single()
     if (!profile?.email) continue
 
     const firstName = escapeHtml(profile.full_name?.split(' ')[0]) || 'there'
     const avail = acc.available_gb
     const referralLine = profile.referral_code
-      ? `<p style="margin-top:16px;font-size:13px;color:#666;">Tip: refer a friend and you both get 1GB free —
-           <a href="${process.env.NEXT_PUBLIC_APP_URL}/auth/signup?ref=${profile.referral_code}">your link</a>.</p>`
+      ? `<p style="margin-top:16px;font-size:13px;color:#666;">${profile.affiliate_status === 'approved'
+           ? 'Tip: share your affiliate link and earn commission on every order —'
+           : `Tip: refer a friend and you both get ${REFERRAL_GB_BONUS}GB free —`}
+           <a href="${process.env.NEXT_PUBLIC_APP_URL}/r/${profile.referral_code}">your link</a>.</p>`
       : ''
 
     if (pct >= 95 && !acc.alerted_95_at) {
@@ -582,6 +585,7 @@ export async function POST(req: Request, context: { params: Promise<{ task: stri
       case 'security':  result = await runSecurity();         break
       case 'provision': result = await runProvision();        break
       case 'webhooks':  result = await runWebhooks();         break
+      case 'reconcile': result = await runReconcile();        break
       case 'benchmark': result = await runBenchmark();        break
       default: return NextResponse.json({ error: `Unknown task: ${task}` }, { status: 400 })
     }

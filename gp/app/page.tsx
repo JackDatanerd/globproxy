@@ -1,3 +1,4 @@
+import { REFERRAL_GB_BONUS, REFERRAL_MIN_ORDER_USD } from '@/lib/referrals'
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
 import HeroCard from '@/components/HeroCard'
@@ -217,9 +218,9 @@ export default async function Home() {
             <div>
               <div className="inline-block bg-accent-light text-accent text-xs font-mono tracking-widest uppercase px-4 py-1.5 rounded-full mb-5">Refer & Earn</div>
               <h2 className="font-display text-4xl font-bold tracking-tight text-ink leading-tight mb-4">Share GlobProxy.<br />Get paid for it.</h2>
-              <p className="text-ink2 font-light leading-relaxed mb-7">Every account gets a free referral link — refer someone and you both get 1GB free the moment they make their first purchase. Run a blog, a forum presence, or a community that needs proxies? Apply for the affiliate program and earn cash instead.</p>
+              <p className="text-ink2 font-light leading-relaxed mb-7">Every account gets a free referral link — refer someone and you both get {REFERRAL_GB_BONUS}GB free after their first purchase of ${REFERRAL_MIN_ORDER_USD}+. Run a blog, a forum presence, or a community that needs proxies? Apply for the affiliate program and earn cash instead.</p>
               <div className="flex flex-col gap-2.5 mb-8">
-                {['Free referral link, no approval needed — 1GB bonus for both sides','Approved affiliates earn 30% commission for a referral\'s first 90 days','15% recurring commission after that, for as long as they stay active','Paid out biweekly by USDT or bank transfer'].map(p=>(
+                {[`Free referral link, no approval needed — ${REFERRAL_GB_BONUS}GB bonus for both sides`,'Approved affiliates earn 30% commission for a referral\'s first 90 days','15% commission on all their later orders, with no cap','Paid twice a month by USDT, M-Pesa or bank transfer'].map(p=>(
                   <div key={p} className="flex items-start gap-3 text-sm text-ink2 font-light">
                     <span className="text-accent font-bold flex-shrink-0 mt-0.5">→</span>{p}
                   </div>

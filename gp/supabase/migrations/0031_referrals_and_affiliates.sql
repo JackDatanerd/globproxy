@@ -76,6 +76,7 @@ begin
 end;
 $$;
 
+alter table public.profiles drop constraint if exists profiles_referral_code_unique;
 alter table public.profiles add constraint profiles_referral_code_unique unique (referral_code);
 alter table public.profiles alter column referral_code set not null;
 alter table public.profiles alter column referral_code set default public.generate_unique_referral_code();
@@ -171,9 +172,11 @@ create index if not exists idx_referrals_referrer on public.referrals(referrer_i
 alter table public.referrals enable row level security;
 
 drop policy if exists "Referrer can view own referrals" on public.referrals;
+drop policy if exists "Referrer can view own referrals" on public.referrals;
 create policy "Referrer can view own referrals" on public.referrals for select
   using (auth.uid() = referrer_id);
 
+drop policy if exists "Admins can view all referrals" on public.referrals;
 drop policy if exists "Admins can view all referrals" on public.referrals;
 create policy "Admins can view all referrals" on public.referrals for select
   using (public.is_admin(auth.uid()));
@@ -268,9 +271,11 @@ create index if not exists idx_affiliate_commissions_status on public.affiliate_
 alter table public.affiliate_commissions enable row level security;
 
 drop policy if exists "Referrer can view own commissions" on public.affiliate_commissions;
+drop policy if exists "Referrer can view own commissions" on public.affiliate_commissions;
 create policy "Referrer can view own commissions" on public.affiliate_commissions for select
   using (auth.uid() = referrer_id);
 
+drop policy if exists "Admins can view all commissions" on public.affiliate_commissions;
 drop policy if exists "Admins can view all commissions" on public.affiliate_commissions;
 create policy "Admins can view all commissions" on public.affiliate_commissions for select
   using (public.is_admin(auth.uid()));

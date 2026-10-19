@@ -1,5 +1,5 @@
 'use client'
-import { useState, Suspense } from 'react'
+import { useState, useEffect, Suspense } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { validateEmail } from '@/lib/email-validation'
@@ -17,7 +17,30 @@ function SignupForm() {
   const router = useRouter()
   const params = useSearchParams()
   const isReseller = params.get('role') === 'reseller'
-  const referralCode = params.get('ref')
+  const urlRef = params.get('ref')
+  const [referralCode, setReferralCode] = useState(urlRef ?? '')
+  const [refInfo, setRefInfo] = useState<{ valid: boolean; bonus?: boolean; bonusGb?: number; minOrderUsd?: number } | null>(null)
+
+  // First-party cookie set by /r/[code] and <RefCapture/> — covers visitors
+  // who browsed around before reaching signup without ?ref= on this URL.
+  useEffect(() => {
+    if (urlRef) return
+    const m = document.cookie.match(/(?:^|; )gp_ref=([^;]+)/)
+    if (m) { try { setReferralCode(decodeURIComponent(m[1])) } catch { /* ignore */ } }
+  }, [urlRef])
+
+  // Tell the visitor something TRUE about the code (valid? is there a bonus?).
+  useEffect(() => {
+    const code = referralCode.trim()
+    if (!/^[A-Za-z0-9]{4,32}$/.test(code)) { setRefInfo(null); return }
+    const t = setTimeout(() => {
+      fetch(`/api/referral/check?code=${encodeURIComponent(code)}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(d => setRefInfo(d))
+        .catch(() => setRefInfo(null))
+    }, 400)
+    return () => clearTimeout(t)
+  }, [referralCode])
 
   function onEmailBlur() {
     if (!email) return
@@ -41,7 +64,8 @@ function SignupForm() {
         full_name: name,
         intended_role: isReseller ? 'reseller' : 'user',
         emailRedirectTo: `${location.origin}/auth/callback`,
-        referral_code: referralCode || undefined,
+        referral_code: referralCode.trim() || undefined,
+        sub_id: params.get('sub') || undefined,
         turnstileToken: captcha,
       }),
     })
@@ -97,6 +121,21 @@ function SignupForm() {
             <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">Password</label>
             <input type="password" required minLength={8} maxLength={72} autoComplete="new-password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Min. 8 characters"
               className="w-full bg-surface border border-border text-ink placeholder-muted px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-accent transition-colors" />
+          </div>
+          <div>
+            <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">Referral code <span className="normal-case tracking-normal">(optional)</span></label>
+            <input type="text" value={referralCode} maxLength={32} onChange={e => setReferralCode(e.target.value.toUpperCase())} placeholder="e.g. A1B2C3D4"
+              className="w-full bg-surface border border-border text-ink placeholder-muted px-4 py-3 rounded-xl text-sm font-mono focus:outline-none focus:border-accent transition-colors" />
+            {refInfo?.valid && (
+              <p className="text-xs text-green-600 mt-1.5">
+                {refInfo.bonus
+                  ? `Code applied — after your first purchase of $${refInfo.minOrderUsd}+ you both get ${refInfo.bonusGb} GB free.`
+                  : 'Code applied.'}
+              </p>
+            )}
+            {refInfo && !refInfo.valid && referralCode.trim() && (
+              <p className="text-xs text-muted mt-1.5">We couldn&apos;t find that code — you can still sign up without it.</p>
+            )}
           </div>
           <Turnstile onToken={setCaptcha} resetSignal={captchaReset} />
           <button type="submit" disabled={loading || !!emailErr}

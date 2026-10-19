@@ -9,7 +9,7 @@ import { adminPost } from '@/lib/adminFetch'
 type Props =
   | { userId: string; action: 'approve' | 'reject' | 'suspendAffiliate' | 'reinstateAffiliate' | 'grantVerifiedOperator' | 'revokeVerifiedOperator'; payoutId?: never }
   | { userId: string; action: 'editRates'; currentIntro: number; currentLifetime: number; payoutId?: never }
-  | { payoutId: string; action: 'markPaid'; amountUsd?: number; userId?: never }
+  | { payoutId: string; action: 'markPaid' | 'voidPayout'; amountUsd?: number; userId?: never }
 
 // Prompts take whole percentages ("30"), the API takes fractions (0.30).
 function askPercent(label: string, def: number): number | null {
@@ -47,6 +47,14 @@ export default function AdminAffiliateActions(props: Props) {
         path = '/api/admin/mark-payout-paid'; body = { payoutId: props.payoutId, reference: ref }; success = 'Marked as paid'
         break
       }
+      case 'voidPayout': {
+        const amount = props.amountUsd != null ? ` of $${props.amountUsd.toFixed(2)}` : ''
+        if (!confirm(`Void this pending payout${amount}?\n\nIts commissions go back to the affiliate's balance and the next payout run picks them up again. Do NOT void a payout you have already sent.`)) return
+        const reason = window.prompt('Reason (required — recorded in the audit log):', '')
+        if (!reason?.trim()) { if (reason !== null) toast.error('A reason is required'); return }
+        path = '/api/admin/void-payout'; body = { payoutId: props.payoutId, reason }; success = 'Payout voided'
+        break
+      }
       case 'grantVerifiedOperator':
         if (!confirm('Make this affiliate a Verified Operator? Their rates rise to 40% / 20% (a higher existing rate is kept).')) return
         path = '/api/admin/grant-verified-operator'; body = { userId: props.userId }; success = 'Granted Verified Operator'
@@ -82,12 +90,13 @@ export default function AdminAffiliateActions(props: Props) {
     window.location.reload()
   }
 
-  const danger = props.action === 'reject' || props.action === 'revokeVerifiedOperator' || props.action === 'suspendAffiliate'
+  const danger = props.action === 'reject' || props.action === 'voidPayout' || props.action === 'revokeVerifiedOperator' || props.action === 'suspendAffiliate'
   const neutral = props.action === 'editRates'
   const label = loading ? '...'
     : props.action === 'approve' ? 'Approve'
     : props.action === 'reject' ? 'Reject'
     : props.action === 'markPaid' ? 'Mark paid'
+    : props.action === 'voidPayout' ? 'Void'
     : props.action === 'grantVerifiedOperator' ? 'Make Verified Operator'
     : props.action === 'suspendAffiliate' ? 'Suspend'
     : props.action === 'reinstateAffiliate' ? 'Reinstate'

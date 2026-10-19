@@ -154,6 +154,17 @@ export async function DELETE(req: Request) {
     await adminSupabase.from('mfa_verified_sessions').delete().eq('user_id', user.id)
     await adminSupabase.from('support_reports').update({ email: '[deleted]' }).eq('user_id', user.id)
 
+    // Step 6c: Stop the affiliate side of the account (migration 0043). The PII
+    // wipe above already removed payout details; this additionally suspends the
+    // affiliate status (no new commissions accrue to a deleted account) and
+    // forfeits UNBATCHED earnings. Already-batched / paid payout rows are kept —
+    // they're financial records. Idempotent; runs after the ban so the rollback
+    // path above never has to restore it.
+    {
+      const { error: scrubErr } = await adminSupabase.rpc('scrub_affiliate_data', { p_user_id: user.id })
+      if (scrubErr) console.error('[delete-account] scrub_affiliate_data failed', user.id, scrubErr)
+    }
+
     // Step 6b: Revoke any outstanding API keys and disable webhooks —
     // neither was ever touched by deletion before this. A live key kept
     // authenticating every v1 route indefinitely with no separate

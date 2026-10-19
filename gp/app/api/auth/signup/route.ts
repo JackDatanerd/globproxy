@@ -2,6 +2,7 @@ import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { validateEmail } from '@/lib/email-validation'
 import { rateLimited } from '@/lib/rateLimit'
 import { recordReferralSignup } from '@/lib/referrals'
+import { REF_COOKIE, REF_SUB_COOKIE, readCookie, hashIp } from '@/lib/referralAttribution'
 import { validatePassword } from '@/lib/passwordPolicy'
 import { verifyTurnstile } from '@/lib/turnstile'
 import { NextResponse } from 'next/server'
@@ -52,7 +53,7 @@ export async function POST(req: Request) {
     if (limited) return limited
 
     const body = await req.json().catch(() => ({}))
-    const { email, password, emailRedirectTo, referral_code, turnstileToken } = body
+    const { email, password, emailRedirectTo, referral_code, sub_id, turnstileToken } = body
     if (typeof email !== 'string' || typeof password !== 'string' || !email || !password) {
       return NextResponse.json({ error: 'Missing fields' }, { status: 400 })
     }
@@ -176,7 +177,20 @@ export async function POST(req: Request) {
     // doesn't need to wait for /auth/callback. Never allowed to affect
     // this response either way: see recordReferralSignup's doc comment.
     if (data.user?.id) {
-      await recordReferralSignup(supabase, referral_code, data.user.id)
+      // Body value wins (the explicit code shown/typed on the form); the
+      // first-party cookie set by /r/[code] and <RefCapture/> covers visitors
+      // who browsed around before signing up. A non-string is rejected inside
+      // the helper instead of throwing after the account already exists.
+      const cookieHeader = req.headers.get('cookie')
+      await recordReferralSignup(
+        supabase,
+        referral_code ?? readCookie(cookieHeader, REF_COOKIE),
+        data.user.id,
+        {
+          subId: sub_id ?? readCookie(cookieHeader, REF_SUB_COOKIE),
+          ipHash: hashIp(req.headers.get('cf-connecting-ip')),
+        }
+      )
     }
 
     return respondGeneric(startedAt)

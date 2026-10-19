@@ -2,7 +2,7 @@ import { createAdminClient } from '@/lib/supabase/server'
 import { provisionPendingCredentials } from '@/lib/credentials'
 import { dispatchWebhook } from '@/lib/webhooks'
 import { sendEmail, escapeHtml } from '@/lib/email'
-import { processReferralForOrder } from '@/lib/referrals'
+import { processReferralForOrder, REFERRAL_GB_BONUS, REFERRAL_MIN_ORDER_USD } from '@/lib/referrals'
 
 export type ActivateResult =
   | { status: 'credited' }
@@ -185,19 +185,21 @@ async function sendConfirmationEmail(
 ) {
   const { data: profile } = await supabase
     .from('profiles')
-    .select('email, full_name, referral_code')
+    .select('email, full_name, referral_code, affiliate_status')
     .eq('id', p.user_id)
     .single()
 
   if (profile?.email && !p.is_canary) {
+    // Approved affiliates earn cash, not GB — promising them (or the people
+    // they refer) "1GB free" was simply untrue.
+    const refLink = `${process.env.NEXT_PUBLIC_APP_URL}/r/${profile.referral_code}`
     const referralLine = profile.referral_code
       ? `<p style="color:#444;text-align:center;font-size:13px;margin-top:20px;">
-           Know someone who could use this? Share your link and you both get
-           <strong>1GB free</strong> when they make their first purchase:
+           ${profile.affiliate_status === 'approved'
+             ? 'Know someone who could use this? Share your affiliate link and earn commission on their orders:'
+             : `Know someone who could use this? Share your link and you both get <strong>${REFERRAL_GB_BONUS}GB free</strong> when they make their first purchase of $${REFERRAL_MIN_ORDER_USD}+:`}
            <br/>
-           <a href="${process.env.NEXT_PUBLIC_APP_URL}/auth/signup?ref=${profile.referral_code}" style="color:#2563eb;">
-             ${process.env.NEXT_PUBLIC_APP_URL}/auth/signup?ref=${profile.referral_code}
-           </a>
+           <a href="${refLink}" style="color:#2563eb;">${refLink}</a>
          </p>`
       : ''
     await sendEmail({

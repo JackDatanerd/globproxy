@@ -59,6 +59,16 @@
         "type": "ratelimit",
         "namespace_id": "1004",
         "simple": { "limit": 10, "period": 60 }
+      },
+      // Reseller allocate / reclaim, keyed per reseller (see
+      // app/api/reseller/allocate/route.ts). Higher than AUTH so a legitimate
+      // bulk allocation isn't throttled, but low enough to stop the allocate
+      // endpoint being used as an email cannon or a registered-email oracle.
+      {
+        "name": "RESELLER_RATE_LIMITER",
+        "type": "ratelimit",
+        "namespace_id": "1005",
+        "simple": { "limit": 30, "period": 60 }
       }
     ]
   }

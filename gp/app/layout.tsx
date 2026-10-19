@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import './globals.css'
 import { Toaster } from 'react-hot-toast'
 import JsonLd from '@/components/JsonLd'
+import RefCapture from '@/components/RefCapture'
 
 const organizationSchema = {
   '@context': 'https://schema.org',
@@ -42,6 +43,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body className="antialiased">
         <JsonLd data={organizationSchema} />
+        <RefCapture />
         {children}
         <Toaster position="top-right" toastOptions={{ style: { fontFamily: 'DM Sans, sans-serif', fontSize: '14px' } }} />
       </body>

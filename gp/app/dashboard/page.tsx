@@ -6,6 +6,7 @@ import PaymentVerifier from '@/components/PaymentVerifier'
 import ReferralLinkCard from '@/components/dashboard/ReferralLinkCard'
 import { formatGb, formatPct, formatUsd } from '@/lib/format'
 import { getProxyPort } from '@/lib/proxyEndpoint'
+import { REFERRAL_GB_BONUS, REFERRAL_MIN_ORDER_USD } from '@/lib/referrals'
 
 export default async function DashboardPage() {
   const supabase = await createClient()
@@ -19,7 +20,7 @@ export default async function DashboardPage() {
     // A real count: "Active proxies" used to be computed from the 5 rows
     // fetched for the list below, so it could never read above 5.
     supabase.from('proxy_credentials').select('id', { count: 'exact', head: true }).eq('user_id', user.id).eq('status', 'active'),
-    supabase.from('profiles').select('full_name, referral_code').eq('id', user.id).maybeSingle(),
+    supabase.from('profiles').select('full_name, referral_code, affiliate_status').eq('id', user.id).maybeSingle(),
   ])
   const bw = bwRes.data, creds = credsRes.data, orders = orderRes.data, profile = profileRes.data
   const loadFailed = !!(bwRes.error || credsRes.error || orderRes.error || activeRes.error)
@@ -109,7 +110,8 @@ export default async function DashboardPage() {
 
       {profile?.referral_code && (
         <div className="mb-4">
-          <ReferralLinkCard code={profile.referral_code} />
+          <ReferralLinkCard code={profile.referral_code} baseUrl={process.env.NEXT_PUBLIC_APP_URL ?? 'https://globproxy.com'}
+            isAffiliate={profile.affiliate_status === 'approved'} bonusGb={REFERRAL_GB_BONUS} minOrderUsd={REFERRAL_MIN_ORDER_USD} />
         </div>
       )}
 

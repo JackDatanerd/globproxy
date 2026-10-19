@@ -51,6 +51,22 @@ export async function POST(req: Request) {
     // privileges, and it's scoped to exactly this user's row with a
     // hardcoded value ('pending'), so there's no escalation risk here.
     const adminSupabase = await createAdminClient()
+
+    // A rejected applicant may re-apply, but not immediately — otherwise a single
+    // account can flood the admin queue and ADMIN_EMAIL inbox (each submit emails
+    // an admin). 7 days is what the rejection email promises. Uses the
+    // application's own timestamps; the atomic UPDATE below still decides.
+    {
+      const { data: prior } = await adminSupabase
+        .from('profiles').select('affiliate_status, affiliate_application').eq('id', user.id).maybeSingle()
+      if (prior?.affiliate_status === 'rejected') {
+        const app = (prior.affiliate_application ?? {}) as { rejected_at?: string; applied_at?: string }
+        const since = Date.parse(app.rejected_at ?? app.applied_at ?? '')
+        if (Number.isFinite(since) && Date.now() - since < 7 * 24 * 60 * 60 * 1000) {
+          return NextResponse.json({ error: 'You can re-apply 7 days after your application was reviewed.' }, { status: 429 })
+        }
+      }
+    }
     //
     // Only a never-applied or previously REJECTED account may (re)apply.
     // This used to write 'pending' unconditionally, so an APPROVED affiliate

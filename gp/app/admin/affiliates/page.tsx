@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { createAdminClient } from '@/lib/supabase/server'
 import AdminAffiliateActions from '@/components/admin/AdminAffiliateActions'
 import RunPayoutCycleButton from '@/components/admin/RunPayoutCycleButton'
+import ExportPayoutsButton from '@/components/admin/ExportPayoutsButton'
 import { formatCycleLabel } from '@/lib/payoutCycle'
 
 export default async function AdminAffiliatesPage() {
@@ -33,9 +34,14 @@ export default async function AdminAffiliatesPage() {
           <h1 className="font-display font-bold text-2xl text-ink">Affiliates</h1>
           <p className="text-muted text-sm mt-1">Manage affiliate applications and biweekly payouts</p>
         </div>
-        <Link href="/admin/cycles" className="text-xs font-mono text-accent hover:underline whitespace-nowrap mt-1">
-          Sales &amp; profit per cycle →
-        </Link>
+        <div className="flex flex-col items-end gap-1 mt-1">
+          <Link href="/admin/cycles" className="text-xs font-mono text-accent hover:underline whitespace-nowrap">
+            Sales &amp; profit per cycle →
+          </Link>
+          <Link href="/admin/referrals" className="text-xs font-mono text-accent hover:underline whitespace-nowrap">
+            Flagged referrals →
+          </Link>
+        </div>
       </div>
 
       {/* Pending applications */}
@@ -100,7 +106,10 @@ export default async function AdminAffiliatesPage() {
               </span>
             )}
           </h2>
-          <RunPayoutCycleButton />
+          <div className="flex items-center gap-2">
+            <ExportPayoutsButton status="pending" />
+            <RunPayoutCycleButton />
+          </div>
         </div>
         {pendingPayouts && pendingPayouts.length > 0 ? (
           <div className="bg-white border border-border rounded-xl overflow-hidden">
@@ -135,7 +144,10 @@ export default async function AdminAffiliatesPage() {
                       )}
                     </td>
                     <td className="px-6 py-4">
-                      <AdminAffiliateActions payoutId={p.id} action="markPaid" amountUsd={Number(p.amount_usd)} />
+                      <div className="flex gap-2">
+                        <AdminAffiliateActions payoutId={p.id} action="markPaid" amountUsd={Number(p.amount_usd)} />
+                        <AdminAffiliateActions payoutId={p.id} action="voidPayout" amountUsd={Number(p.amount_usd)} />
+                      </div>
                     </td>
                   </tr>
                 ))}
