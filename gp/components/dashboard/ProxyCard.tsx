@@ -1,15 +1,30 @@
 'use client'
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
 import { buildProxyUsername, getProxyPort, genSessionId } from '@/lib/proxyEndpoint'
+import { apiJson, copyText } from '@/lib/clientApi'
 import { formatGb, formatPct } from '@/lib/format'
 import SessionManager from '@/components/dashboard/SessionManager'
 import IpWhitelist from '@/components/dashboard/IpWhitelist'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
-interface Props { cred: any; index: number; expanded: boolean; onToggle: () => void }
+interface Props {
+  cred: any
+  index: number
+  expanded: boolean
+  onToggle: () => void
+  // Lets the list jump straight to a tab (the near-limit banner opens
+  // Bandwidth). `nonce` changes on every request so asking for the same tab
+  // twice still works after the user has clicked elsewhere.
+  requestedTab?: { tab: 'cred' | 'bandwidth' | 'endpoints' | 'whitelist' | 'code'; nonce: number } | null
+}
+
+// One pair of thresholds for every indicator on the card (rail, bar, tab dot,
+// remaining text) and for the list's banners. They used to disagree — the rail
+// went red at 85 while the bar went red at 80 and the banner said 95.
+const WARN_PCT = 80
+const URGENT_PCT = 95
 
 type Tab = 'cred' | 'bandwidth' | 'endpoints' | 'whitelist' | 'code'
 type Lang = 'py' | 'node' | 'browser'
@@ -19,7 +34,7 @@ type Lang = 'py' | 'node' | 'browser'
 // detail the old always-open card showed, just organized into tabs so the
 // expanded state doesn't turn into another giant scroll once someone has a
 // handful of sessions.
-export default function ProxyCard({ cred, index, expanded, onToggle }: Props) {
+export default function ProxyCard({ cred, index, expanded, onToggle, requestedTab }: Props) {
   const router = useRouter()
   const [showPass, setShowPass] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -32,13 +47,33 @@ export default function ProxyCard({ cred, index, expanded, onToggle }: Props) {
   const [topupAmount, setTopupAmount] = useState('')
   const [topupLoading, setTopupLoading] = useState(false)
 
-  // Auto-allocate — seeded from the credential row, re-seeded whenever a
-  // fresh `cred` prop arrives (router.refresh() after a save re-fetches
-  // the page's server-side data and passes it back down).
+  // Auto-allocate — seeded from the credential row and re-seeded (effect
+  // below) when the saved values change, i.e. after router.refresh() hands
+  // down fresh server data. useState's initial value only runs once, so
+  // without the effect a change made from another tab/device never showed.
   const [autoEnabled, setAutoEnabled] = useState(!!cred.auto_topup_enabled)
   const [autoThreshold, setAutoThreshold] = useState(String(cred.auto_topup_threshold_gb ?? ''))
   const [autoAmount, setAutoAmount] = useState(String(cred.auto_topup_amount_gb ?? ''))
   const [autoLoading, setAutoLoading] = useState(false)
+  useEffect(() => {
+    setAutoEnabled(!!cred.auto_topup_enabled)
+    setAutoThreshold(String(cred.auto_topup_threshold_gb ?? ''))
+    setAutoAmount(String(cred.auto_topup_amount_gb ?? ''))
+  }, [cred.auto_topup_enabled, cred.auto_topup_threshold_gb, cred.auto_topup_amount_gb])
+
+  useEffect(() => {
+    if (requestedTab) setTab(requestedTab.tab)
+  }, [requestedTab?.nonce]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // An armed "Confirm delete" must not outlive the moment: disarm after a few
+  // seconds and whenever the row is collapsed, so a stray click later (or on
+  // re-opening the row) can't delete a session in one tap.
+  useEffect(() => {
+    if (!confirmDelete) return
+    const t = setTimeout(() => setConfirmDelete(false), 4000)
+    return () => clearTimeout(t)
+  }, [confirmDelete])
+  useEffect(() => { if (!expanded) setConfirmDelete(false) }, [expanded])
 
   const host = cred.host || 'proxy.globproxy.com'
   const port = cred.port || getProxyPort(cred.protocol, cred.session_type)
@@ -55,18 +90,13 @@ export default function ProxyCard({ cred, index, expanded, onToggle }: Props) {
   const isSocks5 = cred.protocol === 'socks5'
   const canDelete = !cred.created_by || cred.created_by === cred.user_id
 
-  const count = cred.endpoint_count || 1
-  const sessionIds = useMemo(
-    () => Array.from({ length: count }, () => genSessionId()),
-    [cred.id, count, cred.session_type]
-  )
-
-  const endpoints: string[] = isSticky ? [] : sessionIds.map((sid) =>
-    `${host}:${port}:${buildProxyUsername(baseUser, cred, sid)}:${pass}`
-  )
-  const user = isSticky
-    ? buildProxyUsername(baseUser, { ...cred, session_type: 'rotating' })
-    : (endpoints.length ? buildProxyUsername(baseUser, cred, sessionIds[0]) : baseUser)
+  // A rotating username carries no session id (buildProxyUsername only adds
+  // one for sticky), so endpoint_count > 1 used to render N byte-identical
+  // lines and "copy all" pasted the same endpoint N times. One rotating
+  // endpoint already serves any number of connections, each on a fresh IP —
+  // show it once.
+  const user = buildProxyUsername(baseUser, { ...cred, session_type: 'rotating', sticky_duration: null })
+  const endpoints: string[] = isSticky ? [] : [`${host}:${port}:${user}:${pass}`]
 
   // Ad hoc sticky endpoint for the header's quick-copy button. The
   // managed, persisted sessions (SessionManager, "Sticky sessions" tab)
@@ -81,20 +111,20 @@ export default function ProxyCard({ cred, index, expanded, onToggle }: Props) {
     ? `${host}:${port}:${buildProxyUsername(baseUser, cred, quickStickySessionId)}:${pass}`
     : null
 
-  function copy(text: string, label = 'Copied') {
-    navigator.clipboard.writeText(text)
-    toast.success(label)
+  async function copy(text: string, label = 'Copied') {
+    if (await copyText(text)) toast.success(label)
+    else toast.error('Couldn\u2019t access the clipboard — select the text and copy it manually.')
   }
 
   function copyAll() {
-    copy(endpoints.join('\n'), `${endpoints.length} endpoint${endpoints.length > 1 ? 's' : ''} copied`)
+    copy(endpoints.join('\n'), 'Endpoint copied')
   }
 
-  function quickCopy(e: React.MouseEvent) {
+  async function quickCopy(e: React.MouseEvent) {
     e.stopPropagation()
     const target = isSticky ? quickStickyEndpoint : endpoints[0]
     if (!target) return
-    navigator.clipboard.writeText(target)
+    if (!(await copyText(target))) { toast.error('Couldn\u2019t access the clipboard.'); return }
     setJustCopied(true)
     toast.success('Endpoint copied')
     setTimeout(() => setJustCopied(false), 1300)
@@ -105,7 +135,9 @@ export default function ProxyCard({ cred, index, expanded, onToggle }: Props) {
     const blob = new Blob([endpoints.join('\n')], { type: 'text/plain' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
-    a.href = url; a.download = `${name.toLowerCase().replace(/\s+/g, '-')}.txt`
+    // Labels are free text — keep the download name filesystem-safe.
+    const safe = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'proxy-session'
+    a.href = url; a.download = `${safe}.txt`
     a.click(); URL.revokeObjectURL(url)
     toast.success('Downloaded')
   }
@@ -115,14 +147,8 @@ export default function ProxyCard({ cred, index, expanded, onToggle }: Props) {
     if (!confirmDelete) { setConfirmDelete(true); return }
     setDeleting(true)
     try {
-      const { data: { session } } = await createClient().auth.getSession()
-      const res = await fetch(`/api/dashboard/proxies/${cred.id}`, {
-        method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${session?.access_token}` },
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error)
-      toast.success('Proxy deleted')
+      await apiJson('DELETE', `/api/dashboard/proxies/${cred.id}`)
+      toast.success('Session deleted')
       router.refresh()
     } catch (err: any) {
       toast.error(err.message)
@@ -134,18 +160,11 @@ export default function ProxyCard({ cred, index, expanded, onToggle }: Props) {
   async function handleTopup(e: React.FormEvent) {
     e.preventDefault()
     const gb = Number(topupAmount)
-    if (!gb || gb <= 0) { toast.error('Enter a GB amount greater than 0'); return }
+    if (!Number.isFinite(gb) || gb <= 0) { toast.error('Enter a GB amount greater than 0'); return }
     setTopupLoading(true)
     try {
-      const { data: { session } } = await createClient().auth.getSession()
-      const res = await fetch(`/api/dashboard/proxies/${cred.id}/topup`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-        body: JSON.stringify({ gb_amount: gb }),
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error)
-      toast.success(`+${gb} GB added`)
+      const data = await apiJson('POST', `/api/dashboard/proxies/${cred.id}/topup`, { gb_amount: gb })
+      toast.success(`+${formatGb(gb)} GB added`)
       if (data.warning) toast(data.warning, { icon: '⚠️', duration: 6000 })
       setTopupAmount('')
       router.refresh()
@@ -162,21 +181,15 @@ export default function ProxyCard({ cred, index, expanded, onToggle }: Props) {
       const t = Number(autoThreshold), a = Number(autoAmount)
       if (!Number.isFinite(t) || t < 0) { toast.error('Threshold must be 0 or greater'); return }
       if (!Number.isFinite(a) || a <= 0) { toast.error('Top-up amount must be greater than 0'); return }
+      if (a <= t) { toast.error('The amount added must be larger than the threshold, or it would re-trigger immediately.'); return }
     }
     setAutoLoading(true)
     try {
-      const { data: { session } } = await createClient().auth.getSession()
-      const res = await fetch(`/api/dashboard/proxies/${cred.id}/auto-topup`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-        body: JSON.stringify({
-          enabled: autoEnabled,
-          threshold_gb: autoEnabled ? Number(autoThreshold) : null,
-          amount_gb: autoEnabled ? Number(autoAmount) : null,
-        }),
+      await apiJson('PATCH', `/api/dashboard/proxies/${cred.id}/auto-topup`, {
+        enabled: autoEnabled,
+        threshold_gb: autoEnabled ? Number(autoThreshold) : null,
+        amount_gb: autoEnabled ? Number(autoAmount) : null,
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error)
       toast.success(autoEnabled ? 'Auto-allocate enabled' : 'Auto-allocate disabled')
       router.refresh()
     } catch (err: any) {
@@ -186,7 +199,9 @@ export default function ProxyCard({ cred, index, expanded, onToggle }: Props) {
     }
   }
 
-  const verifyCurl = `curl -x ${isSocks5 ? 'socks5' : 'http'}://${user}:${pass}@${host}:${port} https://ipinfo.io/json`
+  // socks5h (not socks5): resolve DNS on the proxy side, matching the Python
+  // and Node snippets and avoiding DNS leaks from the user's own resolver.
+  const verifyCurl = `curl -x ${isSocks5 ? 'socks5h' : 'http'}://${user}:${pass}@${host}:${port} https://ipinfo.io/json`
 
   const pySnippet = isSocks5 ? `# pip install "requests[socks]"
 import requests
@@ -207,7 +222,10 @@ proxies = {
 response = requests.get("https://ipinfo.io/json", proxies=proxies)
 print(response.json())  # shows your proxy IP and location`
 
-  const nodeSnippet = isSocks5 ? `// npm install socks-proxy-agent
+  // CommonJS + node-fetch@2: the old snippet mixed require() with a top-level
+  // await, which Node refuses to run ("both require() and top-level await are
+  // present"), and node-fetch v3 is ESM-only so require() would fail anyway.
+  const nodeSnippet = isSocks5 ? `// npm install socks-proxy-agent node-fetch@2
 const { SocksProxyAgent } = require("socks-proxy-agent");
 const fetch = require("node-fetch");
 
@@ -215,16 +233,21 @@ const agent = new SocksProxyAgent(
   "socks5h://${user}:${pass}@${host}:${port}"
 );
 
-const res = await fetch("https://ipinfo.io/json", { agent });
-console.log(await res.json()); // shows proxy IP and location` : `const { HttpsProxyAgent } = require("https-proxy-agent");
+(async () => {
+  const res = await fetch("https://ipinfo.io/json", { agent });
+  console.log(await res.json()); // shows proxy IP and location
+})();` : `// npm install https-proxy-agent node-fetch@2
+const { HttpsProxyAgent } = require("https-proxy-agent");
 const fetch = require("node-fetch");
 
 const agent = new HttpsProxyAgent(
   "http://${user}:${pass}@${host}:${port}"
 );
 
-const res = await fetch("https://ipinfo.io/json", { agent });
-console.log(await res.json()); // shows proxy IP and location`
+(async () => {
+  const res = await fetch("https://ipinfo.io/json", { agent });
+  console.log(await res.json()); // shows proxy IP and location
+})();`
 
   const browserSnippet = `// Chrome / Firefox extension settings:
 //
@@ -242,11 +265,12 @@ console.log(await res.json()); // shows proxy IP and location`
   const railColor =
     cred.status === 'pending' ? 'bg-amber-500'
     : isWarmingUp ? 'bg-accent'
-    : cred.status === 'active' && pct >= 85 ? 'bg-red-400'
+    : cred.status === 'active' && pct >= URGENT_PCT ? 'bg-red-400'
+    : cred.status === 'active' && pct >= WARN_PCT ? 'bg-amber-400'
     : cred.status === 'active' ? 'bg-accent2'
     : 'bg-border'
 
-  const usageFillColor = pct > 80 ? 'bg-red-400' : pct > 50 ? 'bg-amber-400' : 'bg-accent2'
+  const usageFillColor = pct >= URGENT_PCT ? 'bg-red-400' : pct >= WARN_PCT ? 'bg-amber-400' : 'bg-accent2'
 
   const statusBadge = cred.status === 'active'
     ? 'text-accent2 bg-accent2-light'
@@ -273,7 +297,7 @@ console.log(await res.json()); // shows proxy IP and location`
           </div>
           <div className="flex items-center gap-1.5 text-[11px] font-mono text-muted mt-0.5">
             <span>{cred.session_type}</span><span>·</span><span>{(cred.protocol || 'http').toUpperCase()}</span>
-            {cred.sticky_duration && <><span>·</span><span>{cred.sticky_duration}min sticky</span></>}
+            {isSticky && cred.sticky_duration && <><span>·</span><span>{cred.sticky_duration}min sticky</span></>}
             {(cred.country || cred.city) && <><span>·</span><span>{[cred.city, cred.country].filter(Boolean).join(', ')}</span></>}
           </div>
         </div>
@@ -327,11 +351,11 @@ console.log(await res.json()); // shows proxy IP and location`
                 </button>
                 <button onClick={() => setTab('bandwidth')}
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'bandwidth' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
-                  Bandwidth{pct >= 85 && <span className="ml-1 text-red-400">●</span>}
+                  Bandwidth{pct >= WARN_PCT && <span className={clsx('ml-1', pct >= URGENT_PCT ? 'text-red-400' : 'text-amber-400')}>●</span>}
                 </button>
                 <button onClick={() => setTab('endpoints')}
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'endpoints' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
-                  {isSticky ? 'Sticky sessions' : `Endpoints (${count})`}
+                  {isSticky ? 'Sticky sessions' : 'Endpoint'}
                 </button>
                 <button onClick={() => setTab('whitelist')}
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'whitelist' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
@@ -379,7 +403,7 @@ console.log(await res.json()); // shows proxy IP and location`
                     <>
                       <div className="bg-surface border border-border rounded-lg px-4 py-3 mb-2 flex items-center justify-between">
                         <span className="text-[10px] font-mono text-muted uppercase tracking-wider">Remaining</span>
-                        <span className={clsx('text-sm font-mono font-medium', pct >= 85 ? 'text-red-500' : 'text-ink')}>
+                        <span className={clsx('text-sm font-mono font-medium', pct >= URGENT_PCT ? 'text-red-500' : pct >= WARN_PCT ? 'text-amber-600' : 'text-ink')}>
                           {formatGb(Math.max(0, gbAllocated - gbUsed))} GB of {formatGb(gbAllocated)} GB
                         </span>
                       </div>
@@ -389,7 +413,7 @@ console.log(await res.json()); // shows proxy IP and location`
                         <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-1.5">Top up now</div>
                         <div className="flex gap-2">
                           <input
-                            type="number" min="0.1" step="0.1" placeholder="GB to add"
+                            type="number" inputMode="decimal" min="0.01" step="any" placeholder="GB to add"
                             value={topupAmount} onChange={e => setTopupAmount(e.target.value)}
                             className="flex-1 bg-white border border-border px-3 py-2 rounded-lg text-xs focus:outline-none focus:border-accent transition-colors"
                           />
@@ -428,7 +452,7 @@ console.log(await res.json()); // shows proxy IP and location`
                               <label className="text-[10px] font-mono text-muted uppercase tracking-wider block mb-1">When remaining falls below</label>
                               <div className="flex items-center gap-1.5">
                                 <input
-                                  type="number" min="0" step="0.1" placeholder="e.g. 2"
+                                  type="number" inputMode="decimal" min="0" step="any" placeholder="e.g. 2"
                                   value={autoThreshold} onChange={e => setAutoThreshold(e.target.value)}
                                   className="w-full bg-white border border-border px-3 py-2 rounded-lg text-xs focus:outline-none focus:border-accent transition-colors"
                                 />
@@ -439,7 +463,7 @@ console.log(await res.json()); // shows proxy IP and location`
                               <label className="text-[10px] font-mono text-muted uppercase tracking-wider block mb-1">Add</label>
                               <div className="flex items-center gap-1.5">
                                 <input
-                                  type="number" min="0.1" step="0.1" placeholder="e.g. 10"
+                                  type="number" inputMode="decimal" min="0.01" step="any" placeholder="e.g. 10"
                                   value={autoAmount} onChange={e => setAutoAmount(e.target.value)}
                                   className="w-full bg-white border border-border px-3 py-2 rounded-lg text-xs focus:outline-none focus:border-accent transition-colors"
                                 />
@@ -478,7 +502,11 @@ console.log(await res.json()); // shows proxy IP and location`
                     />
                   </div>
                 ) : (
-                  <div className="bg-ink rounded-lg overflow-hidden mb-2">
+                  <div className="mb-2">
+                  <p className="text-[11px] text-muted mb-2">
+                    Rotating session — every request exits through a new IP. This one endpoint handles any number of connections; there&apos;s no need for more.
+                  </p>
+                  <div className="bg-ink rounded-lg overflow-hidden">
                     <div className="flex items-center justify-between px-3 py-2 border-b border-white/10">
                       <span className="text-[10px] font-mono text-white/40 uppercase tracking-widest">host:port:user:pass</span>
                       <div className="flex gap-2">
@@ -497,6 +525,7 @@ console.log(await res.json()); // shows proxy IP and location`
                         <div key={i} className="font-mono text-[11px] text-white/70 leading-5 break-all">{ep}</div>
                       ))}
                     </div>
+                  </div>
                   </div>
                 )
               )}
@@ -569,7 +598,7 @@ console.log(await res.json()); // shows proxy IP and location`
           {/* Delete */}
           <div className="flex items-center justify-between pt-3 mt-1 border-t border-border">
             <div className="text-[11px] text-muted font-mono">
-              {!canDelete ? '⚠ Allocated by reseller — cannot delete' : 'Deleting returns allocated GB to your account'}
+              {!canDelete ? '⚠ Allocated by reseller — cannot delete' : 'Deleting returns this session\u2019s unused GB to your account — GB already used isn\u2019t refunded'}
             </div>
             {canDelete && (
               <button onClick={handleDelete} disabled={deleting}

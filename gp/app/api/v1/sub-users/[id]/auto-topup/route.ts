@@ -25,6 +25,7 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
       amountGb = parseFiniteNumber(body.amount_gb)
       if (thresholdGb === null || thresholdGb < 0) return apiError(400, 'invalid_request', 'threshold_gb must be a number ≥ 0')
       if (amountGb === null || amountGb <= 0) return apiError(400, 'invalid_request', 'amount_gb must be a number greater than 0')
+      if (amountGb <= thresholdGb) return apiError(400, 'invalid_request', 'amount_gb must be greater than threshold_gb')
     }
 
     const { error } = await supabase.rpc('set_auto_topup', {

@@ -1,6 +1,7 @@
 'use client'
 import { useState, useEffect } from 'react'
 import toast from 'react-hot-toast'
+import { apiFetch, apiJson, copyText } from '@/lib/clientApi'
 
 const ENDPOINTS = [
   {
@@ -37,12 +38,6 @@ const ENDPOINTS = [
     method: 'GET', title: 'Bandwidth balance',
     path: '/api/v1/account/bandwidth',
     example: `curl https://globproxy.com/api/v1/account/bandwidth \\
-  -H "Authorization: Bearer YOUR_KEY"`,
-  },
-  {
-    method: 'GET', title: 'List sub-users',
-    path: '/api/v1/sub-users',
-    example: `curl https://globproxy.com/api/v1/sub-users \\
   -H "Authorization: Bearer YOUR_KEY"`,
   },
   {
@@ -126,59 +121,66 @@ export default function ApiKeysClient() {
   const [newExpiry, setNewExpiry] = useState<string>('') // '' = never
   const [newIps, setNewIps] = useState('') // comma/space separated; empty = any IP
   const [justCreated, setJustCreated] = useState<string | null>(null) // plaintext, shown once
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   async function loadKeys() {
     setLoading(true)
-    const res = await fetch('/api/dashboard/api-keys')
-    const data = await res.json().catch(() => ({}))
-    if (res.ok) setKeys(data.keys ?? [])
+    try {
+      const data = await apiFetch('/api/dashboard/api-keys')
+      setKeys(data.keys ?? [])
+      setLoadError(null)
+    } catch (e: any) {
+      // A failed load used to render "No API keys yet." — hiding keys that exist.
+      setLoadError(e?.message || 'Couldn\u2019t load your API keys')
+    }
     setLoading(false)
   }
 
   useEffect(() => { loadKeys() }, [])
 
   async function createKey() {
+    // The plaintext key is shown once. Minting another while the banner is up
+    // replaced it, losing the first key's only copy.
+    if (justCreated) {
+      toast.error('Copy your new key and click \u201cDone\u201d first \u2014 it can\u2019t be shown again.')
+      return
+    }
     setCreating(true)
-    const res = await fetch('/api/dashboard/api-keys', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    try {
+      const data = await apiJson('POST', '/api/dashboard/api-keys', {
         label: newLabel.trim() || 'Default key',
         scopes: newScope === 'read' ? ['read'] : ['read', 'write'],
         expires_in_days: newExpiry ? Number(newExpiry) : null,
         allowed_ips: newIps.split(/[\s,]+/).filter(Boolean),
-      }),
-    })
-    const data = await res.json().catch(() => ({}))
-    if (!res.ok || data.error) {
-      toast.error(data.error ?? 'Failed to create key')
-    } else {
+      })
       setJustCreated(data.key)
       setNewLabel('')
       setNewIps('')
       await loadKeys()
+    } catch (err: any) {
+      if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Failed to create key')
     }
     setCreating(false)
   }
 
   async function revokeKey(id: string) {
     if (!confirm('Revoke this key? Anything using it will stop working immediately.')) return
-    const res = await fetch('/api/dashboard/api-keys', {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id }),
-    })
-    const data = await res.json().catch(() => ({}))
-    if (!res.ok || data.error) toast.error(data.error ?? 'Failed to revoke key')
-    else { toast.success('Key revoked'); loadKeys() }
+    try {
+      await apiJson('DELETE', '/api/dashboard/api-keys', { id })
+      toast.success('Key revoked')
+      loadKeys()
+    } catch (err: any) {
+      toast.error(err.message ?? 'Failed to revoke key')
+    }
   }
 
-  function copy(text: string, label = 'Copied') {
-    navigator.clipboard.writeText(text)
-    toast.success(label)
+  async function copy(text: string, label = 'Copied') {
+    if (await copyText(text)) toast.success(label)
+    else toast.error('Couldn\u2019t access the clipboard — select the text and copy it manually.')
   }
 
-  const activeKeys = keys.filter(k => !k.revoked_at)
+  // Expired keys can't authenticate any more, so they aren't "active".
+  const activeKeys = keys.filter(k => !k.revoked_at && !(k.expires_at && new Date(k.expires_at).getTime() <= Date.now()))
 
   return (
     <div className="max-w-3xl">
@@ -198,7 +200,7 @@ export default function ApiKeysClient() {
             Copy this now — for security we only show it once and can't display it again after you leave this page.
           </p>
           <div className="bg-white border border-border rounded-lg p-4 flex items-center gap-3">
-            <span className="font-mono text-xs text-ink flex-1 truncate">{justCreated}</span>
+            <span className="font-mono text-xs text-ink flex-1 truncate select-all">{justCreated}</span>
             <button onClick={() => copy(justCreated, 'API key copied')}
               className="text-xs font-mono text-accent border border-accent/30 px-2.5 py-1 rounded-lg transition-colors flex-shrink-0">
               Copy
@@ -222,6 +224,10 @@ export default function ApiKeysClient() {
 
         {loading ? (
           <p className="text-sm text-muted">Loading...</p>
+        ) : loadError ? (
+          <p className="text-sm text-red-500 mb-4">{loadError}{' '}
+            <button onClick={loadKeys} className="underline hover:opacity-70">Retry</button>
+          </p>
         ) : keys.length === 0 ? (
           <p className="text-sm text-muted mb-4">No API keys yet.</p>
         ) : (

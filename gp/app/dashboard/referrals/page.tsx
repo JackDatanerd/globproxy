@@ -4,13 +4,15 @@ import ReferralLinkCard from '@/components/dashboard/ReferralLinkCard'
 import AffiliateApplyForm from '@/components/dashboard/AffiliateApplyForm'
 import PayoutMethodForm from '@/components/dashboard/PayoutMethodForm'
 import { currentAccruingCycle, formatCycleLabel } from '@/lib/payoutCycle'
+import { REFERRAL_GB_BONUS } from '@/lib/referrals'
+import { formatUsd } from '@/lib/format'
 
 export default async function ReferralsPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/auth/login')
 
-  const [{ data: profile }, { data: referrals }] = await Promise.all([
+  const [{ data: profile, error: profileError }, { data: referrals, error: referralsError }] = await Promise.all([
     supabase.from('profiles')
       .select('referral_code, affiliate_status, affiliate_commission_rate, affiliate_commission_rate_lifetime, is_verified_operator, payout_method, payout_wallet_address, payout_bank_details, payout_mpesa_phone, payout_method_updated_at')
       .eq('id', user.id)
@@ -23,7 +25,9 @@ export default async function ReferralsPage() {
 
   const isAffiliate = profile?.affiliate_status === 'approved'
 
-  const [{ data: commissions }, { data: payouts }] = isAffiliate
+  const cycle = currentAccruingCycle()
+
+  const [{ data: commissions, error: commissionsError }, { data: payouts, error: payoutsError }, { data: cycleRows, error: cycleError }] = isAffiliate
     ? await Promise.all([
         supabase.from('affiliate_commissions')
           .select('id, gross_amount_usd, commission_rate, commission_amount_usd, status, created_at, payout_id')
@@ -34,22 +38,34 @@ export default async function ReferralsPage() {
           .select('id, cycle_start, cycle_end, amount_usd, status, payout_method, created_at, paid_at')
           .eq('referrer_id', user.id)
           .order('cycle_start', { ascending: false }),
+        // "This cycle so far" needs EVERY unbatched commission in the cycle.
+        // It was summed from the 20 most recent commissions of all time, so a
+        // busy cycle (or a quiet one with older rows pushed out) misreported it.
+        supabase.from('affiliate_commissions')
+          .select('commission_amount_usd')
+          .eq('referrer_id', user.id)
+          .is('payout_id', null)
+          .gte('created_at', `${cycle.cycleStart}T00:00:00.000Z`)
+          .lte('created_at', `${cycle.cycleEnd}T23:59:59.999Z`),
       ])
-    : [{ data: [] }, { data: [] }]
+    : [{ data: [], error: null }, { data: [], error: null }, { data: [], error: null }]
+  const loadFailed = !!(profileError || referralsError || commissionsError || payoutsError || cycleError)
 
   const referredCount = referrals?.length ?? 0
-  const gbEarned = (referrals ?? []).filter(r => r.gb_bonus_credited_at).length // 1 GB each, per REFERRAL_GB_BONUS
+  const gbEarned = (referrals ?? []).filter(r => r.gb_bonus_credited_at).length * REFERRAL_GB_BONUS
 
   const allCommissions = commissions ?? []
   const totalPaidUsd = (payouts ?? []).filter(p => p.status === 'paid').reduce((sum, p) => sum + Number(p.amount_usd), 0)
 
-  const cycle = currentAccruingCycle()
-  const thisCycleUsd = allCommissions
-    .filter(c => !c.payout_id && c.created_at >= cycle.cycleStart && c.created_at.slice(0, 10) <= cycle.cycleEnd)
-    .reduce((sum, c) => sum + Number(c.commission_amount_usd), 0)
+  const thisCycleUsd = (cycleRows ?? []).reduce((sum, c) => sum + Number(c.commission_amount_usd), 0)
 
   return (
     <div className="max-w-3xl">
+      {loadFailed && (
+        <div className="mb-5 bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm">
+          Some of your referral data couldn&apos;t be loaded, so the figures below may be incomplete. Refresh to try again.
+        </div>
+      )}
       <div className="mb-8">
         <div className="flex items-center gap-2.5">
           <h1 className="font-display font-bold text-2xl text-ink">Referrals</h1>
@@ -62,7 +78,7 @@ export default async function ReferralsPage() {
 
       {profile?.referral_code && <ReferralLinkCard code={profile.referral_code} />}
 
-      <div className={`grid gap-4 mt-4 ${isAffiliate ? 'grid-cols-3' : 'grid-cols-2'}`}>
+      <div className={`grid gap-4 mt-4 grid-cols-1 ${isAffiliate ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>
         <div className="bg-white border border-border rounded-xl p-5">
           <div className="text-[10px] font-mono text-muted uppercase tracking-wider">People referred</div>
           <div className="text-2xl font-display font-bold text-ink mt-1">{referredCount}</div>
@@ -70,7 +86,7 @@ export default async function ReferralsPage() {
         {isAffiliate && (
           <div className="bg-white border border-border rounded-xl p-5">
             <div className="text-[10px] font-mono text-muted uppercase tracking-wider">This cycle so far</div>
-            <div className="text-2xl font-display font-bold text-ink mt-1">${thisCycleUsd.toFixed(2)}</div>
+            <div className="text-2xl font-display font-bold text-ink mt-1">{formatUsd(thisCycleUsd)}</div>
             <div className="text-[10px] text-muted mt-1">Payable from {new Date(cycle.payableFrom + 'T00:00:00Z').toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}</div>
           </div>
         )}
@@ -79,7 +95,7 @@ export default async function ReferralsPage() {
             {isAffiliate ? 'Total paid to date' : 'GB bonuses earned'}
           </div>
           <div className="text-2xl font-display font-bold text-accent mt-1">
-            {isAffiliate ? `$${totalPaidUsd.toFixed(2)}` : `${gbEarned} GB`}
+            {isAffiliate ? formatUsd(totalPaidUsd) : `${gbEarned} GB`}
           </div>
         </div>
       </div>
@@ -112,7 +128,7 @@ export default async function ReferralsPage() {
                     <div key={p.id} className="flex items-center justify-between text-xs border-b border-border last:border-0 pb-2 last:pb-0">
                       <span className="text-muted">{formatCycleLabel(p)} · {p.payout_method === 'usdt' ? 'USDT' : p.payout_method === 'mpesa' ? 'M-Pesa' : 'Bank'}</span>
                       <span className={`font-mono ${p.status === 'paid' ? 'text-green-600' : 'text-ink'}`}>
-                        ${Number(p.amount_usd).toFixed(2)} {p.status === 'paid' ? '· paid' : '· scheduled'}
+                        {formatUsd(p.amount_usd)} {p.status === 'paid' ? '· paid' : '· scheduled'}
                       </span>
                     </div>
                   ))}
@@ -132,10 +148,10 @@ export default async function ReferralsPage() {
                     <div key={c.id} className="flex items-center justify-between text-xs border-b border-border last:border-0 pb-2 last:pb-0">
                       <span className="text-muted">
                         {new Date(c.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
-                        {' · '}${Number(c.gross_amount_usd).toFixed(2)} order at {Math.round(Number(c.commission_rate) * 100)}%
+                        {' · '}{formatUsd(c.gross_amount_usd)} order at {Math.round(Number(c.commission_rate) * 100)}%
                       </span>
                       <span className="font-mono text-ink">
-                        ${Number(c.commission_amount_usd).toFixed(2)} {c.payout_id ? '· batched' : '· accruing'}
+                        {formatUsd(c.commission_amount_usd)} {c.payout_id ? '· batched' : '· accruing'}
                       </span>
                     </div>
                   ))}
@@ -149,6 +165,14 @@ export default async function ReferralsPage() {
           <div className="bg-white border border-border rounded-xl p-5">
             <div className="text-sm font-medium text-ink mb-1">Affiliate application pending</div>
             <div className="text-xs text-muted">We'll review it and follow up by email.</div>
+          </div>
+        ) : profile?.affiliate_status === 'suspended' ? (
+          // 'suspended' used to fall through to the blank apply form, inviting a
+          // suspended affiliate to re-apply (and, before the server-side guard,
+          // knocking themselves back to 'pending').
+          <div className="bg-white border border-border rounded-xl p-5">
+            <div className="text-sm font-medium text-ink mb-1">Affiliate account suspended</div>
+            <div className="text-xs text-muted">Commissions aren&apos;t accruing while your affiliate account is suspended. Contact support to find out why. The standard GB bonus above still applies.</div>
           </div>
         ) : profile?.affiliate_status === 'rejected' ? (
           <div className="bg-white border border-border rounded-xl p-5">

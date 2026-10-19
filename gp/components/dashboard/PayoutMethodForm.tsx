@@ -1,6 +1,8 @@
 'use client'
 import { useState } from 'react'
+import { useRouter } from 'next/navigation'
 import toast from 'react-hot-toast'
+import { apiJson } from '@/lib/clientApi'
 
 type Props = {
   currentMethod: 'usdt' | 'bank' | 'mpesa' | null
@@ -11,6 +13,7 @@ type Props = {
 }
 
 export default function PayoutMethodForm({ currentMethod, currentWalletAddress, currentBankDetails, currentMpesaPhone, updatedAt }: Props) {
+  const router = useRouter()
   const [method, setMethod] = useState<'usdt' | 'bank' | 'mpesa'>(currentMethod ?? 'usdt')
   const [walletAddress, setWalletAddress] = useState(currentWalletAddress ?? '')
   const [mpesaPhone, setMpesaPhone] = useState(currentMpesaPhone ?? '')
@@ -24,28 +27,27 @@ export default function PayoutMethodForm({ currentMethod, currentWalletAddress, 
 
   async function handle(e: React.FormEvent) {
     e.preventDefault()
-    setLoading(true)
+    // Pasted values routinely carry leading/trailing whitespace or a newline —
+    // a wallet address with a trailing space fails validation (or worse, is
+    // stored and then fails at payout time).
     const body =
-      method === 'usdt' ? { method, walletAddress } :
-      method === 'mpesa' ? { method, mpesaPhone } :
-      { method, bankDetails: { bankName, accountName, accountNumber, country, swift } }
-
-    const res = await fetch('/api/dashboard/update-payout-method', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    const data = await res.json().catch(() => ({}))
-    setLoading(false)
-    if (!res.ok || data.error) {
-      toast.error(data.error ?? 'Failed to save payout method')
-      return
+      method === 'usdt' ? { method, walletAddress: walletAddress.trim() } :
+      method === 'mpesa' ? { method, mpesaPhone: mpesaPhone.trim() } :
+      { method, bankDetails: { bankName: bankName.trim(), accountName: accountName.trim(), accountNumber: accountNumber.trim(), country: country.trim(), swift: swift.trim() } }
+    setLoading(true)
+    try {
+      await apiJson('POST', '/api/dashboard/update-payout-method', body)
+      toast.success('Payout method saved — check your email for confirmation')
+      setEditing(false)
+      // Re-fetch the server data (new updated_at / masked values) in place.
+      router.refresh()
+    } catch (err: any) {
+      // A network failure used to throw out of this handler and leave the
+      // button on "Saving…" forever.
+      if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Failed to save payout method')
+    } finally {
+      setLoading(false)
     }
-    toast.success('Payout method saved — check your email for confirmation')
-    setEditing(false)
-    // Reflects the new server-set updated_at without a full page reload —
-    // simplest correct thing is just to reload, this isn't a hot path.
-    window.location.reload()
   }
 
   if (!editing) {

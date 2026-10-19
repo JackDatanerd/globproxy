@@ -29,12 +29,15 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ sessio
     .eq('id', sessionId)
     .eq('user_id', user.id)
     .select()
-    .single()
+    .maybeSingle()
 
   if (error) {
     console.error('[dashboard/sessions/[sessionId]] db error:', error)
     return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
   }
+  // .single() turned "not yours / already deleted" into a 500 with Postgres'
+  // "JSON object requested, multiple (or no) rows returned" text.
+  if (!data) return NextResponse.json({ error: 'Session not found' }, { status: 404 })
   return NextResponse.json({ session: data })
 }
 

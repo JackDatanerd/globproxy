@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react'
 import clsx from 'clsx'
 import { formatGb } from '@/lib/format'
+import { apiFetch } from '@/lib/clientApi'
 
 interface SeriesPoint { date: string; gb: number }
 interface BreakdownRow {
@@ -30,6 +31,13 @@ const RANGES = [
 // yet, and pulling one in for a single chart on one page isn't worth the
 // bundle weight on a Cloudflare Workers deployment — this covers exactly
 // what the usage page needs (a daily GB trend line) without one.
+// Daily values are routinely well under 0.01 GB, which formatGb flattened to
+// "0.00" on every axis label. Switch to MB when the whole chart is sub-GB.
+function axisLabel(gb: number, maxGb: number): string {
+  if (maxGb < 1) return `${Math.round(gb * 1024)} MB`
+  return formatGb(gb)
+}
+
 function TrendChart({ points }: { points: SeriesPoint[] }) {
   const width = 640
   const height = 180
@@ -38,7 +46,7 @@ function TrendChart({ points }: { points: SeriesPoint[] }) {
   const padT = 12
   const padB = 24
 
-  if (points.length === 0) {
+  if (points.length === 0 || points.every(p => p.gb === 0)) {
     return (
       <div className="h-[180px] flex items-center justify-center text-xs font-mono text-muted">
         No usage recorded in this range yet.
@@ -76,13 +84,15 @@ function TrendChart({ points }: { points: SeriesPoint[] }) {
           x={padL - 6} y={padT + innerH * (1 - f) + 3}
           textAnchor="end" fontSize={9} fontFamily="monospace" className="fill-muted"
         >
-          {formatGb(maxGb * f)}
+          {axisLabel(maxGb * f, maxGb)}
         </text>
       ))}
       <path d={areaPath} className="fill-accent" fillOpacity={0.08} stroke="none" />
       <path d={linePath} className="stroke-accent" fill="none" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
       {points.map((p, i) => (
-        <circle key={p.date} cx={x(i)} cy={y(p.gb)} r={2.5} className="fill-accent" />
+        <circle key={p.date} cx={x(i)} cy={y(p.gb)} r={points.length > 15 ? 1.8 : 2.5} className="fill-accent">
+          <title>{`${p.date}: ${p.gb < 1 ? `${(p.gb * 1024).toFixed(1)} MB` : `${p.gb.toFixed(3)} GB`}`}</title>
+        </circle>
       ))}
       {points.map((p, i) =>
         i % labelStep === 0 ? (
@@ -109,12 +119,7 @@ export default function UsageHistoryChart() {
     let cancelled = false
     setLoading(true)
     setError(null)
-    fetch(`/api/dashboard/usage/history?range=${range}`)
-      .then(async res => {
-        const json = await res.json()
-        if (!res.ok) throw new Error(json.error || 'Failed to load usage history')
-        return json as HistoryResponse
-      })
+    apiFetch<HistoryResponse>(`/api/dashboard/usage/history?range=${range}`)
       .then(json => { if (!cancelled) setData(json) })
       .catch(err => { if (!cancelled) setError(err.message) })
       .finally(() => { if (!cancelled) setLoading(false) })
@@ -159,7 +164,9 @@ export default function UsageHistoryChart() {
           <div className="h-[180px] flex items-center justify-center text-xs font-mono text-muted">Loading…</div>
         ) : (
           <>
-            <TrendChart points={data?.series ?? []} />
+            <div className={loading ? 'opacity-50 transition-opacity' : 'transition-opacity'}>
+              <TrendChart points={data?.series ?? []} />
+            </div>
             {data?.partial_data && (
               <p className="text-[10.5px] text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 mt-3 font-mono">
                 Some sessions couldn't be reached for this range — the chart above reflects the rest.

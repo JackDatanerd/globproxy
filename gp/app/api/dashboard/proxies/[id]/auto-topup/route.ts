@@ -37,6 +37,12 @@ export async function PATCH(
     if (!Number.isFinite(amountGb) || (amountGb as number) <= 0) {
       return NextResponse.json({ error: 'amount_gb must be a number greater than 0' }, { status: 400 })
     }
+    // amount must exceed threshold: otherwise a top-up can leave the session
+    // still at/below its own threshold, and the cron re-fires every tick,
+    // draining the account balance into a session that never clears the line.
+    if ((amountGb as number) <= (thresholdGb as number)) {
+      return NextResponse.json({ error: 'amount_gb must be greater than threshold_gb' }, { status: 400 })
+    }
   }
 
   const admin = await createAdminClient()

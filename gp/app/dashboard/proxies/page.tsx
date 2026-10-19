@@ -9,7 +9,7 @@ export default async function ProxiesPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/auth/login')
 
-  const [{ data: creds }, { data: bw }] = await Promise.all([
+  const [{ data: creds, error: credsError }, { data: bw }] = await Promise.all([
     supabase.from('proxy_credentials')
       .select('*')
       .eq('user_id', user.id)
@@ -19,6 +19,19 @@ export default async function ProxiesPage() {
       .eq('user_id', user.id)
       .single(),
   ])
+
+  // A failed query used to fall through to the "No sessions yet" empty state,
+  // inviting the customer to create a duplicate of a session that exists.
+  if (credsError) {
+    return (
+      <div className="max-w-4xl">
+        <h1 className="font-display font-bold text-2xl text-ink mb-4">My Proxies</h1>
+        <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-5 py-4 text-sm">
+          We couldn&apos;t load your sessions right now. Your proxies are unaffected — refresh the page to try again.
+        </div>
+      </div>
+    )
+  }
 
   const total     = bw?.total_gb     ?? 0
   const used      = bw?.used_gb      ?? 0

@@ -2,20 +2,28 @@ import { redirect } from 'next/navigation'
 import { cookies } from 'next/headers'
 import { createClient } from '@/lib/supabase/server'
 import { checkVerifiedSession, MFA_COOKIE_NAME } from '@/lib/mfa'
-import DashSidebar from '@/components/dashboard/DashSidebar'
-import DashTopbar from '@/components/dashboard/DashTopbar'
-import MfaRecommendBanner from '@/components/dashboard/MfaRecommendBanner'
+import DashShell from '@/components/dashboard/DashShell'
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/auth/login')
 
-  const { data: profile } = await supabase
+  // Only what the layout itself needs. `select('*')` pulled payout details,
+  // MFA state and the application JSON into every dashboard request, and the
+  // whole row was then handed to a client component.
+  const { data: profile, error: profileError } = await supabase
     .from('profiles')
-    .select('*')
+    .select('role, email, is_deleted, is_suspended, mfa_enabled')
     .eq('id', user.id)
     .single()
+
+  // A failed lookup must not be read as "plain user, nothing wrong": every
+  // suspended/deleted/MFA check below would silently pass. Fail closed to the
+  // error boundary (app/dashboard/error.tsx) instead.
+  if (profileError || !profile) {
+    throw new Error('Could not load your account. Please refresh and try again.')
+  }
 
   // middleware.ts already enforces this (and signs the session out) for every
   // request under /dashboard — this is defense-in-depth so a suspended
@@ -34,15 +42,12 @@ export default async function DashboardLayout({ children }: { children: React.Re
   }
 
   return (
-    <div className="min-h-screen bg-surface flex flex-col">
-      <DashTopbar profile={profile} />
-      <div className="flex flex-1 overflow-hidden">
-        <DashSidebar role={profile?.role ?? 'user'} apiAccess={profile?.api_access ?? false} />
-        <main className="flex-1 p-8 overflow-y-auto">
-          {!profile?.mfa_enabled && <MfaRecommendBanner role={profile?.role ?? 'user'} />}
-          {children}
-        </main>
-      </div>
-    </div>
+    <DashShell
+      role={profile.role ?? 'user'}
+      email={profile.email ?? user.email ?? null}
+      showMfaBanner={!profile.mfa_enabled}
+    >
+      {children}
+    </DashShell>
   )
 }

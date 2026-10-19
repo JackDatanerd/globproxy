@@ -20,10 +20,20 @@ const DISMISS_KEY = 'gp_usage_banner_dismissed'
 // "about to actually stop working." Escalating past a dismissed tier
 // re-surfaces the banner rather than staying hidden forever — a dismiss
 // at 80% shouldn't suppress the more urgent 95% warning later.
+//
+// Reseller-allocated sessions are included too (they can't be topped up or
+// auto-allocated by the customer, but running dry is just as disruptive —
+// the banner points them at their reseller instead). They used to be
+// skipped only implicitly, because auto_topup is never enabled on them…
+// which meant they got the warning with a button for a feature they can't use.
+function isResellerAllocated(cred: any): boolean {
+  return !!cred.created_by && cred.created_by !== cred.user_id
+}
+
 function usageTier(cred: any): 'urgent' | 'warn' | null {
   if (cred.status !== 'active' || cred.auto_topup_enabled) return null
   if (!cred.gb_allocated || cred.gb_allocated <= 0) return null
-  const pct = (cred.gb_used / cred.gb_allocated) * 100
+  const pct = ((cred.gb_used ?? 0) / cred.gb_allocated) * 100
   if (pct >= 95) return 'urgent'
   if (pct >= 80) return 'warn'
   return null
@@ -39,6 +49,7 @@ export default function ProxyList({ creds, availableGb }: Props) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [dismissed, setDismissed] = useState<Record<string, boolean>>({})
   const cardRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const [requestedTab, setRequestedTab] = useState<{ id: string; tab: 'bandwidth'; nonce: number } | null>(null)
 
   const nearLimit = useMemo(() => {
     return creds
@@ -70,7 +81,14 @@ export default function ProxyList({ creds, availableGb }: Props) {
   const visibleWarnings = nearLimit.filter(({ cred, tier }) => !dismissed[dismissKeyFor(cred.id, tier)])
 
   function jumpTo(credId: string) {
+    // The target may be hidden by the current search/status filter — clear
+    // them first, otherwise "jump to" expanded a row that wasn't rendered and
+    // nothing visibly happened.
+    setQuery('')
+    setStatusFilter('all')
     setExpandedId(credId)
+    // Land on the tab the banner is about, not whichever one was last open.
+    setRequestedTab({ id: credId, tab: 'bandwidth', nonce: Date.now() })
     // Wait a tick for the expand to render before scrolling to it.
     setTimeout(() => cardRefs.current[credId]?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50)
   }
@@ -80,7 +98,7 @@ export default function ProxyList({ creds, availableGb }: Props) {
     return creds.filter((c) => {
       if (statusFilter !== 'all' && c.status !== statusFilter) return false
       if (!q) return true
-      const haystack = [c.label, c.country, c.state, c.city, c.session_type, c.protocol]
+      const haystack = [c.label, c.country, c.state, c.city, c.asn, c.session_type, c.protocol, c.status]
         .filter(Boolean).join(' ').toLowerCase()
       return haystack.includes(q)
     })
@@ -111,15 +129,18 @@ export default function ProxyList({ creds, availableGb }: Props) {
                 <button onClick={() => jumpTo(cred.id)} className="font-medium hover:underline">
                   {cred.label || 'This session'}
                 </button>
-                {' '}has used {formatGb(cred.gb_used)} of {formatGb(cred.gb_allocated)}GB
-                {tier === 'urgent' ? ' — about to stop working' : ''} and auto-topup isn't on.
+                {' '}has used {formatGb(cred.gb_used ?? 0)} of {formatGb(cred.gb_allocated)} GB
+                {tier === 'urgent' ? ' — about to stop working' : ''}
+                {isResellerAllocated(cred) ? ' — ask your reseller for more bandwidth.' : ' and auto-topup isn\u2019t on.'}
               </span>
-              <button onClick={() => jumpTo(cred.id)}
-                className={`font-mono text-[11px] px-2.5 py-1 rounded-md border flex-shrink-0 ${
-                  tier === 'urgent' ? 'border-red-300 hover:bg-red-100' : 'border-amber-300 hover:bg-amber-100'
-                }`}>
-                Set up auto-topup
-              </button>
+              {!isResellerAllocated(cred) && (
+                <button onClick={() => jumpTo(cred.id)}
+                  className={`font-mono text-[11px] px-2.5 py-1 rounded-md border flex-shrink-0 ${
+                    tier === 'urgent' ? 'border-red-300 hover:bg-red-100' : 'border-amber-300 hover:bg-amber-100'
+                  }`}>
+                  Set up auto-topup
+                </button>
+              )}
               <button onClick={() => dismiss(cred.id, tier)} aria-label="Dismiss"
                 className="text-current opacity-50 hover:opacity-100 flex-shrink-0 px-1">✕</button>
             </div>
@@ -153,11 +174,16 @@ export default function ProxyList({ creds, availableGb }: Props) {
 
       {filtered.length > 0 ? (
         <div className="flex flex-col gap-2">
-          {filtered.map((cred, i) => (
+          {filtered.map((cred) => (
             <div key={cred.id} ref={el => { cardRefs.current[cred.id] = el }}>
               <ProxyCard
                 cred={cred}
-                index={i}
+                // Creation order across the FULL list (oldest = #1): the
+                // list is newest-first and filtered, so a plain map index
+                // renumbered every unlabeled session on each new session and
+                // on every keystroke in the search box.
+                index={creds.length - 1 - creds.findIndex(c => c.id === cred.id)}
+                requestedTab={requestedTab && requestedTab.id === cred.id ? requestedTab : null}
                 expanded={expandedId === cred.id}
                 onToggle={() => setExpandedId(prev => prev === cred.id ? null : cred.id)}
               />

@@ -1,6 +1,6 @@
 'use client'
-import { useEffect, useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
+import { useEffect, useRef, useState } from 'react'
+import { apiFetch, apiJson } from '@/lib/clientApi'
 import { buildProxyUsername } from '@/lib/proxyEndpoint'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
@@ -33,38 +33,39 @@ export default function SessionManager({ credentialId, cred, host, port, baseUse
   const [creating, setCreating] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editLabel, setEditLabel] = useState('')
+  const [loadError, setLoadError] = useState<string | null>(null)
 
-  async function authHeaders() {
-    const { data: { session } } = await createClient().auth.getSession()
-    return {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${session?.access_token}`,
+  async function load() {
+    try {
+      const data = await apiFetch(`/api/dashboard/proxies/${credentialId}/sessions`)
+      setSessions(data.sessions ?? [])
+      setLoadError(null)
+    } catch (err: any) {
+      // A failed load used to leave `sessions` null forever — an endless
+      // "Loading sessions..." with no way out.
+      setLoadError(err?.message || 'Couldn\u2019t load sessions')
     }
   }
 
-  async function load() {
-    const headers = await authHeaders()
-    const res = await fetch(`/api/dashboard/proxies/${credentialId}/sessions`, { headers })
-    const data = await res.json()
-    if (res.ok) setSessions(data.sessions)
-  }
+  useEffect(() => { setSessions(null); setLoadError(null); load() }, [credentialId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => { load() }, [credentialId])
+  // Next unused "Session N". Using sessions.length + 1 handed out duplicate
+  // names after any deletion (create 1,2,3 → delete 2 → next was "Session 3").
+  function nextDefaultLabel(): string {
+    const taken = new Set((sessions ?? []).map(s => s.label))
+    let n = (sessions?.length ?? 0) + 1
+    while (taken.has(`Session ${n}`)) n++
+    return `Session ${n}`
+  }
 
   async function createSession() {
     setCreating(true)
     try {
-      const headers = await authHeaders()
-      const res = await fetch(`/api/dashboard/proxies/${credentialId}/sessions`, {
-        method: 'POST', headers,
-        body: JSON.stringify({ label: `Session ${(sessions?.length ?? 0) + 1}` }),
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error)
+      const data = await apiJson('POST', `/api/dashboard/proxies/${credentialId}/sessions`, { label: nextDefaultLabel() })
       setSessions(prev => [...(prev ?? []), data.session])
       toast.success('Session created')
     } catch (err: any) {
-      toast.error(err.message)
+      if (err?.code !== 'mfa_required') toast.error(err.message)
     } finally {
       setCreating(false)
     }
@@ -74,10 +75,7 @@ export default function SessionManager({ credentialId, cred, host, port, baseUse
     // Optimistic update so pin/collapse feel instant — reverted on failure.
     setSessions(prev => prev?.map(s => s.id === id ? { ...s, ...optimistic } : s) ?? null)
     try {
-      const headers = await authHeaders()
-      const res = await fetch(`/api/dashboard/sessions/${id}`, { method: 'PATCH', headers, body: JSON.stringify(patch) })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error)
+      await apiJson('PATCH', `/api/dashboard/sessions/${id}`, patch)
     } catch (err: any) {
       toast.error(err.message)
       load() // resync on failure
@@ -87,10 +85,8 @@ export default function SessionManager({ credentialId, cred, host, port, baseUse
   async function terminateSession(id: string) {
     setSessions(prev => prev?.filter(s => s.id !== id) ?? null)
     try {
-      const headers = await authHeaders()
-      const res = await fetch(`/api/dashboard/sessions/${id}`, { method: 'PATCH', headers, body: JSON.stringify({ terminate: true }) })
-      if (!res.ok) throw new Error((await res.json()).error)
-      toast.success('Session terminated — note this only stops it showing here; it still expires naturally on its own once its lifetime setting elapses')
+      await apiJson('PATCH', `/api/dashboard/sessions/${id}`, { terminate: true })
+      toast.success('Session hidden — its IP still expires on its own when the lifetime elapses')
     } catch (err: any) {
       toast.error(err.message)
       load()
@@ -100,9 +96,7 @@ export default function SessionManager({ credentialId, cred, host, port, baseUse
   async function deleteSession(id: string) {
     setSessions(prev => prev?.filter(s => s.id !== id) ?? null)
     try {
-      const headers = await authHeaders()
-      const res = await fetch(`/api/dashboard/sessions/${id}`, { method: 'DELETE', headers })
-      if (!res.ok) throw new Error((await res.json()).error)
+      await apiJson('DELETE', `/api/dashboard/sessions/${id}`)
       toast.success('Session deleted')
     } catch (err: any) {
       toast.error(err.message)
@@ -110,10 +104,31 @@ export default function SessionManager({ credentialId, cred, host, port, baseUse
     }
   }
 
-  function saveLabel(id: string) {
-    const label = editLabel.trim() || 'Session'
-    patchSession(id, { label }, { label })
+  // Enter saves and Escape cancels, but both unmount the input — and a
+  // focused input being removed fires onBlur, which saved a SECOND time on
+  // Enter (duplicate PATCH) and saved on Escape (cancel did nothing).
+  // `finishedEdit` makes whichever handler runs first win.
+  const finishedEdit = useRef(false)
+  function saveLabel(id: string, original: string) {
+    if (finishedEdit.current) return
+    finishedEdit.current = true
+    const label = editLabel.trim().slice(0, 100) || 'Session'
     setEditingId(null)
+    if (label !== original) patchSession(id, { label }, { label })
+  }
+  function cancelEdit() {
+    if (finishedEdit.current) return
+    finishedEdit.current = true
+    setEditingId(null)
+  }
+
+  if (loadError && sessions === null) {
+    return (
+      <div className="text-xs text-red-500 px-3 py-3 font-mono">
+        {loadError}{' '}
+        <button onClick={load} className="underline hover:opacity-70">Retry</button>
+      </div>
+    )
   }
 
   if (sessions === null) {
@@ -153,11 +168,12 @@ export default function SessionManager({ credentialId, cred, host, port, baseUse
 
                   {editingId === s.id ? (
                     <input autoFocus value={editLabel} onChange={e => setEditLabel(e.target.value)}
-                      onKeyDown={e => { if (e.key === 'Enter') saveLabel(s.id); if (e.key === 'Escape') setEditingId(null) }}
-                      onBlur={() => saveLabel(s.id)}
+                      maxLength={100}
+                      onKeyDown={e => { if (e.key === 'Enter') saveLabel(s.id, s.label); if (e.key === 'Escape') cancelEdit() }}
+                      onBlur={() => saveLabel(s.id, s.label)}
                       className="flex-1 bg-white/5 text-white text-xs font-mono px-2 py-1 rounded border border-white/20 focus:outline-none focus:border-accent" />
                   ) : (
-                    <button onClick={() => { setEditingId(s.id); setEditLabel(s.label) }}
+                    <button onClick={() => { finishedEdit.current = false; setEditingId(s.id); setEditLabel(s.label) }}
                       className="flex-1 text-left text-xs font-mono text-white/80 hover:text-white truncate">
                       {s.label}
                     </button>

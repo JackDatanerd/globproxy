@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
+import { apiFetch, apiJson } from '@/lib/clientApi'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
@@ -27,6 +27,7 @@ export default function IpWhitelist({ credentialId }: Props) {
   const [ip, setIp] = useState('')
   const [description, setDescription] = useState('')
   const [adding, setAdding] = useState(false)
+  const [detectingIp, setDetectingIp] = useState(false)
 
   const [bulkMode, setBulkMode] = useState(false)
   const [bulkText, setBulkText] = useState('')
@@ -36,20 +37,9 @@ export default function IpWhitelist({ credentialId }: Props) {
   const [removing, setRemoving] = useState<Set<string>>(new Set())
   const [bulkRemoving, setBulkRemoving] = useState(false)
 
-  async function authHeaders() {
-    const { data: { session } } = await createClient().auth.getSession()
-    return {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${session?.access_token}`,
-    }
-  }
-
   async function load() {
     try {
-      const headers = await authHeaders()
-      const res = await fetch(`/api/dashboard/proxies/${credentialId}/whitelist`, { headers })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error)
+      const data = await apiFetch(`/api/dashboard/proxies/${credentialId}/whitelist`)
       setIps(data.ips ?? [])
       setProvisioning(!!data.provisioning)
       setLoadError(null)
@@ -58,7 +48,20 @@ export default function IpWhitelist({ credentialId }: Props) {
     }
   }
 
-  useEffect(() => { load() }, [credentialId])
+  useEffect(() => { setIps(null); setSelected(new Set()); load() }, [credentialId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function fillMyIp() {
+    setDetectingIp(true)
+    try {
+      const data = await apiFetch('/api/dashboard/my-ip')
+      setIp(data.ip)
+      if (!description.trim()) setDescription(`My IP (${new Date().toLocaleDateString()})`)
+    } catch (err: any) {
+      toast.error(err.message)
+    } finally {
+      setDetectingIp(false)
+    }
+  }
 
   async function addIp(e: React.FormEvent) {
     e.preventDefault()
@@ -66,19 +69,13 @@ export default function IpWhitelist({ credentialId }: Props) {
     if (!description.trim()) { toast.error('Enter a short description (e.g. "Office IP")'); return }
     setAdding(true)
     try {
-      const headers = await authHeaders()
-      const res = await fetch(`/api/dashboard/proxies/${credentialId}/whitelist`, {
-        method: 'POST', headers,
-        body: JSON.stringify({ ip: ip.trim(), description: description.trim() }),
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error)
+      const data = await apiJson('POST', `/api/dashboard/proxies/${credentialId}/whitelist`, { ip: ip.trim(), description: description.trim() })
       setIps(data.ips)
       setIp('')
       setDescription('')
       toast.success('IP whitelisted')
     } catch (err: any) {
-      toast.error(err.message)
+      if (err?.code !== 'mfa_required') toast.error(err.message)
     } finally {
       setAdding(false)
     }
@@ -116,19 +113,19 @@ export default function IpWhitelist({ credentialId }: Props) {
     const items = parseBulkLines(bulkText)
     if (items.length === 0) { toast.error('Paste at least one IP'); return }
     if (items.length > 150) { toast.error('Max 150 IPs per bulk request'); return }
+    const before = ips?.length ?? 0
     setBulkAdding(true)
     try {
-      const headers = await authHeaders()
-      const res = await fetch(`/api/dashboard/proxies/${credentialId}/whitelist/bulk`, {
-        method: 'POST', headers,
-        body: JSON.stringify({ items }),
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error)
+      const data = await apiJson('POST', `/api/dashboard/proxies/${credentialId}/whitelist/bulk`, { items })
       setIps(data.ips)
       setBulkText('')
       setBulkMode(false)
-      toast.success(`${items.length} IP${items.length > 1 ? 's' : ''} submitted`)
+      // Report what actually landed — duplicates of existing entries are
+      // not new, and "N submitted" overstated it.
+      const added = Math.max(0, (data.ips?.length ?? 0) - before)
+      toast.success(added === items.length
+        ? `${added} IP${added === 1 ? '' : 's'} added`
+        : `${added} new IP${added === 1 ? '' : 's'} added (${items.length - added} already on the list or merged)`)
     } catch (err: any) {
       toast.error(err.message)
     } finally {
@@ -139,13 +136,10 @@ export default function IpWhitelist({ credentialId }: Props) {
   async function removeIp(target: string) {
     setRemoving(prev => new Set(prev).add(target))
     try {
-      const headers = await authHeaders()
-      const res = await fetch(
+      const data = await apiFetch(
         `/api/dashboard/proxies/${credentialId}/whitelist?ip=${encodeURIComponent(target)}`,
-        { method: 'DELETE', headers }
+        { method: 'DELETE' }
       )
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error)
       setIps(data.ips)
       setSelected(prev => { const n = new Set(prev); n.delete(target); return n })
       toast.success('IP removed')
@@ -158,17 +152,12 @@ export default function IpWhitelist({ credentialId }: Props) {
 
   async function removeSelected() {
     if (selected.size === 0) return
+    const count = selected.size
     setBulkRemoving(true)
     try {
-      const headers = await authHeaders()
-      const res = await fetch(`/api/dashboard/proxies/${credentialId}/whitelist/bulk`, {
-        method: 'DELETE', headers,
-        body: JSON.stringify({ ips: Array.from(selected) }),
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error)
+      const data = await apiJson('DELETE', `/api/dashboard/proxies/${credentialId}/whitelist/bulk`, { ips: Array.from(selected) })
       setIps(data.ips)
-      toast.success(`${selected.size} IP${selected.size > 1 ? 's' : ''} removed`)
+      toast.success(`${count} IP${count > 1 ? 's' : ''} removed`)
       setSelected(new Set())
     } catch (err: any) {
       toast.error(err.message)
@@ -192,7 +181,7 @@ export default function IpWhitelist({ credentialId }: Props) {
 
   if (ips === null) {
     return loadError
-      ? <div className="text-xs text-red-500 px-3 py-3 font-mono">{loadError}</div>
+      ? <div className="text-xs text-red-500 px-3 py-3 font-mono">{loadError}{' '}<button onClick={load} className="underline hover:opacity-70">Retry</button></div>
       : <div className="text-xs text-muted px-3 py-3 font-mono">Loading whitelist...</div>
   }
 
@@ -228,6 +217,10 @@ export default function IpWhitelist({ credentialId }: Props) {
               <button type="submit" disabled={adding}
                 className="bg-accent text-white px-4 py-2 rounded-lg text-xs font-medium hover:opacity-90 transition-opacity disabled:opacity-50 flex-shrink-0">
                 {adding ? 'Adding…' : 'Add IP'}
+              </button>
+              <button type="button" onClick={fillMyIp} disabled={detectingIp}
+                className="text-[10.5px] font-mono text-accent hover:opacity-70 disabled:opacity-50 basis-full text-left">
+                {detectingIp ? 'detecting…' : '↳ use my current IP'}
               </button>
             </form>
           ) : (
@@ -275,7 +268,7 @@ export default function IpWhitelist({ credentialId }: Props) {
           <div className="divide-y divide-white/10">
             <div className="flex items-center gap-2 px-3 py-1.5 bg-white/[0.02]">
               <input type="checkbox"
-                checked={selected.size === ips.length}
+                checked={ips.length > 0 && selected.size === ips.length}
                 onChange={toggleSelectAll}
                 className="accent-accent" />
               <span className="text-[10px] font-mono text-white/30 uppercase tracking-wider">select all</span>

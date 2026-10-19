@@ -1,24 +1,51 @@
 'use client'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
+import { useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
 import ReportIssueButton from './ReportIssueButton'
 
-export default function DashTopbar({ profile }: { profile: any }) {
+// Only the two fields the topbar renders. The layout used to pass the whole
+// profiles row (payout details, MFA state, application JSON…) into a client
+// component, serialising all of it into the page's HTML payload.
+export default function DashTopbar({
+  profile, onMenu, menuOpen = false,
+}: {
+  profile: { role?: string | null; email?: string | null } | null
+  onMenu?: () => void
+  menuOpen?: boolean
+}) {
   const router = useRouter()
+  const [signingOut, setSigningOut] = useState(false)
   async function signOut() {
+    if (signingOut) return
+    setSigningOut(true)
     // Clears the separate gp_mfa "verified this browser" cookie/session —
     // Supabase's own signOut() below has no idea that cookie exists, so
     // without this a shared machine would stay MFA-verified until the
     // cookie's natural expiry even after the account signs out.
     await fetch('/api/auth/mfa/logout', { method: 'POST' }).catch(() => {})
-    await createClient().auth.signOut()
+    const { error } = await createClient().auth.signOut()
+    if (error) {
+      // Previously reported "Signed out" and navigated away even when the
+      // session was still alive.
+      toast.error('Couldn\u2019t sign you out — please try again.')
+      setSigningOut(false)
+      return
+    }
     toast.success('Signed out')
     router.push('/')
+    router.refresh()
   }
   return (
-    <header className="bg-white border-b border-border h-16 flex items-center px-6 gap-4 sticky top-0 z-40 flex-shrink-0">
+    <header className="bg-white border-b border-border h-16 flex items-center px-4 md:px-6 gap-3 md:gap-4 sticky top-0 z-40 flex-shrink-0">
+      {onMenu && (
+        <button onClick={onMenu} aria-label={menuOpen ? 'Close menu' : 'Open menu'} aria-expanded={menuOpen} aria-controls="dash-sidebar"
+          className="md:hidden -ml-1 w-9 h-9 flex items-center justify-center rounded-lg border border-border text-ink2 hover:text-ink">
+          {menuOpen ? '✕' : '☰'}
+        </button>
+      )}
       <Link href="/" className="font-display font-black text-xl text-ink tracking-tight">Glob<span className="text-accent">Proxy</span></Link>
       <div className="flex-1" />
       <div className="flex items-center gap-3">
@@ -26,7 +53,7 @@ export default function DashTopbar({ profile }: { profile: any }) {
         {profile?.role === 'admin' && <span className="bg-accent-light text-accent text-[10px] font-mono tracking-widest px-2.5 py-1 rounded-full">ADMIN</span>}
         <span className="text-sm text-ink2 hidden md:block">{profile?.email}</span>
         <ReportIssueButton />
-        <button onClick={signOut} className="text-xs text-muted hover:text-ink border border-border px-3 py-1.5 rounded-lg transition-colors">Sign out</button>
+        <button onClick={signOut} disabled={signingOut} className="text-xs disabled:opacity-50 text-muted hover:text-ink border border-border px-3 py-1.5 rounded-lg transition-colors">Sign out</button>
       </div>
     </header>
   )

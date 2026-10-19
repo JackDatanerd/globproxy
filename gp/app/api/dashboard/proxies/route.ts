@@ -39,6 +39,11 @@ export async function POST(req: Request) {
     if (amount === null || amount <= 0) {
       return NextResponse.json({ error: 'auto_topup_amount_gb must be a number greater than 0' }, { status: 400 })
     }
+    // The top-up must lift the session above its own threshold, or the cron
+    // would re-fire on every tick and drain the account balance into it.
+    if (amount <= threshold) {
+      return NextResponse.json({ error: 'auto_topup_amount_gb must be greater than auto_topup_threshold_gb' }, { status: 400 })
+    }
     autoTopup = { threshold_gb: threshold, amount_gb: amount }
   }
 

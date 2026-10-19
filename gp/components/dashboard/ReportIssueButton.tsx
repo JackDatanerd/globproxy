@@ -1,7 +1,7 @@
 'use client'
-import { useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
+import { useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
+import { apiJson } from '@/lib/clientApi'
 
 // Sits in DashTopbar next to Sign out. Backend: app/api/support/report/route.ts
 // (writes to support_reports, migration 0036) + an immediate admin email —
@@ -11,24 +11,29 @@ export default function ReportIssueButton() {
   const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(false)
 
+  // Escape closes the dialog (it had no keyboard exit at all).
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !loading) setOpen(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, loading])
+
   async function submit() {
     if (!message.trim()) return
     setLoading(true)
-    const { data: { session } } = await createClient().auth.getSession()
-    const res = await fetch('/api/support/report', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-      body: JSON.stringify({ message, page_url: window.location.pathname }),
-    })
-    const data = await res.json().catch(() => ({}))
-    setLoading(false)
-    if (!res.ok || data.error) {
-      toast.error(data.error ?? 'Failed to send report')
-      return
+    try {
+      await apiJson('POST', '/api/support/report', { message: message.trim(), page_url: window.location.pathname })
+      toast.success('Thanks — we got it and will follow up by email.')
+      setMessage('')
+      setOpen(false)
+    } catch (err: any) {
+      // A network failure used to throw out of submit() and leave the button
+      // stuck on "Sending…" with the report unsent.
+      toast.error(err.message ?? 'Failed to send report')
+    } finally {
+      setLoading(false)
     }
-    toast.success('Thanks — we got it and will follow up by email.')
-    setMessage('')
-    setOpen(false)
   }
 
   return (
@@ -40,14 +45,18 @@ export default function ReportIssueButton() {
         Report an issue
       </button>
       {open && (
-        <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-center p-4" onClick={() => setOpen(false)}>
-          <div className="bg-white border border-border rounded-xl p-5 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-center p-4" 
+          // A stray click on the backdrop used to discard a half-written report.
+          onClick={() => { if (!message.trim() && !loading) setOpen(false) }}>
+          <div role="dialog" aria-modal="true" aria-label="Report an issue" className="bg-white border border-border rounded-xl p-5 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
             <div className="text-sm font-medium text-ink mb-1">Report an issue</div>
             <div className="text-xs text-muted mb-3">Tell us what went wrong — a payment, a proxy, anything. We'll get an email right away.</div>
             <textarea
               value={message}
               onChange={(e) => setMessage(e.target.value)}
               rows={4}
+              maxLength={5000}
+              autoFocus
               placeholder="What happened?"
               className="w-full text-sm text-ink bg-surface border border-border rounded-lg px-3 py-2 mb-3"
             />

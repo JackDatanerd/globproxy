@@ -1,15 +1,24 @@
 'use client'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import toast from 'react-hot-toast'
+import { copyText } from '@/lib/clientApi'
 
 export default function ReferralLinkCard({ code }: { code: string }) {
   const [copied, setCopied] = useState(false)
-  const link = typeof window !== 'undefined' ? `${window.location.origin}/auth/signup?ref=${code}` : `/auth/signup?ref=${code}`
+  // Origin is read after mount. Reading window at render produced a different
+  // string on the server ("/auth/signup?...") and the client ("https://…"),
+  // a hydration mismatch on the input's value.
+  const [origin, setOrigin] = useState('')
+  useEffect(() => { setOrigin(window.location.origin) }, [])
+  const link = `${origin}/auth/signup?ref=${encodeURIComponent(code)}`
 
-  function copy() {
-    navigator.clipboard.writeText(link).then(() => {
+  async function copy() {
+    if (await copyText(link)) {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
-    })
+    } else {
+      toast.error('Couldn\u2019t access the clipboard — select the link and copy it manually.')
+    }
   }
 
   return (
@@ -22,7 +31,8 @@ export default function ReferralLinkCard({ code }: { code: string }) {
         <input
           readOnly
           value={link}
-          className="flex-1 text-xs font-mono text-ink bg-surface border border-border rounded-lg px-3 py-2 truncate"
+          aria-label="Your referral link"
+          className="flex-1 min-w-0 text-xs font-mono text-ink bg-surface border border-border rounded-lg px-3 py-2 truncate"
           onFocus={(e) => e.target.select()}
         />
         <button

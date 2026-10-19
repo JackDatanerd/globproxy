@@ -3,6 +3,8 @@ import { requireActiveUser } from '@/lib/apiAuth'
 import { genSessionId } from '@/lib/proxyEndpoint'
 import { NextResponse } from 'next/server'
 
+const MAX_STICKY_SESSIONS = 50
+
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   const supabase = await createClient()
@@ -55,7 +57,20 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
 
   const body = await req.json().catch(() => ({}))
-  const label = (body.label || '').trim() || 'Session'
+  const label = (typeof body.label === 'string' ? body.label.trim() : '').slice(0, 100) || 'Session'
+
+  // Cap live named sessions per credential. Nothing bounded this: each one is
+  // a row (and a rendered, polled-on-load list entry), so a script or a stuck
+  // double-click loop could create thousands.
+  const { count: liveCount } = await supabase
+    .from('proxy_sessions')
+    .select('id', { count: 'exact', head: true })
+    .eq('credential_id', id)
+    .eq('user_id', user.id)
+    .is('terminated_at', null)
+  if ((liveCount ?? 0) >= MAX_STICKY_SESSIONS) {
+    return NextResponse.json({ error: `You can have at most ${MAX_STICKY_SESSIONS} sticky sessions on one credential — delete one you no longer use first.` }, { status: 409 })
+  }
 
   const { data, error } = await supabase.from('proxy_sessions').insert({
     credential_id: id,

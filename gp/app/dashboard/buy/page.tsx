@@ -1,12 +1,26 @@
 'use client'
-import { useState } from 'react'
-import { useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
+import { Suspense, useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { PLANS } from '@/lib/plans'
 import { verifyPayment } from '@/lib/verifyPayment'
 import { formatUsd } from '@/lib/format'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
+
+// /dashboard/proxies/new redirects here with ?reason=no_bandwidth when the
+// account has nothing left to allocate. The page ignored it, so the person
+// landed on a plain shop page with no hint why they'd been sent here.
+// useSearchParams needs its own Suspense boundary, hence the tiny component.
+function ReasonBanner() {
+  const reason = useSearchParams().get('reason')
+  if (reason !== 'no_bandwidth') return null
+  return (
+    <div className="mb-5 bg-amber-50 border border-amber-100 text-amber-800 rounded-xl px-4 py-3 text-sm">
+      You don&apos;t have any unassigned bandwidth left to create a new session. Buy some below — it never expires —
+      or free up GB by deleting a session you no longer use.
+    </div>
+  )
+}
 
 export default function BuyPage() {
   const router = useRouter()
@@ -19,10 +33,9 @@ export default function BuyPage() {
     setLoading(true)
     setStatusText('Starting checkout...')
     try {
-      const { data: { session } } = await createClient().auth.getSession()
       const res = await fetch('/api/checkout', {
         method: 'POST',
-        headers: { 'Content-Type':'application/json', 'Authorization':`Bearer ${session?.access_token}` },
+        headers: { 'Content-Type':'application/json' },
         body: JSON.stringify({ plan: plan.slug }),
       })
 
@@ -38,7 +51,7 @@ export default function BuyPage() {
         data = JSON.parse(raw)
       } catch {
         console.error('[checkout] non-JSON response', { status: res.status, body: raw.slice(0, 500) })
-        toast.error(`Checkout failed (server returned status ${res.status}, not JSON — check console for details)`)
+        toast.error(`Checkout failed (status ${res.status}). Please try again, and contact support if it keeps happening.`)
         setLoading(false)
         setStatusText(null)
         return
@@ -107,6 +120,7 @@ export default function BuyPage() {
 
   return (
     <div className="max-w-2xl">
+      <Suspense fallback={null}><ReasonBanner /></Suspense>
       <div className="mb-8">
         <h1 className="font-display font-bold text-2xl text-ink">Buy Bandwidth</h1>
         <p className="text-muted text-sm mt-1">All bandwidth is non-expiring — yours until every byte is used.</p>

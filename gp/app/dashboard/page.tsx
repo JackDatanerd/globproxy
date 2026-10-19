@@ -4,32 +4,50 @@ import Link from 'next/link'
 import { Suspense } from 'react'
 import PaymentVerifier from '@/components/PaymentVerifier'
 import ReferralLinkCard from '@/components/dashboard/ReferralLinkCard'
-import { formatGb, formatPct } from '@/lib/format'
+import { formatGb, formatPct, formatUsd } from '@/lib/format'
+import { getProxyPort } from '@/lib/proxyEndpoint'
 
 export default async function DashboardPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/auth/login')
 
-  const [{ data: bw }, { data: creds }, { data: orders }] = await Promise.all([
-    supabase.from('bandwidth_accounts').select('*').eq('user_id', user.id).single(),
-    supabase.from('proxy_credentials').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(5),
-    supabase.from('orders').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(4),
+  const [bwRes, credsRes, orderRes, activeRes, profileRes] = await Promise.all([
+    supabase.from('bandwidth_accounts').select('total_gb, used_gb, available_gb').eq('user_id', user.id).maybeSingle(),
+    supabase.from('proxy_credentials').select('id, label, host, port, protocol, session_type, country, status, activated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(5),
+    supabase.from('orders').select('id, gb_amount, amount_usd, refunded_usd, payment_status').eq('user_id', user.id).order('created_at', { ascending: false }).limit(4),
+    // A real count: "Active proxies" used to be computed from the 5 rows
+    // fetched for the list below, so it could never read above 5.
+    supabase.from('proxy_credentials').select('id', { count: 'exact', head: true }).eq('user_id', user.id).eq('status', 'active'),
+    supabase.from('profiles').select('full_name, referral_code').eq('id', user.id).maybeSingle(),
   ])
+  const bw = bwRes.data, creds = credsRes.data, orders = orderRes.data, profile = profileRes.data
+  const loadFailed = !!(bwRes.error || credsRes.error || orderRes.error || activeRes.error)
 
-  const { data: profile } = await supabase.from('profiles').select('full_name, referral_code').eq('id', user.id).single()
-  const available = bw?.available_gb ?? 0
+  // "Bandwidth left" is what the customer still owns: purchased minus
+  // consumed. It used to show available_gb (purchased minus *allocated*),
+  // which dropped the moment a session was created even though not a byte had
+  // been used — and contradicted the "used" bar printed right under it.
+  // available_gb is still shown, as "unallocated": what can go into a new session.
+  const unallocated = bw?.available_gb ?? 0
   const used = bw?.used_gb ?? 0
   const total = bw?.total_gb ?? 0
+  const left = Math.max(0, total - used)
   const pct = total > 0 ? (used / total) * 100 : 0
-  const firstName = profile?.full_name?.split(' ')[0] ?? 'there'
-  const activeCount = creds?.filter(c => c.status === 'active').length ?? 0
+  const firstName = profile?.full_name?.trim().split(/\s+/)[0] || 'there'
+  const activeCount = activeRes.count ?? 0
 
   return (
     <div className="max-w-5xl">
       <Suspense fallback={null}>
         <PaymentVerifier />
       </Suspense>
+
+      {loadFailed && (
+        <div className="mb-4 bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm">
+          Some of your dashboard data couldn&apos;t be loaded, so the numbers below may be incomplete. Refresh to try again.
+        </div>
+      )}
 
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div>
@@ -50,9 +68,9 @@ export default async function DashboardPage() {
             <div>
               <div className="text-[10px] font-mono uppercase tracking-widest text-white/40">Bandwidth left</div>
               <div className="font-display font-bold text-[40px] sm:text-[44px] leading-tight tracking-tight mt-1">
-                {formatGb(available)}<span className="text-lg sm:text-xl font-medium text-white/50 ml-1.5">GB</span>
+                {formatGb(left)}<span className="text-lg sm:text-xl font-medium text-white/50 ml-1.5">GB</span>
               </div>
-              <div className="text-xs text-white/55 mt-0.5">of {formatGb(total)} GB purchased</div>
+              <div className="text-xs text-white/55 mt-0.5">of {formatGb(total)} GB purchased · {formatGb(unallocated)} GB not yet assigned to a session</div>
             </div>
             <div className="text-[10px] font-mono text-accent2 bg-accent2/[.14] px-2.5 py-1 rounded-full flex-shrink-0">Never expires</div>
           </div>
@@ -82,8 +100,8 @@ export default async function DashboardPage() {
           </div>
           <div className="bg-white border border-border rounded-2xl px-5 py-4 flex items-center">
             <div>
-              <div className="text-[9.5px] font-mono uppercase tracking-widest text-muted mb-1">Total purchased, all time</div>
-              <div className="font-display font-bold text-[22px] text-ink">{formatGb(total)} <span className="text-[13px] font-mono text-muted font-normal">GB</span></div>
+              <div className="text-[9.5px] font-mono uppercase tracking-widest text-muted mb-1">Free to assign</div>
+              <div className="font-display font-bold text-[22px] text-ink">{formatGb(unallocated)} <span className="text-[13px] font-mono text-muted font-normal">GB</span></div>
             </div>
           </div>
         </div>
@@ -108,13 +126,13 @@ export default async function DashboardPage() {
             <div className="px-3 pb-3">
               {creds.map(c => {
                 const isWarming = c.activated_at && (Date.now() - new Date(c.activated_at).getTime()) < 10 * 60 * 1000
-                const rail = c.status !== 'active' ? 'bg-amber-500' : isWarming ? 'bg-accent' : 'bg-accent2'
+                const rail = c.status === 'pending' ? 'bg-amber-500' : c.status !== 'active' ? 'bg-border' : isWarming ? 'bg-accent' : 'bg-accent2'
                 return (
                   <div key={c.id} className="relative flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-surface transition-colors">
                     <div className={`absolute left-0 top-2 bottom-2 w-[3px] rounded-full ${rail}`} />
                     <div className="flex-1 min-w-0 ml-2">
                       <div className="text-[13px] font-medium text-ink truncate">{c.label || 'Untitled session'}</div>
-                      <div className="text-[10.5px] font-mono text-muted mt-0.5">{c.host || 'proxy.globproxy.com'}:{c.port ?? ''}</div>
+                      <div className="text-[10.5px] font-mono text-muted mt-0.5">{c.host || 'proxy.globproxy.com'}:{c.port || getProxyPort(c.protocol, c.session_type)}</div>
                     </div>
                     {c.country && <span className="text-[9.5px] font-mono bg-accent-light text-accent px-2 py-0.5 rounded-full flex-shrink-0">{c.country}</span>}
                     <div className={`flex items-center gap-1.5 text-[10.5px] font-mono flex-shrink-0 ${c.status === 'active' ? 'text-accent2' : 'text-muted'}`}>
@@ -145,14 +163,15 @@ export default async function DashboardPage() {
               {orders.map((o, i) => (
                 <div key={o.id} className={`flex items-center justify-between py-3 ${i < orders.length - 1 ? 'border-b border-border' : ''}`}>
                   <div>
-                    <div className="text-[13.5px] font-semibold text-ink">{o.gb_amount} GB</div>
+                    <div className="text-[13.5px] font-semibold text-ink">{formatGb(o.gb_amount)} GB</div>
                     <div className="text-[10.5px] font-mono text-muted mt-0.5">Paystack</div>
                   </div>
                   <div className="text-right">
-                    <div className="text-xs font-mono text-ink2">${o.amount_usd}</div>
+                    <div className="text-xs font-mono text-ink2">{formatUsd(o.amount_usd)}</div>
                     <span className={`text-[9px] font-mono px-2 py-0.5 rounded-full uppercase tracking-wide inline-block mt-1 ${
                       o.payment_status === 'paid' ? 'bg-accent2-light text-accent2'
                       : o.payment_status === 'pending' ? 'bg-amber-50 text-amber-600'
+                      : o.payment_status === 'cancelled' || o.payment_status === 'refunded' ? 'bg-surface text-muted border border-border'
                       : 'bg-red-50 text-red-500'
                     }`}>{o.payment_status}</span>
                   </div>

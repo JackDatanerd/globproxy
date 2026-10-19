@@ -62,8 +62,17 @@ async function loadScopedCredentials(supabase: Awaited<ReturnType<typeof createC
 // one username or every sub-user on the whole reseller account — so this
 // is the only way to get an account-scoped (not reseller-wide) daily
 // total across a user's multiple credentials.
-function mergeSeries(perCredential: PeriodStat[][]): { date: string; gb: number }[] {
+function mergeSeries(perCredential: PeriodStat[][], dateFrom: Date, dateTo: Date): { date: string; gb: number }[] {
   const byDate = new Map<string, number>()
+  // Zero-fill every UTC day in the requested range. Geonode only returns days
+  // that had traffic, so the chart used to draw a straight line across the
+  // gaps with evenly spaced points — a 3-day burst looked like a steady trend
+  // and the x-axis dates skipped silently.
+  for (let t = Date.UTC(dateFrom.getUTCFullYear(), dateFrom.getUTCMonth(), dateFrom.getUTCDate()),
+           end = Date.UTC(dateTo.getUTCFullYear(), dateTo.getUTCMonth(), dateTo.getUTCDate());
+       t <= end; t += 86_400_000) {
+    byDate.set(new Date(t).toISOString().slice(0, 10), 0)
+  }
   for (const series of perCredential) {
     for (const point of series) {
       const date = point.periodStart.slice(0, 10) // YYYY-MM-DD
@@ -73,7 +82,7 @@ function mergeSeries(perCredential: PeriodStat[][]): { date: string; gb: number 
   }
   return Array.from(byDate.entries())
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([date, bytes]) => ({ date, gb: Math.round((bytes / 1024 / 1024 / 1024) * 1000) / 1000 }))
+    .map(([date, bytes]) => ({ date, gb: Math.round((bytes / 1024 / 1024 / 1024) * 10000) / 10000 }))
 }
 
 interface BreakdownRow {
@@ -187,7 +196,7 @@ export async function GET(req: Request) {
     return geonodeStatsErrorResponse(firstError?.reason)
   }
 
-  const series = mergeSeries(perCredentialSeries)
+  const series = mergeSeries(perCredentialSeries, dateFrom, dateTo)
   const breakdown = buildBreakdown(perCredentialBreakdown)
 
   if (format === 'csv') {

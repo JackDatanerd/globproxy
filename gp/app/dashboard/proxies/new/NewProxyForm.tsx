@@ -1,7 +1,8 @@
 'use client'
 import { useState, useMemo, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
+import { apiJson } from '@/lib/clientApi'
+import { formatGb } from '@/lib/format'
 import {
   fetchCountryList, fetchCountryDetail, POPULAR_COUNTRY_CODES,
   type CountryListItem, type CountryDetail,
@@ -39,7 +40,6 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
     protocol:        'http' as 'http' | 'socks5',
     session_type:    'rotating' as 'rotating' | 'sticky',
     sticky_duration: 10,
-    endpoint_count:  1,
     gb_allocated:    1,
     auto_topup_enabled:      defaultAutoTopup?.enabled ?? false,
     auto_topup_threshold_gb: defaultAutoTopup?.threshold_gb ?? 1,
@@ -101,14 +101,16 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
   const previewProto = form.protocol === 'socks5' ? 'socks5' : 'http'
   const previewLine = `${previewProto}://${previewUsername}:••••••••@proxy.globproxy.com:${previewPort}`
 
-  const overBudget = form.gb_allocated > availableGb
+  // Tolerance of half a cent of a GB: "use all" and typed values go through
+  // floats, and a balance like 4.999999999 must not read as over budget.
+  const overBudget = form.gb_allocated > availableGb + 0.005
   const gbLeftAfter = Math.max(0, availableGb - (form.gb_allocated || 0))
   const gbMeterPct = availableGb > 0 ? Math.min(100, ((form.gb_allocated || 0) / availableGb) * 100) : 0
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (overBudget) {
-      toast.error(`You only have ${availableGb.toFixed(2)}GB available`)
+      toast.error(`You only have ${formatGb(availableGb)} GB available`)
       return
     }
     const targetingError = validateTargeting(form)
@@ -125,17 +127,32 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
         toast.error('Auto-allocate top-up amount must be greater than 0')
         return
       }
+      if (form.auto_topup_amount_gb <= form.auto_topup_threshold_gb) {
+        toast.error('The auto-allocate amount must be larger than the threshold, or it would re-trigger immediately.')
+        return
+      }
     }
     setLoading(true)
     try {
-      const { data: { session } } = await createClient().auth.getSession()
-      const res = await fetch('/api/dashboard/proxies', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-        body: JSON.stringify(form),
+      // Only the fields the server uses. sticky_duration is meaningless on a
+      // rotating session (it used to be sent — and stored — anyway), and
+      // endpoint_count is always 1: a rotating username carries no session id,
+      // so extra "endpoints" were identical strings.
+      const data = await apiJson('POST', '/api/dashboard/proxies', {
+        label: form.label.trim() || undefined,
+        country: form.country || undefined,
+        state: form.state || undefined,
+        city: form.city || undefined,
+        asn: form.asn || undefined,
+        protocol: form.protocol,
+        session_type: form.session_type,
+        ...(form.session_type === 'sticky' ? { sticky_duration: form.sticky_duration } : {}),
+        endpoint_count: 1,
+        gb_allocated: form.gb_allocated,
+        auto_topup_enabled: form.auto_topup_enabled,
+        auto_topup_threshold_gb: form.auto_topup_enabled ? form.auto_topup_threshold_gb : undefined,
+        auto_topup_amount_gb: form.auto_topup_enabled ? form.auto_topup_amount_gb : undefined,
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error)
       toast.success('Proxy session created!')
       if (data.warning) toast(data.warning, { icon: '⚠️', duration: 6000 })
 
@@ -144,22 +161,22 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
       // block navigating away from a session that was already created
       // successfully — it's just a convenience setting for next time.
       if (saveAsDefault) {
-        const { data: { session: s2 } } = await createClient().auth.getSession()
-        await fetch('/api/dashboard/settings/auto-topup-default', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${s2?.access_token}` },
-          body: JSON.stringify({
-            enabled: form.auto_topup_enabled,
-            threshold_gb: form.auto_topup_enabled ? form.auto_topup_threshold_gb : null,
-            amount_gb: form.auto_topup_enabled ? form.auto_topup_amount_gb : null,
-          }),
-        }).catch((e) => console.error('Failed to save auto-allocate default', e))
+        await apiJson('PATCH', '/api/dashboard/settings/auto-topup-default', {
+          enabled: form.auto_topup_enabled,
+          threshold_gb: form.auto_topup_enabled ? form.auto_topup_threshold_gb : null,
+          amount_gb: form.auto_topup_enabled ? form.auto_topup_amount_gb : null,
+        }).catch((e) => {
+          // fetch only rejects on network failure, so a 4xx from the route
+          // (e.g. validation) used to vanish without a trace.
+          console.error('Failed to save auto-allocate default', e)
+          toast(`Session created, but your default wasn\u2019t saved: ${e?.message ?? 'unknown error'}`, { icon: '⚠️', duration: 6000 })
+        })
       }
 
       router.push('/dashboard/proxies')
       router.refresh()
     } catch (err: any) {
-      toast.error(err.message)
+      if (err?.code !== 'mfa_required') toast.error(err.message)
     } finally {
       setLoading(false)
     }
@@ -176,7 +193,7 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
       <div className="mb-6">
         <h1 className="font-display font-bold text-2xl text-ink">New proxy session</h1>
         <p className="text-muted text-sm mt-1">
-          Configure your proxy — <span className="text-accent font-medium">{availableGb.toFixed(2)} GB</span> available to allocate.
+          Configure your proxy — <span className="text-accent font-medium">{formatGb(availableGb)} GB</span> available to allocate.
         </p>
       </div>
 
@@ -326,30 +343,33 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
               <span className="font-mono text-[10px] text-muted border border-border rounded-md w-5 h-5 inline-flex items-center justify-center">4</span>
               Sizing
             </div>
-            <div className="grid grid-cols-2 gap-3.5">
-              <div>
-                <label className="block text-xs text-ink2 font-medium mb-1.5">Endpoints <span className="text-muted font-normal">(1–10)</span></label>
-                <input type="number" min={1} max={10} value={form.endpoint_count}
-                  onChange={e => set('endpoint_count', Math.min(10, Math.max(1, +e.target.value)))}
-                  className="w-full bg-surface border border-border px-3.5 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors" />
-                <p className="text-xs text-muted mt-1.5">Multiple endpoints for parallel connections</p>
-              </div>
+            <div className="grid grid-cols-1 gap-3.5">
               <div>
                 <label className="block text-xs text-ink2 font-medium mb-1.5">
                   GB to allocate
-                  <button type="button" onClick={() => set('gb_allocated', availableGb)}
+                  <button type="button" onClick={() => {
+                      // Round DOWN to 2dp so the box shows exactly what is
+                      // reserved (no float dust like 4.999999999), unless that
+                      // would leave nothing.
+                      const down = Math.floor(availableGb * 100) / 100
+                      set('gb_allocated', down > 0 ? down : availableGb)
+                    }}
                     className="ml-2 text-[10px] font-mono text-accent bg-accent-light px-2 py-0.5 rounded hover:opacity-80 transition-opacity align-middle">
                     use all
                   </button>
                 </label>
                 <div className="relative">
-                  <input type="number" required min={0.01} step={0.01}
+                  <input type="number" inputMode="decimal" required min={0.01} step="any"
                     value={form.gb_allocated}
-                    onChange={e => set('gb_allocated', +e.target.value)}
+                    onChange={e => set('gb_allocated', e.target.value === '' ? 0 : +e.target.value)}
                     className="w-full bg-surface border border-border px-3.5 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors pr-11" />
                   <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11.5px] font-mono text-muted pointer-events-none">GB</span>
                 </div>
-                <p className="text-xs text-muted mt-1.5">{availableGb.toFixed(2)} GB available</p>
+                <p className="text-xs text-muted mt-1.5">
+                  {formatGb(availableGb)} GB available. {form.session_type === 'rotating'
+                    ? 'One rotating endpoint serves any number of connections.'
+                    : 'You can create named sticky sessions after this is set up.'}
+                </p>
               </div>
             </div>
           </div>
@@ -379,7 +399,7 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
                 <div>
                   <label className="block text-xs text-ink2 font-medium mb-1.5">When remaining falls below</label>
                   <div className="relative">
-                    <input type="number" min={0} step={0.1}
+                    <input type="number" inputMode="decimal" min={0} step="any"
                       value={form.auto_topup_threshold_gb}
                       onChange={e => set('auto_topup_threshold_gb', +e.target.value)}
                       className="w-full bg-surface border border-border px-3.5 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors pr-11" />
@@ -389,7 +409,7 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
                 <div>
                   <label className="block text-xs text-ink2 font-medium mb-1.5">Add</label>
                   <div className="relative">
-                    <input type="number" min={0.1} step={0.1}
+                    <input type="number" inputMode="decimal" min={0.01} step="any"
                       value={form.auto_topup_amount_gb}
                       onChange={e => set('auto_topup_amount_gb', +e.target.value)}
                       className="w-full bg-surface border border-border px-3.5 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors pr-11" />
@@ -441,10 +461,6 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
                 </span>
               </div>
               <div className="flex justify-between items-center py-2 text-[12.5px]">
-                <span className="font-mono text-[10.5px] uppercase tracking-wide text-white/45">Endpoints</span>
-                <span className="font-medium text-white/90">{form.endpoint_count}</span>
-              </div>
-              <div className="flex justify-between items-center py-2 text-[12.5px]">
                 <span className="font-mono text-[10.5px] uppercase tracking-wide text-white/45">Auto-allocate</span>
                 <span className="font-medium text-white/90">
                   {form.auto_topup_enabled
@@ -464,8 +480,8 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
                     style={{ width: `${gbMeterPct}%` }} />
                 </div>
                 <div className="flex justify-between text-[10px] font-mono text-white/45 mt-1.5">
-                  <span>{(form.gb_allocated || 0).toFixed(2)} GB allocated</span>
-                  <span>{gbLeftAfter.toFixed(2)} GB left after</span>
+                  <span>{formatGb(form.gb_allocated)} GB allocated</span>
+                  <span>{formatGb(gbLeftAfter)} GB left after</span>
                 </div>
               </div>
 
@@ -479,7 +495,7 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
             <div className="px-6 pb-6 pt-1">
               <button type="submit" disabled={loading || overBudget || (form.gb_allocated || 0) <= 0}
                 className="w-full bg-accent2 text-ink py-3 rounded-xl text-[13.5px] font-semibold hover:brightness-105 hover:-translate-y-0.5 disabled:opacity-40 disabled:hover:translate-y-0 transition-all">
-                {loading ? 'Creating session…' : `Create session — ${(form.gb_allocated || 0).toFixed(2)} GB`}
+                {loading ? 'Creating session…' : `Create session — ${formatGb(form.gb_allocated)} GB`}
               </button>
               <button type="button" onClick={() => router.push('/dashboard/proxies')}
                 className="w-full text-center mt-2.5 text-xs text-white/40 hover:text-white/70 transition-colors">

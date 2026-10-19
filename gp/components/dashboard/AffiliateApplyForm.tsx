@@ -1,6 +1,7 @@
 'use client'
 import { useState } from 'react'
 import toast from 'react-hot-toast'
+import { apiJson } from '@/lib/clientApi'
 
 export default function AffiliateApplyForm() {
   const [channel, setChannel] = useState('')
@@ -11,23 +12,19 @@ export default function AffiliateApplyForm() {
 
   async function handle(e: React.FormEvent) {
     e.preventDefault()
-    if (!channel || !audience || !plan) {
+    if (!channel.trim() || !audience.trim() || !plan.trim()) {
       toast.error('All fields are required')
       return
     }
     setLoading(true)
-    const res = await fetch('/api/auth/apply-affiliate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ channel, audience, plan }),
-    })
-    const data = await res.json().catch(() => ({}))
-    setLoading(false)
-    if (!res.ok || data.error) {
-      toast.error(data.error ?? 'Application failed')
-      return
+    try {
+      await apiJson('POST', '/api/auth/apply-affiliate', { channel: channel.trim(), audience: audience.trim(), plan: plan.trim() })
+      setSubmitted(true)
+    } catch (err: any) {
+      toast.error(err.message ?? 'Application failed')
+    } finally {
+      setLoading(false)
     }
-    setSubmitted(true)
   }
 
   if (submitted) {
@@ -52,6 +49,7 @@ export default function AffiliateApplyForm() {
         <input
           value={channel}
           onChange={(e) => setChannel(e.target.value)}
+          maxLength={120}
           placeholder="e.g. BlackHatWorld, a blog, a Discord server"
           className="w-full mt-1 text-sm text-ink bg-surface border border-border rounded-lg px-3 py-2"
         />
@@ -61,6 +59,7 @@ export default function AffiliateApplyForm() {
         <input
           value={audience}
           onChange={(e) => setAudience(e.target.value)}
+          maxLength={600}
           placeholder="e.g. ~5k forum followers, mostly scrapers"
           className="w-full mt-1 text-sm text-ink bg-surface border border-border rounded-lg px-3 py-2"
         />
@@ -70,6 +69,7 @@ export default function AffiliateApplyForm() {
         <textarea
           value={plan}
           onChange={(e) => setPlan(e.target.value)}
+          maxLength={1200}
           rows={3}
           placeholder="A couple sentences is enough"
           className="w-full mt-1 text-sm text-ink bg-surface border border-border rounded-lg px-3 py-2"
