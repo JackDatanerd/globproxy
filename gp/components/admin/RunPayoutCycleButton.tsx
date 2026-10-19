@@ -1,8 +1,8 @@
 'use client'
 import { useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
 import { lastCompletedCycle, formatCycleLabel } from '@/lib/payoutCycle'
 import toast from 'react-hot-toast'
+import { adminPost } from '@/lib/adminFetch'
 
 export default function RunPayoutCycleButton() {
   const defaultCycle = lastCompletedCycle()
@@ -12,21 +12,14 @@ export default function RunPayoutCycleButton() {
   const [open, setOpen] = useState(false)
 
   async function handle() {
+    if (!confirm(`Run the payout cycle for ${cycleStart} → ${cycleEnd}? This creates payout records for every eligible affiliate (including earlier balances that were held back).`)) return
     setLoading(true)
-    const { data: { session } } = await createClient().auth.getSession()
-    const res = await fetch('/api/admin/run-payout-cycle', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-      body: JSON.stringify({ cycleStart, cycleEnd }),
-    })
-    const data = await res.json().catch(() => ({}))
+    const { ok, data } = await adminPost('/api/admin/run-payout-cycle', { cycleStart, cycleEnd })
     setLoading(false)
-    if (!res.ok || data.error) {
-      toast.error(data.error ?? 'Failed to run payout cycle')
-      return
-    }
+    if (!ok) { toast.error(data.error ?? 'Failed to run payout cycle'); return }
     const s = data.summary
-    toast.success(`${s.created} payout${s.created === 1 ? '' : 's'} created · ${s.heldRecentMethod + s.noPayoutMethod + s.belowMinimum} rolled forward`)
+    const rolled = s.heldRecentMethod + s.noPayoutMethod + s.belowMinimum
+    toast.success(`${s.created} payout${s.created === 1 ? '' : 's'} created · ${rolled} rolled forward${s.ineligible ? ` · ${s.ineligible} ineligible (suspended/deleted)` : ''}`)
     window.location.reload()
   }
 
@@ -45,7 +38,7 @@ export default function RunPayoutCycleButton() {
     <div className="bg-white border border-border rounded-xl p-5">
       <div className="text-sm font-medium text-ink mb-1">Run payout cycle</div>
       <div className="text-xs text-muted mb-3">
-        Defaults to the most recently completed cycle ({formatCycleLabel(defaultCycle)}). Safe to re-run — commissions already batched into a payout are never claimed twice.
+        Defaults to the most recently completed cycle ({formatCycleLabel(defaultCycle)}). Safe to re-run — commissions already batched into a payout are never claimed twice. Balances held back from earlier cycles (no payout method, security hold, below the minimum) are picked up automatically.
       </div>
       <div className="flex gap-2 items-end mb-3">
         <div>

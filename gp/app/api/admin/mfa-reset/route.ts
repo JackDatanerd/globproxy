@@ -2,6 +2,7 @@ import { createAdminClient } from '@/lib/supabase/server'
 import { adminResetMfa, requireMfaVerified } from '@/lib/mfa'
 import { sendEmailSafe, escapeHtml } from '@/lib/email'
 import { logSecurityEvent } from '@/lib/securityEvents'
+import { logAdminAction } from '@/lib/adminAudit'
 import { NextResponse } from 'next/server'
 
 // Self-service recovery deliberately dead-ends when someone has lost both
@@ -51,6 +52,7 @@ export async function POST(req: Request) {
 
   await adminResetMfa(user_id)
   await logSecurityEvent({ userId: user_id, actorId: caller.id, event: 'mfa_reset_by_admin', req, admin: supabase })
+  await logAdminAction(supabase, { adminId: caller.id, action: 'user.mfa_reset', targetUserId: user_id })
 
   // Security-relevant account change — notify the owner the same way
   // suspend/unsuspend does, so a reset the account owner didn't request

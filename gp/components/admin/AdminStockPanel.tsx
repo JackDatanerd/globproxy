@@ -3,64 +3,50 @@ import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
 import { formatGb, formatPct } from '@/lib/format'
+import { adminPost } from '@/lib/adminFetch'
 
 export default function AdminStockPanel() {
   const [stock, setStock] = useState<any>({ available_gb:0, total_gb:0, total_allocated_gb:0, total_used_gb:0, exposure_gb:0, covered:true, last_synced:null })
   const [loading, setLoading] = useState(false)
-  const [reloading, setReloading] = useState(false)
   const [autoReload, setAutoReload] = useState(false)
   const [threshold, setThreshold] = useState(10)
-  // Previously one `reloadAmt` state backed both the one-time "Manual
-  // reload" input and the persisted "Auto-reload amount" setting — typing
-  // a number into either field and then triggering the other action (a
-  // manual reload, or "Save settings") silently overwrote the other value
-  // with whatever was currently sitting in the shared field. Split into
-  // two so they're actually independent, matching what the two labeled
-  // inputs already implied to the user.
-  const [manualReloadGb, setManualReloadGb] = useState(500)
-  const [autoReloadAmount, setAutoReloadAmount] = useState(500)
+  const [saving, setSaving] = useState(false)
 
   useEffect(() => { loadAll() }, [])
 
   async function loadAll() {
     const sb = createClient()
-    const { data } = await sb.from('platform_settings').select('*').in('key',['geonode_stock','auto_reload_enabled','auto_reload_threshold_gb','auto_reload_amount_gb'])
+    const { data } = await sb.from('platform_settings').select('*').in('key',['geonode_stock','auto_reload_enabled','auto_reload_threshold_gb'])
     data?.forEach((s: any) => {
       if (s.key==='geonode_stock') { try { setStock(JSON.parse(s.value)) } catch {} }
       if (s.key==='auto_reload_enabled') setAutoReload(s.value==='true')
       if (s.key==='auto_reload_threshold_gb') setThreshold(Number(s.value))
-      if (s.key==='auto_reload_amount_gb') setAutoReloadAmount(Number(s.value))
     })
   }
 
   async function syncStock() {
     setLoading(true)
-    const { data: { session } } = await createClient().auth.getSession()
-    const res = await fetch('/api/admin/sync-stock', { method:'POST', headers:{'Authorization':`Bearer ${session?.access_token}`} })
-    const data = await res.json()
-    if (data.error) toast.error(data.error)
-    else { setStock(data.stock); toast.success('Stock synced') }
+    const { ok, data } = await adminPost('/api/admin/sync-stock')
+    if (!ok) toast.error(data.error ?? 'Sync failed')
+    else { setStock((data as any).stock); toast.success('Stock synced') }
     setLoading(false)
   }
 
-  async function manualReload() {
-    setReloading(true)
-    const { data: { session } } = await createClient().auth.getSession()
-    const res = await fetch('/api/admin/reload-stock', { method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${session?.access_token}`}, body: JSON.stringify({ gb_amount: manualReloadGb }) })
-    const data = await res.json()
-    if (data.error) toast.error(data.error)
-    else { toast.success(`${manualReloadGb}GB reloaded`); await syncStock() }
-    setReloading(false)
-  }
-
+  // These writes happen from the browser (RLS: admins only). The results
+  // were never inspected, so "Settings saved" showed even when the write
+  // had been rejected.
   async function saveSettings() {
+    if (!Number.isFinite(threshold) || threshold < 1) { toast.error('Alert threshold must be at least 1 GB'); return }
+    setSaving(true)
     const sb = createClient()
-    await Promise.all([
+    const results = await Promise.all([
       sb.from('platform_settings').upsert({key:'auto_reload_enabled',value:String(autoReload)},{onConflict:'key'}),
       sb.from('platform_settings').upsert({key:'auto_reload_threshold_gb',value:String(threshold)},{onConflict:'key'}),
-      sb.from('platform_settings').upsert({key:'auto_reload_amount_gb',value:String(autoReloadAmount)},{onConflict:'key'}),
     ])
-    toast.success('Settings saved')
+    setSaving(false)
+    const failed = results.find(r => r.error)
+    if (failed?.error) toast.error(`Could not save settings: ${failed.error.message}`)
+    else toast.success('Settings saved')
   }
 
   const avail = stock?.available_gb ?? 0
@@ -129,38 +115,30 @@ export default function AdminStockPanel() {
       </div>
 
       <div className="mb-5 p-4 bg-surface border border-border rounded-xl">
-        <div className="text-xs font-medium text-ink mb-3">Manual reload</div>
-        <div className="flex gap-3 items-center">
-          <input type="number" value={manualReloadGb} onChange={e=>setManualReloadGb(+e.target.value)} min={100} step={100}
-            className="w-28 bg-white border border-border px-3 py-2 rounded-lg text-sm font-mono focus:outline-none focus:border-accent" />
-          <span className="text-sm text-muted">GB</span>
-          <span className="text-xs text-muted font-mono">≈ ${(manualReloadGb*0.49).toFixed(2)}</span>
-          <button onClick={manualReload} disabled={reloading} className="ml-auto bg-accent text-white px-4 py-2 rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-60">
-            {reloading ? 'Reloading...' : 'Reload now →'}
-          </button>
-        </div>
+        <div className="text-xs font-medium text-ink mb-1">Reloading stock</div>
+        <p className="text-[11px] text-muted font-light leading-relaxed">
+          Geonode's reseller API has no purchase endpoint, so stock is topped up in the Geonode dashboard and then picked up here with <span className="font-mono">↻ Sync</span>.
+        </p>
       </div>
 
       <div className="p-4 border border-border rounded-xl">
         <div className="flex items-center justify-between mb-3">
-          <div className="text-xs font-medium text-ink">Auto-reload alerts</div>
+          <div className="text-xs font-medium text-ink">Low-stock email alerts</div>
           <button onClick={()=>setAutoReload(!autoReload)} className={`relative w-10 h-5 rounded-full transition-all ${autoReload?'bg-accent2':'bg-border'}`}>
             <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${autoReload?'left-5':'left-0.5'}`} />
           </button>
         </div>
         {autoReload && (
           <div className="flex flex-col gap-2.5 mb-3">
-            {[['Alert threshold',threshold,(v:number)=>setThreshold(v),'GB remaining'],['Reload amount',autoReloadAmount,(v:number)=>setAutoReloadAmount(v),'GB']].map(([l,v,fn,unit])=>(
-              <div key={l as string} className="flex items-center gap-3">
-                <label className="text-xs text-muted w-28">{l as string}</label>
-                <input type="number" value={v as number} onChange={e=>(fn as Function)(+e.target.value)} min={5}
-                  className="w-20 bg-white border border-border px-2.5 py-1.5 rounded-lg text-sm font-mono focus:outline-none focus:border-accent" />
-                <span className="text-xs text-muted">{unit as string}</span>
-              </div>
-            ))}
+            <div className="flex items-center gap-3">
+              <label className="text-xs text-muted w-28">Alert threshold</label>
+              <input type="number" value={threshold} onChange={e=>setThreshold(+e.target.value)} min={1}
+                className="w-20 bg-white border border-border px-2.5 py-1.5 rounded-lg text-sm font-mono focus:outline-none focus:border-accent" />
+              <span className="text-xs text-muted">GB remaining</span>
+            </div>
           </div>
         )}
-        <button onClick={saveSettings} className="text-xs font-mono text-accent border border-accent/30 px-3 py-1.5 rounded-lg hover:bg-accent-light transition-all">Save settings</button>
+        <button onClick={saveSettings} disabled={saving} className="text-xs font-mono text-accent border border-accent/30 px-3 py-1.5 rounded-lg hover:bg-accent-light transition-all disabled:opacity-50">{saving ? 'Saving…' : 'Save settings'}</button>
         <p className="text-[10px] text-muted mt-2 font-light">{autoReload?`Email alert when stock drops below ${threshold}GB.`:'Enable to receive low-stock alerts.'}</p>
       </div>
     </div>

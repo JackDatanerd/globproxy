@@ -6,9 +6,12 @@ import { formatGb } from '@/lib/format'
 export default async function AdminResellersPage() {
   const supabase = await createAdminClient()
   const [{ data: resellers }, { data: applicants }, { data: apiApplicants }] = await Promise.all([
-    supabase.from('profiles').select('*').eq('role', 'reseller').order('created_at', { ascending: false }),
-    supabase.from('profiles').select('*').eq('role', 'user').eq('reseller_status', 'pending').order('created_at', { ascending: false }),
-    supabase.from('profiles').select('*').eq('role', 'reseller').eq('api_access_status', 'pending').order('created_at', { ascending: false }),
+    // Deleted accounts keep role = 'reseller' on their '[deleted]' tombstone
+    // row, so every list here excludes is_deleted — they used to show up as
+    // "active resellers" (and as pending applicants).
+    supabase.from('profiles').select('*').eq('role', 'reseller').eq('is_deleted', false).order('created_at', { ascending: false }),
+    supabase.from('profiles').select('*').eq('role', 'user').eq('reseller_status', 'pending').eq('is_deleted', false).order('created_at', { ascending: false }),
+    supabase.from('profiles').select('*').eq('role', 'reseller').eq('api_access_status', 'pending').eq('is_deleted', false).order('created_at', { ascending: false }),
   ])
 
   const resellerIds = resellers?.map(r => r.id) ?? []
@@ -115,7 +118,7 @@ export default async function AdminResellersPage() {
                           <span className="text-[10px] font-mono text-muted uppercase tracking-wider w-20 flex-shrink-0">Use case</span>
                           <span className="text-xs text-ink">{app?.use_case || '—'}</span>
                         </div>
-                        {app?.website_url && (
+                        {typeof app?.website_url === 'string' && /^https?:\/\//i.test(app.website_url) && (
                           <div className="flex gap-2">
                             <span className="text-[10px] font-mono text-muted uppercase tracking-wider w-20 flex-shrink-0">Website</span>
                             <a href={app.website_url} target="_blank" rel="noopener noreferrer" className="text-xs text-accent hover:underline">{app.website_url}</a>
@@ -146,7 +149,7 @@ export default async function AdminResellersPage() {
       {/* Active resellers */}
       <div className="bg-white border border-border rounded-xl overflow-hidden">
         <div className="px-6 py-4 border-b border-border">
-          <h2 className="font-display font-bold text-base text-ink">Active resellers ({resellers?.length ?? 0})</h2>
+          <h2 className="font-display font-bold text-base text-ink">Resellers ({resellers?.length ?? 0})</h2>
         </div>
         {resellers && resellers.length > 0 ? (
           <table className="w-full">
@@ -169,7 +172,10 @@ export default async function AdminResellersPage() {
                 return (
                   <tr key={r.id} className={`${i < (resellers?.length ?? 0) - 1 ? 'border-b border-border' : ''} hover:bg-surface`}>
                     <td className="px-6 py-4">
-                      <div className="text-sm font-medium text-ink">{r.full_name || '—'}</div>
+                      <div className="text-sm font-medium text-ink">
+                        {r.full_name || '—'}
+                        {r.is_suspended && <span className="ml-2 text-[10px] font-mono bg-red-50 text-red-500 px-2 py-0.5 rounded-full">Suspended</span>}
+                      </div>
                       <div className="text-xs font-mono text-muted">{r.email}</div>
                     </td>
                     <td className="px-6 py-4 font-mono text-sm text-accent">{formatGb(Math.max(0, available))} GB</td>
@@ -178,7 +184,7 @@ export default async function AdminResellersPage() {
                       {new Date(r.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
                     </td>
                     <td className="px-6 py-4">
-                      <AdminResellerActions userId={r.id} action="suspend" />
+                      <AdminResellerActions userId={r.id} action={r.is_suspended ? 'reinstate' : 'suspend'} />
                     </td>
                   </tr>
                 )

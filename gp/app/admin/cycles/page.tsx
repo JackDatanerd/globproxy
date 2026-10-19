@@ -9,6 +9,7 @@ import {
   formatCycleLabel,
   type PayoutCycle,
 } from '@/lib/payoutCycle'
+import { isIsoDate } from '@/lib/adminAuth'
 import { GEONODE_COST_PER_GB_USD } from '@/lib/constants'
 import { formatGb } from '@/lib/format'
 
@@ -32,6 +33,17 @@ function methodLabel(key: PayoutMethodKey): string {
   return 'No method set'
 }
 
+async function fetchAll<T>(page: (from: number, to: number) => PromiseLike<{ data: T[] | null }>): Promise<T[]> {
+  const out: T[] = []
+  for (let from = 0; from < 50000; from += 1000) {
+    const { data } = await page(from, from + 999)
+    if (!data || data.length === 0) break
+    out.push(...data)
+    if (data.length < 1000) break
+  }
+  return out
+}
+
 const money = (n: number) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
 export default async function AdminCyclesPage({
@@ -49,7 +61,9 @@ export default async function AdminCyclesPage({
   // 16th); cycleFromStart() derives everything else itself rather than
   // trusting an end date from the URL.
   let cycle: PayoutCycle = lastCompletedCycle()
-  if (sp.start && /^\d{4}-\d{2}-(01|16)$/.test(sp.start)) {
+  // isIsoDate is a real calendar check: the old regex alone let 2026-13-01
+  // through, which produced an invalid Date and crashed the page with a 500.
+  if (sp.start && isIsoDate(sp.start) && /-(01|16)$/.test(sp.start)) {
     cycle = cycleFromStart(sp.start)
   }
 
@@ -61,68 +75,65 @@ export default async function AdminCyclesPage({
 
   const { start, end } = cycleWindow(cycle)
 
-  const [{ data: orders }, { data: existingPayouts }] = await Promise.all([
-    supabase
-      .from('orders')
-      .select('amount_usd, gb_amount')
-      .eq('payment_status', 'paid')
-      .eq('is_canary', false)
-      .gte('created_at', start)
-      .lt('created_at', end),
+  // Sales come from admin_order_stats() (migration 0043): server-side,
+  // net of refunds, canary excluded — the same numbers as the Overview and
+  // Orders pages. This page used to sum gross order amounts (ignoring
+  // partial refunds) from a query PostgREST caps at 1000 rows.
+  const [statsRes, { data: existingPayouts }, commissions] = await Promise.all([
+    supabase.rpc('admin_order_stats', { p_start: start, p_end: end }),
     supabase
       .from('affiliate_payouts')
       .select('amount_usd, payout_method')
       .eq('cycle_start', cycle.cycleStart)
       .eq('cycle_end', cycle.cycleEnd),
+    // Every non-void commission earned on this window's sales, paged in
+    // 1000-row chunks so a busy cycle isn't silently truncated.
+    fetchAll<{ referrer_id: string; commission_amount_usd: number; status: string; payout_id: string | null }>((from, to) =>
+      supabase
+        .from('affiliate_commissions')
+        .select('referrer_id, commission_amount_usd, status, payout_id')
+        .gte('created_at', start)
+        .lt('created_at', end)
+        .neq('status', 'void')
+        .order('created_at', { ascending: true })
+        .range(from, to)
+    ),
   ])
 
-  const totalSales = orders?.reduce((s, o) => s + Number(o.amount_usd), 0) ?? 0
-  const totalGbSold = orders?.reduce((s, o) => s + Number(o.gb_amount), 0) ?? 0
-  const orderCount = orders?.length ?? 0
+  const stats = (statsRes.data?.[0] ?? null) as { revenue_usd: number; gb_sold: number; order_count: number } | null
+  const totalSales = Number(stats?.revenue_usd ?? 0)
+  const totalGbSold = Number(stats?.gb_sold ?? 0)
+  const orderCount = Number(stats?.order_count ?? 0)
   const geonodeCost = totalGbSold * GEONODE_COST_PER_GB_USD
 
-  // "How much of that is from the affiliate program" is the cost side —
-  // what's owed to affiliates for this window — broken down by payout
-  // method so the admin knows how much USDT/bank/M-Pesa to have ready.
-  // Once this cycle has actually been run, affiliate_payouts is the
-  // authoritative, method-snapshotted source (the destination is locked
-  // in at run time — see migration 0034 — so it can't drift even if an
-  // affiliate changes their method afterward). Until then, this is
-  // projected from commissions still accruing in this window against
-  // each affiliate's CURRENT payout method — a preview, not a
-  // guarantee, since that method can still change before the cycle is
-  // actually run.
+  // Affiliate cost = EVERY non-void commission earned on this window's
+  // sales. It used to be only the payouts batched for the cycle once any
+  // existed — so balances held back (no payout method, security hold, below
+  // minimum) vanished from the liability and profit looked too high.
+  const totalCommissionCost = commissions.reduce((sum, c) => sum + Number(c.commission_amount_usd), 0)
+  const batchedCost = commissions.filter(c => c.payout_id).reduce((sum, c) => sum + Number(c.commission_amount_usd), 0)
+  const unbatchedPending = commissions.filter(c => !c.payout_id && c.status === 'pending')
+  const unbatchedCost = unbatchedPending.reduce((sum, c) => sum + Number(c.commission_amount_usd), 0)
   const cycleHasBeenRun = (existingPayouts?.length ?? 0) > 0
 
+  // "Payout needed by method" = what's actually been batched for this cycle
+  // (method snapshotted at run time — migration 0034) PLUS a projection of
+  // the not-yet-batched remainder against each affiliate's CURRENT method.
   const byMethod: Record<PayoutMethodKey, number> = { usdt: 0, mpesa: 0, bank: 0, unset: 0 }
-  let totalCommissionCost = 0
-
-  if (cycleHasBeenRun) {
-    for (const p of existingPayouts ?? []) {
-      const amt = Number(p.amount_usd)
-      totalCommissionCost += amt
-      const key = (p.payout_method as PayoutMethodKey) ?? 'unset'
-      byMethod[key] = (byMethod[key] ?? 0) + amt
+  for (const p of existingPayouts ?? []) {
+    const key = (p.payout_method as PayoutMethodKey) ?? 'unset'
+    byMethod[key] = (byMethod[key] ?? 0) + Number(p.amount_usd)
+  }
+  if (unbatchedPending.length > 0) {
+    const referrerIds = [...new Set(unbatchedPending.map(c => c.referrer_id))]
+    const methodByReferrer = new Map<string, string | null>()
+    for (let i = 0; i < referrerIds.length; i += 100) {
+      const { data: referrerProfiles } = await supabase.from('profiles').select('id, payout_method').in('id', referrerIds.slice(i, i + 100))
+      for (const p of referrerProfiles ?? []) methodByReferrer.set(p.id, p.payout_method)
     }
-  } else {
-    const { data: commissions } = await supabase
-      .from('affiliate_commissions')
-      .select('referrer_id, commission_amount_usd')
-      .gte('created_at', start)
-      .lt('created_at', end)
-      .neq('status', 'void')
-
-    const referrerIds = [...new Set((commissions ?? []).map(c => c.referrer_id))]
-    const { data: referrerProfiles } = referrerIds.length > 0
-      ? await supabase.from('profiles').select('id, payout_method').in('id', referrerIds)
-      : { data: [] as { id: string; payout_method: string | null }[] }
-    const methodByReferrer = new Map((referrerProfiles ?? []).map(p => [p.id, p.payout_method]))
-
-    for (const c of commissions ?? []) {
-      const amt = Number(c.commission_amount_usd)
-      totalCommissionCost += amt
+    for (const c of unbatchedPending) {
       const key = (methodByReferrer.get(c.referrer_id) as PayoutMethodKey | null) ?? 'unset'
-      byMethod[key] = (byMethod[key] ?? 0) + amt
+      byMethod[key] = (byMethod[key] ?? 0) + Number(c.commission_amount_usd)
     }
   }
 
@@ -162,12 +173,12 @@ export default async function AdminCyclesPage({
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         {[
-          { label: 'Total sales', value: money(totalSales), sub: `${orderCount} paid order${orderCount === 1 ? '' : 's'}` },
+          { label: 'Total sales', value: money(totalSales), sub: `${orderCount} paid order${orderCount === 1 ? '' : 's'} · net of refunds` },
           { label: 'Geonode cost', value: money(geonodeCost), sub: `${formatGb(totalGbSold)} GB × $${GEONODE_COST_PER_GB_USD}` },
           {
             label: 'Affiliate cost',
             value: money(totalCommissionCost),
-            sub: cycleHasBeenRun ? 'Actual — cycle run' : 'Projected — not yet run',
+            sub: `${money(batchedCost)} batched · ${money(unbatchedCost)} not yet batched${cycleHasBeenRun ? '' : ' (cycle not run)'}`,
           },
           { label: 'Gross profit', value: money(grossProfit), sub: 'Before processor fees & opex' },
         ].map(m => (
@@ -184,7 +195,7 @@ export default async function AdminCyclesPage({
           <h2 className="font-display font-bold text-base text-ink">Affiliate payout needed by method</h2>
           <p className="text-xs text-muted mt-1">
             {cycleHasBeenRun
-              ? 'What was actually batched for this cycle — the amount to have ready in each method.'
+              ? "Payouts batched for this cycle, plus a preview of anything not yet batched (against each affiliate's current method). Earlier balances carried over into this cycle's run are included in the payout amounts."
               : "Preview based on each affiliate's current payout method — can still change before the cycle is run."}
           </p>
         </div>

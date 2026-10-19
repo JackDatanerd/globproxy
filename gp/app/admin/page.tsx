@@ -4,25 +4,53 @@ import AdminStockPanel from '@/components/admin/AdminStockPanel'
 import { formatGb } from '@/lib/format'
 import { GEONODE_COST_PER_GB_USD } from '@/lib/constants'
 
+const money = (n: number) => `$${n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`
+
 export default async function AdminPage() {
   const supabase = await createAdminClient()
+  const now = new Date()
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString()
+
+  // Revenue / GB / order counts come from admin_order_stats() (migration
+  // 0043): a server-side aggregate, net of refunds, canary orders excluded.
+  // This page used to download every paid order and sum it in JS, which
+  // silently truncated at PostgREST's 1000-row cap once the store grew —
+  // and Orders / Sales Cycles used different (gross) maths for the same
+  // "revenue" number.
+  // Soft-deleted accounts keep their role on a '[deleted]' tombstone row, so
+  // every account count / signup list excludes is_deleted.
   const [
     { count: totalUsers },
     { count: totalResellers },
-    { data: orders },
+    allTime,
+    month,
     { data: recentUsers },
+    { count: pendingResellers },
+    { count: pendingAffiliates },
+    { count: pendingApi },
+    { count: unpaidPayouts },
   ] = await Promise.all([
-    supabase.from('profiles').select('*',{count:'exact',head:true}).eq('role','user'),
-    supabase.from('profiles').select('*',{count:'exact',head:true}).eq('role','reseller'),
-    // Canary (synthetic daily test charge) is not revenue; paid orders are net of partial refunds.
-    supabase.from('orders').select('amount_usd,refunded_usd,payment_status,gb_amount,created_at').eq('payment_status','paid').eq('is_canary',false),
-    supabase.from('profiles').select('email,full_name,role,created_at').order('created_at',{ascending:false}).limit(5),
+    supabase.from('profiles').select('*',{count:'exact',head:true}).eq('role','user').eq('is_deleted',false),
+    supabase.from('profiles').select('*',{count:'exact',head:true}).eq('role','reseller').eq('is_deleted',false),
+    supabase.rpc('admin_order_stats'),
+    supabase.rpc('admin_order_stats', { p_start: monthStart }),
+    supabase.from('profiles').select('email,full_name,role,created_at').eq('is_deleted',false).order('created_at',{ascending:false}).limit(5),
+    supabase.from('profiles').select('*',{count:'exact',head:true}).eq('reseller_status','pending').eq('is_deleted',false),
+    supabase.from('profiles').select('*',{count:'exact',head:true}).eq('affiliate_status','pending').eq('is_deleted',false),
+    supabase.from('profiles').select('*',{count:'exact',head:true}).eq('api_access_status','pending').eq('is_deleted',false),
+    supabase.from('affiliate_payouts').select('*',{count:'exact',head:true}).eq('status','pending'),
   ])
 
-  const totalRevenue = orders?.reduce((s,o)=>s+Number(o.amount_usd)-Number(o.refunded_usd??0),0)??0
-  const totalGbSold = orders?.reduce((s,o)=>s+o.gb_amount,0)??0
-  const now = new Date()
-  const thisMonth = orders?.filter(o=>{const d=new Date(o.created_at);return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()}).reduce((s,o)=>s+Number(o.amount_usd)-Number(o.refunded_usd??0),0)??0
+  const statsOk = !allTime.error && !month.error
+  const all = (allTime.data?.[0] ?? null) as { revenue_usd: number; gb_sold: number; order_count: number } | null
+  const mo = (month.data?.[0] ?? null) as { revenue_usd: number } | null
+
+  const attention = [
+    { label: 'Reseller applications', n: pendingResellers ?? 0, href: '/admin/resellers' },
+    { label: 'API access requests', n: pendingApi ?? 0, href: '/admin/resellers' },
+    { label: 'Affiliate applications', n: pendingAffiliates ?? 0, href: '/admin/affiliates' },
+    { label: 'Payouts to send', n: unpaidPayouts ?? 0, href: '/admin/affiliates' },
+  ]
 
   return (
     <div className="max-w-6xl">
@@ -31,18 +59,34 @@ export default async function AdminPage() {
         <p className="text-muted text-sm mt-1">Platform health, finances, and controls</p>
       </div>
 
+      {!statsOk && (
+        <div className="bg-red-50 border border-red-200 text-red-600 text-xs font-mono rounded-xl px-4 py-3 mb-6">
+          Revenue stats unavailable — has migration 0043_admin_hardening.sql been run?
+        </div>
+      )}
+
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         {[
-          {label:'Total revenue',value:`$${totalRevenue.toLocaleString('en-US',{minimumFractionDigits:2})}`,color:'text-accent2',sub:'All time'},
-          {label:'This month',value:`$${thisMonth.toLocaleString('en-US',{minimumFractionDigits:2})}`,color:'text-accent',sub:now.toLocaleString('default',{month:'long'})},
-          {label:'Total GB sold',value:`${formatGb(totalGbSold)} GB`,color:'text-ink',sub:'All time'},
-          {label:'Total orders',value:String(orders?.length??0),color:'text-ink',sub:'Paid only'},
+          {label:'Total revenue',value: all ? money(Number(all.revenue_usd)) : '—',color:'text-accent2',sub:'All time, net of refunds'},
+          {label:'This month',value: mo ? money(Number(mo.revenue_usd)) : '—',color:'text-accent',sub:now.toLocaleString('default',{month:'long',timeZone:'UTC'})},
+          {label:'Total GB sold',value: all ? `${formatGb(Number(all.gb_sold))} GB` : '—',color:'text-ink',sub:'All time, net of refunds'},
+          {label:'Total orders',value: all ? String(all.order_count) : '—',color:'text-ink',sub:'Paid only'},
         ].map(m=>(
           <div key={m.label} className="bg-white border border-border rounded-xl p-5">
             <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-2">{m.label}</div>
             <div className={`font-display text-3xl font-bold ${m.color}`}>{m.value}</div>
             <div className="text-xs text-muted mt-1">{m.sub}</div>
           </div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        {attention.map(a=>(
+          <Link key={a.label} href={a.href} className={`rounded-xl p-5 border transition-all hover:border-accent ${a.n>0?'bg-amber-50 border-amber-200':'bg-white border-border'}`}>
+            <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-2">Needs attention</div>
+            <div className={`font-display text-3xl font-bold ${a.n>0?'text-amber-700':'text-ink'}`}>{a.n}</div>
+            <div className="text-xs text-muted mt-1">{a.label}</div>
+          </Link>
         ))}
       </div>
 
@@ -69,6 +113,7 @@ export default async function AdminPage() {
             {[
               {label:'Manage users',href:'/admin/users'},
               {label:'View all orders',href:'/admin/orders'},
+              {label:'Admin audit log',href:'/admin/audit'},
               {label:'Reseller approvals',href:'/admin/resellers'},
               {label:'All credentials',href:'/admin/credentials'},
             ].map(a=>(

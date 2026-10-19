@@ -6,24 +6,25 @@ import { formatCycleLabel } from '@/lib/payoutCycle'
 
 export default async function AdminAffiliatesPage() {
   const supabase = await createAdminClient()
-  const [{ data: applicants }, { data: affiliates }, { data: pendingPayouts }] = await Promise.all([
-    supabase.from('profiles').select('*').eq('affiliate_status', 'pending').order('created_at', { ascending: false }),
-    supabase.from('profiles').select('*').eq('affiliate_status', 'approved').order('created_at', { ascending: false }),
-    supabase.from('affiliate_payouts').select('*, referrer:referrer_id(email, full_name)').eq('status', 'pending').order('cycle_start', { ascending: false }),
+  // Deleted accounts keep their affiliate_status on the '[deleted]' tombstone,
+  // so every list excludes is_deleted. 'suspended' affiliates get their own
+  // section (status can now be set by /api/admin/suspend-affiliate).
+  const [{ data: applicants }, { data: affiliates }, { data: suspendedAffiliates }, { data: pendingPayouts }, { data: paidPayouts }, earningsRes] = await Promise.all([
+    supabase.from('profiles').select('*').eq('affiliate_status', 'pending').eq('is_deleted', false).order('created_at', { ascending: false }),
+    supabase.from('profiles').select('*').eq('affiliate_status', 'approved').eq('is_deleted', false).order('created_at', { ascending: false }),
+    supabase.from('profiles').select('*').eq('affiliate_status', 'suspended').eq('is_deleted', false).order('created_at', { ascending: false }),
+    supabase.from('affiliate_payouts').select('*, referrer:referrer_id(email, full_name, is_deleted, is_suspended, affiliate_status)').eq('status', 'pending').order('cycle_start', { ascending: false }),
+    supabase.from('affiliate_payouts').select('id, amount_usd, cycle_start, cycle_end, payout_method, paid_at, payment_reference, referrer:referrer_id(email, full_name), payer:paid_by(email)').eq('status', 'paid').order('paid_at', { ascending: false }).limit(15),
+    // Per-affiliate totals computed in SQL (migration 0043) — not by pulling
+    // every commission row through a giant `.in()` filter.
+    supabase.rpc('admin_affiliate_earnings'),
   ])
 
-  const affiliateIds = affiliates?.map(a => a.id) ?? []
-  const { data: allCommissions } = affiliateIds.length > 0
-    ? await supabase.from('affiliate_commissions').select('referrer_id, commission_amount_usd, status').in('referrer_id', affiliateIds)
-    : { data: [] }
-
-  const earningsByAffiliate: Record<string, { pending: number; paid: number }> = {}
-  for (const c of allCommissions ?? []) {
-    const bucket = earningsByAffiliate[c.referrer_id] ?? { pending: 0, paid: 0 }
-    if (c.status === 'paid') bucket.paid += Number(c.commission_amount_usd)
-    else if (c.status === 'pending') bucket.pending += Number(c.commission_amount_usd)
-    earningsByAffiliate[c.referrer_id] = bucket
+  const earningsByAffiliate: Record<string, { accruing: number; awaiting: number; paid: number }> = {}
+  for (const e of (earningsRes.data ?? []) as { referrer_id: string; accruing_usd: number; awaiting_usd: number; paid_usd: number }[]) {
+    earningsByAffiliate[e.referrer_id] = { accruing: Number(e.accruing_usd), awaiting: Number(e.awaiting_usd), paid: Number(e.paid_usd) }
   }
+  const rate = (v: unknown, def: number) => Math.round(Number(v ?? def) * 100)
 
   return (
     <div className="max-w-5xl">
@@ -115,7 +116,11 @@ export default async function AdminAffiliatesPage() {
                 {pendingPayouts.map((p: any, i: number) => (
                   <tr key={p.id} className={i < pendingPayouts.length - 1 ? 'border-b border-border' : ''}>
                     <td className="px-6 py-4">
-                      <div className="text-sm font-medium text-ink">{p.referrer?.full_name || '—'}</div>
+                      <div className="text-sm font-medium text-ink">
+                        {p.referrer?.full_name || '—'}
+                        {p.referrer?.is_deleted && <span className="ml-2 text-[10px] font-mono bg-red-50 text-red-500 px-2 py-0.5 rounded-full">Deleted — do not pay</span>}
+                        {!p.referrer?.is_deleted && (p.referrer?.is_suspended || p.referrer?.affiliate_status === 'suspended') && <span className="ml-2 text-[10px] font-mono bg-amber-50 text-amber-700 px-2 py-0.5 rounded-full">Suspended — check before paying</span>}
+                      </div>
                       <div className="text-xs font-mono text-muted">{p.referrer?.email}</div>
                     </td>
                     <td className="px-6 py-4 text-xs font-mono text-muted">{formatCycleLabel(p)}</td>
@@ -130,7 +135,7 @@ export default async function AdminAffiliatesPage() {
                       )}
                     </td>
                     <td className="px-6 py-4">
-                      <AdminAffiliateActions payoutId={p.id} action="markPaid" />
+                      <AdminAffiliateActions payoutId={p.id} action="markPaid" amountUsd={Number(p.amount_usd)} />
                     </td>
                   </tr>
                 ))}
@@ -153,14 +158,14 @@ export default async function AdminAffiliatesPage() {
           <table className="w-full">
             <thead>
               <tr className="border-b border-border bg-surface">
-                {['Affiliate', 'Rate (intro / lifetime)', 'Accruing', 'Paid to date', 'Joined', 'Verified Operator'].map(h => (
+                {['Affiliate', 'Rate (intro / lifetime)', 'Accruing', 'Awaiting payment', 'Paid to date', 'Joined', 'Actions'].map(h => (
                   <th key={h} className="text-left px-6 py-3 text-[10px] font-mono text-muted uppercase tracking-widest">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {affiliates.map((a, i) => {
-                const earnings = earningsByAffiliate[a.id] ?? { pending: 0, paid: 0 }
+                const earnings = earningsByAffiliate[a.id] ?? { accruing: 0, awaiting: 0, paid: 0 }
                 return (
                   <tr key={a.id} className={i < (affiliates?.length ?? 0) - 1 ? 'border-b border-border' : ''}>
                     <td className="px-6 py-4">
@@ -173,15 +178,23 @@ export default async function AdminAffiliatesPage() {
                       <div className="text-xs font-mono text-muted">{a.email}</div>
                     </td>
                     <td className="px-6 py-4 font-mono text-sm text-ink">
-                      {Math.round(Number(a.affiliate_commission_rate ?? 0.3) * 100)}% / {Math.round(Number(a.affiliate_commission_rate_lifetime ?? 0.15) * 100)}%
+                      {rate(a.affiliate_commission_rate, 0.3)}% / {rate(a.affiliate_commission_rate_lifetime, 0.15)}%
                     </td>
-                    <td className="px-6 py-4 font-mono text-sm text-ink">${earnings.pending.toFixed(2)}</td>
+                    <td className="px-6 py-4 font-mono text-sm text-ink">${earnings.accruing.toFixed(2)}</td>
+                    <td className="px-6 py-4 font-mono text-sm text-ink">${earnings.awaiting.toFixed(2)}</td>
                     <td className="px-6 py-4 font-mono text-sm text-accent">${earnings.paid.toFixed(2)}</td>
                     <td className="px-6 py-4 text-xs font-mono text-muted">
                       {new Date(a.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
                     </td>
                     <td className="px-6 py-4">
-                      <AdminAffiliateActions userId={a.id} action={a.is_verified_operator ? 'revokeVerifiedOperator' : 'grantVerifiedOperator'} />
+                      <div className="flex flex-wrap gap-2">
+                        <AdminAffiliateActions userId={a.id} action={a.is_verified_operator ? 'revokeVerifiedOperator' : 'grantVerifiedOperator'} />
+                        {!a.is_verified_operator && (
+                          <AdminAffiliateActions userId={a.id} action="editRates"
+                            currentIntro={Number(a.affiliate_commission_rate ?? 0.3)} currentLifetime={Number(a.affiliate_commission_rate_lifetime ?? 0.15)} />
+                        )}
+                        <AdminAffiliateActions userId={a.id} action="suspendAffiliate" />
+                      </div>
                     </td>
                   </tr>
                 )
@@ -190,6 +203,68 @@ export default async function AdminAffiliatesPage() {
           </table>
         ) : (
           <div className="text-center py-14 text-muted text-sm font-light">No approved affiliates yet.</div>
+        )}
+      </div>
+
+      {/* Suspended affiliates */}
+      {suspendedAffiliates && suspendedAffiliates.length > 0 && (
+        <div className="bg-white border border-border rounded-xl overflow-hidden mt-8">
+          <div className="px-6 py-4 border-b border-border">
+            <h2 className="font-display font-bold text-base text-ink">Suspended affiliates ({suspendedAffiliates.length})</h2>
+            <p className="text-xs text-muted mt-1">New referrals don't earn and payouts are skipped. Commissions already earned are kept.</p>
+          </div>
+          <table className="w-full">
+            <tbody>
+              {suspendedAffiliates.map((a, i) => {
+                const earnings = earningsByAffiliate[a.id] ?? { accruing: 0, awaiting: 0, paid: 0 }
+                return (
+                  <tr key={a.id} className={i < suspendedAffiliates.length - 1 ? 'border-b border-border' : ''}>
+                    <td className="px-6 py-4">
+                      <div className="text-sm font-medium text-ink">{a.full_name || '—'}</div>
+                      <div className="text-xs font-mono text-muted">{a.email}</div>
+                    </td>
+                    <td className="px-6 py-4 font-mono text-xs text-muted">${earnings.accruing.toFixed(2)} on hold</td>
+                    <td className="px-6 py-4 text-right"><AdminAffiliateActions userId={a.id} action="reinstateAffiliate" /></td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Recently paid payouts — who sent it and the payment reference */}
+      <div className="bg-white border border-border rounded-xl overflow-hidden mt-8">
+        <div className="px-6 py-4 border-b border-border">
+          <h2 className="font-display font-bold text-base text-ink">Recently paid</h2>
+        </div>
+        {(paidPayouts ?? []).length === 0 ? (
+          <div className="text-center py-10 text-muted text-sm font-light">No payouts have been marked paid yet.</div>
+        ) : (
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-border bg-surface">
+                {['Affiliate', 'Cycle', 'Amount', 'Method', 'Reference', 'Paid'].map(h => (
+                  <th key={h} className="text-left px-6 py-3 text-[10px] font-mono text-muted uppercase tracking-widest">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {(paidPayouts ?? []).map((p: any, i: number) => (
+                <tr key={p.id} className={i < (paidPayouts?.length ?? 0) - 1 ? 'border-b border-border' : ''}>
+                  <td className="px-6 py-3 text-xs font-mono text-ink">{p.referrer?.email ?? '—'}</td>
+                  <td className="px-6 py-3 text-xs font-mono text-muted">{formatCycleLabel(p)}</td>
+                  <td className="px-6 py-3 font-mono text-sm text-accent">${Number(p.amount_usd).toFixed(2)}</td>
+                  <td className="px-6 py-3 text-xs font-mono text-muted">{p.payout_method}</td>
+                  <td className="px-6 py-3 text-xs font-mono text-ink break-all">{p.payment_reference ?? '—'}</td>
+                  <td className="px-6 py-3 text-xs font-mono text-muted">
+                    {p.paid_at ? new Date(p.paid_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'}
+                    {p.payer?.email && <div className="text-[10px]">by {p.payer.email}</div>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </div>
     </div>

@@ -1,48 +1,39 @@
-import { createAdminClient } from '@/lib/supabase/server'
-import { requireMfaVerified } from '@/lib/mfa'
+import { authorizeAdmin, readJson, badRequest, isUuid } from '@/lib/adminAuth'
+import { logAdminAction } from '@/lib/adminAudit'
 import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
-  try {
-    const token = req.headers.get('authorization')?.replace('Bearer ', '')
-    if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const auth = await authorizeAdmin(req)
+  if (!auth.ok) return auth.response
+  const { supabase, adminId } = auth
 
-    const supabaseAdmin = await createAdminClient()
-    const { data: { user } } = await supabaseAdmin.auth.getUser(token)
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const body = await readJson<{ credentialId?: string }>(req)
+  if (!body || !isUuid(body.credentialId)) return badRequest('Credential ID missing or invalid')
+  const credentialId = body.credentialId
 
-    const { data: adminProfile } = await supabaseAdmin.from('profiles').select('role').eq('id', user.id).single()
-    if (adminProfile?.role !== 'admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+  // Sanity-check it's a real, usable credential before saving — the same
+  // checks runConfiguredBenchmark applies at run time, surfaced here as an
+  // immediate error instead of a silent skip on the next cron run.
+  const { data: cred } = await supabase
+    .from('proxy_credentials')
+    .select('protocol, status, user_id')
+    .eq('id', credentialId)
+    .single()
+  if (!cred) return NextResponse.json({ error: 'That credential does not exist' }, { status: 400 })
+  // The settings page only ever offers the admin's OWN credentials. The
+  // route accepted any user's, which would have burned a customer's
+  // bandwidth on every benchmark run.
+  if (cred.user_id !== adminId) return NextResponse.json({ error: 'Only your own credentials can be used for benchmarking' }, { status: 403 })
+  if (cred.protocol !== 'http') return NextResponse.json({ error: 'Only http-protocol credentials are supported for benchmarking right now' }, { status: 400 })
+  if (cred.status !== 'active') return NextResponse.json({ error: `That credential is not active (status: ${cred.status})` }, { status: 400 })
 
-    const mfaCheck = await requireMfaVerified(req, user.id)
-    if (mfaCheck) return mfaCheck
+  // upsert, not update: a missing platform_settings row used to make the
+  // update match zero rows and report success while saving nothing.
+  const { error } = await supabase
+    .from('platform_settings')
+    .upsert({ key: 'benchmark_credential_id', value: credentialId, updated_at: new Date().toISOString() }, { onConflict: 'key' })
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
-    const { credentialId } = await req.json()
-    if (!credentialId) return NextResponse.json({ error: 'Credential ID missing' }, { status: 400 })
-
-    // Sanity-check it's a real, usable credential before saving — the
-    // same checks runConfiguredBenchmark applies at run time, just
-    // surfaced here as an immediate error instead of a silent skip on
-    // the next cron run.
-    const { data: cred } = await supabaseAdmin
-      .from('proxy_credentials')
-      .select('protocol, status')
-      .eq('id', credentialId)
-      .single()
-
-    if (!cred) return NextResponse.json({ error: 'That credential does not exist' }, { status: 400 })
-    if (cred.protocol !== 'http') return NextResponse.json({ error: 'Only http-protocol credentials are supported for benchmarking right now' }, { status: 400 })
-    if (cred.status !== 'active') return NextResponse.json({ error: `That credential is not active (status: ${cred.status})` }, { status: 400 })
-
-    const { error: updateErr } = await supabaseAdmin
-      .from('platform_settings')
-      .update({ value: credentialId, updated_at: new Date().toISOString() })
-      .eq('key', 'benchmark_credential_id')
-
-    if (updateErr) return NextResponse.json({ error: updateErr.message }, { status: 500 })
-
-    return NextResponse.json({ success: true })
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 })
-  }
+  await logAdminAction(supabase, { adminId, action: 'benchmark.set_credential', targetRef: credentialId })
+  return NextResponse.json({ success: true })
 }

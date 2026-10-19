@@ -40,7 +40,7 @@ export default async function AdminSettingsPage() {
           <div className="text-[10px] font-mono text-muted mb-1">Webhook URL — add this in your Paystack dashboard</div>
           <div className="font-mono text-sm text-ink">https://globproxy.com/api/webhooks/paystack</div>
         </div>
-        <p className="text-xs text-muted mt-3 font-light">Set this URL in Paystack → Settings → Webhooks. Event: <span className="font-mono">charge.success</span></p>
+        <p className="text-xs text-muted mt-3 font-light">Set this URL in Paystack → Settings → Webhooks. Paystack sends every event type to it; the handler acts on <span className="font-mono">charge.success</span>, <span className="font-mono">charge.failed</span>, <span className="font-mono">refund.processed</span> and <span className="font-mono">charge.dispute.create / resolve</span>, and ignores the rest.</p>
       </div>
 
       <BenchmarkSettings

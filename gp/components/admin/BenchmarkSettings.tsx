@@ -1,7 +1,7 @@
 'use client'
 import { useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
+import { adminPost } from '@/lib/adminFetch'
 
 type Credential = { id: string; host: string; gb_allocated: number; gb_used: number; created_at: string }
 
@@ -19,23 +19,12 @@ export default function BenchmarkSettings({
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<any>(null)
 
-  async function authHeaders() {
-    const { data: { session } } = await createClient().auth.getSession()
-    return { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` }
-  }
-
   async function save() {
     if (!selected) return
     setSaving(true)
-    const res = await fetch('/api/admin/set-benchmark-credential', {
-      method: 'POST', headers: await authHeaders(), body: JSON.stringify({ credentialId: selected }),
-    })
-    const data = await res.json().catch(() => ({}))
+    const { ok, data } = await adminPost('/api/admin/set-benchmark-credential', { credentialId: selected })
     setSaving(false)
-    if (!res.ok || data.error) {
-      toast.error(data.error ?? 'Failed to save')
-      return
-    }
+    if (!ok) { toast.error(data.error ?? 'Failed to save'); return }
     toast.success('Benchmark credential saved')
     window.location.reload()
   }
@@ -43,16 +32,12 @@ export default function BenchmarkSettings({
   async function runTest() {
     setTesting(true)
     setTestResult(null)
-    const res = await fetch('/api/admin/test-benchmark', { method: 'POST', headers: await authHeaders() })
-    const data = await res.json().catch(() => ({}))
+    const { ok, data } = await adminPost('/api/admin/test-benchmark')
     setTesting(false)
-    if (!res.ok || data.error) {
-      toast.error(data.error ?? 'Test run failed')
-      return
-    }
+    if (!ok) { toast.error(data.error ?? 'Test run failed'); return }
     setTestResult(data)
-    if (data.action === 'ran') toast.success('Test run complete — published to /status')
-    else toast.error(data.reason ?? 'Skipped')
+    if ((data as any).action === 'ran') toast.success('Test run complete — published to /status')
+    else toast.error((data as any).reason ?? 'Skipped')
   }
 
   return (

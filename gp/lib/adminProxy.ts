@@ -1,0 +1,80 @@
+import type { AdminSupabase } from '@/lib/adminAuth'
+import { getSubUserUsage, updateSubUserTrafficLimit } from '@/lib/geonode'
+import { syncUserUsage } from '@/lib/usageSync'
+
+// Suspending an account used to block the dashboard and the API but leave
+// every live Geonode sub-user working — a suspended abuser kept proxying
+// until their bandwidth ran out. Geonode has no "disable" call, so the
+// effective switch is capping the sub-user's traffic limit at what it has
+// already used (floored at 1 MB — 0 might read as "unlimited") and
+// marking the credential 'suspended' locally. Re-enabling restores the
+// limit from gb_allocated, which top-ups already keep equal to the limit.
+//
+// NOTE: the cap is applied to the sub-user's cumulative counter. It never
+// touches activeUntil (that would reset usage — see geonode.ts).
+
+type CredRow = { id: string; geonode_sub_user_id: string | null; gb_allocated: number | string | null; status: string }
+
+export type ProxyToggleResult = { changed: number; failed: { id: string; error: string }[] }
+
+export async function disableCredential(supabase: AdminSupabase, cred: CredRow): Promise<void> {
+  if (cred.geonode_sub_user_id) {
+    const usedGb = await getSubUserUsage(cred.geonode_sub_user_id)
+    await updateSubUserTrafficLimit(cred.geonode_sub_user_id, Math.max(1, Math.ceil(usedGb * 1024)))
+  }
+  const { error } = await supabase.from('proxy_credentials').update({ status: 'suspended' }).eq('id', cred.id)
+  if (error) throw new Error(error.message)
+}
+
+export async function enableCredential(supabase: AdminSupabase, cred: CredRow): Promise<void> {
+  if (cred.geonode_sub_user_id) {
+    await updateSubUserTrafficLimit(cred.geonode_sub_user_id, Math.round(Number(cred.gb_allocated ?? 0) * 1024))
+  }
+  const { error } = await supabase.from('proxy_credentials').update({ status: 'active' }).eq('id', cred.id)
+  if (error) throw new Error(error.message)
+}
+
+export async function disableUserCredentials(supabase: AdminSupabase, userId: string): Promise<ProxyToggleResult> {
+  // Bring gb_used / the account balance up to date first, so usage between
+  // the last cron tick and now isn't lost once the credential stops being
+  // 'active' (the usage sync only walks active credentials).
+  await syncUserUsage(userId).catch((e) => console.error('[admin-proxy] pre-suspend usage sync failed', userId, e))
+
+  const { data: creds } = await supabase
+    .from('proxy_credentials')
+    .select('id, geonode_sub_user_id, gb_allocated, status')
+    .eq('user_id', userId)
+    .eq('status', 'active')
+
+  const result: ProxyToggleResult = { changed: 0, failed: [] }
+  for (const cred of creds ?? []) {
+    try {
+      await disableCredential(supabase, cred)
+      result.changed++
+    } catch (e: any) {
+      console.error('[admin-proxy] failed to disable credential', cred.id, e)
+      result.failed.push({ id: cred.id, error: e?.message ?? 'unknown error' })
+    }
+  }
+  return result
+}
+
+export async function enableUserCredentials(supabase: AdminSupabase, userId: string): Promise<ProxyToggleResult> {
+  const { data: creds } = await supabase
+    .from('proxy_credentials')
+    .select('id, geonode_sub_user_id, gb_allocated, status')
+    .eq('user_id', userId)
+    .eq('status', 'suspended')
+
+  const result: ProxyToggleResult = { changed: 0, failed: [] }
+  for (const cred of creds ?? []) {
+    try {
+      await enableCredential(supabase, cred)
+      result.changed++
+    } catch (e: any) {
+      console.error('[admin-proxy] failed to re-enable credential', cred.id, e)
+      result.failed.push({ id: cred.id, error: e?.message ?? 'unknown error' })
+    }
+  }
+  return result
+}

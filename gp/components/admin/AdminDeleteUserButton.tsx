@@ -1,45 +1,33 @@
 'use client'
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
+import { adminPost } from '@/lib/adminFetch'
 
-// Same route AdminUserControls.tsx's dropdown entry calls (app/api/admin/
-// delete-user) — this is the second, more visible entry point on the
-// detail page itself, next to the existing Reset 2FA button, since that's
-// evidently where this gets used in practice rather than the list-page
-// dropdown.
+// Second, more visible entry point for app/api/admin/delete-user, next to
+// the Reset 2FA button on the user detail page.
 export default function AdminDeleteUserButton({ userId, email }: { userId: string; email: string }) {
   const [loading, setLoading] = useState(false)
   const router = useRouter()
 
   async function del() {
-    if (!confirm(`Permanently delete ${email}? This anonymises their profile and cannot be undone.`)) return
-    if (!confirm('Really sure? There is no undo for this.')) return
+    if (!confirm(`Permanently delete ${email}? This anonymises their profile, releases their proxy credentials and cannot be undone.`)) return
+    // The old second dialog said "Type OK to confirm" but confirm() can't
+    // take input. A real typed confirmation, matched against the email:
+    const typed = window.prompt(`Type the account email to confirm deletion:\n${email}`)
+    if (typed === null) return
+    if (typed.trim().toLowerCase() !== email.toLowerCase()) { toast.error('Email did not match — nothing was deleted'); return }
+
     setLoading(true)
-    try {
-      const { data: { session } } = await createClient().auth.getSession()
-      const res = await fetch('/api/admin/delete-user', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
-        body: JSON.stringify({ user_id: userId }),
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Delete failed')
-      toast.success('Account deleted')
-      router.push('/admin/users')
-    } catch (e: any) {
-      toast.error(e.message)
-      setLoading(false)
-    }
+    const { ok, data } = await adminPost('/api/admin/delete-user', { user_id: userId })
+    if (!ok) { toast.error(data.error ?? 'Delete failed'); setLoading(false); return }
+    toast.success('Account deleted')
+    router.push('/admin/users')
   }
 
   return (
-    <button
-      onClick={del}
-      disabled={loading}
-      className="text-xs font-mono text-red-600 border border-red-300 px-3 py-1.5 rounded-lg hover:bg-red-50 transition-all disabled:opacity-50"
-    >
+    <button onClick={del} disabled={loading}
+      className="text-xs font-mono text-red-600 border border-red-300 px-3 py-1.5 rounded-lg hover:bg-red-50 transition-all disabled:opacity-50">
       {loading ? 'Deleting…' : 'Delete account'}
     </button>
   )

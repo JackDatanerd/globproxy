@@ -1,0 +1,59 @@
+import { NextResponse } from 'next/server'
+import { createAdminClient } from '@/lib/supabase/server'
+import { requireMfaVerified } from '@/lib/mfa'
+
+export type AdminSupabase = Awaited<ReturnType<typeof createAdminClient>>
+
+export type AdminAuthResult =
+  | { ok: true; supabase: AdminSupabase; adminId: string }
+  | { ok: false; response: NextResponse }
+
+// The shared front door for every /api/admin/* route: Bearer token ->
+// real user -> role === 'admin' -> TOTP step-up cookie. Same order and
+// same status codes the routes each used to hand-roll (401 / 403 / 403),
+// pulled into one place so a future route can't forget the MFA step.
+export async function authorizeAdmin(req: Request): Promise<AdminAuthResult> {
+  const token = req.headers.get('authorization')?.replace('Bearer ', '')
+  if (!token) return { ok: false, response: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) }
+
+  const supabase = await createAdminClient()
+  const { data: { user } } = await supabase.auth.getUser(token)
+  if (!user) return { ok: false, response: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) }
+
+  const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single()
+  if (profile?.role !== 'admin') return { ok: false, response: NextResponse.json({ error: 'Forbidden' }, { status: 403 }) }
+
+  const mfaCheck = await requireMfaVerified(req, user.id)
+  if (mfaCheck) return { ok: false, response: mfaCheck }
+
+  return { ok: true, supabase, adminId: user.id }
+}
+
+// A malformed / empty body used to throw out of req.json() and surface as
+// an opaque 500 from routes without a try/catch. Returns null instead so
+// the caller can answer 400.
+export async function readJson<T = Record<string, any>>(req: Request): Promise<T | null> {
+  try {
+    const body = await req.json()
+    return body && typeof body === 'object' ? (body as T) : null
+  } catch {
+    return null
+  }
+}
+
+export function badRequest(message: string) {
+  return NextResponse.json({ error: message }, { status: 400 })
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+export function isUuid(v: unknown): v is string {
+  return typeof v === 'string' && UUID_RE.test(v)
+}
+
+// Real calendar-date check for YYYY-MM-DD strings (the regex alone lets
+// 2026-13-45 through).
+export function isIsoDate(v: unknown): v is string {
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false
+  const d = new Date(v + 'T00:00:00Z')
+  return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v
+}

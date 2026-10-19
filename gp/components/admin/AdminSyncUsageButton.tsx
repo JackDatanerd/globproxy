@@ -1,8 +1,8 @@
 'use client'
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
+import { adminPost } from '@/lib/adminFetch'
 
 // user_id omitted = sync every active credential across every user
 // (same work the cron 'usage' task does). user_id present = just that
@@ -19,29 +19,15 @@ export default function AdminSyncUsageButton({
 
   async function sync() {
     setLoading(true)
-    try {
-      const { data: { session } } = await createClient().auth.getSession()
-      const res = await fetch('/api/admin/sync-usage', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
-        body: JSON.stringify(userId ? { user_id: userId } : {}),
-      })
-      const data = await res.json()
-      if (!res.ok || data.error) {
-        toast.error(data.error ?? 'Sync failed')
-      } else {
-        toast.success(
-          data.updated_credentials > 0
-            ? `Synced — ${data.updated_credentials} credential${data.updated_credentials === 1 ? '' : 's'} updated`
-            : 'Synced — already up to date'
-        )
-        router.refresh()
-      }
-    } catch {
-      toast.error('Sync failed')
-    } finally {
-      setLoading(false)
-    }
+    const { ok, data } = await adminPost('/api/admin/sync-usage', userId ? { user_id: userId } : {})
+    setLoading(false)
+    if (!ok) { toast.error(data.error ?? 'Sync failed'); return }
+    toast.success(
+      data.updated_credentials > 0
+        ? `Synced — ${data.updated_credentials} credential${data.updated_credentials === 1 ? '' : 's'} updated`
+        : 'Synced — already up to date'
+    )
+    router.refresh()
   }
 
   return (

@@ -1,70 +1,46 @@
 'use client'
 import { useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
+import { adminPost } from '@/lib/adminFetch'
 
-// Previously this wrote straight to `profiles` from the browser
-// (relying only on RLS), which meant:
-//  - approve/reject never went through a server route at all (approve had
-//    no route to call; reject-reseller existed but was never invoked)
-//  - suspend never called /api/admin/suspend-user, so it neither killed
-//    the target's active session nor sent the suspension email that
-//    route was actually built to send
-// Routing through the server endpoints fixes all three. All three routes
-// now share the same Bearer-token auth pattern, so the token is fetched
-// and sent once here instead of only for the 'suspend' branch.
-export default function AdminResellerActions({ userId, action }: { userId: string; action: 'approve' | 'suspend' | 'reject' }) {
+// All actions go through their server routes (session ban, proxy shut-off,
+// email and audit log live there). 'reinstate' exists because suspending a
+// reseller used to be a one-way door from this page.
+export default function AdminResellerActions({ userId, action }: { userId: string; action: 'approve' | 'suspend' | 'reject' | 'reinstate' }) {
   const [loading, setLoading] = useState(false)
 
   async function handle() {
+    let path: string
+    let body: Record<string, unknown>
+    let success: string
+
+    if (action === 'approve') { path = '/api/admin/approve-reseller'; body = { userId }; success = 'Reseller approved' }
+    else if (action === 'reject') {
+      if (!confirm('Reject this reseller application?')) return
+      path = '/api/admin/reject-reseller'; body = { userId }; success = 'Application rejected'
+    } else if (action === 'suspend') {
+      if (!confirm('Suspend this reseller? They lose dashboard access and their live proxies are shut off.')) return
+      const reason = window.prompt('Reason (optional — shown in the suspension email):', '')
+      if (reason === null) return
+      path = '/api/admin/suspend-user'; body = { user_id: userId, action: 'suspend', reason }; success = 'Reseller suspended'
+    } else { path = '/api/admin/suspend-user'; body = { user_id: userId, action: 'unsuspend' }; success = 'Reseller reinstated' }
+
     setLoading(true)
-    const { data: { session } } = await createClient().auth.getSession()
-    const authHeaders = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` }
-
-    let res: Response
-    if (action === 'approve') {
-      res = await fetch('/api/admin/approve-reseller', {
-        method: 'POST',
-        headers: authHeaders,
-        body: JSON.stringify({ userId }),
-      })
-    } else if (action === 'reject') {
-      res = await fetch('/api/admin/reject-reseller', {
-        method: 'POST',
-        headers: authHeaders,
-        body: JSON.stringify({ userId }),
-      })
-    } else {
-      res = await fetch('/api/admin/suspend-user', {
-        method: 'POST',
-        headers: authHeaders,
-        body: JSON.stringify({ user_id: userId, action: 'suspend' }),
-      })
-    }
-
-    const data = await res.json().catch(() => ({}))
-    if (!res.ok || data.error) {
-      toast.error(data.error ?? 'Action failed')
-    } else {
-      toast.success(
-        action === 'approve' ? 'Reseller approved' : action === 'reject' ? 'Application rejected' : 'Reseller suspended'
-      )
-      window.location.reload()
-    }
-    setLoading(false)
+    const { ok, data } = await adminPost(path, body)
+    if (!ok) { toast.error(data.error ?? 'Action failed'); setLoading(false); return }
+    toast.success(success)
+    const failures = (data as any).proxy_failures?.length ?? 0
+    if (failures) toast.error(`${failures} proxy credential${failures === 1 ? '' : 's'} could not be updated on Geonode — check /admin/credentials`, { duration: 8000 })
+    window.location.reload()
   }
 
+  const positive = action === 'approve' || action === 'reinstate'
   return (
-    <button
-      onClick={handle}
-      disabled={loading}
+    <button onClick={handle} disabled={loading}
       className={`text-xs font-mono px-3 py-1.5 rounded-lg border transition-all disabled:opacity-50 ${
-        action === 'approve'
-          ? 'bg-accent2 text-white border-accent2 hover:opacity-90'
-          : 'border-red-200 text-red-400 hover:bg-red-50'
-      }`}
-    >
-      {loading ? '...' : action === 'approve' ? 'Approve' : action === 'reject' ? 'Reject' : 'Suspend'}
+        positive ? 'bg-accent2 text-white border-accent2 hover:opacity-90' : 'border-red-200 text-red-400 hover:bg-red-50'
+      }`}>
+      {loading ? '...' : action === 'approve' ? 'Approve' : action === 'reject' ? 'Reject' : action === 'reinstate' ? 'Reinstate' : 'Suspend'}
     </button>
   )
 }

@@ -2,44 +2,64 @@ import Link from 'next/link'
 import { createAdminClient } from '@/lib/supabase/server'
 import AdminUserControls from '@/components/admin/AdminUserControls'
 import AdminSyncUsageButton from '@/components/admin/AdminSyncUsageButton'
+import AdminPager, { parsePage, cleanSearch } from '@/components/admin/AdminPager'
 import { formatGb } from '@/lib/format'
 
-export default async function AdminUsersPage() {
-  const supabase = await createAdminClient()
-  
-  // Previously this fetched every profile including soft-deleted ones
-  // (is_deleted, set by admin/delete-user and user/delete-account), which
-  // just accumulate as permanent '[deleted]'/'[deleted]' rows with no way
-  // to clear them from this view.
-  const { data: users } = await supabase
-    .from('profiles')
-    .select('*')
-    .eq('is_deleted', false)
-    .order('created_at', { ascending: false })
+const PAGE_SIZE = 50
+const ROLES = ['user', 'reseller', 'admin']
 
-  // 2. Fetch bandwidth separately
+export default async function AdminUsersPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+  const sp = await searchParams
+  const page = parsePage(sp.page)
+  const q = cleanSearch(sp.q)
+  const role = typeof sp.role === 'string' && ROLES.includes(sp.role) ? sp.role : ''
+
+  const supabase = await createAdminClient()
+
+  // Soft-deleted accounts stay as '[deleted]' tombstones and are excluded.
+  // Paged and searchable: this used to fetch every profile in one request
+  // (silently cut off at 1000 rows) and then hand the whole id list to an
+  // `.in()` filter, whose URL gets too long long before that.
+  let query = supabase
+    .from('profiles')
+    .select('id, email, full_name, role, is_suspended, api_access, mfa_enabled, created_at', { count: 'exact' })
+    .eq('is_deleted', false)
+  if (role) query = query.eq('role', role)
+  if (q) query = query.or(`email.ilike.%${q}%,full_name.ilike.%${q}%`)
+  const from = (page - 1) * PAGE_SIZE
+  const { data: users, count } = await query.order('created_at', { ascending: false }).range(from, from + PAGE_SIZE - 1)
+
   const userIds = users?.map(u => u.id) ?? []
   const { data: bwAccounts } = userIds.length > 0
     ? await supabase.from('bandwidth_accounts').select('user_id, available_gb, total_gb, used_gb').in('user_id', userIds)
     : { data: [] }
-    
   const bwMap = Object.fromEntries((bwAccounts ?? []).map(b => [b.user_id, b]))
 
   return (
     <div className="max-w-6xl">
-      <div className="mb-8 flex items-start justify-between">
+      <div className="mb-6 flex items-start justify-between">
         <div>
           <h1 className="font-display font-bold text-2xl text-ink">All Users</h1>
-          <p className="text-muted text-sm mt-1">{users?.length ?? 0} registered accounts</p>
+          <p className="text-muted text-sm mt-1">{(count ?? 0).toLocaleString()} {q || role ? 'matching' : 'registered'} accounts</p>
         </div>
         <AdminSyncUsageButton label="Sync all usage now" />
       </div>
 
+      <form method="get" className="flex flex-wrap gap-2 mb-5">
+        <input name="q" defaultValue={q} placeholder="Search email or name…"
+          className="w-64 bg-white border border-border px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-accent" />
+        <select name="role" defaultValue={role} className="bg-white border border-border px-3 py-2 rounded-lg text-sm">
+          <option value="">All roles</option>
+          {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+        </select>
+        <button className="text-xs font-mono px-4 py-2 rounded-lg border border-border text-ink2 hover:border-ink2">Filter</button>
+        {(q || role) && <Link href="/admin/users" className="text-xs font-mono px-4 py-2 text-muted hover:text-ink">Clear</Link>}
+      </form>
+
       <div className="bg-white border border-border rounded-xl overflow-hidden">
         <table className="w-full">
           <thead>
-            {/* ... Keep your existing thead ... */}
-            <tr className="border-b border-border bg-surface">
+                        <tr className="border-b border-border bg-surface">
               {['User', 'Role', 'Total', 'Used', 'Available', 'Status', 'API', 'Joined', 'Actions'].map(h => (
                 <th key={h} className="text-left px-5 py-3 text-[10px] font-mono text-muted uppercase tracking-widest">{h}</th>
               ))}
@@ -47,7 +67,6 @@ export default async function AdminUsersPage() {
           </thead>
           <tbody>
             {users?.map((u, i) => {
-              // 3. Use the mapped bandwidth data
               const bw = bwMap[u.id]
               return (
                 <tr key={u.id} className={`${i < users.length - 1 ? 'border-b border-border' : ''} hover:bg-surface transition-colors`}>
@@ -75,7 +94,6 @@ export default async function AdminUsersPage() {
                   <td className="px-5 py-3.5 font-mono text-sm text-ink">{formatGb(bw?.total_gb)} GB</td>
                   <td className="px-5 py-3.5 font-mono text-sm text-ink">{formatGb(bw?.used_gb)} GB</td>
                   <td className="px-5 py-3.5 font-mono text-sm text-ink">{formatGb(bw?.available_gb)} GB</td>
-                  {/* ... Keep the rest of your existing td elements ... */}
                   <td className="px-5 py-3.5">
                     {u.is_suspended ? <span className="text-[10px] font-mono bg-red-50 text-red-500 px-2.5 py-1 rounded-full">Suspended</span> : <span className="text-[10px] font-mono bg-accent2-light text-accent2 px-2.5 py-1 rounded-full">Active</span>}
                   </td>
@@ -86,7 +104,7 @@ export default async function AdminUsersPage() {
                     {new Date(u.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
                   </td>
                   <td className="px-5 py-3.5">
-                    <AdminUserControls user={u} />
+                    <AdminUserControls user={{ id: u.id, email: u.email, role: u.role, is_suspended: u.is_suspended, api_access: u.api_access, mfa_enabled: u.mfa_enabled }} />
                   </td>
                 </tr>
               )
@@ -94,6 +112,7 @@ export default async function AdminUsersPage() {
           </tbody>
         </table>
       </div>
+      <AdminPager basePath="/admin/users" page={page} pageSize={PAGE_SIZE} total={count ?? 0} params={{ q, role }} />
     </div>
   )
 }
