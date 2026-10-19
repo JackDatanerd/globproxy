@@ -1,14 +1,8 @@
 import { createAdminClient } from '@/lib/supabase/server'
-import { createSubUser, deleteSubUser } from '@/lib/geonode'
+import { provisionPendingCredentials } from '@/lib/credentials'
+import { dispatchWebhook } from '@/lib/webhooks'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { processReferralForOrder } from '@/lib/referrals'
-
-function providerConfigured(): boolean {
-  return !!(
-    process.env.GEONODE_API_KEY &&
-    process.env.GEONODE_RESELLER_ID
-  )
-}
 
 export type ActivateResult =
   | { status: 'credited' }
@@ -74,6 +68,19 @@ export async function activateBandwidth(p: {
   // is stamped post_credit_done_at only when they succeed, and the reconcile
   // cron re-runs them for orders still unstamped (see retryPostCredit).
   // Both are idempotent. The confirmation email is attempted once, here only.
+  // bandwidth_credited webhook: fired exactly once, here — not from
+  // postCreditSteps, which the reconcile cron re-runs and would re-send.
+  // The synthetic canary charge is never a customer event.
+  if (!p.is_canary) {
+    try {
+      await dispatchWebhook(p.user_id, 'bandwidth_credited', {
+        order_id: p.order_id, gb_credited: p.gb_amount, amount_usd: p.amount_usd, source: 'purchase',
+      })
+    } catch (e) {
+      console.error('[bandwidth] bandwidth_credited webhook failed (credit is committed)', p.order_id, e)
+    }
+  }
+
   let done = false
   try {
     done = await postCreditSteps(supabase, p, { sendConfirmation: true })
@@ -113,66 +120,20 @@ export async function retryPostCredit(order: {
 
 // Provisions a real Geonode sub-user for every pending credential a user
 // owns. Returns false if any could not be activated (safe to call again).
-// Exported so the cron can also sweep credentials stuck in 'pending' because
-// Geonode was down at creation time, instead of waiting for the next purchase.
+// The claim / persist / orphan-cleanup logic lives in lib/credentials.ts
+// (provisionPendingCredentials): an atomic claim (claim_pending_credentials,
+// migration 0042) means this purchase path, the 5-minute 'provision' cron
+// task and any concurrent run can never both provision a sub-user for the
+// same credential, and the conditional status='pending' write + cleanup of a
+// lost race is the same one this function used to carry. ignoreBackoff: a
+// purchase is a good moment to retry immediately.
 export async function activatePendingCredentials(
-  supabase: Awaited<ReturnType<typeof createAdminClient>>,
+  _supabase: Awaited<ReturnType<typeof createAdminClient>>,
   userId: string,
 ): Promise<boolean> {
-  if (!providerConfigured()) {
-    console.log('[bandwidth] No provider configured — skipping credential activation for user', userId)
-    return true
-  }
-  const { data: pending, error } = await supabase
-    .from('proxy_credentials')
-    .select('*')
-    .eq('user_id', userId)
-    .eq('status', 'pending')
-    .is('created_by', null)
-  if (error) {
-    console.error('[bandwidth] could not list pending credentials', userId, error)
-    return false
-  }
-
-  let ok = true
-  for (const cred of pending ?? []) {
-    try {
-      const gcred = await createSubUser({
-        label: cred.label ?? `gp_${userId.slice(0, 8)}`,
-        gb_limit: cred.gb_allocated,
-        country: cred.country ?? undefined,
-        state: cred.state ?? undefined,
-        city: cred.city ?? undefined,
-        protocol: cred.protocol ?? 'http',
-        session_type: cred.session_type ?? 'rotating',
-        sticky_duration: cred.sticky_duration ?? undefined,
-      })
-      // Conditional on still being pending: a payment webhook and the cron
-      // sweep can race here, and an unconditional update let the loser
-      // overwrite the winner's sub-user, orphaning one at Geonode.
-      const { data: updated, error: updateErr } = await supabase.from('proxy_credentials').update({
-        status: 'active',
-        geonode_sub_user_id: gcred.geonode_sub_user_id, // required for usage/delete lookups
-        geonode_username: gcred.username,
-        geonode_password: gcred.password,
-        host: gcred.host,
-        port: gcred.port,
-        activated_at: new Date().toISOString(),
-      }).eq('id', cred.id).eq('status', 'pending').select('id')
-
-      if (updateErr || !updated || updated.length === 0) {
-        // Either the write failed or someone else already activated it —
-        // either way our freshly created sub-user must not be left orphaned.
-        if (updateErr) { console.error('Failed to persist activated credential', cred.id, updateErr); ok = false }
-        await deleteSubUser(gcred.geonode_sub_user_id).catch((e) =>
-          console.error('Failed to clean up duplicate Geonode sub-user', gcred.geonode_sub_user_id, e))
-      }
-    } catch (e) {
-      console.error('Failed to activate credential', cred.id, e)
-      ok = false
-    }
-  }
-  return ok
+  const r = await provisionPendingCredentials({ userId, limit: 10, ignoreBackoff: true })
+  if (r.skipped) console.log('[bandwidth] credential activation skipped:', r.skipped, 'user', userId)
+  return r.failed === 0
 }
 
 async function postCreditSteps(

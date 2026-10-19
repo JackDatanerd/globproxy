@@ -1,58 +1,41 @@
 import { getSubUserUsage } from '@/lib/geonode'
-import { requireApiAccess } from '@/lib/apiAuth'
+import { withApiAuth } from '@/lib/apiHelpers'
+import { apiError } from '@/lib/apiAuth'
+import { getOwnedCredential, toApiCredential } from '@/lib/credentials'
 import { NextResponse } from 'next/server'
 
-export async function GET(
-  req: Request,
-  context: { params: Promise<{ id: string }> }
-) {
-  const auth = await requireApiAccess(req)
-  if (!auth.ok) return auth.response
-  const { user, supabase } = auth
+// Live usage is re-read from Geonode at most every 30s per sub-user; inside
+// that window the stored value is returned. Every call used to hit Geonode
+// AND write the row, so a tight polling loop was an upstream-amplification
+// path (one customer request = one provider request).
+const LIVE_REFRESH_MIN_INTERVAL_MS = 30_000
 
-  const { id } = await context.params
+export async function GET(req: Request, context: { params: Promise<{ id: string }> }) {
+  return withApiAuth(req, 'GET sub-user usage', async ({ user, supabase }) => {
+    const { id } = await context.params
+    const cred = await getOwnedCredential(supabase, user.id, id, '*')
+    if (!cred) return apiError(404, 'not_found', 'Sub-user not found')
 
-  try {
-    const { data: cred } = await supabase
-      .from('proxy_credentials')
-      .select('*')
-      .eq('id', id)
-      .eq('user_id', user.id)
-      .single()
-
-    if (!cred) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-
-    let usedGb = cred.gb_used ?? 0
-    if (cred.status === 'active' && cred.geonode_sub_user_id) {
+    let usedGb = Number(cred.gb_used ?? 0)
+    let syncedAt: string | null = cred.usage_synced_at ?? null
+    const fresh = syncedAt && Date.now() - new Date(syncedAt).getTime() < LIVE_REFRESH_MIN_INTERVAL_MS
+    if (cred.status === 'active' && cred.geonode_sub_user_id && !fresh) {
       try {
-        // Geonode's usage endpoint takes the sub-user ID, not the username —
-        // see lib/bandwidth.ts / cron usage-sync for the same fix already
-        // applied there.
         usedGb = await getSubUserUsage(cred.geonode_sub_user_id)
-        await supabase.from('proxy_credentials')
-          .update({ gb_used: usedGb })
-          .eq('id', cred.id)
-      } catch {}
+        syncedAt = new Date().toISOString()
+        await supabase.from('proxy_credentials').update({ gb_used: usedGb, usage_synced_at: syncedAt }).eq('id', cred.id)
+      } catch (e) {
+        console.error('[v1 GET sub-user usage] live usage fetch failed, returning stored value', cred.id, e)
+      }
     }
 
+    const full = toApiCredential({ ...cred, gb_used: usedGb })
     return NextResponse.json({
-      id: cred.id,
-      label: cred.label,
-      status: cred.status,
-      protocol: cred.protocol ?? 'http',
-      session_type: cred.session_type,
-      gb_allocated: cred.gb_allocated,
-      gb_used: usedGb,
-      gb_remaining: Math.max(0, cred.gb_allocated - usedGb),
-      country: cred.country,
-      state: cred.state,
-      city: cred.city,
-      host: cred.host,
-      port: cred.port,
-      username: cred.geonode_username,
+      id: full.id, label: full.label, status: full.status, protocol: full.protocol, session_type: full.session_type,
+      gb_allocated: full.gb_allocated, gb_used: full.gb_used, gb_remaining: full.gb_remaining,
+      country: full.country, state: full.state, city: full.city,
+      host: full.host, port: full.port, username: full.username, connection_username: full.connection_username,
+      usage_synced_at: syncedAt,
     })
-  } catch (e: any) {
-    console.error('[v1 GET sub-user usage] unexpected error:', e)
-    return NextResponse.json({ error: 'Internal error. Please try again.' }, { status: 500 })
-  }
+  })
 }

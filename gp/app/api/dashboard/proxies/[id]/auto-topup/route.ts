@@ -21,7 +21,8 @@ export async function PATCH(
 
   const { id } = await context.params
   const body = await req.json().catch(() => ({}))
-  const enabled = Boolean(body?.enabled)
+  // Strictly `=== true`: Boolean("false") is true, so a stringly-typed "false" would otherwise ENABLE auto top-up.
+  const enabled = body?.enabled === true
 
   // threshold/amount are only required (and only persisted) when turning
   // this on — set_auto_topup() clears both to null when disabled, so

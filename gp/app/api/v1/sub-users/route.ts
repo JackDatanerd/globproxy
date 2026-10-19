@@ -1,121 +1,82 @@
-import { createSubUser, deleteSubUser } from '@/lib/geonode'
-import { buildProxyUsername, getProxyPort, validateTargeting } from '@/lib/proxyEndpoint'
-import { requireApiAccess } from '@/lib/apiAuth'
-import { parseGb } from '@/lib/credentials'
+import { withApiAuth, readJsonBody, failFrom, parsePage } from '@/lib/apiHelpers'
+import { apiError } from '@/lib/apiAuth'
+import { parseCreateCredential } from '@/lib/apiValidation'
+import { createCredential, toApiCredential, CRED_COLS } from '@/lib/credentials'
+import {
+  parseIdempotencyKey, claimIdempotencyKey, completeIdempotencyKey, releaseIdempotencyKey,
+} from '@/lib/idempotency'
 import { NextResponse } from 'next/server'
 
+// GET /api/v1/sub-users?limit=100&offset=0&status=active
 export async function GET(req: Request) {
-  const auth = await requireApiAccess(req)
-  if (!auth.ok) return auth.response
-  const { user, supabase } = auth
+  return withApiAuth(req, 'GET sub-users', async ({ user, supabase }) => {
+    const url = new URL(req.url)
+    const { limit, offset } = parsePage(url)
+    const status = url.searchParams.get('status')
+    if (status && !['pending', 'active', 'suspended'].includes(status)) {
+      return apiError(400, 'invalid_request', 'status must be one of: pending, active, suspended.')
+    }
 
-  try {
-    const { data } = await supabase
+    let q = supabase
       .from('proxy_credentials')
-      .select('id,label,status,gb_allocated,gb_used,country,state,city,asn,session_type,protocol,sticky_duration,host,port,geonode_username,activated_at,created_at')
+      .select(CRED_COLS, { count: 'exact' })
       .eq('user_id', user.id)
       .order('created_at', { ascending: false })
+      .order('id', { ascending: false }) // stable tiebreak so pages never repeat/skip rows
+      .range(offset, offset + limit - 1)
+    if (status) q = q.eq('status', status)
 
-    // POST already returns the built, geo-targeted connection_username —
-    // GET was previously only returning the raw geonode_username, which is
-    // not directly usable for connections that specify targeting. Consumers
-    // shouldn't have to reimplement buildProxyUsername() themselves.
-    const sub_users = (data ?? []).map(c => ({
-      ...c,
-      connection_username: c.geonode_username ? buildProxyUsername(c.geonode_username, c) : null,
-    }))
+    const { data, count, error } = await q
+    if (error) {
+      console.error('[v1 GET sub-users] query failed', error)
+      return apiError(500, 'internal_error', 'Internal error. Please try again.')
+    }
 
-    return NextResponse.json({ sub_users })
-  } catch (e: any) {
-    console.error('[v1 GET sub-users] unexpected error:', e)
-    return NextResponse.json({ error: 'Internal error. Please try again.' }, { status: 500 })
-  }
+    const total = count ?? (data?.length ?? 0)
+    return NextResponse.json({
+      sub_users: (data ?? []).map(toApiCredential),
+      total, limit, offset,
+      has_more: offset + (data?.length ?? 0) < total,
+    })
+  })
 }
 
+// POST /api/v1/sub-users — supports an `Idempotency-Key` header so a retried
+// request (timeout, dropped connection) returns the original response
+// instead of creating a second credential and reserving bandwidth twice.
 export async function POST(req: Request) {
-  const auth = await requireApiAccess(req)
-  if (!auth.ok) return auth.response
-  const { user, supabase } = auth
+  return withApiAuth(req, 'POST sub-users', async ({ user, supabase }) => {
+    const idem = parseIdempotencyKey(req)
+    if (!idem.ok) return apiError(400, 'invalid_request', idem.error)
 
-  try {
-    const body = await req.json().catch(() => null)
-    if (!body || typeof body !== 'object') {
-      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
-    }
-    const gb_allocated = parseGb(body.gb_allocated)
-    const { label, country, state, city, asn, session_type = 'rotating', protocol = 'http', endpoint_count = 1, sticky_duration } = body
+    const json = await readJsonBody(req)
+    if (!json.ok) return json.response
+    const parsed = parseCreateCredential(json.body)
+    if (!parsed.ok) return apiError(400, 'invalid_request', parsed.error)
 
-    if (gb_allocated === null) {
-      return NextResponse.json({ error: 'gb_allocated is required and must be a number between 0.01 and 100000' }, { status: 400 })
-    }
-
-    const targetingError = validateTargeting({ country, state, city, asn })
-    if (targetingError) {
-      return NextResponse.json({ error: targetingError }, { status: 400 })
-    }
-
-    // Reserve bandwidth atomically instead of soft-checking it — see
-    // migration 0007 for the full rationale (a burst of creations could
-    // previously each pass a plain "available_gb >= requested" check before
-    // any of them actually landed).
-    const { error: reserveErr } = await supabase.rpc('reserve_credential_bandwidth', {
-      p_user_id: user.id,
-      p_gb: gb_allocated,
-    })
-    if (reserveErr) {
-      return NextResponse.json({ error: 'Insufficient bandwidth. Purchase more to continue.' }, { status: 402 })
-    }
-
-    let gcred: any = null
-    let credStatus: 'active' | 'pending' = 'active'
-    try {
-      gcred = await createSubUser({ label: label ?? `api_${Date.now()}`, gb_limit: gb_allocated, country, state, city, protocol, session_type, sticky_duration })
-    } catch {
-      credStatus = 'pending'
-    }
-
-    const { data: cred, error } = await supabase.from('proxy_credentials').insert({
-      user_id: user.id, label, gb_allocated, country: country ?? null,
-      state: state ?? null, city: city ?? null, asn: asn ?? null, session_type, protocol,
-      endpoint_count: endpoint_count ?? 1, sticky_duration: sticky_duration ?? null,
-      status: credStatus,
-      geonode_sub_user_id: gcred?.geonode_sub_user_id ?? null,
-      geonode_username: gcred?.username ?? null,
-      geonode_password: gcred?.password ?? null,
-      host: gcred?.host ?? 'proxy.globproxy.com',
-      port: gcred?.port ?? getProxyPort(protocol, session_type),
-      activated_at: credStatus === 'active' ? new Date().toISOString() : null,
-    }).select().single()
-
-    if (error) {
-      if (gcred) {
-        await deleteSubUser(gcred.geonode_sub_user_id).catch((e) =>
-          console.error('Failed to clean up orphaned Geonode sub-user', gcred?.geonode_sub_user_id, e)
-        )
+    if (idem.key) {
+      const claim = await claimIdempotencyKey(supabase, user.id, idem.key, JSON.stringify(parsed.value))
+      if (claim.kind === 'replay') {
+        return NextResponse.json(claim.body, { status: claim.status, headers: { 'Idempotent-Replayed': 'true' } })
       }
-      // Give back the reservation — nothing was actually persisted.
-      const { error: releaseErr } = await supabase.rpc('release_credential_bandwidth', { p_user_id: user.id, p_gb: gb_allocated })
-      if (releaseErr) console.error('Failed to release bandwidth reservation after insert failure:', releaseErr)
-      console.error('[v1/sub-users] insert error:', error)
-      return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
+      if (claim.kind === 'mismatch') {
+        return apiError(422, 'idempotency_conflict', 'This Idempotency-Key was already used with a different request body.')
+      }
+      if (claim.kind === 'in_flight') {
+        return apiError(409, 'conflict', 'A request with this Idempotency-Key is still being processed. Retry shortly.', { 'Retry-After': '2' })
+      }
     }
 
-    return NextResponse.json({
-      id: cred.id, label: cred.label, status: cred.status,
-      host: cred.host, port: cred.port,
-      username: cred.geonode_username, // raw Geonode sub-user account name
-      // The username to actually use in your proxy connection — includes
-      // country/state/city/session targeting encoded per Geonode's format.
-      // For sticky sessions, generate a fresh session id per connection
-      // yourself rather than reusing this one indefinitely: buildProxyUsername
-      // logic is in lib/proxyEndpoint.ts if you need to construct more.
-      connection_username: cred.geonode_username
-        ? buildProxyUsername(cred.geonode_username, cred)
-        : null,
-      gb_allocated: cred.gb_allocated, country: cred.country,
-    }, { status: 201 })
-  } catch (e: any) {
-    console.error('[v1 POST sub-users] unexpected error:', e)
-    return NextResponse.json({ error: 'Internal error. Please try again.' }, { status: 500 })
-  }
+    const result = await createCredential(supabase, user.id, parsed.value, { source: 'api' })
+    if (!result.ok) {
+      // Failures are not replayable — free the key so the client can retry
+      // (e.g. after buying bandwidth after a 402).
+      if (idem.key) await releaseIdempotencyKey(supabase, user.id, idem.key)
+      return failFrom(result)
+    }
+
+    const body = { ...toApiCredential(result.data.cred), ...(result.data.warning ? { warning: result.data.warning } : {}) }
+    if (idem.key) await completeIdempotencyKey(supabase, user.id, idem.key, 201, body)
+    return NextResponse.json(body, { status: 201 })
+  })
 }

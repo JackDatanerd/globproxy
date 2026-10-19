@@ -1,18 +1,9 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
-import { createSubUser, deleteSubUser } from '@/lib/geonode'
-import { validateTargeting } from '@/lib/proxyEndpoint'
-import { parseGb } from '@/lib/credentials'
-import { dispatchWebhook } from '@/lib/webhooks'
+import { parseCreateCredential, parseFiniteNumber } from '@/lib/apiValidation'
+import { createCredential } from '@/lib/credentials'
 import { NextResponse } from 'next/server'
 import { requireMfaVerified } from '@/lib/mfa'
-
-function providerConfigured(): boolean {
-  return !!(
-    process.env.GEONODE_API_KEY &&
-    process.env.GEONODE_RESELLER_ID
-  )
-}
 
 export async function POST(req: Request) {
   const supabase = await createClient()
@@ -29,169 +20,38 @@ export async function POST(req: Request) {
   if (suspended) return suspended
 
   const body = await req.json().catch(() => null)
-  if (!body || typeof body !== 'object') {
-    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
-  }
-  const gb_allocated = parseGb(body.gb_allocated)
-  const {
-    label, country, state, city, asn,
-    protocol = 'http', session_type = 'rotating',
-    sticky_duration, endpoint_count = 1,
-    auto_topup_enabled = false, auto_topup_threshold_gb, auto_topup_amount_gb,
-  } = body
 
-  if (gb_allocated === null) {
-    return NextResponse.json({ error: 'gb_allocated must be a number between 0.01 and 100000' }, { status: 400 })
-  }
+  // Same validator as POST /api/v1/sub-users, run BEFORE anything is
+  // reserved or created upstream.
+  const parsed = parseCreateCredential(body)
+  if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 })
 
-  const targetingError = validateTargeting({ country, state, city, asn })
-  if (targetingError) {
-    return NextResponse.json({ error: targetingError }, { status: 400 })
-  }
-
-  // Validated up front, before reserving bandwidth or touching Geonode —
-  // same checks set_auto_topup() (migration 0017) makes at the DB layer,
-  // duplicated here only so a bad auto-allocate config fails fast with no
-  // side effects yet, rather than after a real reservation/Geonode
-  // sub-user already exist and would need to be unwound over a config
-  // typo.
-  if (auto_topup_enabled) {
-    if (!Number.isFinite(Number(auto_topup_threshold_gb)) || Number(auto_topup_threshold_gb) < 0) {
+  // Auto-allocate config is validated up front too (set_auto_topup() makes
+  // the same checks at the DB layer; duplicated so a typo fails with no side
+  // effects instead of after a reservation and a real sub-user exist).
+  let autoTopup: { threshold_gb: number; amount_gb: number } | null = null
+  if (body?.auto_topup_enabled === true) {
+    const threshold = parseFiniteNumber(body.auto_topup_threshold_gb)
+    const amount = parseFiniteNumber(body.auto_topup_amount_gb)
+    if (threshold === null || threshold < 0) {
       return NextResponse.json({ error: 'auto_topup_threshold_gb must be a number ≥ 0' }, { status: 400 })
     }
-    if (!Number.isFinite(Number(auto_topup_amount_gb)) || Number(auto_topup_amount_gb) <= 0) {
+    if (amount === null || amount <= 0) {
       return NextResponse.json({ error: 'auto_topup_amount_gb must be a number greater than 0' }, { status: 400 })
     }
+    autoTopup = { threshold_gb: threshold, amount_gb: amount }
   }
 
-  // 1. Reserve bandwidth atomically. Previously this only soft-checked
-  // available_gb without deducting anything, so a burst of creations could
-  // each pass the check before the next one landed — see migration 0007 for
-  // the full rationale. reserve_credential_bandwidth() does the check and
-  // the commit (via allocated_gb) as a single locked statement, so there's
-  // no window between "checked" and "reserved" for a concurrent request to
-  // slip through.
-  // Reservation + credential writes use the service-role client: users have
-  // no direct write access to proxy_credentials or the reservation counters
-  // (migration 0040), so these can't be replayed from a browser.
+  // Reserve/release are service_role-only (migration 0040), so this goes
+  // through the admin client — the user's identity was verified above.
   const admin = await createAdminClient()
-  const { error: reserveErr } = await admin.rpc('reserve_credential_bandwidth', {
-    p_user_id: user.id,
-    p_gb: gb_allocated,
+  const result = await createCredential(admin, user.id, parsed.value, { source: 'dashboard', autoTopup })
+  if (!result.ok) return NextResponse.json({ error: result.message }, { status: result.status })
+
+  return NextResponse.json({
+    success: true,
+    id: result.data.cred.id,
+    status: result.data.cred.status,
+    warning: result.data.warning,
   })
-  if (reserveErr) {
-    return NextResponse.json({
-      error: reserveErr.message?.includes('Insufficient')
-        ? `Insufficient bandwidth. Requested ${gb_allocated}GB is more than you have available.`
-        : 'Could not reserve bandwidth. Please try again.',
-    }, { status: 402 })
-  }
-
-  // 2. Attempt Geonode — only when provider is configured. A failure here
-  // doesn't give up the reservation — it just means the credential comes
-  // back as 'pending' rather than 'active', same as the v1 API path, and
-  // gets a real Geonode sub-user provisioned the next time this account's
-  // bandwidth is activated (see lib/bandwidth.ts).
-  let gcred: Awaited<ReturnType<typeof createSubUser>> | null = null
-  let status: 'active' | 'pending' = 'pending'
-
-  if (providerConfigured()) {
-    try {
-      gcred = await createSubUser({
-        label: label ?? `gp_${Date.now()}`,
-        gb_limit: gb_allocated,
-        country, state, city, protocol, session_type, sticky_duration,
-      })
-      status = 'active'
-    } catch (e) {
-      console.error('Geonode createSubUser error — leaving credential as pending:', e)
-    }
-  }
-
-  // 3. Insert credential row
-  const { data: cred, error: insertErr } = await admin
-    .from('proxy_credentials')
-    .insert({
-      user_id: user.id,
-      label: label || null,
-      geonode_sub_user_id: gcred?.geonode_sub_user_id ?? null, // required for usage/delete
-      geonode_username: gcred?.username ?? null,
-      geonode_password: gcred?.password ?? null,
-      host: gcred?.host ?? null,
-      port: gcred?.port ?? null,
-      protocol,
-      session_type,
-      sticky_duration: sticky_duration ?? null,
-      endpoint_count: endpoint_count ?? 1,
-      gb_allocated,
-      gb_used: 0,
-      country: country ?? null,
-      state: state ?? null,
-      city: city ?? null,
-      asn: asn ?? null,
-      status,
-      activated_at: status === 'active' ? new Date().toISOString() : null,
-    })
-    .select('id, status')
-    .single()
-
-  if (insertErr) {
-    // Clean up the real Geonode sub-user we just created — otherwise it's
-    // orphaned on Geonode's side with no local record and no way to find it.
-    if (gcred) {
-      await deleteSubUser(gcred.geonode_sub_user_id).catch((e) =>
-        console.error('Failed to clean up orphaned Geonode sub-user', gcred?.geonode_sub_user_id, e)
-      )
-    }
-    // Give back the reservation — nothing was actually persisted.
-    const { error: releaseErr } = await admin.rpc('release_credential_bandwidth', { p_user_id: user.id, p_gb: gb_allocated })
-    if (releaseErr) console.error('Failed to release bandwidth reservation after insert failure:', releaseErr)
-    console.error('proxy_credentials insert failed:', insertErr)
-    return NextResponse.json({ error: 'Could not create the session. Please try again.' }, { status: 500 })
-  }
-
-  // 4. Enable auto-allocate, if requested. A separate call rather than
-  // columns on the insert above because set_auto_topup() (migration 0017)
-  // is the one place that owns "is this config valid for this credential"
-  // — every other write path to auto-allocate settings (the dashboard
-  // toggle on an existing session) goes through it too, so this doesn't
-  // duplicate that logic, just calls it once more right after creation.
-  // Non-fatal: the session itself was already created successfully above:
-  // if this fails, the customer still has a working session, just without
-  // auto-allocate on yet — they can turn it on from the Bandwidth tab.
-  // The pre-validation above means this should only ever fail here on a
-  // genuine race (e.g. status flipped between insert and this call).
-  let autoTopupWarning: string | undefined
-  if (auto_topup_enabled) {
-    const { error: autoErr } = await admin.rpc('set_auto_topup', {
-      p_credential_id: cred.id,
-      p_user_id: user.id,
-      p_enabled: true,
-      p_threshold_gb: Number(auto_topup_threshold_gb),
-      p_amount_gb: Number(auto_topup_amount_gb),
-    })
-    if (autoErr) {
-      console.error('Failed to enable auto-allocate on new credential', cred.id, autoErr)
-      autoTopupWarning = 'Session created, but auto-allocate couldn\u2019t be turned on — enable it from the Bandwidth tab.'
-    }
-  }
-
-  // Notify — non-fatal, same reasoning as the auto-allocate follow-up
-  // above: the session is already created and successful at this point,
-  // a webhook delivery problem on the customer's end must never surface
-  // as this request having failed.
-  await dispatchWebhook(user.id, 'session_created', {
-    credential_id: cred.id,
-    label: label || null,
-    protocol,
-    session_type,
-    gb_allocated,
-    country: country ?? null,
-    state: state ?? null,
-    city: city ?? null,
-    asn: asn ?? null,
-    status: cred.status,
-  }).catch((e) => console.error('[webhooks] session_created dispatch threw', cred.id, e))
-
-  return NextResponse.json({ success: true, id: cred.id, status: cred.status, warning: autoTopupWarning })
 }

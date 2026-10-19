@@ -33,6 +33,32 @@
         "type": "ratelimit",
         "namespace_id": "1001",
         "simple": { "limit": 10, "period": 60 }
+      },
+      // Public v1 API, per API key (lib/apiAuth.ts). 120 requests / minute
+      // overall, and a tighter 30 / minute for mutating calls (create /
+      // delete / top-up provision real upstream resources). Documented in
+      // /docs/api — change both places together.
+      {
+        "name": "API_RATE_LIMITER",
+        "type": "ratelimit",
+        "namespace_id": "1002",
+        "simple": { "limit": 120, "period": 60 }
+      },
+      {
+        "name": "API_WRITE_RATE_LIMITER",
+        "type": "ratelimit",
+        "namespace_id": "1003",
+        "simple": { "limit": 30, "period": 60 }
+      },
+      // GET /api/v1/sub-users/:id/usage/history — each call fans out up to 30
+      // requests on the one shared reseller key at the provider (same reason
+      // the dashboard's usage/history route is limited), so it gets a much
+      // tighter per-key budget than the general limiter.
+      {
+        "name": "API_HISTORY_RATE_LIMITER",
+        "type": "ratelimit",
+        "namespace_id": "1004",
+        "simple": { "limit": 10, "period": 60 }
       }
     ]
   }

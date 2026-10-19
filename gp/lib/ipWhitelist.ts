@@ -50,26 +50,20 @@ export function whitelistErrorResponse(e: unknown): NextResponse {
     // and log the real cause for us to look at.
     if (e.status === 401 || e.status === 403) {
       console.error('Geonode rejected reseller API credentials on whitelist call:', e.status, e.body)
-      return NextResponse.json(
-        { error: 'IP whitelist service is temporarily unavailable. Please try again shortly.' },
-        { status: 502 }
-      )
+      return NextResponse.json({ error: 'IP whitelist service is temporarily unavailable. Please try again shortly.', code: 'upstream_unavailable' }, { status: 502 })
     }
     if (e.status === 404) {
-      return NextResponse.json({ error: e.body?.message || 'Not found' }, { status: 404 })
+      return NextResponse.json({ error: e.body?.message || 'Not found', code: 'not_found' }, { status: 404 })
     }
     if (e.status === 409) {
-      return NextResponse.json(
-        { error: e.body?.message || 'That IP is already whitelisted, or the whitelist limit has been reached.' },
-        { status: 409 }
-      )
+      return NextResponse.json({ error: e.body?.message || 'That IP is already whitelisted, or the whitelist limit has been reached.', code: 'conflict' }, { status: 409 })
     }
     if (e.status === 400) {
-      return NextResponse.json({ error: e.body?.message || 'Invalid request.' }, { status: 400 })
+      return NextResponse.json({ error: e.body?.message || 'Invalid request.', code: 'invalid_request' }, { status: 400 })
     }
     console.error('Unexpected Geonode whitelist error:', e.status, e.body)
-    return NextResponse.json({ error: 'IP whitelist service is temporarily unavailable.' }, { status: 502 })
+    return NextResponse.json({ error: 'IP whitelist service is temporarily unavailable.', code: 'upstream_unavailable' }, { status: 502 })
   }
   console.error('Unexpected whitelist error:', e)
-  return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
+  return NextResponse.json({ error: 'Something went wrong. Please try again.', code: 'internal_error' }, { status: 500 })
 }

@@ -86,7 +86,13 @@ import { default as handler } from './.open-next/worker.js'
 // below alongside benchmark — both were added after the original three-
 // workflow replacement this file's header comment describes.
 const CRON_TASKS: Record<string, string[]> = {
-  '*/5 * * * *': ['reconcile', 'security', 'usage'], // reconcile (payments safety net) and security (auth notices) never throw, so they can't block usage
+  // reconcile (payments safety net) and security (auth notices) never throw, so they can't block usage.
+  // provision + webhooks (migration 0042) also never throw, and run LAST so
+  // they can't hold up usage sync: provision retries pending credentials and
+  // failed traffic-limit syncs; webhooks retries failed deliveries and fires
+  // bandwidth-threshold events. Both keep per-tick work small because
+  // Workers caps subrequests per invocation and the chain shares one.
+  '*/5 * * * *': ['reconcile', 'security', 'usage', 'provision', 'webhooks'],
   '0 * * * *': ['stock'],
   '0 8 * * *': ['alerts', 'summary', 'cleanup'],
   '0 */6 * * *': ['benchmark'],

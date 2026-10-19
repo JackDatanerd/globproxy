@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
 import TwoFactorSettings from '@/components/dashboard/TwoFactorSettings'
 import { ChangePasswordCard, ChangeEmailCard, SecurityActivityCard } from '@/components/dashboard/AccountSecurityCards'
+import { WEBHOOK_EVENTS, WEBHOOK_EVENT_LABELS } from '@/lib/webhookEvents'
 
 const COUNTRIES = [
   'Afghanistan','Albania','Algeria','Angola','Argentina','Australia','Austria','Bangladesh',
@@ -43,12 +44,16 @@ function SettingsPageInner() {
   const [webhooks, setWebhooks] = useState<any[]>([])
   const [webhooksLoading, setWebhooksLoading] = useState(true)
   const [newWebhookUrl, setNewWebhookUrl] = useState('')
-  const [newWebhookEvents, setNewWebhookEvents] = useState<string[]>(['session_created', 'bandwidth_threshold_crossed'])
+  const [newWebhookEvents, setNewWebhookEvents] = useState<string[]>(['session_created', 'bandwidth_threshold_crossed', 'bandwidth_exhausted'])
   const [creatingWebhook, setCreatingWebhook] = useState(false)
   // Shown exactly once, right after creation — the API never returns the
   // secret again after this response (see app/api/dashboard/webhooks/route.ts).
   const [revealedSecret, setRevealedSecret] = useState<string | null>(null)
   const [testingId, setTestingId] = useState<string | null>(null)
+  // Delivery log: one endpoint's log open at a time.
+  const [logId, setLogId] = useState<string | null>(null)
+  const [logRows, setLogRows] = useState<any[]>([])
+  const [logLoading, setLogLoading] = useState(false)
 
   // Reseller application form state
   const [applying, setApplying] = useState(false)
@@ -177,7 +182,7 @@ function SettingsPageInner() {
     })
     const data = await res.json().catch(() => ({}))
     if (!res.ok || data.error) { toast.error(data.error ?? 'Failed to update webhook'); return }
-    setWebhooks(w => w.map(x => x.id === id ? { ...x, enabled } : x))
+    setWebhooks(w => w.map(x => x.id === id ? { ...x, ...(data.webhook ?? { enabled }) } : x))
   }
 
   async function deleteWebhook(id: string) {
@@ -195,6 +200,37 @@ function SettingsPageInner() {
     if (!res.ok || data.error) toast.error(data.error ?? 'Test delivery failed — check the endpoint is reachable')
     else toast.success('Test event delivered')
     setTestingId(null)
+  }
+
+  async function rotateWebhookSecret(id: string) {
+    if (!confirm('Rotate the signing secret? The current secret stops working immediately — update your receiver with the new one.')) return
+    const res = await fetch(`/api/dashboard/webhooks/${id}/rotate-secret`, { method: 'POST' })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.error) toast.error(data.error ?? 'Failed to rotate secret')
+    else setRevealedSecret(data.secret)
+  }
+
+  async function loadDeliveries(id: string) {
+    setLogLoading(true)
+    const res = await fetch(`/api/dashboard/webhooks/${id}/deliveries?limit=25`)
+    const data = await res.json().catch(() => ({}))
+    setLogRows(res.ok ? (data.deliveries ?? []) : [])
+    if (!res.ok) toast.error(data.error ?? 'Failed to load deliveries')
+    setLogLoading(false)
+  }
+
+  async function toggleLog(id: string) {
+    if (logId === id) { setLogId(null); return }
+    setLogId(id)
+    await loadDeliveries(id)
+  }
+
+  async function redeliver(endpointId: string, deliveryId: string) {
+    const res = await fetch(`/api/dashboard/webhooks/${endpointId}/deliveries/${deliveryId}/redeliver`, { method: 'POST' })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.error) toast.error(data.error ?? 'Redelivery failed')
+    else toast.success('Event redelivered')
+    await loadDeliveries(endpointId)
   }
 
   async function submitApplication(e: React.FormEvent) {
@@ -311,16 +347,19 @@ function SettingsPageInner() {
       <div className="bg-white border border-border rounded-xl p-6 mb-5">
         <h2 className="font-display font-bold text-base text-ink mb-2">Webhooks</h2>
         <p className="text-xs text-muted mb-4">
-          Get an HTTP POST when a session is created or your bandwidth crosses 80%/95%. Each request is signed with your endpoint's
-          secret via an <span className="font-mono">X-GlobProxy-Signature</span> header (hex HMAC-SHA256 of the raw body) so you can verify it came from us.
+          Get an HTTP POST when sessions change or your bandwidth runs low. Each request is signed with your endpoint's
+          secret (<span className="font-mono">X-GlobProxy-Signature-V2</span> carries a timestamp for replay protection;
+          <span className="font-mono"> X-GlobProxy-Signature</span> is the plain HMAC-SHA256 of the body). Failed deliveries are retried
+          for up to ~9 hours, and an endpoint that keeps failing is disabled automatically. See the{' '}
+          <a href="/docs/api#webhooks" target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">webhook docs</a>.
         </p>
 
         {revealedSecret && (
           <div className="bg-accent-light border border-accent/30 rounded-xl p-5 mb-5">
             <h3 className="font-display font-bold text-sm text-ink mb-1.5">Your signing secret</h3>
             <p className="text-xs text-muted mb-3">
-              Copy this now — we only show it once and can't display it again after you leave this page. If you lose it, delete the
-              webhook and create a new one.
+              Copy this now — we only show it once and can't display it again after you leave this page. If you lose it, use
+              “Rotate secret” on the webhook to generate a new one.
             </p>
             <div className="bg-white border border-border rounded-lg p-3 flex items-center gap-3">
               <span className="font-mono text-xs text-ink flex-1 truncate">{revealedSecret}</span>
@@ -348,6 +387,7 @@ function SettingsPageInner() {
                     <div className="text-sm text-ink font-mono truncate">{w.url}</div>
                     <div className="text-xs text-muted mt-0.5">
                       {w.event_types.join(', ')}
+                      {!w.enabled && w.disabled_reason ? <span className="text-red-500"> · disabled: {w.disabled_reason}</span> : null}
                       {w.last_failure_at && (!w.last_success_at || new Date(w.last_failure_at) > new Date(w.last_success_at))
                         ? <span className="text-red-500"> · last delivery failed{w.last_error ? ` (${w.last_error})` : ''}</span>
                         : w.last_success_at ? <span className="text-green-600"> · delivering OK</span> : ' · no deliveries yet'}
@@ -357,6 +397,14 @@ function SettingsPageInner() {
                     <button onClick={() => testWebhook(w.id)} disabled={testingId === w.id}
                       className="text-xs font-mono text-muted hover:text-ink border border-border px-2.5 py-1 rounded-lg transition-colors disabled:opacity-50">
                       {testingId === w.id ? 'Sending...' : 'Send test'}
+                    </button>
+                    <button onClick={() => toggleLog(w.id)}
+                      className="text-xs font-mono text-muted hover:text-ink border border-border px-2.5 py-1 rounded-lg transition-colors">
+                      {logId === w.id ? 'Hide log' : 'Log'}
+                    </button>
+                    <button onClick={() => rotateWebhookSecret(w.id)}
+                      className="text-xs font-mono text-muted hover:text-ink border border-border px-2.5 py-1 rounded-lg transition-colors">
+                      Rotate secret
                     </button>
                     <button onClick={() => toggleWebhook(w.id, !w.enabled)}
                       className="text-xs font-mono text-muted hover:text-ink border border-border px-2.5 py-1 rounded-lg transition-colors">
@@ -368,6 +416,38 @@ function SettingsPageInner() {
                     </button>
                   </div>
                 </div>
+                {logId === w.id && (
+                  <div className="mt-3 border-t border-border pt-3">
+                    {logLoading ? (
+                      <p className="text-xs text-muted">Loading...</p>
+                    ) : logRows.length === 0 ? (
+                      <p className="text-xs text-muted">No deliveries in the last 14 days.</p>
+                    ) : (
+                      <div className="flex flex-col gap-1.5">
+                        {logRows.map(d => (
+                          <div key={d.id} className="flex items-center justify-between gap-3 text-xs font-mono">
+                            <div className="min-w-0 truncate">
+                              <span className={d.status === 'succeeded' ? 'text-green-600' : d.status === 'retrying' ? 'text-amber-600' : 'text-red-500'}>
+                                {d.status}
+                              </span>
+                              <span className="text-ink2"> · {d.event_type}</span>
+                              <span className="text-muted"> · {new Date(d.created_at).toLocaleString()}</span>
+                              <span className="text-muted"> · {d.attempts} attempt{d.attempts === 1 ? '' : 's'}</span>
+                              {d.response_status ? <span className="text-muted"> · HTTP {d.response_status}</span> : null}
+                              {d.last_error && d.status !== 'succeeded' ? <span className="text-red-500"> · {d.last_error}</span> : null}
+                            </div>
+                            {d.event_type !== 'test' && (
+                              <button onClick={() => redeliver(w.id, d.id)}
+                                className="text-muted hover:text-ink border border-border px-2 py-0.5 rounded-lg flex-shrink-0">
+                                Redeliver
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -379,10 +459,7 @@ function SettingsPageInner() {
             onChange={e => setNewWebhookUrl(e.target.value)}
             className="w-full bg-surface border border-border px-4 py-3 rounded-xl text-sm font-mono focus:outline-none focus:border-accent transition-colors mb-3" />
           <div className="flex flex-wrap gap-4 mb-4">
-            {[
-              ['session_created', 'Session created'],
-              ['bandwidth_threshold_crossed', 'Bandwidth crossed 80%/95%'],
-            ].map(([val, label]) => (
+            {WEBHOOK_EVENTS.map((val) => [val, WEBHOOK_EVENT_LABELS[val]] as const).map(([val, label]) => (
               <label key={val} className="flex items-center gap-2 cursor-pointer select-none">
                 <input type="checkbox" checked={newWebhookEvents.includes(val)}
                   onChange={e => setNewWebhookEvents(evs => e.target.checked ? [...evs, val] : evs.filter(x => x !== val))}

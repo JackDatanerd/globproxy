@@ -1,22 +1,22 @@
-// Validates a user-supplied outbound webhook URL before we let our own
-// server fetch() it.
+// Validates a user-supplied outbound webhook URL before our own server
+// fetch()es it.
 //
-// This is a literal-address check, not DNS-rebinding protection: it cannot
-// resolve hostnames, so a public name that *resolves* to a private address
-// (e.g. 127.0.0.1.nip.io) still passes. Mitigations that already exist:
-// https-only, redirects are never followed (lib/webhooks.ts uses
-// redirect: 'manual'), and the Workers runtime itself cannot reach private
-// ranges. What this closes is every way of *spelling* a private/loopback/
-// reserved address in the URL.
+// Two layers:
+//   1. validateWebhookUrl()   — synchronous, literal-address/hostname rules.
+//   2. checkHostnameResolution() — asynchronous DNS-over-HTTPS lookup so a
+//      public-looking hostname that RESOLVES to a private/loopback/
+//      link-local address is caught too (a plain literal check can't see
+//      that). Run at create/update time and again at every delivery.
 //
-// History: the original version matched IPv6 prefixes by string (blocking
-// real hosts like fcm.googleapis.com and fdic.gov because they start with
-// "fc"/"fd") and only recognised two embedded-IPv4 spellings, missing
-// ::127.0.0.1, ::7f00:1, ::ffff:0:7f00:1, 2002:7f00:1::, febf::, fec0::,
-// "localhost." and *.localhost. IPv6 is now parsed into 8 numeric groups
-// and classified by range, and the URL parser's own canonical hostname
-// (which already normalises 0x7f.1 / 2130706433 style IPv4) is what we test.
+// What this still is not: airtight DNS-rebinding protection (the name can
+// resolve differently between our check and fetch()'s own lookup). It
+// narrows that window to a single request and, together with
+// redirect:'manual' in lib/webhooks.ts and https-only, closes the practical
+// attack surface.
 
+const MAX_URL_LENGTH = 2048
+
+// ── IPv4 ──────────────────────────────────────────────────────────────
 function ipv4ToInt(ip: string): number | null {
   const m = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
   if (!m) return null
@@ -34,7 +34,7 @@ const BLOCKED_IPV4_RANGES: [string, number][] = [
   ['172.16.0.0', 12],    // RFC1918
   ['192.0.0.0', 24],     // IETF protocol assignments
   ['192.0.2.0', 24],     // TEST-NET-1
-  ['192.88.99.0', 24],   // deprecated 6to4 relay anycast
+  ['192.88.99.0', 24],   // 6to4 relay anycast (deprecated)
   ['192.168.0.0', 16],   // RFC1918
   ['198.18.0.0', 15],    // benchmarking
   ['198.51.100.0', 24],  // TEST-NET-2
@@ -43,7 +43,9 @@ const BLOCKED_IPV4_RANGES: [string, number][] = [
   ['240.0.0.0', 4],      // reserved + 255.255.255.255 broadcast
 ]
 
-function isBlockedIpv4Int(n: number): boolean {
+function isBlockedIpv4(ip: string): boolean {
+  const n = ipv4ToInt(ip)
+  if (n === null) return false
   return BLOCKED_IPV4_RANGES.some(([base, bits]) => {
     const baseInt = ipv4ToInt(base)!
     const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0
@@ -51,38 +53,37 @@ function isBlockedIpv4Int(n: number): boolean {
   })
 }
 
-// Parses an IPv6 literal (no brackets) into 8 16-bit groups, or null if it
-// isn't a valid IPv6 address. Handles "::" compression and a trailing
-// dotted-quad (::ffff:1.2.3.4).
-function parseIpv6(addr: string): number[] | null {
-  let a = addr.toLowerCase()
-  const zone = a.indexOf('%')
-  if (zone !== -1) a = a.slice(0, zone)
-  if (!/^[0-9a-f:.]+$/.test(a) || !a.includes(':')) return null
+// ── IPv6 ──────────────────────────────────────────────────────────────
+// Parses any textual IPv6 form (compressed, expanded, with an embedded
+// dotted-quad tail) into 8 16-bit groups. Returns null if it isn't IPv6.
+function parseIpv6(raw: string): number[] | null {
+  let h = raw.toLowerCase()
+  if (!h.includes(':')) return null
+  const zone = h.indexOf('%')
+  if (zone !== -1) h = h.slice(0, zone)
 
-  // Convert a trailing dotted-quad into two hex groups.
-  const lastColon = a.lastIndexOf(':')
-  const tail = a.slice(lastColon + 1)
-  if (tail.includes('.')) {
-    const n = ipv4ToInt(tail)
+  // Embedded IPv4 tail (a.b.c.d) -> two hex groups
+  const tail = h.match(/^(.*:)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/)
+  if (tail) {
+    const n = ipv4ToInt(tail[2])
     if (n === null) return null
-    a = a.slice(0, lastColon + 1) + ((n >>> 16) & 0xffff).toString(16) + ':' + (n & 0xffff).toString(16)
+    h = `${tail[1]}${((n >>> 16) & 0xffff).toString(16)}:${(n & 0xffff).toString(16)}`
   }
 
-  const halves = a.split('::')
+  const halves = h.split('::')
   if (halves.length > 2) return null
-  const toGroups = (s: string) => (s === '' ? [] : s.split(':'))
+  const toGroups = (part: string) => (part === '' ? [] : part.split(':'))
   const head = toGroups(halves[0])
   const rest = halves.length === 2 ? toGroups(halves[1]) : []
-  let groups: string[]
-  if (halves.length === 2) {
-    const missing = 8 - head.length - rest.length
-    if (missing < 1) return null
-    groups = [...head, ...Array(missing).fill('0'), ...rest]
-  } else {
-    groups = head
-  }
+  if (halves.length === 1 && head.length !== 8) return null
+  const missing = 8 - head.length - rest.length
+  if (halves.length === 2 && missing < 1) return null
+
+  const groups = halves.length === 2
+    ? [...head, ...Array(missing).fill('0'), ...rest]
+    : head
   if (groups.length !== 8) return null
+
   const out: number[] = []
   for (const g of groups) {
     if (!/^[0-9a-f]{1,4}$/.test(g)) return null
@@ -91,78 +92,60 @@ function parseIpv6(addr: string): number[] | null {
   return out
 }
 
-function embeddedV4(hi: number, lo: number): number {
-  return (((hi & 0xffff) << 16) | (lo & 0xffff)) >>> 0
-}
+const v4From = (hi: number, lo: number) =>
+  `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`
 
 function isBlockedIpv6(g: number[]): boolean {
-  const [g0, g1, g2, g3, g4, g5, g6, g7] = g
-  const firstFiveZero = g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0
+  const allZero = (n: number) => g.slice(0, n).every((x) => x === 0)
 
-  // :: and ::1
-  if (firstFiveZero && g5 === 0 && g6 === 0 && (g7 === 0 || g7 === 1)) return true
-  // ::/96 IPv4-compatible (deprecated) — ::127.0.0.1, ::7f00:1 …
-  if (firstFiveZero && g5 === 0) return true
-  // ::ffff:0:0/96 IPv4-mapped — ::ffff:127.0.0.1, ::ffff:7f00:1
-  if (firstFiveZero && g5 === 0xffff) return isBlockedIpv4Int(embeddedV4(g6, g7))
-  // ::ffff:0:0:0/96 IPv4-translated (SIIT) — ::ffff:0:7f00:1
-  if (g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0xffff && g5 === 0) {
-    return isBlockedIpv4Int(embeddedV4(g6, g7))
+  if (allZero(8)) return true                       // ::
+  if (allZero(7) && g[7] === 1) return true         // ::1
+  if (allZero(5) && g[5] === 0xffff) return isBlockedIpv4(v4From(g[6], g[7])) // ::ffff:a.b.c.d (IPv4-mapped)
+  if (allZero(4) && g[4] === 0xffff && g[5] === 0) return isBlockedIpv4(v4From(g[6], g[7])) // ::ffff:0:a.b.c.d (IPv4-translated, SIIT)
+  if (allZero(6)) return true                       // ::a.b.c.d (IPv4-compatible, deprecated) — never legitimate
+  if (g[0] === 0x64 && g[1] === 0xff9b) {
+    if (g[2] === 1) return true                     // 64:ff9b:1::/48 local-use NAT64
+    if (g.slice(2, 6).every((x) => x === 0)) return isBlockedIpv4(v4From(g[6], g[7])) // 64:ff9b::/96
   }
-  // 64:ff9b::/96 NAT64 well-known prefix
-  if (g0 === 0x64 && g1 === 0xff9b && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0) {
-    return isBlockedIpv4Int(embeddedV4(g6, g7))
-  }
-  // 64:ff9b:1::/48 local-use NAT64 — never a public destination
-  if (g0 === 0x64 && g1 === 0xff9b && g2 === 1) return true
-  // 2002::/16 6to4 — IPv4 sits in groups 1–2
-  if (g0 === 0x2002) return isBlockedIpv4Int(embeddedV4(g1, g2))
-  // 2001::/32 Teredo — tunnelled, never a legitimate webhook host
-  if (g0 === 0x2001 && g1 === 0) return true
-  // 2001:db8::/32 documentation, 100::/64 discard-only
-  if (g0 === 0x2001 && g1 === 0xdb8) return true
-  if (g0 === 0x100 && g1 === 0 && g2 === 0 && g3 === 0) return true
-  // fc00::/7 unique-local
-  if ((g0 & 0xfe00) === 0xfc00) return true
-  // fe80::/10 link-local and fec0::/10 deprecated site-local
-  if ((g0 & 0xffc0) === 0xfe80 || (g0 & 0xffc0) === 0xfec0) return true
-  // ff00::/8 multicast
-  if ((g0 & 0xff00) === 0xff00) return true
+  if (g[0] === 0x2002) return true                       // 6to4 (2002::/16) embeds an IPv4 address; never a real webhook receiver
+  if (g[0] === 0x2001 && g[1] === 0) return true    // Teredo
+  if (g[0] === 0x2001 && g[1] === 0x0db8) return true // documentation
+  if (g[0] === 0x2001 && g[1] < 0x0200) return true // IETF protocol assignments
+  if (g[0] === 0x0100 && g[1] === 0 && g[2] === 0 && g[3] === 0) return true // discard-only
+  if ((g[0] & 0xfe00) === 0xfc00) return true       // fc00::/7 unique-local
+  if ((g[0] & 0xffc0) === 0xfe80) return true       // fe80::/10 link-local
+  if ((g[0] & 0xffc0) === 0xfec0) return true       // fec0::/10 site-local (deprecated)
+  if ((g[0] & 0xff00) === 0xff00) return true       // multicast
   return false
 }
 
-// Names that are loopback / internal by convention, not by address.
-function isInternalHostname(h: string): boolean {
-  return (
-    h === 'localhost' ||
-    h.endsWith('.localhost') ||
-    h.endsWith('.local') ||
-    h.endsWith('.localdomain') ||
-    h.endsWith('.internal') ||
-    h.endsWith('.home.arpa')
-  )
-}
+// ── Hostnames ─────────────────────────────────────────────────────────
+const BLOCKED_SUFFIXES = [
+  '.localhost', '.local', '.localdomain', '.internal', '.intranet',
+  '.corp', '.lan', '.home', '.private', '.home.arpa', '.test', '.invalid', '.example',
+]
 
-function isPrivateOrReservedHost(hostname: string): boolean {
-  let h = hostname.toLowerCase()
-  if (h.startsWith('[') && h.endsWith(']')) h = h.slice(1, -1)
-  // A trailing root dot ("localhost.") names the same host.
-  while (h.endsWith('.')) h = h.slice(0, -1)
-  if (h === '') return true
+export function isBlockedHostLiteral(hostname: string): boolean {
+  // URL.hostname keeps IPv6 brackets and a trailing root dot — normalise both.
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, '')
+  if (!h) return true
 
-  if (h.includes(':')) {
-    const groups = parseIpv6(h)
-    return groups === null ? true : isBlockedIpv6(groups) // unparseable IPv6 -> refuse
-  }
+  const v6 = parseIpv6(h)
+  if (v6) return isBlockedIpv6(v6)
 
-  const n = ipv4ToInt(h)
-  if (n !== null) return isBlockedIpv4Int(n)
+  if (/^\d+(\.\d+){3}$/.test(h)) return isBlockedIpv4(h) || ipv4ToInt(h) === null
 
-  return isInternalHostname(h)
+  if (h === 'localhost') return true
+  if (BLOCKED_SUFFIXES.some((s) => h.endsWith(s))) return true
+  // Single-label names ("intranet", "metadata") only ever resolve inside a
+  // private search domain — never a legitimate public webhook receiver.
+  if (!h.includes('.')) return true
+  return false
 }
 
 // Returns an error message if the URL isn't acceptable, or null if it's fine.
 export function validateWebhookUrl(raw: string): string | null {
+  if (typeof raw !== 'string' || raw.length > MAX_URL_LENGTH) return 'Enter a valid URL (max 2048 characters)'
   let u: URL
   try {
     u = new URL(raw)
@@ -170,9 +153,70 @@ export function validateWebhookUrl(raw: string): string | null {
     return 'Enter a valid URL'
   }
   if (u.protocol !== 'https:') return 'Webhook URL must use https://'
-  if (u.username || u.password) return 'Webhook URL cannot contain a username or password'
-  if (isPrivateOrReservedHost(u.hostname)) {
+  if (u.username || u.password) return 'Webhook URL must not contain embedded credentials'
+  if (isBlockedHostLiteral(u.hostname)) {
     return 'Webhook URL cannot point to a private, loopback, or link-local address'
   }
   return null
+}
+
+// ── DNS-over-HTTPS resolution check ───────────────────────────────────
+type DohAnswer = { type: number; data: string }
+type DohResponse = { Status?: number; Answer?: DohAnswer[] }
+type FetchLike = (url: string, init?: any) => Promise<{ ok: boolean; json: () => Promise<any> }>
+
+const DOH_ENDPOINT = 'https://cloudflare-dns.com/dns-query'
+const DOH_TIMEOUT_MS = 3000
+const DOH_CACHE_TTL_MS = 60_000
+const dohCache = new Map<string, { at: number; result: string | null }>()
+
+async function dohQuery(fetchImpl: FetchLike, name: string, type: 'A' | 'AAAA'): Promise<DohResponse> {
+  const res = await fetchImpl(`${DOH_ENDPOINT}?name=${encodeURIComponent(name)}&type=${type}`, {
+    headers: { accept: 'application/dns-json' },
+    signal: AbortSignal.timeout(DOH_TIMEOUT_MS),
+  })
+  if (!res.ok) throw new Error(`DoH ${type} lookup failed`)
+  return (await res.json()) as DohResponse
+}
+
+// Returns an error message if `hostname` resolves to a blocked address (or,
+// with requireResolvable, doesn't resolve at all), else null. IP literals are
+// skipped (already covered by validateWebhookUrl). FAILS OPEN if the DNS
+// lookup itself is unavailable — a resolver outage must not stop every
+// webhook delivery platform-wide; the literal check above still ran.
+export async function checkHostnameResolution(
+  hostname: string,
+  opts: { requireResolvable?: boolean; fetchImpl?: FetchLike } = {}
+): Promise<string | null> {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, '')
+  if (!h || h.includes(':') || /^\d+(\.\d+){3}$/.test(h)) return null
+
+  const cacheKey = `${h}|${opts.requireResolvable ? 1 : 0}`
+  const cached = dohCache.get(cacheKey)
+  if (cached && Date.now() - cached.at < DOH_CACHE_TTL_MS) return cached.result
+
+  const fetchImpl = opts.fetchImpl ?? (fetch as unknown as FetchLike)
+  let result: string | null = null
+  try {
+    const [a, aaaa] = await Promise.all([dohQuery(fetchImpl, h, 'A'), dohQuery(fetchImpl, h, 'AAAA')])
+    const answers = [...(a.Answer ?? []), ...(aaaa.Answer ?? [])].filter((x) => x.type === 1 || x.type === 28)
+    if (answers.some((x) => isBlockedHostLiteral(x.data))) {
+      result = 'Webhook hostname resolves to a private, loopback, or link-local address'
+    } else if (opts.requireResolvable && answers.length === 0 && a.Status === 3 && aaaa.Status === 3) {
+      result = 'That hostname does not resolve'
+    }
+  } catch (e) {
+    console.error('[ssrfGuard] DNS resolution check unavailable, failing open for', h, e)
+    return null // deliberately not cached
+  }
+  dohCache.set(cacheKey, { at: Date.now(), result })
+  if (dohCache.size > 500) dohCache.clear()
+  return result
+}
+
+// Convenience for create/update routes: literal rules, then DNS.
+export async function validateWebhookUrlFull(raw: string): Promise<string | null> {
+  const literal = validateWebhookUrl(raw)
+  if (literal) return literal
+  return checkHostnameResolution(new URL(raw).hostname, { requireResolvable: true })
 }

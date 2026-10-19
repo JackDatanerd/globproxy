@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # GlobProxy v1 API — run-through of every endpoint, old and new.
-# Usage: bash globproxy-api-test.sh
+# Usage: GLOBPROXY_API_KEY=gp_live_... bash globproxy-api-test.sh
+#   (optional) GLOBPROXY_BASE_URL=https://globproxy.com
+#
+# The API key is read from the environment — NEVER hard-code one in this
+# file. A live key was previously committed here in a public repo; that key
+# must be revoked from /dashboard/api-keys and the file's git history
+# rewritten (see the audit notes), not just edited.
 #
 # Prints "PASS"/"FAIL" per check based on HTTP status, plus the raw body
 # so you can eyeball anything that looks wrong even on a "PASS" status.

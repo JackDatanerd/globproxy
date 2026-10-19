@@ -20,7 +20,7 @@ import { NextResponse } from 'next/server'
 // Fails open, not closed: if the binding isn't present (local dev outside
 // wrangler, or the binding name changes) this returns null and the request
 // proceeds normally rather than 500ing every request in that environment.
-export type RateLimiterBinding = 'AUTH_RATE_LIMITER'
+export type RateLimiterBinding = 'AUTH_RATE_LIMITER' | 'API_RATE_LIMITER' | 'API_WRITE_RATE_LIMITER' | 'API_HISTORY_RATE_LIMITER'
 
 export async function rateLimited(
   req: Request,
@@ -48,5 +48,28 @@ export async function rateLimited(
     // Never let the rate limiter itself become an outage vector.
     console.error('[rateLimit] check failed, allowing request through', e)
     return null
+  }
+}
+
+// Per-API-key limiter for the public v1 API (lib/apiAuth.ts). Keyed on the
+// api_keys row id rather than the caller's IP — resellers often call from
+// shared egress addresses, and one noisy key shouldn't throttle another.
+// Same fail-open posture as rateLimited(): a missing binding or a limiter
+// error never blocks a request. Returns true when the request is allowed.
+export async function allowApiRequest(
+  binding: 'API_RATE_LIMITER' | 'API_WRITE_RATE_LIMITER' | 'API_HISTORY_RATE_LIMITER',
+  keyId: string
+): Promise<boolean> {
+  try {
+    const { env } = getCloudflareContext({ async: false }) as unknown as {
+      env: Record<string, { limit: (opts: { key: string }) => Promise<{ success: boolean }> } | undefined>
+    }
+    const limiter = env?.[binding]
+    if (!limiter) return true
+    const { success } = await limiter.limit({ key: `${binding}:${keyId}` })
+    return success
+  } catch (e) {
+    console.error('[rateLimit] api limiter check failed, allowing request through', e)
+    return true
   }
 }

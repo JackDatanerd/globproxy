@@ -3,7 +3,7 @@
 -- Run this entire file in Supabase SQL Editor (fresh project)
 -- ============================================================
 --
--- INCLUDES MIGRATIONS THROUGH: 0041_post_credit_retry.sql
+-- INCLUDES MIGRATIONS THROUGH: 0042_api_integrations_hardening.sql
 --
 -- This line is the source of truth `scripts/check-schema-sync.mjs` reads
 -- to compare against supabase/migrations/ — it's what CI checks on every
@@ -104,6 +104,10 @@ create table public.bandwidth_accounts (
   archived_used_gb numeric not null default 0, -- Durable ledger for GB consumed by credentials that have since been deleted — used_gb (live sum over *active* credentials) would otherwise silently lose this the moment the row disappears. See migration 0025.
   alerted_80_at timestamp with time zone,
   alerted_95_at timestamp with time zone,
+  -- Migration 0042: de-dupe flags for the webhook-only threshold task (independent of the email flags above).
+  wh_alerted_80_at  timestamptz,
+  wh_alerted_95_at  timestamptz,
+  wh_alerted_100_at timestamptz,
   -- Account-level default that a new session's auto-allocate section
   -- pre-fills from (still overridable per session before submit) — set
   -- once via set_default_auto_topup() instead of typing it in on every
@@ -544,6 +548,11 @@ create table public.proxy_credentials (
   -- so lib/autoTopup.ts can alert once and go quiet rather than re-sending
   -- the same email every ~5 minutes on every subsequent cron tick.
   auto_topup_insufficient_alerted_at timestamptz,
+  -- Migration 0042: provisioning-retry bookkeeping + usage-read throttle.
+  provisioning_claimed_at timestamptz,
+  provision_attempts      integer not null default 0,
+  last_provision_error    text,
+  usage_synced_at         timestamptz,
   constraint auto_topup_threshold_nonneg
     check (auto_topup_threshold_gb is null or auto_topup_threshold_gb >= 0),
   constraint auto_topup_amount_positive
@@ -1112,7 +1121,13 @@ create table public.api_keys (
   label        text not null default 'Default key',
   created_at   timestamp with time zone default now(),
   last_used_at timestamp with time zone,
-  revoked_at   timestamp with time zone
+  revoked_at   timestamp with time zone,
+  -- Migration 0042
+  scopes       text[] not null default array['read','write']::text[],
+  expires_at   timestamptz,
+  last_used_ip text,
+  allowed_ips  text[] not null default '{}'::text[],
+  constraint api_keys_valid_scopes check (scopes <@ array['read','write']::text[] and cardinality(scopes) > 0)
 );
 
 create index api_keys_user_id_idx on public.api_keys(user_id);
@@ -1121,10 +1136,25 @@ alter table public.api_keys enable row level security;
 
 create policy "Users can view own api keys"
   on public.api_keys for select using (auth.uid() = user_id);
-create policy "Users can revoke own api keys"
-  on public.api_keys for update
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id and revoked_at is not null);
+-- Migration 0042: no client UPDATE policy — revocation goes through
+-- /api/dashboard/api-keys with the admin client after an ownership check.
+
+create or replace function public.enforce_api_key_limit()
+returns trigger language plpgsql security definer set search_path = public, pg_temp
+as $$
+begin
+  perform pg_advisory_xact_lock(hashtext('api_keys:' || new.user_id::text));
+  if (select count(*) from public.api_keys
+      where user_id = new.user_id and revoked_at is null) >= 25 then
+    raise exception 'Maximum of 25 active API keys per account' using errcode = '23514';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger api_keys_enforce_limit
+  before insert on public.api_keys
+  for each row execute function public.enforce_api_key_limit();
 
 -- ── WEBHOOK ENDPOINTS ─────────────────────────────────────────
 -- See migration 0018. Two events for v1: 'session_created' and
@@ -1149,12 +1179,21 @@ create table public.webhook_endpoints (
   last_success_at  timestamptz,
   last_failure_at  timestamptz,
   last_error       text,
+  -- Migration 0042
+  description          text,
+  consecutive_failures integer not null default 0,
+  disabled_at          timestamptz,
+  disabled_reason      text,
   constraint webhook_endpoints_https_only check (url ~* '^https://'),
   -- Defense-in-depth alongside the app-layer check in the API routes —
   -- even a bug in application code can't get an unrecognized event type
   -- persisted here.
   constraint webhook_endpoints_valid_events
-    check (event_types <@ array['session_created', 'bandwidth_threshold_crossed']::text[])
+    check (event_types <@ array[
+      'session_created', 'session_activated', 'session_deleted', 'session_topped_up',
+      'auto_topup_triggered', 'auto_topup_failed',
+      'bandwidth_threshold_crossed', 'bandwidth_exhausted', 'bandwidth_credited'
+    ]::text[])
 );
 
 create index webhook_endpoints_user_id_idx on public.webhook_endpoints(user_id);
@@ -1177,6 +1216,166 @@ create policy "Users can view own webhook endpoints"
 -- against the URL, which RLS has no way to do. All writes go through
 -- /api/dashboard/webhooks/* using the service role after an explicit
 -- ownership check.
+
+
+-- ── Migration 0042: webhook limit trigger, delivery log, attempt bookkeeping ──
+create or replace function public.enforce_webhook_endpoint_limit()
+returns trigger language plpgsql security definer set search_path = public, pg_temp
+as $$
+begin
+  perform pg_advisory_xact_lock(hashtext('webhook_endpoints:' || new.user_id::text));
+  if (select count(*) from public.webhook_endpoints where user_id = new.user_id) >= 10 then
+    raise exception 'Maximum of 10 webhook endpoints per account' using errcode = '23514';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger webhook_endpoints_enforce_limit
+  before insert on public.webhook_endpoints
+  for each row execute function public.enforce_webhook_endpoint_limit();
+
+-- One row per (event, endpoint). `payload` is the exact JSON body that is
+-- signed, so retries and manual redeliveries send byte-identical bodies.
+create table public.webhook_deliveries (
+  id               uuid default uuid_generate_v4() primary key,
+  endpoint_id      uuid not null references public.webhook_endpoints(id) on delete cascade,
+  user_id          uuid not null references public.profiles(id) on delete cascade,
+  event_id         uuid not null,
+  event_type       text not null,
+  payload          text not null,
+  status           text not null default 'retrying' check (status in ('succeeded','retrying','failed')),
+  attempts         integer not null default 0,
+  next_attempt_at  timestamptz,
+  last_attempt_at  timestamptz,
+  response_status  integer,
+  last_error       text,
+  duration_ms      integer,
+  created_at       timestamptz not null default now()
+);
+
+create index webhook_deliveries_endpoint_idx
+  on public.webhook_deliveries (endpoint_id, created_at desc);
+create index webhook_deliveries_user_event_idx
+  on public.webhook_deliveries (user_id, event_type, created_at desc);
+create index webhook_deliveries_due_idx
+  on public.webhook_deliveries (next_attempt_at) where status = 'retrying';
+
+alter table public.webhook_deliveries enable row level security;
+
+create policy "Users can view own webhook deliveries"
+  on public.webhook_deliveries for select
+  using (auth.uid() = user_id);
+
+-- Atomic success/failure bookkeeping on the endpoint; auto-disables after
+-- p_disable_threshold consecutive failed attempts. Returns true only on
+-- the call that flipped enabled -> false (so the owner is emailed once).
+create or replace function public.record_webhook_attempt(
+  p_endpoint_id uuid,
+  p_ok boolean,
+  p_error text,
+  p_disable_threshold integer default 50,
+  p_force_disable_reason text default null
+)
+returns boolean language plpgsql security definer set search_path = public, pg_temp
+as $$
+declare
+  v_enabled boolean;
+  v_failures integer;
+  v_disable boolean := false;
+begin
+  select enabled, consecutive_failures into v_enabled, v_failures
+  from public.webhook_endpoints where id = p_endpoint_id for update;
+  if not found then return false; end if;
+
+  if p_ok then
+    update public.webhook_endpoints
+    set last_success_at = now(), last_error = null, consecutive_failures = 0
+    where id = p_endpoint_id;
+    return false;
+  end if;
+
+  v_failures := v_failures + 1;
+  v_disable := v_enabled and (p_force_disable_reason is not null or v_failures >= p_disable_threshold);
+
+  update public.webhook_endpoints
+  set last_failure_at = now(),
+      last_error = left(p_error, 500),
+      consecutive_failures = v_failures,
+      enabled = case when v_disable then false else enabled end,
+      disabled_at = case when v_disable then now() else disabled_at end,
+      disabled_reason = case when v_disable
+        then coalesce(p_force_disable_reason, 'Disabled automatically after ' || v_failures || ' consecutive failed deliveries')
+        else disabled_reason end
+  where id = p_endpoint_id;
+
+  return v_disable;
+end;
+$$;
+
+revoke all on function public.record_webhook_attempt(uuid, boolean, text, integer, text) from public, anon, authenticated;
+grant execute on function public.record_webhook_attempt(uuid, boolean, text, integer, text) to service_role;
+
+
+-- ── Migration 0042: pending-credential provisioning claim ──
+create or replace function public.claim_pending_credentials(
+  p_limit integer default 5,
+  p_user_id uuid default null,
+  p_ignore_backoff boolean default false
+)
+returns setof public.proxy_credentials
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+begin
+  return query
+  update public.proxy_credentials pc
+  set provisioning_claimed_at = now(),
+      provision_attempts = pc.provision_attempts + 1
+  where pc.id in (
+    select c.id from public.proxy_credentials c
+    where c.status = 'pending'
+      and c.created_by is null
+      and (p_user_id is null or c.user_id = p_user_id)
+      and (
+        p_ignore_backoff
+        or (
+          c.provision_attempts < 30
+          and (
+            c.provisioning_claimed_at is null
+            or c.provisioning_claimed_at < now() - least(
+                 interval '3 minutes' * power(2, least(c.provision_attempts, 7)),
+                 interval '6 hours')
+          )
+        )
+      )
+      and (c.provisioning_claimed_at is null or c.provisioning_claimed_at < now() - interval '2 minutes')
+    order by c.created_at
+    limit p_limit
+    for update skip locked
+  )
+  returning pc.*;
+end;
+$$;
+
+revoke all on function public.claim_pending_credentials(integer, uuid, boolean) from public, anon, authenticated;
+grant execute on function public.claim_pending_credentials(integer, uuid, boolean) to service_role;
+
+
+-- ── Migration 0042: idempotency keys for POST /api/v1/sub-users ──
+create table public.api_idempotency_keys (
+  user_id          uuid not null references public.profiles(id) on delete cascade,
+  key              text not null,
+  request_hash     text not null,
+  status           text not null default 'in_progress' check (status in ('in_progress','completed')),
+  response_status  integer,
+  response_body    jsonb,
+  created_at       timestamptz not null default now(),
+  primary key (user_id, key)
+);
+create index api_idempotency_keys_created_idx on public.api_idempotency_keys (created_at);
+alter table public.api_idempotency_keys enable row level security;
+-- No policies: service role only.
+
 
 -- ── SUPPORT REPORTS ────────────────────────────────────────────
 -- Migration 0036. Backs the in-app "Report an issue" button
@@ -1638,10 +1837,7 @@ create policy "Anyone can view benchmarks" on public.network_benchmarks for sele
 -- without this section, any authenticated user could call these directly
 -- (e.g. credit_bandwidth to mint free bandwidth) regardless of the
 -- ownership/role checks in application code. reserve_credential_bandwidth
--- and release_credential_bandwidth are genuinely called from the user's
--- own browser session (app/api/dashboard/proxies), so they keep
--- `authenticated`, backed by the auth.uid()-vs-p_user_id check inside each
--- function above; everything else is service_role only.
+-- and release_credential_bandwidth are service_role only (migration 0040).
 -- 0040: reserve/release are service_role ONLY. They used to be granted to
 -- `authenticated`, which let a user call release_credential_bandwidth
 -- directly to hand back a live credential's reservation and mint bandwidth.
@@ -1650,6 +1846,15 @@ grant execute on function public.reserve_credential_bandwidth(uuid, numeric) to 
 
 revoke all on function public.release_credential_bandwidth(uuid, numeric) from public, anon, authenticated;
 grant execute on function public.release_credential_bandwidth(uuid, numeric) to service_role;
+
+revoke all on function public.record_webhook_attempt(uuid, boolean, text, integer, text) from public, anon, authenticated;
+grant execute on function public.record_webhook_attempt(uuid, boolean, text, integer, text) to service_role;
+
+revoke all on function public.claim_pending_credentials(integer, uuid, boolean) from public, anon, authenticated;
+grant execute on function public.claim_pending_credentials(integer, uuid, boolean) to service_role;
+
+revoke all on function public.enforce_api_key_limit() from public, anon, authenticated;
+revoke all on function public.enforce_webhook_endpoint_limit() from public, anon, authenticated;
 
 revoke all on function public.credit_bandwidth(uuid, numeric) from public;
 grant execute on function public.credit_bandwidth(uuid, numeric) to service_role;
@@ -1968,8 +2173,29 @@ create index if not exists orders_post_credit_pending_idx
   on public.orders (paid_at)
   where bandwidth_credited = true and post_credit_done_at is null;
 
+-- ── 0042 §1b: close the direct anon/authenticated EXECUTE grants on every SECURITY DEFINER function ──
+-- (see migrations/0042_api_integrations_hardening.sql for the full explanation and the verification query)
+do $$
+declare r record;
+begin
+  for r in
+    select p.oid::regprocedure as sig
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.prokind = 'f' and p.prosecdef and p.proname <> 'is_admin'
+  loop
+    execute format('revoke all on function %s from public, anon, authenticated', r.sig);
+    execute format('grant execute on function %s to service_role', r.sig);
+  end loop;
+end $$;
+
+-- 0012 revoked the PUBLIC default for future functions; this revokes the
+-- direct anon/authenticated default as well, so the next SECURITY DEFINER
+-- function someone adds doesn't ship client-callable.
+alter default privileges in schema public revoke execute on functions from anon, authenticated;
+
 insert into public.schema_migrations (filename) values
   ('0039_auth_mfa_hardening.sql'),
   ('0040_proxy_credentials_lockdown.sql'),
-  ('0041_post_credit_retry.sql')
+  ('0041_post_credit_retry.sql'),
+  ('0042_api_integrations_hardening.sql')
 on conflict do nothing;

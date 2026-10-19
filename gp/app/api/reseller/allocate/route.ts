@@ -2,6 +2,7 @@ import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { requireMfaVerified } from '@/lib/mfa'
 import { sendEmail, escapeHtml } from '@/lib/email'
+import { dispatchWebhook } from '@/lib/webhooks'
 import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
@@ -116,6 +117,12 @@ export async function POST(req: Request) {
     if (historyError) {
       console.error('Transfer history write failed (transfer itself succeeded):', historyError.message)
     }
+
+    // Webhook for the recipient: bandwidth landed on their account. Awaited
+    // and never throws (see lib/webhooks.ts).
+    await dispatchWebhook(recipientProfile.id, 'bandwidth_credited', {
+      gb_credited: gb_allocated, source: 'reseller_allocation',
+    })
 
     // Notify both sides — previously a transfer completed silently for
     // everyone: the recipient had no way to know new bandwidth had landed

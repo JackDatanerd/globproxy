@@ -1,4 +1,4 @@
-import { requireApiAccess } from '@/lib/apiAuth'
+import { requireApiAccess, apiError } from '@/lib/apiAuth'
 import { bulkAddWhitelistedIps, bulkRemoveWhitelistedIps } from '@/lib/geonode'
 import { isValidIp, validateDescription, whitelistErrorResponse, MAX_BULK_ITEMS } from '@/lib/ipWhitelist'
 import { NextResponse } from 'next/server'
@@ -26,10 +26,10 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
     const rawItems = Array.isArray(body?.items) ? body.items : null
 
     if (!rawItems || rawItems.length === 0) {
-      return NextResponse.json({ error: 'items must be a non-empty array of { ip, description }.' }, { status: 400 })
+      return apiError(400, 'invalid_request', 'items must be a non-empty array of { ip, description }.')
     }
     if (rawItems.length > MAX_BULK_ITEMS) {
-      return NextResponse.json({ error: `Max ${MAX_BULK_ITEMS} IPs per bulk request.` }, { status: 400 })
+      return apiError(400, 'invalid_request', `Max ${MAX_BULK_ITEMS} IPs per bulk request.`)
     }
 
     const items: { ip: string; description: string }[] = []
@@ -37,17 +37,17 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
       const ip = typeof raw?.ip === 'string' ? raw.ip.trim() : ''
       const description = typeof raw?.description === 'string' ? raw.description.trim() : ''
       if (!isValidIp(ip)) {
-        return NextResponse.json({ error: `"${ip || '(empty)'}" is not a valid IPv4 or IPv6 address.` }, { status: 400 })
+        return apiError(400, 'invalid_request', `"${ip || '(empty)'}" is not a valid IPv4 or IPv6 address.`)
       }
       const descError = validateDescription(description)
-      if (descError) return NextResponse.json({ error: `${ip}: ${descError}` }, { status: 400 })
+      if (descError) return apiError(400, 'invalid_request', `${ip}: ${descError}`)
       items.push({ ip, description })
     }
 
     const cred = await loadOwnedCredential(supabase, id, user.id)
-    if (!cred) return NextResponse.json({ error: 'Sub-user not found' }, { status: 404 })
+    if (!cred) return apiError(404, 'not_found', 'Sub-user not found')
     if (!cred.geonode_sub_user_id) {
-      return NextResponse.json({ error: 'This sub-user is still being provisioned — try again shortly.' }, { status: 409 })
+      return apiError(409, 'conflict', 'This sub-user is still being provisioned — try again shortly.')
     }
 
     const ips = await bulkAddWhitelistedIps(cred.geonode_sub_user_id, items)
@@ -68,25 +68,25 @@ export async function DELETE(req: Request, context: { params: Promise<{ id: stri
     const rawIps = Array.isArray(body?.ips) ? body.ips : null
 
     if (!rawIps || rawIps.length === 0) {
-      return NextResponse.json({ error: 'ips must be a non-empty array.' }, { status: 400 })
+      return apiError(400, 'invalid_request', 'ips must be a non-empty array.')
     }
     if (rawIps.length > MAX_BULK_ITEMS) {
-      return NextResponse.json({ error: `Max ${MAX_BULK_ITEMS} IPs per bulk request.` }, { status: 400 })
+      return apiError(400, 'invalid_request', `Max ${MAX_BULK_ITEMS} IPs per bulk request.`)
     }
 
     const ips: string[] = []
     for (const raw of rawIps) {
       const ip = typeof raw === 'string' ? raw.trim() : ''
       if (!isValidIp(ip)) {
-        return NextResponse.json({ error: `"${ip || '(empty)'}" is not a valid IPv4 or IPv6 address.` }, { status: 400 })
+        return apiError(400, 'invalid_request', `"${ip || '(empty)'}" is not a valid IPv4 or IPv6 address.`)
       }
       ips.push(ip)
     }
 
     const cred = await loadOwnedCredential(supabase, id, user.id)
-    if (!cred) return NextResponse.json({ error: 'Sub-user not found' }, { status: 404 })
+    if (!cred) return apiError(404, 'not_found', 'Sub-user not found')
     if (!cred.geonode_sub_user_id) {
-      return NextResponse.json({ error: 'This sub-user is still being provisioned — try again shortly.' }, { status: 409 })
+      return apiError(409, 'conflict', 'This sub-user is still being provisioned — try again shortly.')
     }
 
     const result = await bulkRemoveWhitelistedIps(cred.geonode_sub_user_id, ips)

@@ -4,6 +4,36 @@ import toast from 'react-hot-toast'
 
 const ENDPOINTS = [
   {
+    method: 'GET', title: 'List sub-users (paginated)',
+    path: '/api/v1/sub-users?limit=100&offset=0',
+    example: `curl "https://globproxy.com/api/v1/sub-users?limit=100" \\\n  -H "Authorization: Bearer YOUR_KEY"`,
+  },
+  {
+    method: 'GET', title: 'Get one sub-user',
+    path: '/api/v1/sub-users/:id',
+    example: `curl https://globproxy.com/api/v1/sub-users/SUB_USER_ID \\\n  -H "Authorization: Bearer YOUR_KEY"`,
+  },
+  {
+    method: 'PATCH', title: 'Update label / targeting',
+    path: '/api/v1/sub-users/:id',
+    example: `curl -X PATCH https://globproxy.com/api/v1/sub-users/SUB_USER_ID \\\n  -H "Authorization: Bearer YOUR_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{ "label": "scraper-eu", "country": "de" }'`,
+  },
+  {
+    method: 'GET', title: 'Usage history',
+    path: '/api/v1/sub-users/:id/usage/history?days=7',
+    example: `curl "https://globproxy.com/api/v1/sub-users/SUB_USER_ID/usage/history?days=7" \\\n  -H "Authorization: Bearer YOUR_KEY"`,
+  },
+  {
+    method: 'GET', title: 'Purchase history',
+    path: '/api/v1/orders',
+    example: `curl https://globproxy.com/api/v1/orders \\\n  -H "Authorization: Bearer YOUR_KEY"`,
+  },
+  {
+    method: 'POST', title: 'Create a webhook',
+    path: '/api/v1/webhooks',
+    example: `curl -X POST https://globproxy.com/api/v1/webhooks \\\n  -H "Authorization: Bearer YOUR_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{ "url": "https://example.com/hooks/globproxy", "event_types": ["session_created", "bandwidth_exhausted"] }'`,
+  },
+  {
     method: 'GET', title: 'Bandwidth balance',
     path: '/api/v1/account/bandwidth',
     example: `curl https://globproxy.com/api/v1/account/bandwidth \\
@@ -81,6 +111,10 @@ type ApiKeyMeta = {
   created_at: string
   last_used_at: string | null
   revoked_at: string | null
+  scopes?: string[]
+  expires_at?: string | null
+  last_used_ip?: string | null
+  allowed_ips?: string[]
 }
 
 export default function ApiKeysClient() {
@@ -88,6 +122,9 @@ export default function ApiKeysClient() {
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
   const [newLabel, setNewLabel] = useState('')
+  const [newScope, setNewScope] = useState<'full' | 'read'>('full')
+  const [newExpiry, setNewExpiry] = useState<string>('') // '' = never
+  const [newIps, setNewIps] = useState('') // comma/space separated; empty = any IP
   const [justCreated, setJustCreated] = useState<string | null>(null) // plaintext, shown once
 
   async function loadKeys() {
@@ -105,7 +142,12 @@ export default function ApiKeysClient() {
     const res = await fetch('/api/dashboard/api-keys', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ label: newLabel.trim() || 'Default key' }),
+      body: JSON.stringify({
+        label: newLabel.trim() || 'Default key',
+        scopes: newScope === 'read' ? ['read'] : ['read', 'write'],
+        expires_in_days: newExpiry ? Number(newExpiry) : null,
+        allowed_ips: newIps.split(/[\s,]+/).filter(Boolean),
+      }),
     })
     const data = await res.json().catch(() => ({}))
     if (!res.ok || data.error) {
@@ -113,6 +155,7 @@ export default function ApiKeysClient() {
     } else {
       setJustCreated(data.key)
       setNewLabel('')
+      setNewIps('')
       await loadKeys()
     }
     setCreating(false)
@@ -189,8 +232,17 @@ export default function ApiKeysClient() {
                   <div className="text-sm text-ink font-medium">{k.label}</div>
                   <div className="text-xs font-mono text-muted">
                     {k.key_prefix}••••••••
-                    {k.revoked_at ? ' · revoked' : k.last_used_at ? ` · last used ${new Date(k.last_used_at).toLocaleDateString()}` : ' · never used'}
+                    {k.revoked_at ? ' · revoked' : k.last_used_at ? ` · last used ${new Date(k.last_used_at).toLocaleDateString()}${k.last_used_ip ? ` from ${k.last_used_ip}` : ''}` : ' · never used'}
                   </div>
+                  {!k.revoked_at && (
+                    <div className="text-[11px] font-mono text-muted mt-0.5">
+                      {k.scopes && !k.scopes.includes('write') ? 'read-only' : 'full access'}
+                      {k.expires_at ? (new Date(k.expires_at).getTime() <= Date.now()
+                        ? ' · expired'
+                        : ` · expires ${new Date(k.expires_at).toLocaleDateString()}`) : ' · no expiry'}
+                      {k.allowed_ips && k.allowed_ips.length > 0 ? ` · IPs: ${k.allowed_ips.join(', ')}` : ' · any IP'}
+                    </div>
+                  )}
                 </div>
                 {!k.revoked_at && (
                   <button onClick={() => revokeKey(k.id)}
@@ -203,6 +255,24 @@ export default function ApiKeysClient() {
           </div>
         )}
 
+        <div className="flex flex-wrap gap-2 mb-2">
+          <select value={newScope} onChange={e => setNewScope(e.target.value as 'full' | 'read')}
+            className="bg-surface border border-border px-3 py-2 rounded-xl text-xs focus:outline-none focus:border-accent">
+            <option value="full">Full access (read + write)</option>
+            <option value="read">Read-only</option>
+          </select>
+          <select value={newExpiry} onChange={e => setNewExpiry(e.target.value)}
+            className="bg-surface border border-border px-3 py-2 rounded-xl text-xs focus:outline-none focus:border-accent">
+            <option value="">No expiry</option>
+            <option value="30">Expires in 30 days</option>
+            <option value="90">Expires in 90 days</option>
+            <option value="180">Expires in 180 days</option>
+            <option value="365">Expires in 1 year</option>
+          </select>
+        </div>
+        <input value={newIps} onChange={e => setNewIps(e.target.value)}
+          placeholder="Allowed IPs (optional) — e.g. 203.0.113.4, 198.51.100.0/24"
+          className="w-full bg-surface border border-border px-4 py-2 rounded-xl text-xs font-mono focus:outline-none focus:border-accent transition-colors mb-2" />
         <div className="flex gap-2">
           <input value={newLabel} onChange={e => setNewLabel(e.target.value)} placeholder="Key label (optional)"
             className="flex-1 bg-surface border border-border px-4 py-2.5 rounded-xl text-sm focus:outline-none focus:border-accent transition-colors" />
@@ -244,7 +314,7 @@ export default function ApiKeysClient() {
             Auth header: <span className="font-mono text-ink">Authorization: Bearer YOUR_KEY</span>
           </p>
           <p className="text-xs text-muted mt-2">
-            Also available: removing a single whitelisted IP, and bulk add/remove — see the{' '}
+            Also available: sticky sessions, webhook management (rotate secret, delivery log, redeliver), idempotent creates, whitelist bulk add/remove — see the{' '}
             <a href="/docs/api" target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">full API docs</a> for those and every parameter.
           </p>
         </div>

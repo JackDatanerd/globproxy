@@ -2,10 +2,11 @@ import { createAdminClient } from '@/lib/supabase/server'
 import { syncAllUsage } from '@/lib/usageSync'
 import { computeStockStatus } from '@/lib/stockStatus'
 import { sendEmail, escapeHtml } from '@/lib/email'
-import { dispatchWebhook } from '@/lib/webhooks'
+import { runWebhookRetries, runBandwidthThresholdWebhooks, pruneIntegrationData } from '@/lib/webhooks'
+import { provisionPendingCredentials, reconcileLimitSync } from '@/lib/credentials'
 import { runConfiguredBenchmark } from '@/lib/networkProbe'
 import { chargeAuthorization, generateReference, verifyTransaction, paymentMismatchReason } from '@/lib/paystack'
-import { activateBandwidth, retryPostCredit, activatePendingCredentials } from '@/lib/bandwidth'
+import { activateBandwidth, retryPostCredit } from '@/lib/bandwidth'
 import { alertAdminPayment } from '@/lib/paymentAlerts'
 import { flushSecurityNotices } from '@/lib/securityEvents'
 import { NextResponse } from 'next/server'
@@ -192,12 +193,9 @@ async function runBandwidthAlerts() {
                <a href="${process.env.NEXT_PUBLIC_APP_URL}/dashboard/buy">Top up now →</a>
                ${referralLine}`,
       })
-      // Same trigger, same data, as a webhook — fired from right here
-      // rather than a separate scan so there's exactly one place deciding
-      // "has this account crossed a threshold," not two that could drift.
-      await dispatchWebhook(acc.user_id, 'bandwidth_threshold_crossed', {
-        threshold_pct: 95, used_pct: pct, available_gb: avail, total_gb: acc.total_gb,
-      }).catch((e) => console.error('[webhooks] bandwidth_threshold_crossed dispatch threw', acc.user_id, e))
+      // (The bandwidth_threshold_crossed WEBHOOK no longer fires from this
+      // once-a-day email run — it has its own 5-minute task, see
+      // runBandwidthThresholdWebhooks in lib/webhooks.ts.)
       await supabase.from('bandwidth_accounts')
         .update({ alerted_95_at: new Date().toISOString() })
         .eq('user_id', acc.user_id)
@@ -210,9 +208,6 @@ async function runBandwidthAlerts() {
                <a href="${process.env.NEXT_PUBLIC_APP_URL}/dashboard/buy">Buy more →</a>
                ${referralLine}`,
       })
-      await dispatchWebhook(acc.user_id, 'bandwidth_threshold_crossed', {
-        threshold_pct: 80, used_pct: pct, available_gb: avail, total_gb: acc.total_gb,
-      }).catch((e) => console.error('[webhooks] bandwidth_threshold_crossed dispatch threw', acc.user_id, e))
       await supabase.from('bandwidth_accounts')
         .update({ alerted_80_at: new Date().toISOString() })
         .eq('user_id', acc.user_id)
@@ -336,8 +331,8 @@ async function runReconcile() {
 // activateBandwidth() stamps orders.post_credit_done_at once credential
 // activation + referral/affiliate crediting succeed (migration 0041).
 // Unstamped credited orders are retried here — both steps are idempotent —
-// for up to 3 days. Also sweeps credentials stuck in 'pending' (Geonode was
-// down when the customer created them) so they don't wait for a purchase.
+// for up to 3 days. (Credentials stuck in 'pending' are retried by the
+// separate 'provision' task.)
 async function runPostCreditRetry() {
   try {
     const supabase = await createAdminClient()
@@ -361,20 +356,11 @@ async function runPostCreditRetry() {
       if (await retryPostCredit(o)) completed++
     }
 
-    const { data: stuck } = await supabase.from('proxy_credentials')
-      .select('user_id')
-      .eq('status', 'pending')
-      .is('created_by', null)
-      .lt('created_at', new Date(now - 10 * 60 * 1000).toISOString())
-      .limit(10)
-    const users = Array.from(new Set((stuck ?? []).map(r => r.user_id as string)))
-    let pendingUsers = 0
-    for (const uid of users) {
-      pendingUsers++
-      await activatePendingCredentials(supabase, uid)
-    }
+    // (Credentials stuck in 'pending' are no longer swept from here: the
+    // dedicated 'provision' task below retries them with backoff and an
+    // atomic claim, instead of fanning out per user once an hour.)
 
-    return { retried, completed, pending_credential_users: pendingUsers }
+    return { retried, completed }
   } catch (e: any) {
     console.error('[post-credit retry] failed', e)
     return { error: e?.message ?? 'post-credit retry failed' }
@@ -404,7 +390,13 @@ async function runCleanup() {
   const { error: mfaErr } = await supabase.rpc('cleanup_expired_mfa_sessions')
   if (mfaErr) console.error('cleanup_expired_mfa_sessions failed:', mfaErr)
 
-  return { cleaned: stale?.length ?? 0, mfa_sessions_swept: !mfaErr }
+  // Webhook delivery log (14 days) and API idempotency keys (24h).
+  const pruned = await pruneIntegrationData().catch((e) => {
+    console.error('pruneIntegrationData failed:', e)
+    return { deliveries_pruned: false, idempotency_pruned: false }
+  })
+
+  return { cleaned: stale?.length ?? 0, mfa_sessions_swept: !mfaErr, ...pruned }
 }
 
 // ── Security notices + audit-log retention (migration 0039) ──────────
@@ -539,6 +531,38 @@ async function runBenchmark() {
   return runConfiguredBenchmark(supabase)
 }
 
+// ── Pending-credential provisioning (public API + dashboard) ───────
+// A credential created while Geonode was unreachable stays 'pending'. This
+// retries them with backoff (claim_pending_credentials, migration 0042) —
+// previously the ONLY thing that ever activated one was the owner's next
+// purchase, so an API user who never bought again was stuck forever. Also
+// re-applies live traffic-limit PATCHes that failed after a committed
+// top-up. Small per-tick limits on purpose: Workers caps subrequests per
+// invocation and this shares the */5 invocation with reconcile + usage.
+// Never throws, so it can't block the chain.
+async function runProvision() {
+  try {
+    const provision = await provisionPendingCredentials({ limit: 5 })
+    const limits = await reconcileLimitSync(5)
+    return { provision, limits }
+  } catch (e: any) {
+    console.error('[cron provision] failed:', e)
+    return { error: String(e?.message ?? e) }
+  }
+}
+
+// ── Webhooks: delivery retries + threshold events ──────────────────
+async function runWebhooks() {
+  try {
+    const retries = await runWebhookRetries()
+    const thresholds = await runBandwidthThresholdWebhooks()
+    return { retries, thresholds }
+  } catch (e: any) {
+    console.error('[cron webhooks] failed:', e)
+    return { error: String(e?.message ?? e) }
+  }
+}
+
 // ── Route handler ─────────────────────────────────────────────────
 export async function POST(req: Request, context: { params: Promise<{ task: string }> }) {
   if (!validateCron(req)) {
@@ -556,6 +580,8 @@ export async function POST(req: Request, context: { params: Promise<{ task: stri
       case 'canary':    result = await runCanary();           break
       case 'reconcile': result = { reconcile: await runReconcile(), post_credit: await runPostCreditRetry() }; break
       case 'security':  result = await runSecurity();         break
+      case 'provision': result = await runProvision();        break
+      case 'webhooks':  result = await runWebhooks();         break
       case 'benchmark': result = await runBenchmark();        break
       default: return NextResponse.json({ error: `Unknown task: ${task}` }, { status: 400 })
     }

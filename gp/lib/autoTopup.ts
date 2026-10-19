@@ -1,6 +1,8 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { updateSubUserTrafficLimit } from '@/lib/geonode'
 import { sendEmail, escapeHtml } from '@/lib/email'
+import { dispatchWebhook } from '@/lib/webhooks'
+import { markLimitSyncNeeded } from '@/lib/credentials'
 
 // Runs right after usage-sync writes fresh gb_used for every active
 // credential (see lib/usageSync.ts) — this is deliberately NOT a
@@ -104,6 +106,12 @@ export async function runAutoTopups(userId?: string) {
         await supabase.from('proxy_credentials')
           .update({ auto_topup_insufficient_alerted_at: new Date().toISOString() })
           .eq('id', cred.id)
+        // Same once-then-quiet de-dupe as the email: this flag clears when
+        // the balance recovers or the config is re-saved.
+        await dispatchWebhook(cred.user_id, 'auto_topup_failed', {
+          credential_id: cred.id, reason: 'insufficient_balance',
+          gb_allocated: cred.gb_allocated, gb_used: cred.gb_used, amount_gb: cred.auto_topup_amount_gb,
+        })
         insufficientAlerts++
       }
       continue
@@ -122,9 +130,14 @@ export async function runAutoTopups(userId?: string) {
       try {
         await updateSubUserTrafficLimit(cred.geonode_sub_user_id!, newTotal * 1024)
       } catch (e) {
-        console.error('[auto-topup] DB committed but Geonode PATCH failed — needs manual reconciliation', cred.id, e)
+        console.error('[auto-topup] DB committed but Geonode PATCH failed — queued for automatic retry', cred.id, e)
+        await markLimitSyncNeeded(supabase, cred.id)
       }
     }
+
+    await dispatchWebhook(cred.user_id, 'auto_topup_triggered', {
+      credential_id: cred.id, gb_added: cred.auto_topup_amount_gb, gb_allocated: Number.isFinite(newTotal) ? newTotal : null,
+    })
 
     await supabase.from('proxy_credentials')
       .update({ auto_topup_last_triggered_at: new Date().toISOString(), auto_topup_insufficient_alerted_at: null })
