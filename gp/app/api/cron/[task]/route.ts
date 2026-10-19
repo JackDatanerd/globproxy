@@ -114,23 +114,46 @@ async function runStockCheck() {
   const exposureBreach = !stock.covered
   const floorBreach = stock.available_gb <= threshold
 
-  if (exposureBreach || floorBreach) {
-    const subject = exposureBreach
-      ? `[EXPOSURE ALERT] Stock (${stock.available_gb.toFixed(1)}GB) can't cover what's sold (${stock.exposure_gb.toFixed(1)}GB unused-but-allocated)`
-      : `[LOW STOCK] Geonode bandwidth: ${stock.available_gb.toFixed(1)}GB remaining`
-    await sendEmail({
-      to: process.env.ADMIN_EMAIL!,
-      subject,
-      html: `<p><strong>Available:</strong> ${stock.available_gb.toFixed(1)}GB of ${stock.total_gb.toFixed(1)}GB total</p>
-             <p><strong>Allocated to customers:</strong> ${stock.total_allocated_gb.toFixed(1)}GB</p>
-             <p><strong>Actually used so far:</strong> ${stock.total_used_gb.toFixed(1)}GB</p>
-             <p><strong>Exposure (allocated but not yet used):</strong> ${stock.exposure_gb.toFixed(1)}GB</p>
-             ${exposureBreach ? '<p style="color:#e24b4a"><strong>If customers drew down their full remaining allocation right now, you would run short.</strong></p>' : ''}
-             <p><a href="${appUrl()}/admin/settings">Go to Admin Panel →</a></p>`,
-    })
-    return { action: 'alert_sent', ...stock, usage_sync: syncHealth }
+  // De-dupe: this task runs hourly, and the condition used to re-email the
+  // admin on EVERY tick for as long as it held (the usage-staleness alert
+  // above already de-dupes; this didn't). Now: one email when a condition
+  // begins (or changes kind), a reminder at most every 24h while it
+  // persists, and the flag clears when stock recovers.
+  const breachKind = exposureBreach ? 'exposure' : floorBreach ? 'floor' : null
+  const { data: alertRow } = await supabase
+    .from('platform_settings').select('value').eq('key', 'stock_alert_state').maybeSingle()
+  let prevAlert: { kind?: string; at?: string } = {}
+  try { prevAlert = JSON.parse(alertRow?.value ?? '{}') } catch { /* reset */ }
+
+  if (!breachKind) {
+    if (alertRow) await supabase.from('platform_settings').delete().eq('key', 'stock_alert_state')
+    return { action: 'ok', ...stock, usage_sync: syncHealth }
   }
-  return { action: 'ok', ...stock, usage_sync: syncHealth }
+
+  const REMINDER_MS = 24 * 60 * 60 * 1000
+  const alreadyAlerted = prevAlert.kind === breachKind && prevAlert.at &&
+    Date.now() - new Date(prevAlert.at).getTime() < REMINDER_MS
+  if (alreadyAlerted) {
+    return { action: 'alert_suppressed', ...stock, usage_sync: syncHealth }
+  }
+
+  const subject = exposureBreach
+    ? `[EXPOSURE ALERT] Stock (${stock.available_gb.toFixed(1)}GB) can't cover unallocated + pending customer GB (${stock.exposure_gb.toFixed(1)}GB)`
+    : `[LOW STOCK] Geonode bandwidth: ${stock.available_gb.toFixed(1)}GB remaining`
+  await sendEmail({
+    to: process.env.ADMIN_EMAIL!,
+    subject,
+    html: `<p><strong>Available to allocate:</strong> ${stock.available_gb.toFixed(1)}GB of ${stock.total_gb.toFixed(1)}GB total</p>
+           <p><strong>Customer balances not yet allocated to a session:</strong> ${stock.unallocated_balances_gb.toFixed(1)}GB</p>
+           <p><strong>Sessions waiting to be provisioned:</strong> ${stock.pending_allocated_gb.toFixed(1)}GB</p>
+           <p><strong>Exposure (the two above):</strong> ${stock.exposure_gb.toFixed(1)}GB</p>
+           <p style="color:#666">Already inside live sessions: ${stock.committed_unused_gb.toFixed(1)}GB unused of ${stock.total_allocated_gb.toFixed(1)}GB allocated — already deducted from Geonode's available figure, so not counted as exposure.</p>
+           ${exposureBreach ? '<p style="color:#e24b4a"><strong>If customers turned all their unallocated balance into sessions right now, you would run short.</strong></p>' : ''}
+           <p><a href="${appUrl()}/admin/settings">Go to Admin Panel →</a></p>`,
+  })
+  await supabase.from('platform_settings')
+    .upsert({ key: 'stock_alert_state', value: JSON.stringify({ kind: breachKind, at: new Date().toISOString() }) }, { onConflict: 'key' })
+  return { action: 'alert_sent', ...stock, usage_sync: syncHealth }
 }
 
 // ── Usage sync ───────────────────────────────────────────────────
@@ -138,7 +161,23 @@ async function runStockCheck() {
 // "sync now" button (app/api/admin/sync-usage) so there is exactly one
 // place that decides how gb_used gets reconciled from Geonode, not two
 // that can quietly diverge.
-const runUsageSync = syncAllUsage
+// syncAllUsage() THROWS when Geonode's sub-user listing is incomplete (so an
+// outage can't masquerade as a healthy sync). In the */5 chain a non-OK task
+// stops every task after it (custom-worker.ts), and 'provision' + 'webhooks'
+// run after 'usage' — webhook delivery retries and threshold events have
+// nothing to do with Geonode and must keep running during its outage. So the
+// cron wrapper logs the failure and reports it in the body instead; the
+// freshness marker is deliberately NOT stamped, which is what the staleness
+// watchdog in 'stock' alerts on. (The admin "sync now" button still surfaces
+// the error as a 500.)
+async function runUsageSync() {
+  try {
+    return await syncAllUsage()
+  } catch (e: any) {
+    console.error('[cron usage] sync did not complete:', e)
+    return { ok: false, error: String(e?.message ?? e) }
+  }
+}
 
 // ── User bandwidth alerts ─────────────────────────────────────────
 // Each account only ever gets ONE email per threshold (80%, 95%) until

@@ -1,56 +1,68 @@
 import { appUrl } from '@/lib/appUrl'
 import { createAdminClient } from '@/lib/supabase/server'
-import { updateSubUserTrafficLimit } from '@/lib/geonode'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { dispatchWebhook } from '@/lib/webhooks'
-import { markLimitSyncNeeded } from '@/lib/credentials'
+import { syncCredentialLimit, loadSuspendedUserIds } from '@/lib/credentials'
+import { fetchAllRows } from '@/lib/dbPaging'
 
 // Runs right after usage-sync writes fresh gb_used for every active
 // credential (see lib/usageSync.ts) — this is deliberately NOT a
-// separate cron task. It needs gb_used to already reflect real Geonode
-// consumption for the "remaining GB" check below to mean anything, and
-// piggybacking on the existing ~5-minute usage-sync cadence means a
-// credential gets topped up well before it actually runs dry, not just
-// once a day (matching the "doesn't have to wait till allocation dies"
-// requirement this was built for) — same reasoning that made the
-// 80%/95% bandwidth alerts want to run on their own trigger rather than
-// the once-a-day chain.
+// separate cron task: it needs gb_used to already reflect real Geonode
+// consumption, and piggybacking on the ~5-minute usage-sync cadence means
+// a credential is topped up well before it actually runs dry.
 //
-// Reuses topup_credential() (migration 0016) as the actual top-up
-// mechanism — the exact same atomic reserve-against-balance +
-// bump-gb_allocated RPC the manual "Top up" button calls — so there is
-// exactly one place that decides how a top-up is applied, whether a
-// human or this loop triggered it.
-export async function runAutoTopups(userId?: string) {
-  const supabase = await createAdminClient()
+// The decision AND the top-up happen inside ONE database transaction:
+// auto_topup_credential() (migration 0046) locks the credential row,
+// re-checks "is this still due" against the current gb_allocated/gb_used,
+// and only then calls topup_credential(). The candidate list below is just a
+// cheap pre-filter on a snapshot. Previously the due-check ran here on the
+// snapshot and topup_credential() applied it unconditionally, so two
+// overlapping runs (cron tick + admin "sync now", or two ticks) that both
+// saw the same snapshot each topped the credential up.
 
-  let query = supabase
-    .from('proxy_credentials')
-    .select('id, user_id, gb_allocated, gb_used, auto_topup_threshold_gb, auto_topup_amount_gb, geonode_sub_user_id, auto_topup_insufficient_alerted_at')
-    .eq('auto_topup_enabled', true)
-    .eq('status', 'active')
-    .is('created_by', null) // reseller-allocated credentials are never eligible — same rule topup_credential() enforces
-    .not('geonode_sub_user_id', 'is', null) // needs a live sub-user to actually raise the cap on
+// Each triggered top-up costs several subrequests (RPC, limit PATCH,
+// bookkeeping, a webhook, possibly an email). Bounded per run; anything left
+// over is still due on the next 5-minute tick.
+const MAX_TOPUPS_PER_RUN = 12
 
-  if (userId) query = query.eq('user_id', userId)
+// `admin` is injectable only so tests can drive this with a fake client; callers omit it.
+export async function runAutoTopups(userId?: string, admin?: Awaited<ReturnType<typeof createAdminClient>>) {
+  const supabase = admin ?? await createAdminClient()
 
-  const { data: candidates, error: fetchErr } = await query
+  // Admin-suspended accounts must not keep spending their balance.
+  const suspendedUsers = await loadSuspendedUserIds(supabase)
+
+  // Paginated: PostgREST silently truncates a plain select at 1000 rows.
+  const { rows: allCandidates, error: fetchErr } = await fetchAllRows<any>((from, to) => {
+    let q = supabase
+      .from('proxy_credentials')
+      .select('id, user_id, label, gb_allocated, gb_used, auto_topup_threshold_gb, auto_topup_amount_gb, auto_topup_insufficient_alerted_at')
+      .eq('auto_topup_enabled', true)
+      .eq('status', 'active')
+      .is('created_by', null) // reseller-allocated credentials are never eligible — same rule the RPC enforces
+      .not('geonode_sub_user_id', 'is', null)
+      .order('id')
+    if (userId) q = q.eq('user_id', userId)
+    return q.range(from, to)
+  })
   if (fetchErr) {
     console.error('[auto-topup] failed to load candidates:', fetchErr)
-    return { checked: 0, triggered: 0, insufficient_alerts: 0 }
+    return { checked: 0, triggered: 0, insufficient_alerts: 0, errors: 1, deferred: 0 }
   }
+  const candidates = allCandidates.filter(c => !suspendedUsers.has(c.user_id))
 
   let triggered = 0
   let insufficientAlerts = 0
+  let errors = 0
+  let deferred = 0
 
-  for (const cred of candidates ?? []) {
+  for (const cred of candidates) {
     const remaining = (cred.gb_allocated ?? 0) - (cred.gb_used ?? 0)
     const threshold = cred.auto_topup_threshold_gb ?? 0
 
     if (remaining > threshold) {
-      // Back above threshold (e.g. someone manually topped up, or GB was
-      // freed up some other way) — clear any stale alert flag so a
-      // future dip re-alerts instead of staying silently suppressed.
+      // Back above threshold — clear any stale alert flag so a future dip
+      // re-alerts instead of staying silently suppressed.
       if (cred.auto_topup_insufficient_alerted_at) {
         await supabase.from('proxy_credentials')
           .update({ auto_topup_insufficient_alerted_at: null })
@@ -59,23 +71,28 @@ export async function runAutoTopups(userId?: string) {
       continue
     }
 
-    const { data: rawNewTotal, error: topupErr } = await supabase.rpc('topup_credential', {
+    if (triggered + insufficientAlerts >= MAX_TOPUPS_PER_RUN) { deferred++; continue }
+
+    const { data: rawNewTotal, error: topupErr } = await supabase.rpc('auto_topup_credential', {
       p_credential_id: cred.id,
       p_user_id: cred.user_id,
-      p_gb: cred.auto_topup_amount_gb,
     })
 
     if (topupErr) {
-      // By far the most likely cause here is insufficient account
-      // balance to cover the configured amount — the credential and
-      // amount are otherwise fixed, valid config that already passed
-      // set_auto_topup()'s own checks when it was saved. Don't re-alert
-      // on every single cron tick for the same exhausted account (this
-      // runs every ~5 min); alert once, then stay quiet until either the
-      // balance recovers (handled by the `remaining > threshold` branch
-      // above, once a manual top-up or purchase clears it) or this gets
-      // reconfigured (set_auto_topup() clears the flag on any save).
-      console.error('[auto-topup] failed for credential', cred.id, topupErr.message)
+      const msg = topupErr.message ?? ''
+      // ONLY a genuine balance shortfall earns the "insufficient balance"
+      // email. Every other failure used to be reported that way too — a
+      // credential deleted mid-run, a status change, a misconfigured
+      // threshold — telling customers to buy bandwidth they didn't need.
+      if (!msg.includes('Insufficient')) {
+        errors++
+        console.error('[auto-topup] failed for credential', cred.id, topupErr.code, msg)
+        continue
+      }
+
+      console.error('[auto-topup] insufficient balance for credential', cred.id)
+      // One alert per shortfall, not one every 5 minutes. The flag is
+      // cleared when the balance recovers or the config is re-saved.
       if (!cred.auto_topup_insufficient_alerted_at) {
         const { data: profile } = await supabase
           .from('profiles').select('email, full_name').eq('id', cred.user_id).single()
@@ -107,8 +124,7 @@ export async function runAutoTopups(userId?: string) {
         await supabase.from('proxy_credentials')
           .update({ auto_topup_insufficient_alerted_at: new Date().toISOString() })
           .eq('id', cred.id)
-        // Same once-then-quiet de-dupe as the email: this flag clears when
-        // the balance recovers or the config is re-saved.
+        // Same once-then-quiet de-dupe as the email.
         await dispatchWebhook(cred.user_id, 'auto_topup_failed', {
           credential_id: cred.id, reason: 'insufficient_balance',
           gb_allocated: cred.gb_allocated, gb_used: cred.gb_used, amount_gb: cred.auto_topup_amount_gb,
@@ -118,23 +134,18 @@ export async function runAutoTopups(userId?: string) {
       continue
     }
 
+    // NULL = the RPC re-checked under the lock and nothing was due (another
+    // run got there first, or the credential changed). Not an error.
+    if (rawNewTotal === null || rawNewTotal === undefined) continue
+
     triggered++
     const newTotal = Number(rawNewTotal)
 
-    // DB side already committed atomically inside topup_credential() —
-    // this PATCH just brings Geonode's live cap up to match. Same
-    // "reservation is the source of truth, this is best-effort
-    // reconciliation" reasoning as the manual topup route: a failure
-    // here needs human eyes but shouldn't be treated as the top-up
-    // itself having failed.
-    if (Number.isFinite(newTotal)) {
-      try {
-        await updateSubUserTrafficLimit(cred.geonode_sub_user_id!, newTotal * 1024)
-      } catch (e) {
-        console.error('[auto-topup] DB committed but Geonode PATCH failed — queued for automatic retry', cred.id, e)
-        await markLimitSyncNeeded(supabase, cred.id)
-      }
-    }
+    // DB side already committed atomically. Bring Geonode's live cap up to
+    // the CURRENT database value. A failure is flagged for the cron retry
+    // (syncCredentialLimit → markLimitSyncNeeded) and healed by the usage-sync
+    // reconciler even if the flag is lost.
+    await syncCredentialLimit(supabase, cred.id)
 
     await dispatchWebhook(cred.user_id, 'auto_topup_triggered', {
       credential_id: cred.id, gb_added: cred.auto_topup_amount_gb, gb_allocated: Number.isFinite(newTotal) ? newTotal : null,
@@ -145,5 +156,5 @@ export async function runAutoTopups(userId?: string) {
       .eq('id', cred.id)
   }
 
-  return { checked: candidates?.length ?? 0, triggered, insufficient_alerts: insufficientAlerts }
+  return { checked: candidates.length, triggered, insufficient_alerts: insufficientAlerts, errors, deferred }
 }

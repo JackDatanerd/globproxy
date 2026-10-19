@@ -19,6 +19,14 @@ interface Props {
 // GlobProxy has exposed for it. With no whitelist entries, a credential's
 // only access control is its username/password pair; adding IPs here
 // restricts connections to just those sources on top of that.
+//
+// COPY NOTE: the user-facing text below used to claim listed IPs are the ONLY
+// sources that can authenticate and that an empty list "accepts connections
+// from any IP". Neither was ever verified against Geonode's real behaviour —
+// a provider whitelist can just as easily mean "these IPs may connect without
+// credentials" as "only these IPs may connect". It now says only what is
+// certain. Verify with a live test (connect from a non-listed IP with valid
+// credentials) before describing this as an access restriction.
 export default function IpWhitelist({ credentialId }: Props) {
   const [ips, setIps] = useState<WhitelistedIp[] | null>(null)
   const [provisioning, setProvisioning] = useState(false)
@@ -194,8 +202,8 @@ export default function IpWhitelist({ credentialId }: Props) {
       )}
 
       <p className="text-[10.5px] text-muted mb-3">
-        Only these IPs will be able to authenticate with this credential's username and password. Leave empty to
-        allow connections from any IP (default).
+        IPs listed here are registered as authorized sources for this credential. Keep the username and
+        password private regardless — don't rely on this list alone to keep other IPs out.
       </p>
 
       {/* Add form */}
@@ -262,7 +270,7 @@ export default function IpWhitelist({ credentialId }: Props) {
 
         {ips.length === 0 ? (
           <div className="px-3 py-4 text-[11px] font-mono text-white/40">
-            No IPs whitelisted — this credential currently accepts connections from any IP.
+            No IPs whitelisted.
           </div>
         ) : (
           <div className="divide-y divide-white/10">

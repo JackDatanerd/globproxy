@@ -54,9 +54,46 @@ function slug(v: string): string {
 // Geonode's own dashboard generates mixed-case alphanumeric session IDs
 // (e.g. "mBXMRo") — likely just an opaque token, but matching their own
 // pattern rather than the lowercase-only guess from generic docs.
+const SESSION_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+
 export function genSessionId(): string {
-  const c = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
-  return Array.from({ length: 8 }, () => c[Math.floor(Math.random() * c.length)]).join('')
+  // crypto, not Math.random — and rejection sampling so the 62-char alphabet
+  // isn't modulo-biased (248 = 62 * 4 is the largest multiple below 256).
+  const out: string[] = []
+  while (out.length < 8) {
+    const buf = crypto.getRandomValues(new Uint8Array(16))
+    for (const b of buf) {
+      if (b < 248 && out.length < 8) out.push(SESSION_CHARS[b % 62])
+    }
+  }
+  return out.join('')
+}
+
+// Stable, non-secret session id derived from a seed (credential id) + index.
+// The dashboard's ad hoc endpoints used genSessionId() inside useMemo, so
+// every page load minted a new id — and since the id IS the sticky-session
+// key, every reload silently moved "endpoint 1" to a different IP and
+// invalidated any list the customer had already exported. Deterministic
+// derivation keeps each endpoint on the same peer until they choose
+// otherwise (named sessions via SessionManager are the explicit rotation
+// mechanism). FNV-1a + xorshift: it only needs to be stable and spread out,
+// not unpredictable (the username it lands in is already behind the
+// credential's password).
+export function deriveSessionId(seed: string, index = 0): string {
+  let h = 2166136261
+  const input = `${seed}#${index}`
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i)
+    h = Math.imul(h, 16777619) >>> 0
+  }
+  let out = ''
+  for (let i = 0; i < 8; i++) {
+    h ^= h << 13; h >>>= 0
+    h ^= h >>> 17
+    h ^= h << 5; h >>>= 0
+    out += SESSION_CHARS[h % 62]
+  }
+  return out
 }
 
 // sessionId is optional so callers generating multiple endpoints can pass a
@@ -92,7 +129,10 @@ export function buildProxyUsername(baseUsername: string, opts: TargetingOptions,
     // MINUTES, then session — e.g. -lifetime-1440-session-mBXMRo for a
     // 24-hour (1440 min) sticky session. Confirmed directly from a live
     // credential string, not from third-party docs (which said seconds).
-    const lifetimeMinutes = Math.max(1, Math.round(opts.sticky_duration ?? 10))
+    // NaN (a non-numeric stored value) used to flow through Math.max/round
+    // and produce a literal "lifetime-NaN" in the username.
+    const rawLifetime = Number(opts.sticky_duration ?? 10)
+    const lifetimeMinutes = Number.isFinite(rawLifetime) ? Math.min(1440, Math.max(1, Math.round(rawLifetime))) : 10
     const id = sessionId ?? genSessionId()
     u += `-lifetime-${lifetimeMinutes}-session-${id}`
   }

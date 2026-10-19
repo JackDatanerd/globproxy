@@ -1,13 +1,14 @@
 // Pure constants — no server imports — so the dashboard (client component),
 // the API routes, the delivery engine and the docs all read the same list.
 // Keep in sync with the webhook_endpoints_valid_events CHECK constraint
-// (migration 0042): an event added here must be added there too, or the
+// (migrations 0042 + 0046): an event added here must be added there too, or the
 // insert/update is rejected by the database.
 export const WEBHOOK_EVENTS = [
   'session_created',
   'session_activated',
   'session_deleted',
   'session_topped_up',
+  'session_exhausted',
   'auto_topup_triggered',
   'auto_topup_failed',
   'bandwidth_threshold_crossed',
@@ -22,6 +23,7 @@ export const WEBHOOK_EVENT_LABELS: Record<WebhookEvent, string> = {
   session_activated: 'Pending session activated',
   session_deleted: 'Session deleted',
   session_topped_up: 'Session topped up',
+  session_exhausted: 'Session ran out of bandwidth',
   auto_topup_triggered: 'Auto top-up triggered',
   auto_topup_failed: 'Auto top-up failed (insufficient balance)',
   bandwidth_threshold_crossed: 'Bandwidth crossed 80% / 95%',

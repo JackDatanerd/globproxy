@@ -2,6 +2,7 @@ import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { parseCreateCredential, parseFiniteNumber } from '@/lib/apiValidation'
 import { createCredential } from '@/lib/credentials'
+import { rateLimited } from '@/lib/rateLimit'
 import { NextResponse } from 'next/server'
 import { requireMfaVerified } from '@/lib/mfa'
 
@@ -18,6 +19,12 @@ export async function POST(req: Request) {
 
   const suspended = await requireActiveUser(user.id)
   if (suspended) return suspended
+
+  // Every create costs real upstream calls on the one shared reseller key;
+  // the public API is limited per key (lib/apiAuth.ts), the dashboard path had
+  // no limit at all. Same shared limiter binding as usage/history.
+  const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', `proxy-create:${user.id}`)
+  if (limited) return limited
 
   const body = await req.json().catch(() => null)
 

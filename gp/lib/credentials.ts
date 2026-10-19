@@ -4,7 +4,8 @@ import {
 } from '@/lib/geonode'
 import { buildProxyUsername, getProxyPort } from '@/lib/proxyEndpoint'
 import { dispatchWebhook } from '@/lib/webhooks'
-import type { CreateCredentialInput } from '@/lib/apiValidation'
+import { fetchAllRows } from '@/lib/dbPaging'
+import { parseLabel, parseTargeting, parseSessionOptions, parseFiniteNumber, MAX_ENDPOINT_COUNT, type CreateCredentialInput } from '@/lib/apiValidation'
 
 // The single implementation of credential create / delete / top-up /
 // pending-provisioning, shared by the dashboard routes (session auth) and
@@ -27,6 +28,9 @@ const fail = (status: number, code: CredErrorCode, message: string): CredFail =>
 export function providerConfigured(): boolean {
   return !!(process.env.GEONODE_API_KEY && process.env.GEONODE_RESELLER_ID)
 }
+
+// Mirrors enforce_credential_limit() (migration 0046).
+export const MAX_CREDENTIALS_PER_ACCOUNT = 100
 
 export const CRED_COLS =
   'id, label, status, gb_allocated, gb_used, country, state, city, asn, session_type, protocol, sticky_duration, endpoint_count, host, port, geonode_username, geonode_password, activated_at, created_at, created_by, auto_topup_enabled, auto_topup_threshold_gb, auto_topup_amount_gb'
@@ -82,6 +86,17 @@ export async function createCredential(
   opts: { source: 'api' | 'dashboard'; autoTopup?: { threshold_gb: number; amount_gb: number } | null }
 ): Promise<CredResult<{ cred: any; warning?: string }>> {
   const gb = input.gb_allocated
+
+  // Soft pre-check of the per-account cap (the database trigger from
+  // migration 0046 is the authoritative, race-free enforcement). Without
+  // this a user at the cap would reserve bandwidth and create a real Geonode
+  // sub-user only to have the insert rejected and everything unwound.
+  const { count: liveCount } = await admin
+    .from('proxy_credentials').select('id', { count: 'exact', head: true })
+    .eq('user_id', userId).in('status', ['active', 'pending'])
+  if ((liveCount ?? 0) >= MAX_CREDENTIALS_PER_ACCOUNT) {
+    return fail(409, 'conflict', `Session limit reached (${MAX_CREDENTIALS_PER_ACCOUNT}). Delete an unused session first.`)
+  }
 
   // 1. Reserve atomically (migration 0007) — no window between "checked" and
   // "reserved" for a concurrent request to slip through.
@@ -160,6 +175,10 @@ export async function createCredential(
           console.error('[credentials] FAILED to clean up orphaned Geonode sub-user', gcred?.geonode_sub_user_id, e))
       }
       await release('insert failure')
+      // Lost a race for the last slot against a concurrent create.
+      if (insertErr?.code === '23514' && String(insertErr.message).includes('Session limit')) {
+        return fail(409, 'conflict', `Session limit reached (${MAX_CREDENTIALS_PER_ACCOUNT}). Delete an unused session first.`)
+      }
       return fail(500, 'internal_error', 'Could not create the sub-user. Please try again.')
     }
 
@@ -264,6 +283,43 @@ export async function markLimitSyncNeeded(admin: Admin, credentialId: string) {
   catch (e) { console.error('[credentials] could not mark limit sync', credentialId, e) }
 }
 
+export function expectedLimitMb(gbAllocated: number): number {
+  return Math.max(1, Math.round(Number(gbAllocated) * 1024))
+}
+
+// Brings Geonode's live cap in line with the database for ONE credential.
+//
+//   1. read gb_allocated fresh,  2. PATCH it,  3. read it again — if a
+//   concurrent top-up committed while we were talking to Geonode, PATCH the
+//   newer value too (bounded to 2 rounds; the usage-sync reconciler heals
+//   anything beyond that on the next tick).
+//
+// On failure the credential is flagged (markLimitSyncNeeded) so the cron
+// retry picks it up, and a customer-facing warning string is returned.
+export async function syncCredentialLimit(admin: Admin, credentialId: string): Promise<string | null> {
+  for (let round = 0; round < 2; round++) {
+    const { data: cred } = await admin
+      .from('proxy_credentials').select('status, geonode_sub_user_id, gb_allocated')
+      .eq('id', credentialId).maybeSingle()
+    // 'pending' has no sub-user yet; provisioning reads gb_allocated fresh.
+    if (!cred || cred.status !== 'active' || !cred.geonode_sub_user_id) return null
+
+    const sent = Number(cred.gb_allocated)
+    try {
+      // trafficLimitMB only — NEVER activeUntil (it resets usage upstream).
+      await updateSubUserTrafficLimit(cred.geonode_sub_user_id, expectedLimitMb(sent))
+    } catch (e) {
+      console.error('[credentials] DB committed but Geonode limit PATCH failed — queued for automatic retry', credentialId, e)
+      await markLimitSyncNeeded(admin, credentialId)
+      return 'Your balance was reserved and the allocation increased, but updating the live proxy limit failed. It will be retried automatically; contact support if it doesn\u2019t resolve shortly.'
+    }
+
+    const { data: after } = await admin.from('proxy_credentials').select('gb_allocated').eq('id', credentialId).maybeSingle()
+    if (!after || Number(after.gb_allocated) === sent) return null // nothing moved underneath us
+  }
+  return null
+}
+
 export async function topupCredential(
   admin: Admin, userId: string, id: string, gb: number, source: 'api' | 'dashboard'
 ): Promise<CredResult<{ gb_allocated: number; gb_added: number; warning?: string }>> {
@@ -280,19 +336,14 @@ export async function topupCredential(
   }
 
   const newTotal = Number(rawNewTotal)
-  let warning: string | undefined
 
-  const cred = await getOwnedCredential(admin, userId, id, 'status, geonode_sub_user_id, label')
-  if (cred?.status === 'active' && cred.geonode_sub_user_id && Number.isFinite(newTotal)) {
-    try {
-      // trafficLimitMB only — NEVER activeUntil (it resets usage upstream).
-      await updateSubUserTrafficLimit(cred.geonode_sub_user_id, newTotal * 1024)
-    } catch (e) {
-      console.error('[credentials] DB committed but Geonode PATCH failed — queued for automatic retry', id, e)
-      await markLimitSyncNeeded(admin, id)
-      warning = 'Your balance was reserved and the allocation increased, but updating the live proxy limit failed. It will be retried automatically; contact support if it doesn\u2019t resolve shortly.'
-    }
-  }
+  // Push the CURRENT database allocation to Geonode — not `newTotal`. Two
+  // concurrent top-ups each PATCH an absolute number; if the older request's
+  // PATCH lands last the live cap ends up BELOW what the database (and the
+  // customer) says, the PATCH "succeeds", and nothing is marked for retry.
+  // See syncCredentialLimit for the read-then-write-then-verify sequence.
+  const warning = (await syncCredentialLimit(admin, id)) ?? undefined
+  const cred = await getOwnedCredential(admin, userId, id, 'label')
 
   await dispatchWebhook(userId, 'session_topped_up', {
     credential_id: id, label: cred?.label ?? null, gb_added: gb, gb_allocated: newTotal, source,
@@ -387,4 +438,115 @@ export async function reconcileLimitSync(limit = 5): Promise<{ checked: number; 
     }
   }
   return { checked: rows?.length ?? 0, fixed }
+}
+
+// ── Edit in place ─────────────────────────────────────────────────────
+// Label, targeting, protocol, session type, sticky lifetime and endpoint
+// count, WITHOUT delete + recreate. Nothing here touches Geonode: targeting
+// lives in the connection username and the stored port is a pure function of
+// (protocol, session_type). Shared by PATCH /api/v1/sub-users/:id and PATCH
+// /api/dashboard/proxies/:id (the dashboard had no edit at all — moving a
+// session to another country meant deleting it, the one operation that
+// rounds, refunds and archives GB).
+//
+// Changing the country clears a dependent state/city that the caller didn't
+// also send: merging them onto the new country (e.g. country=de with the old
+// state=california) produced a username Geonode can't match.
+const normGeo = (v: unknown): string | null => {
+  if (v === undefined || v === null) return null
+  const t = String(v).trim().toLowerCase().replace(/[^a-z0-9]/g, '')
+  return t === '' ? null : t
+}
+
+export async function updateCredentialSettings(
+  admin: Admin, userId: string, id: string, body: unknown
+): Promise<CredResult<{ cred: any }>> {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return fail(400, 'invalid_request', 'Request body must be a JSON object.')
+  }
+  const b = body as Record<string, unknown>
+
+  const cred = await getOwnedCredential(admin, userId, id)
+  if (!cred) return fail(404, 'not_found', 'Sub-user not found')
+  if (cred.created_by) {
+    return fail(403, 'forbidden', 'This allocation was made by your reseller and cannot be edited. Contact them directly.')
+  }
+  if (cred.status === 'suspended') return fail(403, 'forbidden', 'This session is suspended and cannot be edited.')
+
+  const patch: Record<string, unknown> = {}
+
+  if ('label' in b) {
+    const label = parseLabel(b.label)
+    if (!label.ok) return fail(400, 'invalid_request', label.error)
+    patch.label = label.value
+  }
+
+  if ('endpoint_count' in b) {
+    const n = parseFiniteNumber(b.endpoint_count)
+    if (n === null || !Number.isInteger(n) || n < 1 || n > MAX_ENDPOINT_COUNT) {
+      return fail(400, 'invalid_request', `endpoint_count must be a whole number between 1 and ${MAX_ENDPOINT_COUNT}.`)
+    }
+    patch.endpoint_count = n
+  }
+
+  if (['country', 'state', 'city', 'asn'].some((k) => k in b)) {
+    const countryChanged = 'country' in b && normGeo(b.country) !== (cred.country ?? null)
+    const stateChanged = 'state' in b && normGeo(b.state) !== (cred.state ?? null)
+    const t = parseTargeting({
+      country: 'country' in b ? b.country : cred.country,
+      state: 'state' in b ? b.state : (countryChanged ? null : cred.state),
+      city: 'city' in b ? b.city : (countryChanged || stateChanged ? null : cred.city),
+      asn: 'asn' in b ? b.asn : cred.asn,
+    })
+    if (!t.ok) return fail(400, 'invalid_request', t.error)
+    Object.assign(patch, t.value)
+  }
+
+  if (['session_type', 'protocol', 'sticky_duration'].some((k) => k in b)) {
+    const s = parseSessionOptions(
+      { session_type: b.session_type, protocol: b.protocol, sticky_duration: 'sticky_duration' in b ? b.sticky_duration : cred.sticky_duration },
+      { session_type: cred.session_type, protocol: cred.protocol }
+    )
+    if (!s.ok) return fail(400, 'invalid_request', s.error)
+    Object.assign(patch, s.value)
+    patch.port = getProxyPort(s.value.protocol, s.value.session_type)
+  }
+
+  if (Object.keys(patch).length === 0) {
+    return fail(400, 'invalid_request', 'No updatable fields provided. Supported: label, country, state, city, asn, session_type, protocol, sticky_duration, endpoint_count.')
+  }
+
+  const { data, error } = await admin
+    .from('proxy_credentials').update(patch).eq('id', id).eq('user_id', userId).select(CRED_COLS).maybeSingle()
+  if (error) {
+    console.error('[credentials] updateCredentialSettings failed', id, error)
+    return fail(500, 'internal_error', 'Could not update the sub-user.')
+  }
+  if (!data) return fail(404, 'not_found', 'Sub-user not found')
+  return { ok: true, data: { cred: data } }
+}
+
+// ── Suspension safety net ─────────────────────────────────────────────
+// Suspending an account is done by lib/adminProxy.ts: it caps each live
+// sub-user at what it has used and flips the credential to 'suspended'
+// (which takes it out of usage sync). That loop is best-effort per
+// credential — if one cap call fails, THAT credential stays 'active' and
+// keeps serving traffic with nothing to retry it. The usage-sync reconciler
+// (lib/usageSync.ts) closes that gap: any credential still 'active' under a
+// suspended owner gets the same cap on the next tick. It never touches a
+// credential adminProxy already marked 'suspended'.
+export const SUSPENDED_CAP_HEADROOM_MB = 1
+
+export function suspendedCapMb(usedMb: number): number {
+  return Math.max(1, Math.ceil(usedMb) + SUSPENDED_CAP_HEADROOM_MB)
+}
+
+// Ids of every admin-suspended account. A set lookup rather than a PostgREST
+// embed: proxy_credentials has TWO foreign keys to profiles (user_id,
+// created_by), which makes an unhinted `profiles!inner(...)` ambiguous.
+export async function loadSuspendedUserIds(admin: Admin): Promise<Set<string>> {
+  const { rows } = await fetchAllRows<{ id: string }>((from, to) =>
+    admin.from('profiles').select('id').eq('is_suspended', true).order('id').range(from, to)
+  )
+  return new Set(rows.map((r) => r.id))
 }

@@ -1,53 +1,76 @@
 import { getAccountBalance } from '@/lib/geonode'
+import { fetchAllRows } from '@/lib/dbPaging'
 
 export interface StockStatus {
-  available_gb: number
+  available_gb: number              // Geonode availableForAllocationMB — what can still be carved out for new sub-users
   total_gb: number
-  total_allocated_gb: number
-  total_used_gb: number
-  exposure_gb: number
+  total_allocated_gb: number        // Σ gb_allocated over active credentials (informational)
+  total_used_gb: number             // Σ gb_used over active credentials (informational)
+  committed_unused_gb: number       // Σ max(0, allocated - used) — ALREADY deducted from available_gb by Geonode
+  unallocated_balances_gb: number   // customer balances not yet given to any credential
+  pending_allocated_gb: number      // reserved by credentials that have no Geonode sub-user yet
+  exposure_gb: number               // unallocated_balances + pending — the GB still to be carved out of available_gb
   covered: boolean
   last_synced: string
 }
 
-// Exposure = total allocated (promised to customers) minus total actually
-// used, across active credentials — what you'd need in hand right now if
-// every customer drew down their full remaining allocation at once. This is
-// the number that matters for a usage-based deduction model, not just a flat
-// "stock below X" floor.
+// WHAT "EXPOSURE" MEANS HERE (changed — the old formula was wrong).
+//
+// available_gb is Geonode's availableForAllocationMB = totalMB minus what is
+// ALREADY allocated to sub-users (see getAccountBalance). Every GB inside an
+// active credential's limit has therefore already been taken out of that
+// figure. The old exposure was Σ(allocated - used) over active credentials —
+// GB that are already deducted — compared against that same already-reduced
+// pool, so it counted the same GB twice (false alarms) while missing the
+// claims that are really still to be satisfied from it:
+//
+//   1. unallocated customer balances — GB customers paid for and may turn
+//      into new sessions at any moment (bandwidth_accounts.available_gb:
+//      total_gb - allocated_gb), and
+//   2. pending credentials — GB reserved against a customer's balance whose
+//      Geonode sub-user hasn't been created yet; provisioning will have to
+//      carve them out of available_gb.
+//
+// Exposure = (1) + (2). `covered` means the remaining unsold-to-Geonode pool
+// can honour every one of them.
 export async function computeStockStatus(supabase: any): Promise<StockStatus> {
   const balance = await getAccountBalance()
 
-  const { data: activeCreds } = await supabase
-    .from('proxy_credentials')
-    .select('gb_allocated, gb_used')
-    .eq('status', 'active')
+  const active = await fetchAllRows<{ gb_allocated: number | null; gb_used: number | null }>((from, to) =>
+    supabase.from('proxy_credentials').select('gb_allocated, gb_used').eq('status', 'active').order('id').range(from, to)
+  )
+  const pending = await fetchAllRows<{ gb_allocated: number | null }>((from, to) =>
+    supabase.from('proxy_credentials').select('gb_allocated').eq('status', 'pending').order('id').range(from, to)
+  )
+  const accounts = await fetchAllRows<{ available_gb: number | null }>((from, to) =>
+    supabase.from('bandwidth_accounts').select('available_gb').gt('available_gb', 0).order('user_id').range(from, to)
+  )
+  // A truncated read would silently UNDERSTATE exposure — the dangerous
+  // direction for an alerting metric. Fail loudly instead.
+  if (active.error || pending.error || accounts.error) {
+    throw new Error(`Stock status read failed: ${active.error ?? pending.error ?? accounts.error}`)
+  }
 
-  const totalAllocated = activeCreds?.reduce((s: number, c: any) => s + (c.gb_allocated ?? 0), 0) ?? 0
-  const totalUsed = activeCreds?.reduce((s: number, c: any) => s + (c.gb_used ?? 0), 0) ?? 0
-  // Clamp PER CREDENTIAL before summing, not the aggregate. Nothing in
-  // usageSync.ts caps gb_used at gb_allocated when writing a sync (Geonode's
-  // own trafficUsedMB can itself exceed trafficLimitMB — confirmed live on
-  // the account, e.g. a sub-user at 53.29MB used against a 51MB limit), and
-  // nothing auto-suspends a credential once it's over. If any single
-  // credential is over its own cap, summing (allocated - used) at the
-  // aggregate level lets that credential's negative remainder silently
-  // cancel out another credential's real remaining exposure — understating
-  // the number this metric exists to get right. A customer who's already
-  // over their cap contributes 0 future draw risk; it can't offset a
-  // different customer who genuinely still has headroom to pull.
-  const exposureGb = activeCreds?.reduce(
-    (s: number, c: any) => s + Math.max(0, (c.gb_allocated ?? 0) - (c.gb_used ?? 0)),
-    0
-  ) ?? 0
+  const sum = (xs: number[]) => xs.reduce((s, n) => s + n, 0)
+  const totalAllocated = sum(active.rows.map(c => Number(c.gb_allocated ?? 0)))
+  const totalUsed = sum(active.rows.map(c => Number(c.gb_used ?? 0)))
+  // Clamped PER CREDENTIAL: a credential over its own cap (Geonode's
+  // trafficUsedMB can exceed trafficLimitMB) must not offset another's headroom.
+  const committedUnused = sum(active.rows.map(c => Math.max(0, Number(c.gb_allocated ?? 0) - Number(c.gb_used ?? 0))))
+  const unallocatedBalances = sum(accounts.rows.map(a => Number(a.available_gb ?? 0)))
+  const pendingAllocated = sum(pending.rows.map(c => Number(c.gb_allocated ?? 0)))
+  const exposure = unallocatedBalances + pendingAllocated
 
   return {
     available_gb: balance.available_gb,
     total_gb: balance.total_gb,
     total_allocated_gb: totalAllocated,
     total_used_gb: totalUsed,
-    exposure_gb: exposureGb,
-    covered: balance.available_gb >= exposureGb,
+    committed_unused_gb: committedUnused,
+    unallocated_balances_gb: unallocatedBalances,
+    pending_allocated_gb: pendingAllocated,
+    exposure_gb: exposure,
+    covered: balance.available_gb >= exposure,
     last_synced: new Date().toISOString(),
   }
 }

@@ -3,7 +3,7 @@
 -- Run this entire file in Supabase SQL Editor (fresh project)
 -- ============================================================
 --
--- INCLUDES MIGRATIONS THROUGH: 0045_auth_mfa_closeout.sql
+-- INCLUDES MIGRATIONS THROUGH: 0046_proxy_lifecycle_residuals.sql
 --
 -- This line is the source of truth `scripts/check-schema-sync.mjs` reads
 -- to compare against supabase/migrations/ — it's what CI checks on every
@@ -584,6 +584,8 @@ create table public.proxy_credentials (
   provisioning_claimed_at timestamptz,
   provision_attempts      integer not null default 0,
   last_provision_error    text,
+  -- Migration 0046: once-per-exhaustion notice flag for this credential.
+  exhausted_alerted_at    timestamptz,
   usage_synced_at         timestamptz,
   constraint auto_topup_threshold_nonneg
     check (auto_topup_threshold_gb is null or auto_topup_threshold_gb >= 0),
@@ -991,6 +993,9 @@ begin
     if p_amount_gb is null or p_amount_gb <= 0 then
       raise exception 'amount_gb must be greater than 0';
     end if;
+    if p_amount_gb <= p_threshold_gb then
+      raise exception 'amount_gb must be greater than threshold_gb, otherwise the session would be topped up on every check';
+    end if;
   end if;
 
   update public.proxy_credentials
@@ -1032,6 +1037,9 @@ begin
     if p_amount_gb is null or p_amount_gb <= 0 then
       raise exception 'amount_gb must be greater than 0';
     end if;
+    if p_amount_gb <= p_threshold_gb then
+      raise exception 'amount_gb must be greater than threshold_gb';
+    end if;
   end if;
 
   update public.bandwidth_accounts
@@ -1045,6 +1053,81 @@ begin
   end if;
 end;
 $$;
+
+-- Migration 0046 — auto top-up decided under the row lock; per-account credential cap.
+-- ── 1. Auto top-up decided under the lock ─────────────────────
+-- Returns the credential's new gb_allocated, or NULL when nothing was due
+-- (disabled, not active, reseller-allocated, or already back above the
+-- threshold — e.g. a concurrent run topped it up first).
+create or replace function public.auto_topup_credential(
+  p_credential_id uuid,
+  p_user_id uuid
+)
+returns numeric
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  c record;
+  v_remaining numeric;
+begin
+  select * into c
+  from public.proxy_credentials
+  where id = p_credential_id and user_id = p_user_id
+  for update;
+
+  if not found then
+    raise exception 'Credential not found' using errcode = 'P0002';
+  end if;
+
+  if not c.auto_topup_enabled or c.status <> 'active' or c.created_by is not null then
+    return null;
+  end if;
+
+  if c.auto_topup_amount_gb <= c.auto_topup_threshold_gb then
+    raise exception 'Auto top-up misconfigured: amount must be greater than threshold' using errcode = 'P0003';
+  end if;
+
+  v_remaining := c.gb_allocated - coalesce(c.gb_used, 0);
+  if v_remaining > c.auto_topup_threshold_gb then
+    return null;
+  end if;
+
+  return public.topup_credential(p_credential_id, p_user_id, c.auto_topup_amount_gb);
+end;
+$$;
+
+revoke all on function public.auto_topup_credential(uuid, uuid) from public, anon, authenticated;
+grant execute on function public.auto_topup_credential(uuid, uuid) to service_role;
+
+-- ── 3. Per-account credential cap ─────────────────────────────
+create or replace function public.enforce_credential_limit()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if new.status not in ('active', 'pending') then
+    return new;
+  end if;
+  perform pg_advisory_xact_lock(hashtext('proxy_credentials:' || new.user_id::text));
+  if (select count(*) from public.proxy_credentials
+      where user_id = new.user_id and status in ('active', 'pending')) >= 100 then
+    raise exception 'Session limit reached (100). Delete an unused session first.' using errcode = '23514';
+  end if;
+  return new;
+end;
+$$;
+
+revoke all on function public.enforce_credential_limit() from public, anon, authenticated;
+
+drop trigger if exists proxy_credentials_enforce_limit on public.proxy_credentials;
+create trigger proxy_credentials_enforce_limit
+  before insert on public.proxy_credentials
+  for each row execute function public.enforce_credential_limit();
+
 
 -- Bulk usage-sync helpers — see migration 0010. Only ever called from
 -- lib/usageSync.ts via the admin (service_role) client.
@@ -1222,10 +1305,11 @@ create table public.webhook_endpoints (
   -- persisted here.
   constraint webhook_endpoints_valid_events
     check (event_types <@ array[
-      'session_created', 'session_activated', 'session_deleted', 'session_topped_up',
-      'auto_topup_triggered', 'auto_topup_failed',
-      'bandwidth_threshold_crossed', 'bandwidth_exhausted', 'bandwidth_credited'
-    ]::text[])
+    'session_created', 'session_activated', 'session_deleted', 'session_topped_up',
+    'session_exhausted',
+    'auto_topup_triggered', 'auto_topup_failed',
+    'bandwidth_threshold_crossed', 'bandwidth_exhausted', 'bandwidth_credited'
+  ]::text[])
 );
 
 create index webhook_endpoints_user_id_idx on public.webhook_endpoints(user_id);

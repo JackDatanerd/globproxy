@@ -19,8 +19,26 @@ function headers() {
   }
 }
 
+// 4 decimals (~0.1 MB). This used to round to 0.01 GB (~10 MB), which made
+// sub-5 MB usage read as exactly 0 and let up to ~5 MB per delete/recreate
+// cycle go unaccounted for in the refund calculation.
 function mbToGb(mb: number): number {
-  return Math.round((mb / 1024) * 100) / 100
+  return Math.round((mb / 1024) * 10000) / 10000
+}
+
+// Every Geonode call goes through this. Without a timeout a hung upstream
+// holds the Worker open until the platform kills it — and createCredential
+// has a bandwidth reservation committed by then (a kill between the reserve
+// and the insert leaks it permanently).
+const REQUEST_TIMEOUT_MS = 12_000
+async function gfetch(url: string, init: RequestInit = {}, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Response> {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal })
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 // Spec requires password to be uuid-formatted, not an arbitrary string —
@@ -74,13 +92,21 @@ export async function createSubUser(p: CreateSubUserParams): Promise<GCred> {
   // sticky vs rotating at all. See lib/proxyEndpoint.ts for the confirmed values.
   const port = getProxyPort(p.protocol, p.session_type)
 
-  const res = await fetch(`${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users`, {
+  // A limit that rounds to 0 MB must never reach Geonode: depending on the
+  // provider's semantics 0 can mean "unlimited". The validators enforce a
+  // 0.01 GB minimum; this is the backstop for any caller that skips them.
+  const trafficLimitMB = Math.round(p.gb_limit * 1024)
+  if (!Number.isFinite(trafficLimitMB) || trafficLimitMB < 1) {
+    throw new Error(`Refusing to create a sub-user with an invalid traffic limit (${p.gb_limit} GB)`)
+  }
+
+  const res = await gfetch(`${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users`, {
     method: 'POST',
     headers: headers(),
     body: JSON.stringify({
       username,
       password,
-      trafficLimitMB: Math.round(p.gb_limit * 1024),
+      trafficLimitMB,
       // activeUntil / email omitted — both optional per spec
     }),
   })
@@ -93,8 +119,17 @@ export async function createSubUser(p: CreateSubUserParams): Promise<GCred> {
   const d = await res.json()
   const result = d.result ?? d.data ?? d
 
+  // Previously fell back to the username when Geonode returned no id. Every
+  // later PATCH/DELETE/usage call is keyed on the numeric id, so a username
+  // there silently 404s forever. Fail loudly instead; the orphan sweep in
+  // usage sync surfaces the sub-user that was created.
+  if (result?.id === undefined || result?.id === null || result?.id === '') {
+    console.error('Geonode createSubUser returned no id for', username, JSON.stringify(d))
+    throw new Error('Geonode createSubUser returned no sub-user id')
+  }
+
   return {
-    geonode_sub_user_id: String(result.id ?? username),
+    geonode_sub_user_id: String(result.id),
     username: result.username ?? username,
     password: result.password ?? password,
     host: PROXY_HOST,
@@ -119,17 +154,22 @@ export async function updateSubUserTrafficLimit(
   geonodeSubUserId: string,
   newTrafficLimitMB: number
 ): Promise<void> {
-  const res = await fetch(
+  const limitMb = Math.round(newTrafficLimitMB)
+  if (!Number.isFinite(limitMb) || limitMb < 1) {
+    throw new Error(`Refusing to set an invalid traffic limit (${newTrafficLimitMB} MB)`)
+  }
+  const res = await gfetch(
     `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${geonodeSubUserId}`,
     {
       method: 'PATCH',
       headers: headers(),
-      body: JSON.stringify({ trafficLimitMB: Math.round(newTrafficLimitMB) }),
+      body: JSON.stringify({ trafficLimitMB: limitMb }),
     }
   )
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(`Geonode updateSubUserTrafficLimit failed: ${res.status} ${JSON.stringify(err)}`)
+    // GeonodeApiError (not a bare Error) so callers can branch on status.
+    throw new GeonodeApiError(`Geonode updateSubUserTrafficLimit failed: ${res.status} ${JSON.stringify(err)}`, res.status, err)
   }
 }
 
@@ -156,7 +196,7 @@ export async function updateSubUserTrafficLimit(
 // got the chance to do that while this function swallowed the failure
 // into a fake real value.
 export async function getSubUserUsage(geonodeSubUserId: string): Promise<number> {
-  const res = await fetch(
+  const res = await gfetch(
     `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${geonodeSubUserId}`,
     { headers: headers() }
   )
@@ -177,33 +217,63 @@ export async function getSubUserUsage(geonodeSubUserId: string): Promise<number>
 // that cap below the level JS try/catch can intercept, so it killed the
 // whole invocation with an opaque 500 regardless of per-credential error
 // handling. This reduces N calls to ceil(N/100).
-export async function listAllSubUsersUsage(): Promise<Map<string, number>> {
-  const usageMap = new Map<string, number>()
-  let offset = 0
+// Returns usage AND the live traffic limit AND the username per sub-user,
+// plus a `complete` flag. It used to swallow a failed page and hand back
+// whatever had been collected — indistinguishable from a full listing — so a
+// Geonode outage or revoked key looked like a healthy sync and stamped the
+// freshness marker the staleness watchdog depends on. Callers must check
+// `complete` before treating absence from the map as meaningful.
+export interface SubUserSnapshot {
+  usedGb: number
+  usedMb: number
+  limitMb: number | null // null when Geonode didn't report one
+  username: string | null
+}
+
+const MAX_LIST_PAGES = 100 // 10,000 sub-users — a runaway guard, not a real ceiling
+
+export async function listAllSubUsers(): Promise<{ subUsers: Map<string, SubUserSnapshot>; complete: boolean }> {
+  const subUsers = new Map<string, SubUserSnapshot>()
   const limit = 100
-  while (true) {
-    const res = await fetch(
-      `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users?limit=${limit}&offset=${offset}`,
-      { headers: headers() }
-    )
-    if (!res.ok) {
-      console.error('Geonode listAllSubUsersUsage failed:', res.status, await res.text().catch(() => ''))
-      break // return whatever was collected so far rather than throwing
+  let offset = 0
+  for (let page = 0; page < MAX_LIST_PAGES; page++) {
+    let res: Response
+    try {
+      res = await gfetch(
+        `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users?limit=${limit}&offset=${offset}`,
+        { headers: headers() }
+      )
+    } catch (e) {
+      console.error('Geonode listAllSubUsers request failed:', e)
+      return { subUsers, complete: false }
     }
-    const d = await res.json()
+    if (!res.ok) {
+      console.error('Geonode listAllSubUsers failed:', res.status, await res.text().catch(() => ''))
+      return { subUsers, complete: false }
+    }
+    const d = await res.json().catch(() => null)
+    if (!d) return { subUsers, complete: false }
     const result = d.result ?? d.data ?? d
     const docs = result.documents ?? []
     for (const doc of docs) {
-      usageMap.set(String(doc.id), mbToGb(doc.trafficUsedMB ?? 0))
+      const usedMb = Number(doc.trafficUsedMB ?? 0)
+      const limitMb = doc.trafficLimitMB === undefined || doc.trafficLimitMB === null ? null : Number(doc.trafficLimitMB)
+      subUsers.set(String(doc.id), {
+        usedGb: mbToGb(usedMb),
+        usedMb,
+        limitMb: limitMb !== null && Number.isFinite(limitMb) ? limitMb : null,
+        username: typeof doc.username === 'string' ? doc.username : null,
+      })
     }
-    if (docs.length < limit) break // last page
+    if (docs.length < limit) return { subUsers, complete: true } // last page
     offset += limit
   }
-  return usageMap
+  console.error('Geonode listAllSubUsers hit MAX_LIST_PAGES — treating the listing as incomplete')
+  return { subUsers, complete: false }
 }
 
 export async function getAccountBalance(): Promise<{ available_gb: number; total_gb: number }> {
-  const res = await fetch(
+  const res = await gfetch(
     `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/traffic`,
     { headers: headers() }
   )
@@ -320,7 +390,7 @@ export async function getPeriodStats(
     dateTo: dateTo.toISOString(),
     subUserFilter,
   })
-  const res = await fetch(
+  const res = await gfetch(
     `${MONITOR_BASE}/statistics/${SERVICE_TYPE}/per-period?${params}`,
     { headers: monitorHeaders() }
   )
@@ -360,26 +430,33 @@ export interface HostCountryStat {
 // unbounded number of upstream calls — same subrequest-budget concern
 // documented on listAllSubUsersUsage above, just scoped to a single
 // credential's stats instead of the full-account usage-sync cron.
-export async function getHostCountryStats(
+export async function getHostCountryStatsWithMeta(
   subUserFilter: string,
   dateFrom: Date,
   dateTo: Date,
   granularity: 'minute' | 'hour' | 'day' = 'day',
   limit = 500,
   hardCap = 2000
-): Promise<HostCountryStat[]> {
+): Promise<{ stats: HostCountryStat[]; truncated: boolean }> {
   const results: HostCountryStat[] = []
+  // The page size actually sent to Geonode (max 5000 per spec). The "was that
+  // the last page" check must compare against THIS, not the caller's raw
+  // `limit` — with limit > 5000 the old check never saw a short page and
+  // looped to the hard cap.
+  const pageSize = Math.max(1, Math.min(limit, 5000))
   let offset = 0
-  while (results.length < hardCap) {
+  let truncated = false
+  while (true) {
+    if (results.length >= hardCap) { truncated = true; break }
     const params = new URLSearchParams({
       granularity,
       dateFrom: dateFrom.toISOString(),
       dateTo: dateTo.toISOString(),
       subUserFilter,
-      limit: String(Math.min(limit, 5000)),
+      limit: String(pageSize),
       offset: String(offset),
     })
-    const res = await fetch(
+    const res = await gfetch(
       `${MONITOR_BASE}/statistics/${SERVICE_TYPE}/per-subuser-host-country?${params}`,
       { headers: monitorHeaders() }
     )
@@ -393,10 +470,21 @@ export async function getHostCountryStats(
     }
     const docs: HostCountryStat[] = d.documents ?? []
     results.push(...docs)
-    if (docs.length < limit) break // last page
-    offset += limit
+    if (docs.length < pageSize) break // last page
+    offset += pageSize
   }
-  return results
+  return { stats: results.slice(0, hardCap), truncated }
+}
+
+export async function getHostCountryStats(
+  subUserFilter: string,
+  dateFrom: Date,
+  dateTo: Date,
+  granularity: 'minute' | 'hour' | 'day' = 'day',
+  limit = 500,
+  hardCap = 2000
+): Promise<HostCountryStat[]> {
+  return (await getHostCountryStatsWithMeta(subUserFilter, dateFrom, dateTo, granularity, limit, hardCap)).stats
 }
 
 // ─── Whitelisted IPs ──────────────────────────────────────────────────────
@@ -417,7 +505,7 @@ async function whitelistRequest(
   path: string,
   init?: RequestInit
 ): Promise<WhitelistedIp[]> {
-  const res = await fetch(
+  const res = await gfetch(
     `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${geonodeSubUserId}/whitelisted-ips${path}`,
     { ...init, headers: headers() }
   )
@@ -486,7 +574,7 @@ export function bulkRemoveWhitelistedIps(
 }
 
 export async function deleteSubUser(geonodeSubUserId: string): Promise<void> {
-  const res = await fetch(`${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${geonodeSubUserId}`, {
+  const res = await gfetch(`${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${geonodeSubUserId}`, {
     method: 'DELETE',
     headers: headers(),
   })
@@ -533,7 +621,7 @@ export async function debugCreateSubUser(): Promise<{
   let error: string | null = null
 
   try {
-    const res = await fetch(`${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users`, {
+    const res = await gfetch(`${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users`, {
       method: 'POST',
       headers: headers(),
       body: JSON.stringify(requestBody),
@@ -550,13 +638,13 @@ export async function debugCreateSubUser(): Promise<{
         username: result.username ?? username,
         password: result.password ?? password,
         host: PROXY_HOST,
-        port: 9000,
+        port: getProxyPort('http', 'rotating'),
         protocol: 'http',
       }
 
       // Immediately clean up — don't leave test sub-users in Geonode
       try {
-        const delRes = await fetch(
+        const delRes = await gfetch(
           `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${parsedGcred.geonode_sub_user_id}`,
           { method: 'DELETE', headers: headers() }
         )

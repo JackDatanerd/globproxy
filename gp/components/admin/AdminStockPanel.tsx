@@ -103,13 +103,15 @@ export default function AdminStockPanel() {
           </div>
           <div>
             <div className={`font-display text-xl font-bold ${stock.covered === false ? 'text-red-500' : 'text-ink'}`}>{formatGb(stock.exposure_gb)}</div>
-            <div className="text-[10px] font-mono text-muted mt-0.5">Exposure</div>
+            <div className="text-[10px] font-mono text-muted mt-0.5">Exposure (unallocated + pending)</div>
           </div>
         </div>
         <p className="text-[10px] text-muted mt-3 font-light leading-relaxed">
-          Exposure = allocated minus used — what you'd need in hand if every customer drew their full remaining allocation right now.
+          Exposure = customer balance not yet allocated to a session ({formatGb(stock.unallocated_balances_gb ?? 0)}) + sessions
+          waiting to be provisioned ({formatGb(stock.pending_allocated_gb ?? 0)}) — what you'd still have to carve out of Geonode's
+          available stock. GB already allocated to live sessions is already deducted from Available by Geonode, so it isn't counted again.
           {stock.covered === false
-            ? ' Current stock is below this — you are exposed if customers draw down at once.'
+            ? ' Current stock is below this — you are exposed if customers allocate it all at once.'
             : ' Current stock covers this.'}
         </p>
       </div>

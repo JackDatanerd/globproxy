@@ -1,11 +1,12 @@
 'use client'
 import { useState, useMemo, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { buildProxyUsername, getProxyPort, genSessionId } from '@/lib/proxyEndpoint'
+import { buildProxyUsername, getProxyPort, deriveSessionId } from '@/lib/proxyEndpoint'
 import { apiJson, copyText } from '@/lib/clientApi'
 import { formatGb, formatPct } from '@/lib/format'
 import SessionManager from '@/components/dashboard/SessionManager'
 import IpWhitelist from '@/components/dashboard/IpWhitelist'
+import CredentialSettings from '@/components/dashboard/CredentialSettings'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
@@ -26,7 +27,7 @@ interface Props {
 const WARN_PCT = 80
 const URGENT_PCT = 95
 
-type Tab = 'cred' | 'bandwidth' | 'endpoints' | 'whitelist' | 'code'
+type Tab = 'cred' | 'bandwidth' | 'endpoints' | 'whitelist' | 'edit' | 'code'
 type Lang = 'py' | 'node' | 'browser'
 
 // Row-based redesign: collapsed by default (status communicated by the left
@@ -55,6 +56,8 @@ export default function ProxyCard({ cred, index, expanded, onToggle, requestedTa
   const [autoThreshold, setAutoThreshold] = useState(String(cred.auto_topup_threshold_gb ?? ''))
   const [autoAmount, setAutoAmount] = useState(String(cred.auto_topup_amount_gb ?? ''))
   const [autoLoading, setAutoLoading] = useState(false)
+  // Pending credentials: on-demand "retry provisioning"
+  const [retrying, setRetrying] = useState(false)
   useEffect(() => {
     setAutoEnabled(!!cred.auto_topup_enabled)
     setAutoThreshold(String(cred.auto_topup_threshold_gb ?? ''))
@@ -106,7 +109,11 @@ export default function ProxyCard({ cred, index, expanded, onToggle, requestedTa
   // lifetime/session suffix), not in anything that has to be pre-registered
   // in our DB. Without this, sticky sessions had no quick-copy at all
   // (endpoints was always [] for them), unlike every rotating session.
-  const quickStickySessionId = useMemo(() => genSessionId(), [cred.id])
+  // Derived from the credential id, NOT random: a random id per mount moved
+  // the sticky session to a different IP on every page load, and made any
+  // endpoint the customer had already copied stale immediately. Named
+  // sessions (SessionManager) are the explicit way to get a fresh IP.
+  const quickStickySessionId = useMemo(() => deriveSessionId(cred.id, 0), [cred.id])
   const quickStickyEndpoint = isSticky
     ? `${host}:${port}:${buildProxyUsername(baseUser, cred, quickStickySessionId)}:${pass}`
     : null
@@ -172,6 +179,20 @@ export default function ProxyCard({ cred, index, expanded, onToggle, requestedTa
       toast.error(err.message)
     } finally {
       setTopupLoading(false)
+    }
+  }
+
+  async function handleRetryProvisioning(e: React.MouseEvent) {
+    e.stopPropagation()
+    setRetrying(true)
+    try {
+      await apiJson('POST', `/api/dashboard/proxies/${cred.id}/retry`)
+      toast.success('Session is now active')
+      router.refresh()
+    } catch (err: any) {
+      toast.error(err.message)
+    } finally {
+      setRetrying(false)
     }
   }
 
@@ -332,7 +353,11 @@ const agent = new HttpsProxyAgent(
         <div className="border-t border-border px-6 pb-5 pt-4">
           {cred.status === 'pending' && (
             <div className="mb-4 text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-4 py-3 font-mono">
-              ⏳ Credentials are being provisioned. This usually takes under a minute. Refresh the page or contact support if this persists.
+              <div>⏳ This session is queued: the proxy network was unreachable when it was created. We retry automatically every few minutes, and your bandwidth is already reserved.</div>
+              <button onClick={handleRetryProvisioning} disabled={retrying}
+                className="mt-2 border border-amber-300 text-amber-800 px-3 py-1.5 rounded-lg text-[11px] hover:bg-amber-100 disabled:opacity-60 transition-colors">
+                {retrying ? 'Retrying…' : 'Retry now'}
+              </button>
             </div>
           )}
           {cred.status === 'active' && isWarmingUp && (
@@ -360,6 +385,10 @@ const agent = new HttpsProxyAgent(
                 <button onClick={() => setTab('whitelist')}
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'whitelist' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
                   IP whitelist
+                </button>
+                <button onClick={() => setTab('edit')}
+                  className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'edit' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
+                  Edit
                 </button>
                 <button onClick={() => setTab('code')}
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'code' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
@@ -532,6 +561,11 @@ const agent = new HttpsProxyAgent(
 
               {tab === 'whitelist' && (
                 <IpWhitelist credentialId={cred.id} />
+              )}
+
+              {tab === 'edit' && (
+                // key forces a fresh form when a refreshed `cred` arrives after a save
+                <CredentialSettings key={`${cred.id}:${cred.label}:${cred.country}:${cred.state}:${cred.city}:${cred.asn}:${cred.protocol}:${cred.session_type}:${cred.sticky_duration}`} cred={cred} />
               )}
 
               {tab === 'code' && (

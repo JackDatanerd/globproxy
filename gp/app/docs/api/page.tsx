@@ -339,6 +339,9 @@ export default function ApiDocsPage() {
               Changes the label or connection settings. Targeting lives in the connection username, so this takes
               effect immediately and doesn't touch bandwidth (use <span className="font-mono text-ink">/topup</span> for that).
               Send only the fields you want to change; send <span className="font-mono text-ink">null</span> to clear a targeting field.
+              Changing <span className="font-mono text-ink">country</span> also clears a <span className="font-mono text-ink">state</span> /{' '}
+              <span className="font-mono text-ink">city</span> you don't send in the same request, since the old ones belong to the old country.
+              Sub-users allocated by a reseller, and suspended ones, can't be edited (<span className="font-mono text-ink">403</span>).
             </p>
             <Code>{`curl -X PATCH https://globproxy.com/api/v1/sub-users/SUB_USER_ID \\
   -H "Authorization: Bearer YOUR_KEY" \\
@@ -351,6 +354,7 @@ export default function ApiDocsPage() {
               ['session_type', 'string', '"rotating" or "sticky". Changes the port.'],
               ['protocol', 'string', '"http" or "socks5". Changes the port.'],
               ['sticky_duration', 'integer | null', 'Minutes, 1–1440 (sticky only).'],
+              ['endpoint_count', 'integer', 'Informational, 1–100.'],
             ]} />
             <p className="text-sm text-ink2 mt-4">Returns the updated sub-user.</p>
           </Endpoint>
@@ -457,7 +461,7 @@ export default function ApiDocsPage() {
             <Table rows={[
               ['enabled', 'boolean', 'Required. Turn auto-topup on or off.'],
               ['threshold_gb', 'number', 'Required when enabling. Remaining GB that triggers a top-up. Can be 0.'],
-              ['amount_gb', 'number', 'Required when enabling. GB added per trigger, must be > 0.'],
+              ['amount_gb', 'number', 'Required when enabling. GB added per trigger, must be > 0 and greater than threshold_gb (otherwise the sub-user would be topped up on every check).'],
             ]} />
             <p className="text-sm text-ink2 mt-4">
               Send <span className="font-mono text-ink">{`{ "enabled": false }`}</span> to turn it off —{' '}
@@ -599,6 +603,7 @@ export default function ApiDocsPage() {
             ['session_activated', 'event', 'A pending sub-user finished provisioning and is now live. data: credential_id, label, gb_allocated, status.'],
             ['session_deleted', 'event', 'A sub-user was deleted. data: credential_id, label, gb_allocated, gb_used, gb_released, source.'],
             ['session_topped_up', 'event', 'GB were added to a sub-user (manual top-up). data: credential_id, label, gb_added, gb_allocated, source.'],
+            ['session_exhausted', 'event', 'A single sub-user used its entire allocation and has stopped connecting (sent once per exhaustion; not sent when auto-topup is enabled on it). data: credential_id, label, gb_allocated, gb_used.'],
             ['auto_topup_triggered', 'event', 'Auto-topup added bandwidth. data: credential_id, gb_added, gb_allocated.'],
             ['auto_topup_failed', 'event', 'Auto-topup could not run because your balance was too low (sent once until it recovers). data: credential_id, reason, gb_allocated, gb_used, amount_gb.'],
             ['bandwidth_threshold_crossed', 'event', 'Account usage crossed 80% or 95%. data: threshold_pct, used_pct, available_gb, total_gb. Checked every 5 minutes.'],

@@ -2,6 +2,7 @@ import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { parseGbAmount } from '@/lib/apiValidation'
 import { topupCredential } from '@/lib/credentials'
+import { rateLimited } from '@/lib/rateLimit'
 import { NextResponse } from 'next/server'
 
 // Adds GB to a credential the user already owns, instead of requiring a
@@ -18,6 +19,9 @@ export async function POST(
 
   const suspended = await requireActiveUser(user.id)
   if (suspended) return suspended
+
+  const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', `proxy-topup:${user.id}`)
+  if (limited) return limited
 
   const { id } = await context.params
   const body = await req.json().catch(() => ({}))

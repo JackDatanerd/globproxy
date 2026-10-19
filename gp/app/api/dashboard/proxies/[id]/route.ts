@@ -1,6 +1,6 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
-import { deleteCredential } from '@/lib/credentials'
+import { deleteCredential, updateCredentialSettings } from '@/lib/credentials'
 import { NextResponse } from 'next/server'
 
 export async function DELETE(
@@ -21,6 +21,35 @@ export async function DELETE(
   // shared with DELETE /api/v1/sub-users/:id.
   const admin = await createAdminClient()
   const result = await deleteCredential(admin, user.id, id, 'dashboard')
+  if (!result.ok) {
+    return NextResponse.json(
+      { error: result.status === 404 ? 'Credential not found' : result.message },
+      { status: result.status }
+    )
+  }
+  return NextResponse.json({ success: true })
+}
+
+// Edit in place — label, targeting, protocol, session type, sticky lifetime,
+// endpoint count. DB-only (see updateCredentialSettings in lib/credentials.ts,
+// shared with PATCH /api/v1/sub-users/:id): changing where a session exits
+// never needs the delete/recreate round trip.
+export async function PATCH(
+  req: Request,
+  context: { params: Promise<{ id: string }> }
+) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const suspended = await requireActiveUser(user.id)
+  if (suspended) return suspended
+
+  const { id } = await context.params
+  const body = await req.json().catch(() => null)
+
+  const admin = await createAdminClient()
+  const result = await updateCredentialSettings(admin, user.id, id, body)
   if (!result.ok) {
     return NextResponse.json(
       { error: result.status === 404 ? 'Credential not found' : result.message },

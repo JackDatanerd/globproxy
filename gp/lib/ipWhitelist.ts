@@ -18,10 +18,14 @@ const IPV4_RE = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1
 const IPV6_RE =
   /^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$|^([0-9a-fA-F]{1,4}:){1,7}:$|^([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}$|^([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}$|^([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}$|^([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}$|^([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}$|^[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})$|^:((:[0-9a-fA-F]{1,4}){1,7}|:)$/
 
+// IPv4-mapped IPv6 (::ffff:1.2.3.4) — what dual-stack stacks report for a v4
+// client. The base matcher above rejected it.
+const IPV4_MAPPED_RE = new RegExp('^::ffff:' + IPV4_RE.source.slice(1), 'i')
+
 export function isValidIp(value: string): boolean {
   const v = value.trim()
   if (!v) return false
-  return IPV4_RE.test(v) || IPV6_RE.test(v)
+  return IPV4_RE.test(v) || IPV6_RE.test(v) || IPV4_MAPPED_RE.test(v)
 }
 
 // Mirrors the spec's `description` schema (minLength 1, maxLength 100) —

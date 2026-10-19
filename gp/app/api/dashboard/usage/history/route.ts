@@ -1,7 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { rateLimited } from '@/lib/rateLimit'
-import { getPeriodStats, getHostCountryStats, GeonodeApiError, type PeriodStat, type HostCountryStat } from '@/lib/geonode'
+import { getPeriodStats, getHostCountryStatsWithMeta, GeonodeApiError, type PeriodStat, type HostCountryStat } from '@/lib/geonode'
 import { toCsv, csvResponse } from '@/lib/csv'
 import { NextResponse } from 'next/server'
 
@@ -18,16 +18,15 @@ function parseRange(value: string | null): RangeDays {
   return (ALLOWED_RANGE_DAYS as readonly number[]).includes(n) ? (n as RangeDays) : 7
 }
 
-// Each credential in scope costs up to 2 upstream calls (period + host-
-// country). Cloudflare Workers' free-plan cap is 50 subrequests per
-// invocation — the same ceiling that forced listAllSubUsersUsage() into a
-// bulk/paginated shape for the cron sync job (see lib/geonode.ts). A
-// single user's usage-history page load isn't the cron job, but a power
-// user with dozens of credentials could still trip it, so this caps how
-// many credentials get included and biases toward the ones that matter:
-// sorted by gb_used desc, so the heaviest consumers are always covered
-// even if some long-tail low/no-usage credentials get left out.
-const MAX_CREDENTIALS = 15
+// Subrequest budget (Cloudflare Workers' free-plan cap is 50 per invocation).
+// Per credential: 1 period call + up to 2 host-country pages (500 rows each,
+// HOST_COUNTRY_HARD_CAP below). The old cap of 15 credentials only counted 2
+// calls each and ignored host-country pagination, so the real worst case,
+// 15 x (1 + 4) = 75, blew the budget. 10 x (1 + 2) = 30, plus the two
+// Supabase reads, stays under 50. Sorted by gb_used desc, so the heaviest
+// consumers are always covered even if long-tail credentials are left out.
+const MAX_CREDENTIALS = 10
+const HOST_COUNTRY_HARD_CAP = 1000 // rows per credential = 2 pages of 500
 
 type CredRow = {
   id: string
@@ -55,6 +54,11 @@ async function loadScopedCredentials(supabase: Awaited<ReturnType<typeof createC
   const creds = (data ?? []) as CredRow[]
   return { creds, truncated: (totalCount ?? creds.length) > creds.length }
 }
+
+// NOTE: only credentials that still exist are included. A deleted
+// credential's history is not shown (its consumed GB is archived into the
+// account's used_gb total, but no per-day breakdown is kept), so the chart
+// total can be lower than used_gb after deletions.
 
 // Merges each credential's own per-period time series into a single
 // account-level series keyed by day. There's no ".all scoped to just this
@@ -174,17 +178,19 @@ export async function GET(req: Request) {
   }
 
   const breakdownResults = await Promise.allSettled(
-    creds.map(c => getHostCountryStats(c.geonode_username!, dateFrom, dateTo, 'day'))
+    creds.map(c => getHostCountryStatsWithMeta(c.geonode_username!, dateFrom, dateTo, 'day', 500, HOST_COUNTRY_HARD_CAP))
   )
   const perCredentialBreakdown: { label: string; stats: HostCountryStat[] }[] = []
   let anyBreakdownFailure = false
+  let breakdownTruncated = false
   creds.forEach((c, i) => {
     const r = breakdownResults[i]
     if (r.status === 'fulfilled') {
-      perCredentialBreakdown.push({ label: c.label || c.country || 'Unnamed', stats: r.value })
+      perCredentialBreakdown.push({ label: c.label || c.country || 'Unnamed', stats: r.value.stats })
+      if (r.value.truncated) breakdownTruncated = true
     } else {
       anyBreakdownFailure = true
-      console.error('getHostCountryStats failed for a credential:', r.reason)
+      console.error('getHostCountryStatsWithMeta failed for a credential:', r.reason)
     }
   })
 
@@ -223,10 +229,13 @@ export async function GET(req: Request) {
     date_from: dateFrom.toISOString(),
     date_to: dateTo.toISOString(),
     series,
-    // Table stays readable in-app; full detail is always available via
-    // the CSV export (format=csv&dataset=breakdown), which is not capped.
+    // Table stays readable in-app; the CSV export carries every row we
+    // fetched. That is bounded per credential (HOST_COUNTRY_HARD_CAP) — it
+    // used to be described as "not capped", which was false — and
+    // breakdown_truncated says when a cap was actually hit.
     breakdown: breakdown.slice(0, 50),
     breakdown_row_count: breakdown.length,
+    breakdown_truncated: breakdownTruncated,
     credentials_truncated: truncated,
     partial_data: anySeriesFailure || anyBreakdownFailure,
   })
