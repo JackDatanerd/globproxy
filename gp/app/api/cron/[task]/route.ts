@@ -267,14 +267,21 @@ async function runDailySummary() {
   const today = new Date().toISOString().split('T')[0]
 
   const { data: orders } = await supabase.from('orders')
-    .select('amount_usd, gb_amount')
+    .select('amount_usd, gb_amount, refunded_usd')
     .eq('payment_status', 'paid')
     .eq('is_canary', false) // canary's daily $0.50 test charge isn't real revenue
     .gte('paid_at', `${yesterday}T00:00:00Z`)
     .lt('paid_at', `${today}T00:00:00Z`)
 
-  const rev = orders?.reduce((s, o) => s + o.amount_usd, 0) ?? 0
-  const gb = orders?.reduce((s, o) => s + o.gb_amount, 0) ?? 0
+  // Net of refunds issued so far (partial refunds keep status 'paid'), the same
+  // basis as the admin Overview/Orders pages, so the email and the dashboard
+  // agree.
+  const keptShare = (o: { amount_usd: number; refunded_usd: number | null }) => {
+    const amt = Number(o.amount_usd)
+    return amt > 0 ? Math.max(amt - Number(o.refunded_usd ?? 0), 0) / amt : 1
+  }
+  const rev = orders?.reduce((s, o) => s + Number(o.amount_usd) * keptShare(o), 0) ?? 0
+  const gb = orders?.reduce((s, o) => s + Number(o.gb_amount) * keptShare(o), 0) ?? 0
 
   const { count: newUsers } = await supabase.from('profiles')
     .select('*', { count: 'exact', head: true })
@@ -285,7 +292,7 @@ async function runDailySummary() {
     subject: `GlobProxy Daily Summary — ${yesterday}`,
     html: `<div style="font-family:sans-serif">
       <h2 style="color:#0057ff">Daily Summary — ${yesterday}</h2>
-      <p><strong>Revenue:</strong> $${rev.toFixed(2)}</p>
+      <p><strong>Revenue (net of refunds):</strong> $${rev.toFixed(2)}</p>
       <p><strong>GB sold:</strong> ${gb.toFixed(1)} GB</p>
       <p><strong>Orders:</strong> ${orders?.length ?? 0}</p>
       <p><strong>New users:</strong> ${newUsers ?? 0}</p>

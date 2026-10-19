@@ -34,6 +34,7 @@ export interface PaystackTransaction {
   reference: string
   amount: number
   currency?: string
+  gateway_response?: string
   metadata: Record<string, string>
 }
 

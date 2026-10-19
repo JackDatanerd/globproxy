@@ -5,7 +5,8 @@ import { formatGb } from '@/lib/format'
 
 const PAGE_SIZE = 50
 // 'refund' = any order with money refunded (partial refunds keep status 'paid').
-const FILTERS = ['paid', 'pending', 'failed', 'cancelled', 'refunded', 'refund'] as const
+// 'disputed' = a Paystack chargeback is open on the order (migration 0047).
+const FILTERS = ['paid', 'pending', 'failed', 'cancelled', 'refunded', 'refund', 'disputed'] as const
 
 export default async function AdminOrdersPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const sp = await searchParams
@@ -36,6 +37,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
 
   let query = supabase.from('orders').select('*', { count: 'exact' })
   if (status === 'refund') query = query.gt('refunded_usd', 0)
+  else if (status === 'disputed') query = query.eq('dispute_status', 'open')
   else if (status) query = query.eq('payment_status', status)
   if (searchIds) query = searchIds.length ? query.in('user_id', searchIds) : query.in('user_id', ['00000000-0000-0000-0000-000000000000'])
   const from = (page - 1) * PAGE_SIZE
@@ -86,7 +88,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
 
       <div className="flex flex-wrap items-center gap-2 mb-4">
         <Link href={hrefFor('')} className={chip(!status)}>All</Link>
-        {FILTERS.map(f => <Link key={f} href={hrefFor(f)} className={chip(status === f)}>{f === 'refund' ? 'has refund' : f}</Link>)}
+        {FILTERS.map(f => <Link key={f} href={hrefFor(f)} className={chip(status === f)}>{f === 'refund' ? 'has refund' : f === 'disputed' ? 'open dispute' : f}</Link>)}
         <form method="get" className="ml-auto flex gap-2">
           {status && <input type="hidden" name="status" value={status} />}
           <input name="q" defaultValue={q} placeholder="Search customer email or name…"

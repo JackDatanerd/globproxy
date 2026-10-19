@@ -4,6 +4,8 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
 import { formatGb, formatUsd } from '@/lib/format'
+import { PLANS } from '@/lib/plans'
+import BillingDetailsForm from '@/components/dashboard/BillingDetailsForm'
 
 export default function BillingPage() {
   const [orders, setOrders] = useState<any[]>([])
@@ -79,7 +81,13 @@ export default function BillingPage() {
   const paid = orders.filter(o => o.payment_status === 'paid')
   // Net of partial refunds; fully refunded orders have their own status and aren't in `paid`.
   const totalSpent = paid.reduce((s, o) => s + Number(o.amount_usd) - Number(o.refunded_usd ?? 0), 0)
-  const totalGb = paid.reduce((s, o) => s + Number(o.gb_amount), 0)
+  // Same net basis as "Total spent": a partial refund also took its share of
+  // the bandwidth back.
+  const totalGb = paid.reduce((s, o) => {
+    const amt = Number(o.amount_usd)
+    const kept = amt > 0 ? Math.max(amt - Number(o.refunded_usd ?? 0), 0) / amt : 1
+    return s + Number(o.gb_amount) * kept
+  }, 0)
 
   return (
     <div className="max-w-4xl">
@@ -102,7 +110,7 @@ export default function BillingPage() {
       <div className="grid grid-cols-3 gap-4 mb-8">
         {[
           ['Total spent', formatUsd(totalSpent)],
-          ['Total GB purchased', `${formatGb(totalGb)} GB`],
+          ['Total GB purchased (net)', `${formatGb(totalGb)} GB`],
           ['Total orders', String(paid.length)],
         ].map(([l, v]) => (
           <div key={l} className="bg-white border border-border rounded-xl p-5">
@@ -111,6 +119,8 @@ export default function BillingPage() {
           </div>
         ))}
       </div>
+
+      <BillingDetailsForm />
 
       {/* Orders table */}
       <div className="bg-white border border-border rounded-xl overflow-hidden">
@@ -155,6 +165,9 @@ export default function BillingPage() {
                     }`}>
                       {o.payment_status}
                     </span>
+                    {o.payment_status === 'failed' && o.failure_reason && (
+                      <div className="text-[10px] text-muted mt-1 max-w-[180px] truncate" title={o.failure_reason}>{o.failure_reason}</div>
+                    )}
                   </td>
                   <td className="px-6 py-4 text-right whitespace-nowrap">
                     {(o.payment_status === 'paid' || o.payment_status === 'refunded') && (
@@ -167,6 +180,17 @@ export default function BillingPage() {
                         Invoice
                       </a>
                     )}
+                    {(o.payment_status === 'pending' || o.payment_status === 'failed') && (() => {
+                      const plan = PLANS.find(p => !p.custom && p.gb === Number(o.gb_amount) && p.total === Number(o.amount_usd))
+                      return plan ? (
+                        <Link
+                          href={`/dashboard/buy?plan=${plan.slug}`}
+                          className="text-[10px] font-mono text-accent hover:underline border border-accent/30 px-3 py-1 rounded-lg inline-block mr-2"
+                        >
+                          {o.payment_status === 'pending' ? 'Pay now' : 'Try again'}
+                        </Link>
+                      ) : null
+                    })()}
                     {o.payment_status === 'pending' && (
                       <button
                         onClick={() => cancelOrder(o.id)}

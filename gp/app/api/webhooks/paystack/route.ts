@@ -5,6 +5,7 @@ import { activateBandwidth } from '@/lib/bandwidth'
 import { createAdminClient } from '@/lib/supabase/server'
 import { escapeHtml, sendEmail } from '@/lib/email'
 import { alertAdminPayment } from '@/lib/paymentAlerts'
+import { sendPaymentFailedEmail, sendRefundEmail } from '@/lib/billingEmails'
 
 type Admin = Awaited<ReturnType<typeof createAdminClient>>
 
@@ -47,7 +48,7 @@ export async function POST(req: Request) {
         break
       case 'charge.dispute.create':
       case 'charge.dispute.resolve':
-        await handleDispute(event.event, event.data)
+        await handleDispute(supabase, event.event, event.data)
         break
     }
     return NextResponse.json({ received: true })
@@ -157,7 +158,7 @@ async function handleChargeFailed(supabase: Admin, data: any) {
   const metaOrderId = data?.metadata?.order_id
   const order_id: string = typeof metaOrderId === 'string' && UUID_RE.test(metaOrderId) ? metaOrderId : ''
 
-  let orderQuery = supabase.from('orders').select('id, payment_status, amount_usd, gb_amount, user_id')
+  let orderQuery = supabase.from('orders').select('id, payment_status, amount_usd, gb_amount, user_id, is_canary')
   const lookup = order_id ? orderQuery.eq('id', order_id) : (reference ? orderQuery.eq('paystack_reference', reference) : null)
   const { data: order, error } = lookup ? await lookup.maybeSingle() : { data: null, error: null }
   if (error) throw error
@@ -166,12 +167,24 @@ async function handleChargeFailed(supabase: Admin, data: any) {
   // card on the same Paystack session, and a later charge.success is still
   // credited (see handleChargeSuccess). Marking it 'failed' here is purely
   // informational.
+  let transitioned = false
   if (order && order.payment_status === 'pending') {
-    await supabase.from('orders').update({
+    const { data: flipped, error: flipErr } = await supabase.from('orders').update({
       payment_status: 'failed',
       failure_reason: gateway_response ?? 'Declined',
       failed_at: new Date().toISOString(),
-    }).eq('id', order.id)
+    }).eq('id', order.id).eq('payment_status', 'pending').select('id')
+    if (flipErr) throw flipErr
+    transitioned = (flipped?.length ?? 0) > 0
+  }
+
+  // Tell the customer — once, on the pending → failed transition (Paystack can
+  // deliver the same decline more than once). The synthetic canary charge is
+  // never a customer event.
+  if (order && transitioned && !order.is_canary) {
+    await sendPaymentFailedEmail(supabase, order.user_id, {
+      amountUsd: Number(order.amount_usd), gb: Number(order.gb_amount), reason: gateway_response ?? null,
+    })
   }
 
   const customerEmail = escapeHtml(data?.customer?.email ?? 'unknown')
@@ -222,11 +235,19 @@ async function handleRefundProcessed(supabase: Admin, data: any) {
   if (rpcErr) throw rpcErr
 
   if (result?.applied) {
-    await alertAdminPayment('Refund applied', {
-      order_id: order.id, refund_usd: result.refund_usd, gb_clawed_back: result.gb_clawed,
-      gb_not_recoverable: result.gb_shortfall, fully_refunded: result.fully_refunded,
-      note: 'If this order came through a referral/affiliate, its commission is NOT reversed automatically — review it in admin.',
+    await alertAdminPayment(result.credited === false ? 'Refund recorded before the payment was credited' : 'Refund applied', {
+      order_id: order.id, refund_usd: result.refund_usd, credit_note: result.credit_note,
+      gb_clawed_back: result.gb_clawed, gb_not_recoverable: result.gb_shortfall, fully_refunded: result.fully_refunded,
+      note: result.credited === false
+        ? 'The charge.success had not been processed yet. The order will not be credited in full (a fully refunded order is never credited).'
+        : 'If this order came through a referral/affiliate its commission is reduced automatically; a commission already PAID out is not — see the audit log. GB not recoverable was already allocated to a session.',
     })
+    if (!order.is_canary) {
+      await sendRefundEmail(supabase, order.user_id, {
+        refundUsd: Number(result.refund_usd), creditNote: result.credit_note ?? null,
+        gbClawed: Number(result.gb_clawed ?? 0), credited: result.credited !== false, fullyRefunded: !!result.fully_refunded,
+      })
+    }
   } else if (result?.reason !== 'duplicate') {
     await alertAdminPayment('Refund could not be applied automatically', {
       order_id: order.id, refund_reference: refundRef, reason: result?.reason ?? 'unknown',
@@ -234,12 +255,32 @@ async function handleRefundProcessed(supabase: Admin, data: any) {
   }
 }
 
-// Disputes can be won, so nothing is clawed back automatically — the admin
-// is told immediately because Paystack's response window is short.
-async function handleDispute(kind: string, data: any) {
-  await alertAdminPayment(kind === 'charge.dispute.create' ? 'DISPUTE OPENED — respond in Paystack' : 'Dispute resolved', {
-    transaction_reference: data?.transaction?.reference ?? data?.transaction_reference ?? '(unknown)',
+// Disputes can be won, so no bandwidth is clawed back automatically. What IS
+// automatic: the order is flagged (orders.dispute_status) and the account
+// cannot start new purchases while a dispute is open — otherwise buy → use →
+// charge back could be repeated indefinitely. The admin is told immediately
+// because Paystack's response window is short. Resolution does not guess who
+// won: it clears the purchase pause and tells the admin to act on the outcome
+// (a lost dispute normally arrives as a refund event, which does claw back).
+async function handleDispute(supabase: Admin, kind: string, data: any) {
+  const txRef: string = data?.transaction?.reference ?? data?.transaction_reference ?? ''
+  const opened = kind === 'charge.dispute.create'
+
+  let flagged = false
+  if (txRef) {
+    const patch = opened
+      ? { dispute_status: 'open', dispute_opened_at: new Date().toISOString(), dispute_resolution: null }
+      : { dispute_status: 'resolved', dispute_resolution: String(data?.resolution ?? data?.status ?? 'resolved').slice(0, 200) }
+    const { data: rows, error } = await supabase.from('orders').update(patch).eq('paystack_reference', txRef).select('id')
+    if (error) throw error // transient — let Paystack redeliver
+    flagged = (rows?.length ?? 0) > 0
+  }
+
+  await alertAdminPayment(opened ? 'DISPUTE OPENED — respond in Paystack' : 'Dispute resolved', {
+    transaction_reference: txRef || '(unknown)',
     status: data?.status ?? '', resolution: data?.resolution ?? '', refund_amount: data?.refund_amount ?? '',
     category: data?.category ?? '',
+    order_flagged: flagged ? (opened ? 'yes — new purchases paused for this account' : 'yes — purchase pause lifted') : 'no matching order found',
+    ...(opened ? {} : { next_step: 'If the dispute was lost, review the account (refund events claw bandwidth back automatically; GB already used cannot be recovered).' }),
   })
 }

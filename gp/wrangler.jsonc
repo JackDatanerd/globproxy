@@ -69,6 +69,18 @@
         "type": "ratelimit",
         "namespace_id": "1005",
         "simple": { "limit": 30, "period": 60 }
+      },
+      // Payments: /api/checkout (keyed per user) and the unauthenticated
+      // /api/verify-payment (keyed per IP). Every verify call that reaches a
+      // real reference spends one request against Paystack's own API quota,
+      // which the reconcile cron and genuine customers share — so the public
+      // endpoint is capped. Generous enough for the client's confirm-polling
+      // (<= 8 calls over ~25s) several times over.
+      {
+        "name": "PAYMENT_RATE_LIMITER",
+        "type": "ratelimit",
+        "namespace_id": "1006",
+        "simple": { "limit": 30, "period": 60 }
       }
     ]
   }

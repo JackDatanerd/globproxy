@@ -31,7 +31,7 @@ export async function GET() {
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await supabase
       .from('orders')
-      .select('created_at, paid_at, invoice_number, gb_amount, amount_usd, refunded_usd, payment_status, paystack_reference')
+      .select('created_at, paid_at, invoice_number, gb_amount, amount_usd, refunded_usd, payment_status, paystack_reference, failure_reason')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false })
       .order('id', { ascending: false })
@@ -53,7 +53,9 @@ export async function GET() {
     { header: 'gb', value: o => o.gb_amount },
     { header: 'amount_usd', value: o => Number(o.amount_usd).toFixed(2) },
     { header: 'refunded_usd', value: o => Number(o.refunded_usd ?? 0).toFixed(2) },
+    { header: 'net_usd', value: o => Math.max(Number(o.amount_usd) - Number(o.refunded_usd ?? 0), 0).toFixed(2) },
     { header: 'status', value: o => o.payment_status },
+    { header: 'failure_reason', value: o => o.failure_reason ?? '' },
     { header: 'payment_reference', value: o => o.paystack_reference ?? '' },
   ])
 

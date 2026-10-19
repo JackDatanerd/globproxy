@@ -3,9 +3,16 @@ import { verifyTransaction, paymentMismatchReason } from '@/lib/paystack'
 import { activateBandwidth } from '@/lib/bandwidth'
 import { createAdminClient } from '@/lib/supabase/server'
 import { alertAdminPayment } from '@/lib/paymentAlerts'
+import { rateLimited } from '@/lib/rateLimit'
 
 export async function POST(req: Request) {
   try {
+    // Unauthenticated by design (see below), so cap it per IP: each call that
+    // reaches a real reference spends Paystack API quota shared with the
+    // reconcile cron and every genuine customer.
+    const limited = await rateLimited(req, 'PAYMENT_RATE_LIMITER')
+    if (limited) return limited
+
     let reference: unknown
     try {
       ;({ reference } = await req.json())
@@ -56,7 +63,20 @@ export async function POST(req: Request) {
 
     const txn = await verifyTransaction(reference)
     if (txn.status !== 'success') {
-      return NextResponse.json({ error: 'Payment not successful' }, { status: 400 })
+      // Not-yet-final states are NOT failures: a card awaiting 3-D Secure/OTP,
+      // or a redirect that returned before the charge settled, still ends in
+      // charge.success. Tell the client to keep waiting (it polls) instead of
+      // showing a red "failed" for money that is about to arrive.
+      if (['ongoing', 'pending', 'processing', 'queued'].includes(txn.status)) {
+        return NextResponse.json({ success: false, pending: true, error: 'Your payment is still being processed.' }, { status: 202 })
+      }
+      if (txn.status === 'reversed') {
+        return NextResponse.json({ error: 'This payment was reversed.' }, { status: 400 })
+      }
+      if (txn.status === 'abandoned') {
+        return NextResponse.json({ error: 'The payment was not completed. You have not been charged.' }, { status: 400 })
+      }
+      return NextResponse.json({ error: txn.gateway_response ? `Payment not successful: ${txn.gateway_response}` : 'Payment not successful' }, { status: 400 })
     }
 
     const mismatch = paymentMismatchReason(txn, order)
@@ -83,6 +103,7 @@ export async function POST(req: Request) {
       // complete it within minutes.
       return NextResponse.json({
         success: false,
+        delayed: true,
         error: "Your payment is confirmed, but we couldn't credit it just yet. It will be credited automatically within a few minutes — contact support if it doesn't appear.",
       }, { status: 503 })
     }

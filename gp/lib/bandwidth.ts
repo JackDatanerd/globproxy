@@ -182,7 +182,7 @@ async function postCreditSteps(
 
 async function sendConfirmationEmail(
   supabase: Awaited<ReturnType<typeof createAdminClient>>,
-  p: { user_id: string; gb_amount: number; is_canary?: boolean },
+  p: { order_id: string; user_id: string; gb_amount: number; amount_usd: number; is_canary?: boolean },
 ) {
   const { data: profile } = await supabase
     .from('profiles')
@@ -191,6 +191,18 @@ async function sendConfirmationEmail(
     .single()
 
   if (profile?.email && !p.is_canary) {
+    // Receipt details: the invoice number was assigned inside the atomic claim
+    // that just committed, so it is readable now. Best-effort — the email
+    // still goes out (without the invoice line) if this lookup fails.
+    const { data: orderRow } = await supabase
+      .from('orders').select('invoice_number').eq('id', p.order_id).maybeSingle()
+    const invoiceNo = orderRow?.invoice_number ?? null
+    const receiptBlock = `
+          <table style="width:100%;border-collapse:collapse;margin:24px 0;font-size:14px;color:#333;">
+            <tr><td style="padding:6px 0;border-bottom:1px solid #eee;">Bandwidth</td><td style="padding:6px 0;border-bottom:1px solid #eee;text-align:right;">${p.gb_amount} GB</td></tr>
+            <tr><td style="padding:6px 0;border-bottom:1px solid #eee;">Amount paid</td><td style="padding:6px 0;border-bottom:1px solid #eee;text-align:right;">$${Number(p.amount_usd).toFixed(2)} USD</td></tr>
+            ${invoiceNo ? `<tr><td style="padding:6px 0;">Invoice</td><td style="padding:6px 0;text-align:right;"><a href="${appUrl()}/invoice/${p.order_id}" style="color:#2563eb;">${escapeHtml(invoiceNo)}</a></td></tr>` : ''}
+          </table>`
     // Approved affiliates earn cash, not GB — promising them (or the people
     // they refer) "1GB free" was simply untrue.
     const refLink = `${appUrl()}/r/${profile.referral_code}`
@@ -216,6 +228,7 @@ async function sendConfirmationEmail(
             your <strong>${p.gb_amount} GB</strong> of residential proxy bandwidth
             is now in your account. It never expires — use it at your own pace.
           </p>
+          ${receiptBlock}
           <div style="text-align:center;margin:32px 0;">
             <a href="${appUrl()}/dashboard/proxies"
                style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">
@@ -224,7 +237,7 @@ async function sendConfirmationEmail(
           </div>
           ${referralLine}
           <p style="color:#bbb;font-size:12px;text-align:center;margin-top:32px;">
-            © 2026 GlobProxy · Residential Proxies That Never Expire
+            © ${new Date().getUTCFullYear()} GlobProxy · Residential Proxies That Never Expire
           </p>
         </div>
       `,

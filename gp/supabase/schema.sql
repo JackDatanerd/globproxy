@@ -3,7 +3,7 @@
 -- Run this entire file in Supabase SQL Editor (fresh project)
 -- ============================================================
 --
--- INCLUDES MIGRATIONS THROUGH: 0046_proxy_lifecycle_residuals.sql
+-- INCLUDES MIGRATIONS THROUGH: 0047_payments_billing_closeout.sql
 --
 -- This line is the source of truth `scripts/check-schema-sync.mjs` reads
 -- to compare against supabase/migrations/ — it's what CI checks on every
@@ -732,7 +732,10 @@ security definer
 set search_path = public, pg_temp
 as $$
 declare
-  v_claimed uuid;
+  v_claimed  uuid;
+  v_amount   numeric;
+  v_refunded numeric;
+  v_credit   numeric;
 begin
   update public.orders
   set payment_status     = 'paid',
@@ -745,18 +748,39 @@ begin
         when is_canary then null
         else 'INV-' || to_char(now() at time zone 'UTC', 'YYYY')
              || '-' || lpad(nextval('public.invoice_number_seq')::text, 6, '0')
-      end
+      end,
+      -- Buyer details as they are today, frozen onto the invoice.
+      billing_details    = (
+        select jsonb_strip_nulls(jsonb_build_object(
+          'name',    coalesce(nullif(btrim(pr.company_name), ''), nullif(btrim(pr.full_name), '')),
+          'contact', nullif(btrim(pr.full_name), ''),
+          'email',   pr.email,
+          'address', nullif(btrim(pr.billing_address), ''),
+          'tax_id',  nullif(btrim(pr.tax_id), '')
+        ))
+        from public.profiles pr where pr.id = p_user_id
+      )
   where id = p_order_id
     and user_id = p_user_id
     and bandwidth_credited = false
     and payment_status in ('pending', 'cancelled', 'failed')
-  returning id into v_claimed;
+  returning id, amount_usd, coalesce(refunded_usd, 0) into v_claimed, v_amount, v_refunded;
 
   if v_claimed is null then
     return false; -- already credited, refunded, or not this user's order
   end if;
 
-  perform public.credit_bandwidth(p_user_id, p_gb); -- uncaught error rolls the claim back too
+  -- A refund that landed before this credit (see apply_order_refund) already
+  -- gave that share of the money back: credit only what is still paid for.
+  v_credit := case
+    when v_refunded > 0 and v_amount > 0
+      then round(p_gb * greatest(v_amount - v_refunded, 0) / v_amount, 6)
+    else p_gb
+  end;
+
+  if v_credit > 0 then
+    perform public.credit_bandwidth(p_user_id, v_credit); -- uncaught error rolls the claim back too
+  end if;
 
   return true;
 end;
@@ -775,18 +799,30 @@ set search_path = public, pg_temp
 as $$
 declare
   v_order     public.orders%rowtype;
+  v_credited  boolean;
   v_refund    numeric;
   v_gb        numeric;
   v_avail     numeric;
   v_claw      numeric;
   v_inserted  text;
   v_total     numeric;
+  v_note      text;
 begin
   select * into v_order from public.orders where id = p_order_id for update;
   if not found then
     return jsonb_build_object('applied', false, 'reason', 'order_not_found');
   end if;
-  if v_order.bandwidth_credited is not true then
+
+  -- Serialised by the order lock above, so a redelivered refund event is a
+  -- clean no-op that does not burn a credit-note number.
+  if exists (select 1 from public.order_refunds where refund_reference = p_refund_reference) then
+    return jsonb_build_object('applied', false, 'reason', 'duplicate');
+  end if;
+
+  v_credited := v_order.bandwidth_credited is true;
+  -- An uncredited order can still have been paid (webhook delayed): refunds
+  -- against it are recorded. Anything else uncredited is not a real payment.
+  if not v_credited and v_order.payment_status not in ('pending', 'cancelled', 'failed') then
     return jsonb_build_object('applied', false, 'reason', 'order_never_credited');
   end if;
 
@@ -795,14 +831,21 @@ begin
     return jsonb_build_object('applied', false, 'reason', 'nothing_to_refund');
   end if;
 
-  v_gb := round(v_order.gb_amount * v_refund / v_order.amount_usd, 6);
+  if v_credited then
+    v_gb := round(v_order.gb_amount * v_refund / v_order.amount_usd, 6);
+    select available_gb into v_avail
+    from public.bandwidth_accounts where user_id = v_order.user_id for update;
+    v_claw := least(v_gb, greatest(coalesce(v_avail, 0), 0));
+  else
+    v_gb := 0;
+    v_claw := 0;
+  end if;
 
-  select available_gb into v_avail
-  from public.bandwidth_accounts where user_id = v_order.user_id for update;
-  v_claw := least(v_gb, greatest(coalesce(v_avail, 0), 0));
+  v_note := 'CN-' || to_char(now() at time zone 'UTC', 'YYYY')
+            || '-' || lpad(nextval('public.credit_note_seq')::text, 6, '0');
 
-  insert into public.order_refunds (refund_reference, order_id, amount_usd, gb_clawed, gb_shortfall)
-  values (p_refund_reference, p_order_id, v_refund, v_claw, v_gb - v_claw)
+  insert into public.order_refunds (refund_reference, order_id, amount_usd, gb_clawed, gb_shortfall, credit_note_number)
+  values (p_refund_reference, p_order_id, v_refund, v_claw, v_gb - v_claw, v_note)
   on conflict (refund_reference) do nothing
   returning refund_reference into v_inserted;
 
@@ -825,10 +868,12 @@ begin
 
   return jsonb_build_object(
     'applied', true,
+    'credited', v_credited,
     'refund_usd', v_refund,
     'gb_clawed', v_claw,
     'gb_shortfall', v_gb - v_claw,
-    'fully_refunded', v_total >= v_order.amount_usd
+    'fully_refunded', v_total >= v_order.amount_usd,
+    'credit_note', v_note
   );
 end;
 $$;
@@ -1896,6 +1941,10 @@ begin
   new.refunded_at           := old.refunded_at;
   new.reconcile_checked_at  := old.reconcile_checked_at;
   new.post_credit_done_at   := old.post_credit_done_at;
+  new.billing_details       := old.billing_details;
+  new.dispute_status        := old.dispute_status;
+  new.dispute_opened_at     := old.dispute_opened_at;
+  new.dispute_resolution    := old.dispute_resolution;
 
   return new;
 end;
@@ -3662,4 +3711,56 @@ grant execute on function public.cleanup_old_security_events() to service_role;
 
 insert into public.schema_migrations (filename) values
   ('0045_auth_mfa_closeout.sql')
+on conflict do nothing;
+
+-- ============================================================
+-- Migration 0047 — payments & billing close-out (functions folded in above:
+-- claim_and_credit_order, apply_order_refund, protect_order_columns)
+-- ============================================================
+-- ── 1/4. orders columns ─────────────────────────────────────
+alter table public.orders add column if not exists billing_details jsonb;
+alter table public.orders add column if not exists dispute_status text;
+alter table public.orders add column if not exists dispute_opened_at timestamptz;
+alter table public.orders add column if not exists dispute_resolution text;
+
+alter table public.orders drop constraint if exists orders_dispute_status_check;
+alter table public.orders add constraint orders_dispute_status_check
+  check (dispute_status is null or dispute_status in ('open', 'resolved'));
+
+create index if not exists orders_open_dispute_idx
+  on public.orders (user_id) where dispute_status = 'open';
+
+-- ── 3. profiles billing details ─────────────────────────────
+alter table public.profiles add column if not exists billing_address text;
+alter table public.profiles add column if not exists tax_id text;
+
+alter table public.profiles drop constraint if exists profiles_billing_details_len;
+alter table public.profiles add constraint profiles_billing_details_len
+  check (char_length(coalesce(billing_address, '')) <= 500 and char_length(coalesce(tax_id, '')) <= 64);
+
+-- ── 2. credit notes ─────────────────────────────────────────
+create sequence if not exists public.credit_note_seq;
+revoke all on sequence public.credit_note_seq from public, anon, authenticated;
+
+alter table public.order_refunds add column if not exists credit_note_number text;
+
+create unique index if not exists order_refunds_credit_note_key
+  on public.order_refunds (credit_note_number) where credit_note_number is not null;
+
+-- Customers may read refund rows of their own orders (invoice page). Writes
+-- remain service-role only (no insert/update/delete policy).
+drop policy if exists "Own order refunds" on public.order_refunds;
+create policy "Own order refunds" on public.order_refunds for select
+  using (exists (select 1 from public.orders o where o.id = order_refunds.order_id and o.user_id = auth.uid()));
+
+-- The functions above were re-created; default privileges already keep new
+-- SECURITY DEFINER functions off anon/authenticated (0042), restated here so
+-- this migration is self-evidently safe on its own.
+revoke all on function public.claim_and_credit_order(uuid, uuid, numeric, text) from public, anon, authenticated;
+grant execute on function public.claim_and_credit_order(uuid, uuid, numeric, text) to service_role;
+revoke all on function public.apply_order_refund(uuid, text, numeric) from public, anon, authenticated;
+grant execute on function public.apply_order_refund(uuid, text, numeric) to service_role;
+
+insert into public.schema_migrations (filename) values
+  ('0047_payments_billing_closeout.sql')
 on conflict do nothing;

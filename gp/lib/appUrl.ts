@@ -18,3 +18,19 @@ export function sameOriginUrl(candidate: unknown): string | undefined {
     return undefined
   }
 }
+
+/**
+ * True when a browser-supplied Origin header names some other site. Cookie-
+ * authenticated state-changing routes use it as a CSRF guard; requests with no
+ * Origin header (non-browser clients) are not judged here.
+ */
+export function isCrossSiteRequest(req: Request): boolean {
+  const origin = req.headers.get('origin')
+  if (!origin) return false
+  try {
+    const o = new URL(origin).origin
+    return o !== new URL(req.url).origin && o !== appUrl()
+  } catch {
+    return true
+  }
+}

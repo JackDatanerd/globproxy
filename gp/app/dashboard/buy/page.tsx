@@ -1,8 +1,8 @@
 'use client'
-import { Suspense, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { PLANS } from '@/lib/plans'
-import { verifyPayment } from '@/lib/verifyPayment'
+import { confirmPayment } from '@/lib/verifyPayment'
 import { formatUsd } from '@/lib/format'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
@@ -25,6 +25,13 @@ function ReasonBanner() {
 export default function BuyPage() {
   const router = useRouter()
   const [plan, setPlan] = useState(PLANS[1])
+
+  // "Pay now" on a pending order (Billing) links here with ?plan=<slug>.
+  useEffect(() => {
+    const slug = new URLSearchParams(window.location.search).get('plan')
+    const found = slug ? PLANS.find(p => p.slug === slug) : undefined
+    if (found) setPlan(found)
+  }, [])
   const [loading, setLoading] = useState(false)
   const [statusText, setStatusText] = useState<string | null>(null)
 
@@ -72,17 +79,22 @@ export default function BuyPage() {
           popup.resumeTransaction(data.access_code, {
             onSuccess: async (tranx) => {
               setStatusText('Confirming payment...')
-              const result = await verifyPayment(tranx.reference || data.reference)
+              // Polls while Paystack/our credit is still settling, so a slow
+              // charge isn't reported as a failure.
+              const result = await confirmPayment(tranx.reference || data.reference)
               if (result.success) {
                 toast.success('Bandwidth credited to your account!')
                 router.push('/dashboard')
                 router.refresh()
+              } else if (result.pending || result.delayed) {
+                // Money moved (or is moving) on Paystack's side; the webhook /
+                // reconcile cron will credit it independently — not lost, just
+                // not confirmed on-screen yet.
+                toast(result.delayed && result.error ? result.error : "Your payment is still being processed. It'll appear on your dashboard shortly — contact support if it doesn't.", { duration: 10000, icon: '⏳' })
+                router.push('/dashboard')
+                router.refresh()
               } else {
-                // Charge succeeded on Paystack's side but our verify call
-                // failed (network blip, etc.) — the webhook will still
-                // land and credit it independently, so this isn't lost,
-                // just not confirmed on-screen yet.
-                toast.error(result.error || "Payment went through, but we couldn't confirm it here yet. It'll appear on your dashboard shortly — contact support if it doesn't.")
+                toast.error(result.error || 'Payment verification failed')
               }
               setLoading(false)
               setStatusText(null)

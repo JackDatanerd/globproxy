@@ -28,7 +28,7 @@ export async function DELETE(req: Request) {
     // Step 2: Fetch profile before wiping it
     const { data: profile } = await adminSupabase
       .from('profiles')
-      .select('email, full_name, is_deleted, company_name, api_access, reseller_application, affiliate_application, api_access_application, payout_method, payout_wallet_address, payout_wallet_network, payout_bank_details, payout_mpesa_phone, payout_method_updated_at, mfa_enabled')
+      .select('email, full_name, is_deleted, company_name, billing_address, tax_id, api_access, reseller_application, affiliate_application, api_access_application, payout_method, payout_wallet_address, payout_wallet_network, payout_bank_details, payout_mpesa_phone, payout_method_updated_at, mfa_enabled')
       .eq('id', user.id)
       .single()
 
@@ -76,6 +76,8 @@ export async function DELETE(req: Request) {
         full_name: '[deleted]',
         email: '[deleted]',
         company_name: null,
+        billing_address: null,
+        tax_id: null,
         is_deleted: true,
         deleted_at: new Date().toISOString(),
         api_access: false,
@@ -122,6 +124,8 @@ export async function DELETE(req: Request) {
         full_name: profile?.full_name ?? null,
         email: profile?.email ?? null,
         company_name: profile?.company_name ?? null,
+        billing_address: profile?.billing_address ?? null,
+        tax_id: profile?.tax_id ?? null,
         is_deleted: false,
         deleted_at: null,
         api_access: profile?.api_access ?? false,

@@ -1,20 +1,57 @@
-import { createAdminClient } from '@/lib/supabase/server'
+import { createAdminClient, createClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { initializeTransaction, generateReference } from '@/lib/paystack'
 import { getPurchasablePlan } from '@/lib/plans'
+import { appUrl, isCrossSiteRequest } from '@/lib/appUrl'
+import { rateLimited } from '@/lib/rateLimit'
 import { NextResponse } from 'next/server'
+
+// Who is calling? The dashboard's buy page authenticates with the browser's
+// session cookie (nothing client-side has to read the access token), while
+// scripts may still send `Authorization: Bearer <access token>`. This route
+// used to accept ONLY the Bearer header, so the moment the buy page stopped
+// attaching it every checkout answered 401 — a revenue outage caused by a
+// UI-only change. Cookie first, Bearer as a fallback, so neither client can
+// break the other again.
+async function resolveCaller(req: Request): Promise<{ id: string; email: string | null; viaCookie: boolean } | null> {
+  const bearer = req.headers.get('authorization')?.match(/^Bearer\s+(\S+)\s*$/i)?.[1]
+  if (bearer) {
+    const admin = await createAdminClient()
+    const { data: { user } } = await admin.auth.getUser(bearer)
+    return user ? { id: user.id, email: user.email ?? null, viaCookie: false } : null
+  }
+  const sb = await createClient()
+  const { data: { user } } = await sb.auth.getUser()
+  return user ? { id: user.id, email: user.email ?? null, viaCookie: true } : null
+}
 
 export async function POST(req: Request) {
   try {
-    const token = req.headers.get('authorization')?.replace('Bearer ', '')
-    if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    const caller = await resolveCaller(req)
+    if (!caller) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (caller.viaCookie && isCrossSiteRequest(req)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
+    const limited = await rateLimited(req, 'PAYMENT_RATE_LIMITER', caller.id)
+    if (limited) return limited
+
+    const user = { id: caller.id, email: caller.email }
     const supabase = await createAdminClient()
-    const { data: { user } } = await supabase.auth.getUser(token)
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
     const suspended = await requireActiveUser(user.id)
     if (suspended) return suspended
+
+    // A payment dispute (chargeback) is open on this account: no new purchases
+    // until it is settled — otherwise buy → use → dispute can be repeated.
+    const { data: openDispute, error: disputeErr } = await supabase
+      .from('orders').select('id').eq('user_id', user.id).eq('dispute_status', 'open').limit(1)
+    // Secondary control: if this lookup fails, log it and let the purchase
+    // proceed rather than turning a DB hiccup into a checkout outage.
+    if (disputeErr) console.error('[checkout] dispute lookup failed', disputeErr)
+    if (openDispute && openDispute.length > 0) {
+      return NextResponse.json({
+        error: 'New purchases are paused while a payment dispute on your account is open. Please contact support@globproxy.com.',
+      }, { status: 403 })
+    }
 
     let plan: unknown
     try {
@@ -28,11 +65,7 @@ export async function POST(req: Request) {
     if (!user.email) {
       return NextResponse.json({ error: 'Your account has no email address. Add one before purchasing.' }, { status: 400 })
     }
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL
-    if (!appUrl) {
-      console.error('Checkout error: NEXT_PUBLIC_APP_URL is not configured')
-      return NextResponse.json({ error: 'Checkout is temporarily unavailable. Please contact support.' }, { status: 500 })
-    }
+    const base = appUrl()
 
     const reference = generateReference()
 
@@ -64,7 +97,7 @@ export async function POST(req: Request) {
           gb_amount: String(planData.gb),
           plan: planData.slug,
         },
-        callback_url: `${appUrl}/dashboard?payment=success&reference=${reference}`,
+        callback_url: `${base}/dashboard?payment=success&reference=${reference}`,
       })
     } catch (initErr) {
       // The reference never reached Paystack, so nothing can ever be paid

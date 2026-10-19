@@ -38,16 +38,38 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
 
   const { data: profile } = await supabase
     .from('profiles')
-    .select('full_name, company_name, email')
+    .select('full_name, company_name, email, billing_address, tax_id')
     .eq('id', user.id)
     .single()
 
-  // Nothing was actually invoiced yet for a pending/failed/cancelled
-  // order — no invoice_number was ever assigned (see migration 0021), so
-  // there's genuinely nothing to render. This is reachable if someone
-  // saves/revisits the link before payment completes; it isn't a 404,
-  // it's a "not yet" — the Billing page only ever links here for orders
-  // that already are paid/refunded.
+  // Credit notes for any refunds (RLS: customers read refund rows of their own
+  // orders only). A failed read just omits the lines rather than breaking the
+  // invoice.
+  const { data: refunds } = await supabase
+    .from('order_refunds')
+    .select('credit_note_number, amount_usd, created_at')
+    .eq('order_id', order.id)
+    .order('created_at', { ascending: true })
+
+  // Seller identity — set INVOICE_SELLER_ADDRESS / INVOICE_SELLER_TAX_ID in the
+  // environment to print the legal address and registration number. Lines that
+  // aren't configured are omitted rather than printed blank.
+  const sellerName = process.env.INVOICE_SELLER_NAME?.trim() || 'Saltern Studio'
+  const sellerAddress = process.env.INVOICE_SELLER_ADDRESS?.trim() || ''
+  const sellerTaxId = process.env.INVOICE_SELLER_TAX_ID?.trim() || ''
+
+  // Buyer details as they were when the order was paid (frozen by
+  // claim_and_credit_order); invoices issued before that fall back to the
+  // current profile.
+  const snap = (order.billing_details ?? null) as { name?: string; contact?: string; email?: string; address?: string; tax_id?: string } | null
+  const buyer = snap ?? {
+    name: profile?.company_name || profile?.full_name || undefined,
+    contact: profile?.company_name ? profile?.full_name ?? undefined : undefined,
+    email: profile?.email,
+    address: profile?.billing_address ?? undefined,
+    tax_id: profile?.tax_id ?? undefined,
+  }
+
   if (!['paid', 'refunded'].includes(order.payment_status)) {
     return (
       <div className="min-h-screen bg-surface flex items-center justify-center p-6">
@@ -63,8 +85,27 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
     )
   }
 
+  // Refunded before it was ever credited: money came back, but no invoice
+  // number was issued (they are assigned when the order is claimed as paid).
+  if (!order.bandwidth_credited && !order.invoice_number) {
+    return (
+      <div className="min-h-screen bg-surface flex items-center justify-center p-6">
+        <div className="text-center max-w-sm">
+          <p className="text-ink font-display font-semibold text-lg mb-1.5">No invoice for this order</p>
+          <p className="text-muted text-sm mb-5">
+            This order was refunded before it was completed, so no invoice was issued.
+            {(refunds ?? []).length > 0 && <> Credit note: <span className="font-mono">{refunds![0].credit_note_number}</span>.</>}
+          </p>
+          <Link href="/dashboard/billing" className="text-accent text-sm hover:underline">← Back to Billing</Link>
+        </div>
+      </div>
+    )
+  }
+
   const isRefunded = order.payment_status === 'refunded'
-  const billedName = profile?.full_name || profile?.email || 'Customer'
+  const refundedTotal = Number(order.refunded_usd ?? 0)
+  const isPartlyRefunded = !isRefunded && refundedTotal > 0
+  const billedName = buyer.name || buyer.email || 'Customer'
 
   return (
     <div className="min-h-screen bg-surface py-10 px-6 print:bg-white print:py-0 print:px-0">
@@ -93,16 +134,19 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
         <div className="grid grid-cols-2 gap-6 mb-10">
           <div>
             <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-1.5">From</div>
-            <div className="text-sm text-ink font-medium">Saltern Studio</div>
+            <div className="text-sm text-ink font-medium">{sellerName}</div>
             <div className="text-sm text-ink2">trading as GlobProxy</div>
-            <div className="text-sm text-ink2"></div>
+            {sellerAddress && <div className="text-sm text-ink2 whitespace-pre-line">{sellerAddress}</div>}
+            {sellerTaxId && <div className="text-sm text-ink2">Tax ID: {sellerTaxId}</div>}
             <div className="text-sm text-ink2">support@globproxy.com</div>
           </div>
           <div>
             <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-1.5">Billed to</div>
             <div className="text-sm text-ink font-medium">{billedName}</div>
-            {profile?.company_name && <div className="text-sm text-ink2">{profile.company_name}</div>}
-            <div className="text-sm text-ink2">{profile?.email}</div>
+            {buyer.contact && buyer.contact !== billedName && <div className="text-sm text-ink2">{buyer.contact}</div>}
+            {buyer.address && <div className="text-sm text-ink2 whitespace-pre-line">{buyer.address}</div>}
+            {buyer.tax_id && <div className="text-sm text-ink2">Tax ID: {buyer.tax_id}</div>}
+            <div className="text-sm text-ink2">{buyer.email}</div>
           </div>
         </div>
 
@@ -119,7 +163,7 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
           <div>
             <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-1">Status</div>
             <div className={isRefunded ? 'text-red-500 font-medium' : 'text-accent2 font-medium'}>
-              {isRefunded ? 'Refunded' : 'Paid'}
+              {isRefunded ? 'Refunded' : isPartlyRefunded ? 'Paid · partly refunded' : 'Paid'}
             </div>
           </div>
         </div>
@@ -146,10 +190,25 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
               <td className="pt-4 text-sm font-semibold text-ink text-right">Total (USD)</td>
               <td className="pt-4 text-sm font-semibold text-ink text-right font-mono">${Number(order.amount_usd).toFixed(2)}</td>
             </tr>
-            {Number(order.refunded_usd ?? 0) > 0 && (
+            {(refunds ?? []).length > 0 ? (
+              <>
+                {refunds!.map(r => (
+                  <tr key={r.credit_note_number}>
+                    <td className="pt-2 text-sm text-red-500 text-right">
+                      Refund · credit note {r.credit_note_number} ({formatDate(r.created_at)})
+                    </td>
+                    <td className="pt-2 text-sm text-red-500 text-right font-mono">−${Number(r.amount_usd).toFixed(2)}</td>
+                  </tr>
+                ))}
+                <tr>
+                  <td className="pt-3 text-sm font-semibold text-ink text-right">Net paid (USD)</td>
+                  <td className="pt-3 text-sm font-semibold text-ink text-right font-mono">${Math.max(Number(order.amount_usd) - refundedTotal, 0).toFixed(2)}</td>
+                </tr>
+              </>
+            ) : refundedTotal > 0 && (
               <tr>
                 <td className="pt-2 text-sm text-red-500 text-right">Refunded{order.refunded_at ? ` (${formatDate(order.refunded_at)})` : ''}</td>
-                <td className="pt-2 text-sm text-red-500 text-right font-mono">−${Number(order.refunded_usd).toFixed(2)}</td>
+                <td className="pt-2 text-sm text-red-500 text-right font-mono">−${refundedTotal.toFixed(2)}</td>
               </tr>
             )}
           </tfoot>

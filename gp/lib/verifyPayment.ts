@@ -7,6 +7,12 @@
 export interface VerifyPaymentResult {
   success: boolean
   already_paid?: boolean
+  // The payment has not settled yet (3-D Secure / OTP in flight, redirect
+  // returned early). Not a failure — keep waiting.
+  pending?: boolean
+  // Paystack has the money but our credit hasn't committed yet; the webhook /
+  // reconcile cron completes it within minutes. Not a failure either.
+  delayed?: boolean
   error?: string
 }
 
@@ -17,12 +23,47 @@ export async function verifyPayment(reference: string): Promise<VerifyPaymentRes
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reference }),
     })
-    const data = await res.json()
-    if (!res.ok || !data.success) {
-      return { success: false, error: data.error || 'Payment verification failed' }
+    const data = await res.json().catch(() => ({}))
+    if (res.ok && data.success) {
+      return { success: true, already_paid: !!data.already_paid }
     }
-    return { success: true, already_paid: !!data.already_paid }
+    if (res.status === 429) {
+      return { success: false, pending: true, error: 'Still confirming your payment…' }
+    }
+    return {
+      success: false,
+      pending: !!data.pending,
+      delayed: !!data.delayed,
+      error: data.error || 'Payment verification failed',
+    }
   } catch {
-    return { success: false, error: 'Could not verify payment' }
+    // Network blip: the money may well have moved — treat as "keep trying",
+    // not as a definitive failure.
+    return { success: false, pending: true, error: 'Could not verify payment' }
   }
+}
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+// Verifies and, while the answer is "not yet" (pending / delayed / network),
+// polls a handful of times before giving up. Resolves as soon as the answer is
+// definitive: credited, or a real failure. If it runs out of attempts the last
+// result is returned with pending/delayed still set so the caller can say
+// "still processing — it will appear shortly" instead of "failed".
+export async function confirmPayment(
+  reference: string,
+  opts: { attempts?: number; delayMs?: number; onWaiting?: () => void } = {},
+): Promise<VerifyPaymentResult> {
+  const attempts = opts.attempts ?? 8
+  const delayMs = opts.delayMs ?? 3000
+  let last: VerifyPaymentResult = { success: false, pending: true }
+  for (let i = 0; i < attempts; i++) {
+    last = await verifyPayment(reference)
+    if (last.success || (!last.pending && !last.delayed)) return last
+    if (i < attempts - 1) {
+      opts.onWaiting?.()
+      await sleep(delayMs)
+    }
+  }
+  return last
 }

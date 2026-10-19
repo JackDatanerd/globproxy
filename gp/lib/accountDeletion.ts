@@ -14,6 +14,8 @@ export function anonymisedProfilePatch(): Record<string, any> {
     full_name: '[deleted]',
     email: '[deleted]',
     company_name: null,
+    billing_address: null,
+    tax_id: null,
     is_deleted: true,
     deleted_at: new Date().toISOString(),
     api_access: false,
