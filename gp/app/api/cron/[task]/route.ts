@@ -5,7 +5,7 @@ import { sendEmail, escapeHtml } from '@/lib/email'
 import { dispatchWebhook } from '@/lib/webhooks'
 import { runConfiguredBenchmark } from '@/lib/networkProbe'
 import { chargeAuthorization, generateReference, verifyTransaction, paymentMismatchReason } from '@/lib/paystack'
-import { activateBandwidth } from '@/lib/bandwidth'
+import { activateBandwidth, retryPostCredit, activatePendingCredentials } from '@/lib/bandwidth'
 import { alertAdminPayment } from '@/lib/paymentAlerts'
 import { flushSecurityNotices } from '@/lib/securityEvents'
 import { NextResponse } from 'next/server'
@@ -332,6 +332,55 @@ async function runReconcile() {
   }
 }
 
+// ── Re-run the follow-ups of credited orders that didn't fully finish ─
+// activateBandwidth() stamps orders.post_credit_done_at once credential
+// activation + referral/affiliate crediting succeed (migration 0041).
+// Unstamped credited orders are retried here — both steps are idempotent —
+// for up to 3 days. Also sweeps credentials stuck in 'pending' (Geonode was
+// down when the customer created them) so they don't wait for a purchase.
+async function runPostCreditRetry() {
+  try {
+    const supabase = await createAdminClient()
+    const now = Date.now()
+    const minAge = new Date(now - 3 * 60 * 1000).toISOString()
+    const maxAge = new Date(now - 3 * 24 * 60 * 60 * 1000).toISOString()
+
+    const { data: orders, error } = await supabase.from('orders')
+      .select('id, user_id, gb_amount, amount_usd, is_canary')
+      .eq('bandwidth_credited', true)
+      .is('post_credit_done_at', null)
+      .lt('paid_at', minAge)
+      .gt('paid_at', maxAge)
+      .order('paid_at', { ascending: true })
+      .limit(10)
+    if (error) return { error: error.message }
+
+    let retried = 0, completed = 0
+    for (const o of orders ?? []) {
+      retried++
+      if (await retryPostCredit(o)) completed++
+    }
+
+    const { data: stuck } = await supabase.from('proxy_credentials')
+      .select('user_id')
+      .eq('status', 'pending')
+      .is('created_by', null)
+      .lt('created_at', new Date(now - 10 * 60 * 1000).toISOString())
+      .limit(10)
+    const users = Array.from(new Set((stuck ?? []).map(r => r.user_id as string)))
+    let pendingUsers = 0
+    for (const uid of users) {
+      pendingUsers++
+      await activatePendingCredentials(supabase, uid)
+    }
+
+    return { retried, completed, pending_credential_users: pendingUsers }
+  } catch (e: any) {
+    console.error('[post-credit retry] failed', e)
+    return { error: e?.message ?? 'post-credit retry failed' }
+  }
+}
+
 // ── Cleanup stale orders ──────────────────────────────────────────
 async function runCleanup() {
   const supabase = await createAdminClient()
@@ -505,7 +554,7 @@ export async function POST(req: Request, context: { params: Promise<{ task: stri
       case 'summary':   result = await runDailySummary();     break
       case 'cleanup':   result = await runCleanup();          break
       case 'canary':    result = await runCanary();           break
-      case 'reconcile': result = await runReconcile();        break
+      case 'reconcile': result = { reconcile: await runReconcile(), post_credit: await runPostCreditRetry() }; break
       case 'security':  result = await runSecurity();         break
       case 'benchmark': result = await runBenchmark();        break
       default: return NextResponse.json({ error: `Unknown task: ${task}` }, { status: 400 })

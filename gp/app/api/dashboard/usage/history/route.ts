@@ -1,4 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
+import { requireActiveUser } from '@/lib/apiAuth'
+import { rateLimited } from '@/lib/rateLimit'
 import { getPeriodStats, getHostCountryStats, GeonodeApiError, type PeriodStat, type HostCountryStat } from '@/lib/geonode'
 import { toCsv, csvResponse } from '@/lib/csv'
 import { NextResponse } from 'next/server'
@@ -120,6 +122,15 @@ export async function GET(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const inactive = await requireActiveUser(user.id)
+  if (inactive) return inactive
+
+  // Each call fans out up to 30 Geonode requests on the one shared reseller
+  // API key, so an unthrottled loop here could exhaust Geonode's limits for
+  // every customer. 10/min per user+IP is far above what the UI needs.
+  const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', `usage:${user.id}`)
+  if (limited) return limited
 
   const url = new URL(req.url)
   const range = parseRange(url.searchParams.get('range'))

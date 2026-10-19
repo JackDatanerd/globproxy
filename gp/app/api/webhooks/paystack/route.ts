@@ -149,11 +149,16 @@ async function handleChargeSuccess(supabase: Admin, data: any) {
 async function handleChargeFailed(supabase: Admin, data: any) {
   const reference = data?.reference ?? ''
   const gateway_response = data?.gateway_response
-  const order_id = data?.metadata?.order_id ?? ''
+  // Same validation as handleChargeSuccess: a non-UUID order_id used to reach
+  // .eq('id', …), Postgres rejected it, we threw, and Paystack redelivered
+  // the malformed event forever. Fall back to the unique reference.
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  const metaOrderId = data?.metadata?.order_id
+  const order_id: string = typeof metaOrderId === 'string' && UUID_RE.test(metaOrderId) ? metaOrderId : ''
 
-  const { data: order, error } = order_id
-    ? await supabase.from('orders').select('id, payment_status, amount_usd, gb_amount, user_id').eq('id', order_id).maybeSingle()
-    : { data: null, error: null }
+  let orderQuery = supabase.from('orders').select('id, payment_status, amount_usd, gb_amount, user_id')
+  const lookup = order_id ? orderQuery.eq('id', order_id) : (reference ? orderQuery.eq('paystack_reference', reference) : null)
+  const { data: order, error } = lookup ? await lookup.maybeSingle() : { data: null, error: null }
   if (error) throw error
 
   // A decline on one attempt is not final: the customer can retry another
@@ -171,7 +176,7 @@ async function handleChargeFailed(supabase: Admin, data: any) {
   const customerEmail = escapeHtml(data?.customer?.email ?? 'unknown')
   const safeReason = escapeHtml(gateway_response ?? 'not provided')
   await sendEmail({
-    to: process.env.ADMIN_EMAIL!,
+    to: process.env.ADMIN_EMAIL ?? '',
     subject: `[PAYMENT FAILED] ${gateway_response ?? 'Declined'} — $${order?.amount_usd ?? '?'}`,
     html: `<p><strong>Customer:</strong> ${customerEmail}</p>
            <p><strong>Amount:</strong> $${order?.amount_usd ?? 'unknown'} (${order?.gb_amount ?? '?'} GB)</p>

@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { requireActiveUser } from '@/lib/apiAuth'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { rateLimited } from '@/lib/rateLimit'
@@ -16,6 +17,9 @@ export async function POST(req: Request) {
     if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
+
+    const inactive = await requireActiveUser(user.id)
+    if (inactive) return inactive
 
     const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', `apply:${user.id}`)
     if (limited) return limited

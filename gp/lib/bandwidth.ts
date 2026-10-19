@@ -66,78 +66,162 @@ export async function activateBandwidth(p: {
   // The GB is credited and committed. Nothing below may throw out of this
   // function — a failed follow-up must not make the caller believe the
   // credit itself failed.
+  //
+  // The follow-ups (activating pending credentials, referral / affiliate
+  // crediting) used to run exactly once, here, and were never retried: a
+  // Geonode blip or DB error at this moment meant a referrer was never paid
+  // or a credential never provisioned, with nothing to notice. Now the order
+  // is stamped post_credit_done_at only when they succeed, and the reconcile
+  // cron re-runs them for orders still unstamped (see retryPostCredit).
+  // Both are idempotent. The confirmation email is attempted once, here only.
+  let done = false
   try {
-    await postCreditSteps(supabase, p)
+    done = await postCreditSteps(supabase, p, { sendConfirmation: true })
   } catch (e) {
     console.error('[bandwidth] post-credit steps threw (credit itself is committed)', p.order_id, e)
   }
+  if (done || p.is_canary) await markPostCreditDone(supabase, p.order_id)
   return { status: 'credited' }
+}
+
+async function markPostCreditDone(supabase: Awaited<ReturnType<typeof createAdminClient>>, orderId: string) {
+  const { error } = await supabase.from('orders')
+    .update({ post_credit_done_at: new Date().toISOString() })
+    .eq('id', orderId)
+    .is('post_credit_done_at', null)
+  if (error) console.error('[bandwidth] could not stamp post_credit_done_at', orderId, error)
+}
+
+// Re-runs the idempotent follow-ups of an already-credited order. Called by
+// the reconcile cron for orders whose first attempt didn't fully succeed.
+export async function retryPostCredit(order: {
+  id: string; user_id: string; gb_amount: number; amount_usd: number; is_canary?: boolean | null
+}): Promise<boolean> {
+  const supabase = await createAdminClient()
+  let done = false
+  try {
+    done = await postCreditSteps(supabase, {
+      order_id: order.id, user_id: order.user_id, gb_amount: Number(order.gb_amount),
+      amount_usd: Number(order.amount_usd), is_canary: !!order.is_canary,
+    }, { sendConfirmation: false })
+  } catch (e) {
+    console.error('[bandwidth] post-credit retry threw', order.id, e)
+  }
+  if (done) await markPostCreditDone(supabase, order.id)
+  return done
+}
+
+// Provisions a real Geonode sub-user for every pending credential a user
+// owns. Returns false if any could not be activated (safe to call again).
+// Exported so the cron can also sweep credentials stuck in 'pending' because
+// Geonode was down at creation time, instead of waiting for the next purchase.
+export async function activatePendingCredentials(
+  supabase: Awaited<ReturnType<typeof createAdminClient>>,
+  userId: string,
+): Promise<boolean> {
+  if (!providerConfigured()) {
+    console.log('[bandwidth] No provider configured — skipping credential activation for user', userId)
+    return true
+  }
+  const { data: pending, error } = await supabase
+    .from('proxy_credentials')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('status', 'pending')
+    .is('created_by', null)
+  if (error) {
+    console.error('[bandwidth] could not list pending credentials', userId, error)
+    return false
+  }
+
+  let ok = true
+  for (const cred of pending ?? []) {
+    try {
+      const gcred = await createSubUser({
+        label: cred.label ?? `gp_${userId.slice(0, 8)}`,
+        gb_limit: cred.gb_allocated,
+        country: cred.country ?? undefined,
+        state: cred.state ?? undefined,
+        city: cred.city ?? undefined,
+        protocol: cred.protocol ?? 'http',
+        session_type: cred.session_type ?? 'rotating',
+        sticky_duration: cred.sticky_duration ?? undefined,
+      })
+      // Conditional on still being pending: a payment webhook and the cron
+      // sweep can race here, and an unconditional update let the loser
+      // overwrite the winner's sub-user, orphaning one at Geonode.
+      const { data: updated, error: updateErr } = await supabase.from('proxy_credentials').update({
+        status: 'active',
+        geonode_sub_user_id: gcred.geonode_sub_user_id, // required for usage/delete lookups
+        geonode_username: gcred.username,
+        geonode_password: gcred.password,
+        host: gcred.host,
+        port: gcred.port,
+        activated_at: new Date().toISOString(),
+      }).eq('id', cred.id).eq('status', 'pending').select('id')
+
+      if (updateErr || !updated || updated.length === 0) {
+        // Either the write failed or someone else already activated it —
+        // either way our freshly created sub-user must not be left orphaned.
+        if (updateErr) { console.error('Failed to persist activated credential', cred.id, updateErr); ok = false }
+        await deleteSubUser(gcred.geonode_sub_user_id).catch((e) =>
+          console.error('Failed to clean up duplicate Geonode sub-user', gcred.geonode_sub_user_id, e))
+      }
+    } catch (e) {
+      console.error('Failed to activate credential', cred.id, e)
+      ok = false
+    }
+  }
+  return ok
 }
 
 async function postCreditSteps(
   supabase: Awaited<ReturnType<typeof createAdminClient>>,
   p: { order_id: string; user_id: string; gb_amount: number; amount_usd: number; is_canary?: boolean },
-) {
+  opts: { sendConfirmation: boolean },
+): Promise<boolean> {
+  let ok = true
 
+  // 3. Activate pending proxy credentials
   try {
-  // 3. Activate pending proxy credentials — only when provider is configured
-  if (providerConfigured()) {
-    const { data: pending } = await supabase
-      .from('proxy_credentials')
-      .select('*')
-      .eq('user_id', p.user_id)
-      .eq('status', 'pending')
-      .is('created_by', null)
-
-    for (const cred of pending ?? []) {
-      try {
-        const gcred = await createSubUser({
-          label: cred.label ?? `gp_${p.user_id.slice(0, 8)}`,
-          gb_limit: cred.gb_allocated,
-          country: cred.country ?? undefined,
-          state: cred.state ?? undefined,
-          city: cred.city ?? undefined,
-          protocol: cred.protocol ?? 'http',
-          session_type: cred.session_type ?? 'rotating',
-          sticky_duration: cred.sticky_duration ?? undefined,
-        })
-        const { error: updateErr } = await supabase.from('proxy_credentials').update({
-          status: 'active',
-          geonode_sub_user_id: gcred.geonode_sub_user_id, // required for usage/delete lookups
-          geonode_username: gcred.username,
-          geonode_password: gcred.password,
-          host: gcred.host,
-          port: gcred.port,
-          activated_at: new Date().toISOString(),
-        }).eq('id', cred.id)
-
-        if (updateErr) {
-          // Supabase doesn't throw on this — it was failing silently before,
-          // leaving a real Geonode sub-user orphaned with no local record.
-          console.error('Failed to persist activated credential', cred.id, updateErr)
-          await deleteSubUser(gcred.geonode_sub_user_id).catch(() => {})
-        }
-      } catch (e) {
-        console.error('Failed to activate credential', cred.id, e)
-      }
-    }
-
-    // (There used to be a step 4 here activating reseller_transfers rows
-    // with status:'pending'. allocate/route.ts is the only writer of that
-    // table and always inserts status:'active' with no credential_id — the
-    // transfer is a direct bandwidth ledger move, not a Geonode credential
-    // provisioning event, so there was never a 'pending' row for this block
-    // to find. Removed as dead code; reseller_transfers activation, if it's
-    // ever needed, belongs in allocate/route.ts where the row is created.)
-  } else {
-    console.log('[bandwidth] No provider configured — skipping credential activation for order', p.order_id)
-  }
+    if (!(await activatePendingCredentials(supabase, p.user_id))) ok = false
   } catch (e) {
+    ok = false
     console.error('[bandwidth] credential activation failed (credit is committed)', p.order_id, e)
   }
 
-  try {
-  // 5. Send confirmation email
+  // 5. Confirmation email — first attempt only, never retried (a duplicate
+  // "your GB is ready" is worse than a missed one).
+  if (opts.sendConfirmation) {
+    try {
+      await sendConfirmationEmail(supabase, p)
+    } catch (e) {
+      console.error('[bandwidth] confirmation email failed (credit is committed)', p.order_id, e)
+    }
+  }
+
+  // 6. Referral / affiliate crediting — idempotent per order. The daily
+  // canary test charge is synthetic: never a referral/affiliate event.
+  if (!p.is_canary) {
+    try {
+      const referralOk = await processReferralForOrder(supabase, {
+        user_id: p.user_id,
+        order_id: p.order_id,
+        amount_usd: p.amount_usd,
+      })
+      if (!referralOk) ok = false
+    } catch (e) {
+      ok = false
+      console.error('[bandwidth] referral processing failed (credit is committed)', p.order_id, e)
+    }
+  }
+  return ok
+}
+
+async function sendConfirmationEmail(
+  supabase: Awaited<ReturnType<typeof createAdminClient>>,
+  p: { user_id: string; gb_amount: number; is_canary?: boolean },
+) {
   const { data: profile } = await supabase
     .from('profiles')
     .select('email, full_name, referral_code')
@@ -181,25 +265,5 @@ async function postCreditSteps(
         </div>
       `,
     })
-  }
-  } catch (e) {
-    console.error('[bandwidth] confirmation email failed (credit is committed)', p.order_id, e)
-  }
-
-  try {
-  // 6. Referral / affiliate crediting — a pure add-on that runs only after
-  // the buyer's own GB has already been claimed and credited above. Never
-  // allowed to affect the response or roll anything back: see
-  // processReferralForOrder's own doc comment in lib/referrals.ts.
-  // The daily canary test charge is synthetic — never a referral/affiliate event.
-  if (!p.is_canary) {
-    await processReferralForOrder(supabase, {
-      user_id: p.user_id,
-      order_id: p.order_id,
-      amount_usd: p.amount_usd,
-    })
-  }
-  } catch (e) {
-    console.error('[bandwidth] referral processing failed (credit is committed)', p.order_id, e)
   }
 }

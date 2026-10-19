@@ -497,7 +497,7 @@ export async function deleteSubUser(geonodeSubUserId: string): Promise<void> {
     // one, leaving orphaned sub-users on Geonode's side with no local
     // record and no way to find them again.
     const err = await res.json().catch(() => ({}))
-    throw new Error(`Geonode deleteSubUser failed: ${res.status} ${JSON.stringify(err)}`)
+    throw new GeonodeApiError(`Geonode deleteSubUser failed: ${res.status} ${JSON.stringify(err)}`, res.status, err)
   }
 }
 

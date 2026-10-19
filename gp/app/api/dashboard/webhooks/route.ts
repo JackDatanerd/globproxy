@@ -19,7 +19,10 @@ export async function GET() {
     .eq('user_id', user.id)
     .order('created_at', { ascending: false })
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  if (error) {
+    console.error('[dashboard/webhooks] db error:', error)
+    return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
+  }
   return NextResponse.json({ webhooks: data })
 }
 
@@ -76,6 +79,9 @@ export async function POST(req: Request) {
     .select('id, url, event_types, enabled, created_at, secret')
     .single()
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  if (error) {
+    console.error('[dashboard/webhooks] db error:', error)
+    return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
+  }
   return NextResponse.json({ webhook: data })
 }

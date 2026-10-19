@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { requireActiveUser } from '@/lib/apiAuth'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { normalizeMpesaPhone } from '@/lib/mpesa'
@@ -32,6 +33,9 @@ export async function POST(req: Request) {
     if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
+
+    const inactive = await requireActiveUser(user.id)
+    if (inactive) return inactive
 
     // 2FA step-up — redirecting payouts is the classic account-takeover
     // cash-out, so an enrolled account needs a verified session, not just a
@@ -136,6 +140,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ success: true })
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 })
+    console.error('[dashboard/update-payout-method] unexpected error:', err)
+    return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
   }
 }

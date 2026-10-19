@@ -1,5 +1,5 @@
 import { requireApiAccess } from '@/lib/apiAuth'
-import { deleteSubUser, getSubUserUsage } from '@/lib/geonode'
+import { deleteOwnCredential } from '@/lib/credentials'
 import { NextResponse } from 'next/server'
 
 // Mirrors app/api/dashboard/proxies/[id]/route.ts's DELETE handler as
@@ -34,52 +34,14 @@ export async function DELETE(
     // Bandwidth a reseller allocated to a client can't be reversed by the
     // client via the API any more than it can from their dashboard — the
     // reseller paid for it.
-    if (cred.created_by && cred.created_by !== user.id) {
+    if (cred.created_by) {
       return NextResponse.json({
         error: 'This allocation was made by your reseller and cannot be deleted. Contact them directly.',
       }, { status: 403 })
     }
 
-    let liveUsedGb: number | null = null
-    if (cred.geonode_sub_user_id) {
-      try { liveUsedGb = await getSubUserUsage(cred.geonode_sub_user_id) }
-      catch (e) { console.error('[v1 delete] Live usage check failed (non-fatal):', e) }
-    }
-
-    if (cred.geonode_sub_user_id) {
-      try { await deleteSubUser(cred.geonode_sub_user_id) }
-      catch (e) { console.error('[v1 delete] Geonode delete failed (non-fatal):', e) }
-    }
-
-    const { data: deletedRows, error: delErr } = await supabase
-      .from('proxy_credentials')
-      .delete()
-      .eq('id', id)
-      .select('id')
-
-    if (delErr) {
-      return NextResponse.json({ error: delErr.message }, { status: 500 })
-    }
-    if (!deletedRows || deletedRows.length === 0) {
-      return NextResponse.json({ error: 'Delete was blocked — nothing was removed.' }, { status: 500 })
-    }
-
-    const usedGb = liveUsedGb ?? cred.gb_used ?? 0
-    const releaseGb = Math.max(0, cred.gb_allocated - usedGb)
-
-    const { error: releaseErr } = await supabase.rpc('release_credential_bandwidth', {
-      p_user_id: user.id,
-      p_gb: releaseGb,
-    })
-    if (releaseErr) console.error('[v1 delete] Failed to release bandwidth reservation:', releaseErr)
-
-    if (usedGb > 0) {
-      const { error: archiveErr } = await supabase.rpc('archive_credential_used_gb', {
-        p_user_id: user.id,
-        p_gb: usedGb,
-      })
-      if (archiveErr) console.error('[v1 delete] Failed to archive consumed bandwidth:', archiveErr)
-    }
+    const result = await deleteOwnCredential(user.id, cred)
+    if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status })
 
     return NextResponse.json({ success: true })
   } catch (e: any) {

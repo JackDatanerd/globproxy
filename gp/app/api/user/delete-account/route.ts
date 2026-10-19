@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { deleteSubUser } from '@/lib/geonode'
+import { deleteSubUser, GeonodeApiError } from '@/lib/geonode'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { requireMfaVerified } from '@/lib/mfa'
 
@@ -23,7 +23,7 @@ export async function DELETE(req: Request) {
     // Step 2: Fetch profile before wiping it
     const { data: profile } = await adminSupabase
       .from('profiles')
-      .select('email, full_name, is_deleted')
+      .select('email, full_name, is_deleted, company_name, api_access, reseller_application, affiliate_application, api_access_application, payout_method, payout_wallet_address, payout_wallet_network, payout_bank_details, payout_mpesa_phone, payout_method_updated_at, mfa_enabled')
       .eq('id', user.id)
       .single()
 
@@ -41,29 +41,55 @@ export async function DELETE(req: Request) {
       .eq('user_id', user.id)
       .not('geonode_sub_user_id', 'is', null)
 
+    // Every sub-user must really be gone before anything local changes: this
+    // used to swallow failures, so an outage left live, usable proxies behind
+    // an account marked deleted. 404 = already gone (a retry after a partial
+    // run), which is fine — so this route is safe to call again.
     for (const cred of creds ?? []) {
       if (!cred.geonode_sub_user_id) continue
-      await deleteSubUser(cred.geonode_sub_user_id).catch((e) =>
-        console.error('Failed to clean up Geonode sub-user during account deletion', cred.id, e)
-      )
+      try {
+        await deleteSubUser(cred.geonode_sub_user_id)
+      } catch (e) {
+        if (e instanceof GeonodeApiError && e.status === 404) continue
+        console.error('Failed to clean up Geonode sub-user during account deletion — aborting', cred.id, e)
+        return NextResponse.json(
+          { error: 'We could not remove your proxy sessions right now, so your account was not deleted. Please try again in a few minutes.' },
+          { status: 502 }
+        )
+      }
     }
 
-    // Step 4: Anonymise — only columns confirmed to exist in profiles
+    // Step 4: Anonymise. Wipes everything personal on the profile — name,
+    // email, company, payout destination (wallet / bank / M-Pesa) and the
+    // free-text applications — while keeping what accounting and abuse
+    // handling need: orders/invoices, ledgers and the suspension state. A
+    // suspended account that deletes itself stays suspended (this used to
+    // clear the suspension fields, turning self-deletion into an unsuspend).
     const { error: profileError } = await adminSupabase
       .from('profiles')
       .update({
         full_name: '[deleted]',
         email: '[deleted]',
+        company_name: null,
         is_deleted: true,
         deleted_at: new Date().toISOString(),
-        is_suspended: false,
-        suspended_at: null,
-        suspension_reason: null,
+        api_access: false,
+        reseller_application: null,
+        affiliate_application: null,
+        api_access_application: null,
+        payout_method: null,
+        payout_wallet_address: null,
+        payout_wallet_network: null,
+        payout_bank_details: null,
+        payout_mpesa_phone: null,
+        payout_method_updated_at: null,
+        mfa_enabled: false,
       })
       .eq('id', user.id)
 
     if (profileError) {
-      return NextResponse.json({ error: profileError.message }, { status: 500 })
+      console.error('delete-account: profile anonymise failed', profileError)
+      return NextResponse.json({ error: 'Could not delete the account. Please try again.' }, { status: 500 })
     }
 
     // Step 5: Ban rather than delete the auth account — deleting it would
@@ -86,22 +112,47 @@ export async function DELETE(req: Request) {
     })
 
     if (banError) {
-      // Rollback anonymisation
+      // Rollback anonymisation (everything the update above cleared)
       await adminSupabase.from('profiles').update({
         full_name: profile?.full_name ?? null,
         email: profile?.email ?? null,
+        company_name: profile?.company_name ?? null,
         is_deleted: false,
         deleted_at: null,
+        api_access: profile?.api_access ?? false,
+        reseller_application: profile?.reseller_application ?? null,
+        affiliate_application: profile?.affiliate_application ?? null,
+        api_access_application: profile?.api_access_application ?? null,
+        payout_method: profile?.payout_method ?? null,
+        payout_wallet_address: profile?.payout_wallet_address ?? null,
+        payout_wallet_network: profile?.payout_wallet_network ?? null,
+        payout_bank_details: profile?.payout_bank_details ?? null,
+        payout_mpesa_phone: profile?.payout_mpesa_phone ?? null,
+        payout_method_updated_at: profile?.payout_method_updated_at ?? null,
+        mfa_enabled: profile?.mfa_enabled ?? false,
       }).eq('id', user.id)
-      return NextResponse.json({ error: banError.message }, { status: 500 })
+      console.error('delete-account: ban failed', banError)
+      return NextResponse.json({ error: 'Could not delete the account. Please try again.' }, { status: 500 })
     }
 
-    // Step 6: Mark remaining credentials suspended (no 'deleted' status value exists)
+    // Step 6: Credentials: sub-users are gone upstream, so mark them
+    // suspended (no 'deleted' status value exists) and drop the stored
+    // proxy password + Geonode ids. The unique index on
+    // geonode_sub_user_id (migration 0040) also stops a stale id lingering.
     if ((creds ?? []).length) {
       await adminSupabase.from('proxy_credentials')
-        .update({ status: 'suspended' })
+        .update({ status: 'suspended', geonode_password: null, geonode_username: null, geonode_sub_user_id: null })
         .eq('user_id', user.id)
     }
+
+    // Step 6a: Remove personal / secret data that has no accounting value:
+    // webhook URLs + signing secrets, 2FA seeds / backup codes / trusted
+    // browsers, and the email attached to support reports.
+    await adminSupabase.from('webhook_endpoints').delete().eq('user_id', user.id)
+    await adminSupabase.from('mfa_totp_factors').delete().eq('user_id', user.id)
+    await adminSupabase.from('mfa_backup_codes').delete().eq('user_id', user.id)
+    await adminSupabase.from('mfa_verified_sessions').delete().eq('user_id', user.id)
+    await adminSupabase.from('support_reports').update({ email: '[deleted]' }).eq('user_id', user.id)
 
     // Step 6b: Revoke any outstanding API keys and disable webhooks —
     // neither was ever touched by deletion before this. A live key kept
@@ -114,10 +165,6 @@ export async function DELETE(req: Request) {
       .update({ revoked_at: new Date().toISOString() })
       .eq('user_id', user.id)
       .is('revoked_at', null)
-    await adminSupabase.from('webhook_endpoints')
-      .update({ enabled: false })
-      .eq('user_id', user.id)
-      .eq('enabled', true)
 
     // Step 7: Email — best-effort, non-fatal
     if (profile?.email && profile.email !== '[deleted]') {
@@ -131,7 +178,7 @@ export async function DELETE(req: Request) {
             <h2 style="text-align:center;color:#111;">Account deleted</h2>
             <p style="color:#444;text-align:center;">
               Hi ${escapeHtml(profile.full_name) || 'there'}, your GlobProxy account has been permanently
-              deleted as requested. Your personal data has been removed from our system.
+              deleted as requested. Your name, email, payout details and proxy credentials have been removed. Records of past payments are kept as required for accounting.
             </p>
             <p style="color:#444;text-align:center;">
               If you did not request this, please contact us immediately.
@@ -153,6 +200,7 @@ export async function DELETE(req: Request) {
     return NextResponse.json({ success: true, message: 'Account deleted' })
 
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 })
+    console.error('delete-account unexpected error:', err)
+    return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
   }
 }

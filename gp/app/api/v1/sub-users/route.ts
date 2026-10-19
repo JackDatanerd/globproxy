@@ -1,6 +1,7 @@
 import { createSubUser, deleteSubUser } from '@/lib/geonode'
 import { buildProxyUsername, getProxyPort, validateTargeting } from '@/lib/proxyEndpoint'
 import { requireApiAccess } from '@/lib/apiAuth'
+import { parseGb } from '@/lib/credentials'
 import { NextResponse } from 'next/server'
 
 export async function GET(req: Request) {
@@ -37,11 +38,15 @@ export async function POST(req: Request) {
   const { user, supabase } = auth
 
   try {
-    const body = await req.json()
-    const { label, gb_allocated, country, state, city, asn, session_type = 'rotating', protocol = 'http', endpoint_count = 1, sticky_duration } = body
+    const body = await req.json().catch(() => null)
+    if (!body || typeof body !== 'object') {
+      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+    }
+    const gb_allocated = parseGb(body.gb_allocated)
+    const { label, country, state, city, asn, session_type = 'rotating', protocol = 'http', endpoint_count = 1, sticky_duration } = body
 
-    if (!gb_allocated || gb_allocated <= 0) {
-      return NextResponse.json({ error: 'gb_allocated is required and must be > 0' }, { status: 400 })
+    if (gb_allocated === null) {
+      return NextResponse.json({ error: 'gb_allocated is required and must be a number between 0.01 and 100000' }, { status: 400 })
     }
 
     const targetingError = validateTargeting({ country, state, city, asn })
@@ -91,7 +96,8 @@ export async function POST(req: Request) {
       // Give back the reservation — nothing was actually persisted.
       const { error: releaseErr } = await supabase.rpc('release_credential_bandwidth', { p_user_id: user.id, p_gb: gb_allocated })
       if (releaseErr) console.error('Failed to release bandwidth reservation after insert failure:', releaseErr)
-      return NextResponse.json({ error: error.message }, { status: 500 })
+      console.error('[v1/sub-users] insert error:', error)
+      return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
     }
 
     return NextResponse.json({

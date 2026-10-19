@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { requireActiveUser } from '@/lib/apiAuth'
 import { toCsv, csvResponse } from '@/lib/csv'
 import { NextResponse } from 'next/server'
 
@@ -18,6 +19,9 @@ export async function GET() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const inactive = await requireActiveUser(user.id)
+  if (inactive) return inactive
 
   // Page through everything: PostgREST silently truncates a single response
   // (1000 rows by default), and a failed query must be an error, not a

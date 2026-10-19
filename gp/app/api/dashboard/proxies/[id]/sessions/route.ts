@@ -18,7 +18,10 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     .order('pinned', { ascending: false })
     .order('created_at', { ascending: true })
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  if (error) {
+    console.error('[dashboard/proxies/[id]/sessions] db error:', error)
+    return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
+  }
   return NextResponse.json({ sessions: data })
 }
 
@@ -61,6 +64,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     label,
   }).select().single()
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  if (error) {
+    console.error('[dashboard/proxies/[id]/sessions] db error:', error)
+    return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
+  }
   return NextResponse.json({ session: data }, { status: 201 })
 }

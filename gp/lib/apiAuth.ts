@@ -54,7 +54,14 @@ function unauthorized() {
 // been deleted, which is a much easier bar to clear.
 export async function requireActiveUser(userId: string): Promise<NextResponse | null> {
   const supabase = await createAdminClient()
-  const { data } = await supabase.from('profiles').select('is_suspended, is_deleted').eq('id', userId).single()
+  const { data, error } = await supabase.from('profiles').select('is_suspended, is_deleted').eq('id', userId).maybeSingle()
+  // Fail CLOSED: a failed or empty lookup used to read as "active" (every
+  // check below is `data?.x`), so a transient DB error let suspended and
+  // deleted accounts straight through on the routes that rely on this.
+  if (error || !data) {
+    console.error('[requireActiveUser] profile lookup failed — failing closed', userId, error?.message)
+    return NextResponse.json({ error: 'Could not verify your account right now. Please try again.' }, { status: 503 })
+  }
   if (data?.is_deleted) {
     return NextResponse.json({ error: 'This account no longer exists.' }, { status: 403 })
   }

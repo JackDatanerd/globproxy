@@ -9,6 +9,7 @@ export async function initializeTransaction(params: {
   callback_url: string
 }) {
   const res = await fetch(`${BASE}/transaction/initialize`, {
+    signal: AbortSignal.timeout(15000), // a hung Paystack call must not pin the Worker request
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${SECRET}`,
@@ -39,6 +40,7 @@ export interface PaystackTransaction {
 export async function verifyTransaction(reference: string): Promise<PaystackTransaction> {
   const res = await fetch(`${BASE}/transaction/verify/${encodeURIComponent(reference)}`, {
     headers: { 'Authorization': `Bearer ${SECRET}` },
+    signal: AbortSignal.timeout(10000), // reconcile loops over several of these per run
   })
   const data = await res.json()
   if (!data.status) throw new Error(data.message ?? 'Verification failed')
@@ -62,6 +64,7 @@ export async function chargeAuthorization(params: {
   metadata: Record<string, string>
 }) {
   const res = await fetch(`${BASE}/transaction/charge_authorization`, {
+    signal: AbortSignal.timeout(20000),
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${SECRET}`,

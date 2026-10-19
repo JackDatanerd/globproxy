@@ -1,18 +1,21 @@
 // Validates a user-supplied outbound webhook URL before we let our own
-// server fetch() it. Same bug class Passthrough's SSRF guard was built to
-// catch (see that codebase's fix for the IPv6-mapped bypass) — a naive
-// "reject 127.0.0.1 / localhost" string check misses hostnames that
-// resolve or literally spell out a loopback/private address in a form
-// that check doesn't recognize, e.g. the IPv6-mapped-IPv4 hex form
-// `::ffff:7f00:1` instead of the dotted `::ffff:127.0.0.1`. This guard is
-// intentionally the same shape as that one, ported fresh here since
-// GlobProxy didn't have this class of problem before webhooks introduced
-// the first user-controlled outbound URL in this codebase.
+// server fetch() it.
 //
-// This is a defense-in-depth literal-address check, not DNS-rebinding
-// protection — it can't resolve hostnames itself without an extra round
-// trip. Combined with the https-only requirement below, it closes the
-// easy/obvious version of "point our server at my own internal network."
+// This is a literal-address check, not DNS-rebinding protection: it cannot
+// resolve hostnames, so a public name that *resolves* to a private address
+// (e.g. 127.0.0.1.nip.io) still passes. Mitigations that already exist:
+// https-only, redirects are never followed (lib/webhooks.ts uses
+// redirect: 'manual'), and the Workers runtime itself cannot reach private
+// ranges. What this closes is every way of *spelling* a private/loopback/
+// reserved address in the URL.
+//
+// History: the original version matched IPv6 prefixes by string (blocking
+// real hosts like fcm.googleapis.com and fdic.gov because they start with
+// "fc"/"fd") and only recognised two embedded-IPv4 spellings, missing
+// ::127.0.0.1, ::7f00:1, ::ffff:0:7f00:1, 2002:7f00:1::, febf::, fec0::,
+// "localhost." and *.localhost. IPv6 is now parsed into 8 numeric groups
+// and classified by range, and the URL parser's own canonical hostname
+// (which already normalises 0x7f.1 / 2130706433 style IPv4) is what we test.
 
 function ipv4ToInt(ip: string): number | null {
   const m = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
@@ -22,74 +25,140 @@ function ipv4ToInt(ip: string): number | null {
   return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0
 }
 
-const PRIVATE_IPV4_RANGES: [string, number][] = [
-  ['0.0.0.0', 8],      // "this network"
-  ['10.0.0.0', 8],     // RFC1918
-  ['100.64.0.0', 10],  // CGNAT
-  ['127.0.0.0', 8],    // loopback
-  ['169.254.0.0', 16], // link-local
-  ['172.16.0.0', 12],  // RFC1918
-  ['192.0.0.0', 24],   // IETF protocol assignments
-  ['192.168.0.0', 16], // RFC1918
-  ['198.18.0.0', 15],  // benchmarking
-  ['224.0.0.0', 4],    // multicast
+const BLOCKED_IPV4_RANGES: [string, number][] = [
+  ['0.0.0.0', 8],        // "this network"
+  ['10.0.0.0', 8],       // RFC1918
+  ['100.64.0.0', 10],    // CGNAT
+  ['127.0.0.0', 8],      // loopback
+  ['169.254.0.0', 16],   // link-local (cloud metadata lives here)
+  ['172.16.0.0', 12],    // RFC1918
+  ['192.0.0.0', 24],     // IETF protocol assignments
+  ['192.0.2.0', 24],     // TEST-NET-1
+  ['192.88.99.0', 24],   // deprecated 6to4 relay anycast
+  ['192.168.0.0', 16],   // RFC1918
+  ['198.18.0.0', 15],    // benchmarking
+  ['198.51.100.0', 24],  // TEST-NET-2
+  ['203.0.113.0', 24],   // TEST-NET-3
+  ['224.0.0.0', 4],      // multicast
+  ['240.0.0.0', 4],      // reserved + 255.255.255.255 broadcast
 ]
 
-function isPrivateIpv4(ip: string): boolean {
-  const n = ipv4ToInt(ip)
-  if (n === null) return false
-  return PRIVATE_IPV4_RANGES.some(([base, bits]) => {
+function isBlockedIpv4Int(n: number): boolean {
+  return BLOCKED_IPV4_RANGES.some(([base, bits]) => {
     const baseInt = ipv4ToInt(base)!
     const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0
     return (n & mask) === (baseInt & mask)
   })
 }
 
-// Combines two 16-bit hex groups into the dotted-quad they encode.
-function hexPairToIpv4(hi: string, lo: string): string {
-  const h = parseInt(hi, 16)
-  const l = parseInt(lo, 16)
-  return `${(h >> 8) & 0xff}.${h & 0xff}.${(l >> 8) & 0xff}.${l & 0xff}`
+// Parses an IPv6 literal (no brackets) into 8 16-bit groups, or null if it
+// isn't a valid IPv6 address. Handles "::" compression and a trailing
+// dotted-quad (::ffff:1.2.3.4).
+function parseIpv6(addr: string): number[] | null {
+  let a = addr.toLowerCase()
+  const zone = a.indexOf('%')
+  if (zone !== -1) a = a.slice(0, zone)
+  if (!/^[0-9a-f:.]+$/.test(a) || !a.includes(':')) return null
+
+  // Convert a trailing dotted-quad into two hex groups.
+  const lastColon = a.lastIndexOf(':')
+  const tail = a.slice(lastColon + 1)
+  if (tail.includes('.')) {
+    const n = ipv4ToInt(tail)
+    if (n === null) return null
+    a = a.slice(0, lastColon + 1) + ((n >>> 16) & 0xffff).toString(16) + ':' + (n & 0xffff).toString(16)
+  }
+
+  const halves = a.split('::')
+  if (halves.length > 2) return null
+  const toGroups = (s: string) => (s === '' ? [] : s.split(':'))
+  const head = toGroups(halves[0])
+  const rest = halves.length === 2 ? toGroups(halves[1]) : []
+  let groups: string[]
+  if (halves.length === 2) {
+    const missing = 8 - head.length - rest.length
+    if (missing < 1) return null
+    groups = [...head, ...Array(missing).fill('0'), ...rest]
+  } else {
+    groups = head
+  }
+  if (groups.length !== 8) return null
+  const out: number[] = []
+  for (const g of groups) {
+    if (!/^[0-9a-f]{1,4}$/.test(g)) return null
+    out.push(parseInt(g, 16))
+  }
+  return out
 }
 
-// Pulls an embedded IPv4 out of an IPv6 transition-mechanism address.
-// Two address families do this, and both need handling since either one
-// can smuggle a private/loopback IPv4 target past a naive IPv6 check:
-//
-// 1. IPv4-mapped (RFC 4291), ::ffff:0:0/96 — dotted form
-//    (::ffff:127.0.0.1) or pure-hex form (::ffff:7f00:1). The hex form is
-//    the exact one that slipped past Passthrough's original check.
-//
-// 2. NAT64 well-known prefix (RFC 6052), 64:ff9b::/96 — same idea, same
-//    dotted/hex duality (64:ff9b::127.0.0.1 or 64:ff9b::7f00:1), plus the
-//    fully-expanded non-compressed form some URL parsers will still
-//    accept (64:ff9b:0:0:0:0:7f00:1). Audit-confirmed bypass: the
-//    ::ffff: check alone let 64:ff9b::7f00:1 (== 127.0.0.1) through.
-function extractEmbeddedIpv4(hostname: string): string | null {
-  const h = hostname.toLowerCase()
-
-  let m = h.match(/^\[?::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\]?$/)
-  if (m) return m[1]
-  m = h.match(/^\[?::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})\]?$/)
-  if (m) return hexPairToIpv4(m[1], m[2])
-
-  m = h.match(/^\[?64:ff9b::(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\]?$/)
-  if (m) return m[1]
-  m = h.match(/^\[?64:ff9b::([0-9a-f]{1,4}):([0-9a-f]{1,4})\]?$/)
-  if (m) return hexPairToIpv4(m[1], m[2])
-  m = h.match(/^\[?64:ff9b:0{1,4}:0{1,4}:0{1,4}:0{1,4}:([0-9a-f]{1,4}):([0-9a-f]{1,4})\]?$/)
-  if (m) return hexPairToIpv4(m[1], m[2])
-
-  return null
+function embeddedV4(hi: number, lo: number): number {
+  return (((hi & 0xffff) << 16) | (lo & 0xffff)) >>> 0
 }
 
-function isPrivateOrLoopbackHost(hostname: string): boolean {
-  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '')
-  if (h === 'localhost' || h === '0.0.0.0' || h === '::1' || h === '::') return true
-  if (h.startsWith('fe80:') || h.startsWith('fc') || h.startsWith('fd')) return true // IPv6 link-local + unique-local
-  const embedded = extractEmbeddedIpv4(h)
-  if (embedded) return isPrivateIpv4(embedded)
-  return isPrivateIpv4(h)
+function isBlockedIpv6(g: number[]): boolean {
+  const [g0, g1, g2, g3, g4, g5, g6, g7] = g
+  const firstFiveZero = g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0
+
+  // :: and ::1
+  if (firstFiveZero && g5 === 0 && g6 === 0 && (g7 === 0 || g7 === 1)) return true
+  // ::/96 IPv4-compatible (deprecated) — ::127.0.0.1, ::7f00:1 …
+  if (firstFiveZero && g5 === 0) return true
+  // ::ffff:0:0/96 IPv4-mapped — ::ffff:127.0.0.1, ::ffff:7f00:1
+  if (firstFiveZero && g5 === 0xffff) return isBlockedIpv4Int(embeddedV4(g6, g7))
+  // ::ffff:0:0:0/96 IPv4-translated (SIIT) — ::ffff:0:7f00:1
+  if (g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0xffff && g5 === 0) {
+    return isBlockedIpv4Int(embeddedV4(g6, g7))
+  }
+  // 64:ff9b::/96 NAT64 well-known prefix
+  if (g0 === 0x64 && g1 === 0xff9b && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0) {
+    return isBlockedIpv4Int(embeddedV4(g6, g7))
+  }
+  // 64:ff9b:1::/48 local-use NAT64 — never a public destination
+  if (g0 === 0x64 && g1 === 0xff9b && g2 === 1) return true
+  // 2002::/16 6to4 — IPv4 sits in groups 1–2
+  if (g0 === 0x2002) return isBlockedIpv4Int(embeddedV4(g1, g2))
+  // 2001::/32 Teredo — tunnelled, never a legitimate webhook host
+  if (g0 === 0x2001 && g1 === 0) return true
+  // 2001:db8::/32 documentation, 100::/64 discard-only
+  if (g0 === 0x2001 && g1 === 0xdb8) return true
+  if (g0 === 0x100 && g1 === 0 && g2 === 0 && g3 === 0) return true
+  // fc00::/7 unique-local
+  if ((g0 & 0xfe00) === 0xfc00) return true
+  // fe80::/10 link-local and fec0::/10 deprecated site-local
+  if ((g0 & 0xffc0) === 0xfe80 || (g0 & 0xffc0) === 0xfec0) return true
+  // ff00::/8 multicast
+  if ((g0 & 0xff00) === 0xff00) return true
+  return false
+}
+
+// Names that are loopback / internal by convention, not by address.
+function isInternalHostname(h: string): boolean {
+  return (
+    h === 'localhost' ||
+    h.endsWith('.localhost') ||
+    h.endsWith('.local') ||
+    h.endsWith('.localdomain') ||
+    h.endsWith('.internal') ||
+    h.endsWith('.home.arpa')
+  )
+}
+
+function isPrivateOrReservedHost(hostname: string): boolean {
+  let h = hostname.toLowerCase()
+  if (h.startsWith('[') && h.endsWith(']')) h = h.slice(1, -1)
+  // A trailing root dot ("localhost.") names the same host.
+  while (h.endsWith('.')) h = h.slice(0, -1)
+  if (h === '') return true
+
+  if (h.includes(':')) {
+    const groups = parseIpv6(h)
+    return groups === null ? true : isBlockedIpv6(groups) // unparseable IPv6 -> refuse
+  }
+
+  const n = ipv4ToInt(h)
+  if (n !== null) return isBlockedIpv4Int(n)
+
+  return isInternalHostname(h)
 }
 
 // Returns an error message if the URL isn't acceptable, or null if it's fine.
@@ -101,7 +170,8 @@ export function validateWebhookUrl(raw: string): string | null {
     return 'Enter a valid URL'
   }
   if (u.protocol !== 'https:') return 'Webhook URL must use https://'
-  if (isPrivateOrLoopbackHost(u.hostname)) {
+  if (u.username || u.password) return 'Webhook URL cannot contain a username or password'
+  if (isPrivateOrReservedHost(u.hostname)) {
     return 'Webhook URL cannot point to a private, loopback, or link-local address'
   }
   return null

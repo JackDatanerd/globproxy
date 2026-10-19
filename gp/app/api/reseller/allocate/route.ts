@@ -189,6 +189,7 @@ export async function POST(req: Request) {
 
   } catch (err: any) {
     console.error('Allocation error:', err)
-    return NextResponse.json({ error: err.message }, { status: 500 })
+    console.error('[reseller/allocate] unexpected error:', err)
+    return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
   }
 }

@@ -79,6 +79,17 @@ export async function middleware(request: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser()
   const path = request.nextUrl.pathname
 
+  // Redirects must carry the cookies Supabase just set on `response` — a
+  // refreshed session after getUser(), or the deletions from signOut().
+  // A bare NextResponse.redirect() drops them, which strands a user whose
+  // refresh token was rotated (the next request replays a consumed token
+  // and fails) and leaves a signed-out session cookie in the browser.
+  const redirectTo = (url: URL) => {
+    const redirect = NextResponse.redirect(url)
+    response.cookies.getAll().forEach((c) => redirect.cookies.set(c))
+    return redirect
+  }
+
   // '/invoice' added alongside '/dashboard'/'/reseller'/'/admin': it's an
   // order's billing/PII document, equivalent in sensitivity to what's
   // already on the (MFA-gated, for admin/reseller) /dashboard/billing
@@ -102,7 +113,7 @@ export async function middleware(request: NextRequest) {
   if ((isProtected || isMfaFlowPath) && !user) {
     const loginUrl = new URL('/auth/login', request.url)
     if (isProtected) loginUrl.searchParams.set('next', here)
-    return NextResponse.redirect(loginUrl)
+    return redirectTo(loginUrl)
   }
 
   if (user) {
@@ -148,23 +159,23 @@ export async function middleware(request: NextRequest) {
     // layout-level check of their own.
     if (profile?.is_deleted && !path.startsWith('/auth')) {
       await supabase.auth.signOut()
-      return NextResponse.redirect(new URL('/auth/login?deleted=1', request.url))
+      return redirectTo(new URL('/auth/login?deleted=1', request.url))
     }
 
     // Suspended — sign out and redirect
     if (profile?.is_suspended && !path.startsWith('/auth')) {
       await supabase.auth.signOut()
-      return NextResponse.redirect(new URL('/auth/login?suspended=1', request.url))
+      return redirectTo(new URL('/auth/login?suspended=1', request.url))
     }
 
     // Non-admin hitting /admin — send to dashboard
     if (path.startsWith('/admin') && profile?.role !== 'admin') {
-      return NextResponse.redirect(new URL('/dashboard', request.url))
+      return redirectTo(new URL('/dashboard', request.url))
     }
 
     // Reseller-only routes
     if (path.startsWith('/reseller') && !['reseller', 'admin'].includes(profile?.role ?? '')) {
-      return NextResponse.redirect(new URL('/dashboard', request.url))
+      return redirectTo(new URL('/dashboard', request.url))
     }
 
     // ── MFA step-up ──────────────────────────────────────────────────
@@ -183,7 +194,7 @@ export async function middleware(request: NextRequest) {
     if (isProtected && !isMfaFlowPath && profile?.mfa_enabled) {
       const verified = await hasValidMfaSession(request, user.id)
       if (!verified) {
-        return NextResponse.redirect(new URL(`/auth/mfa-verify?next=${encodeURIComponent(here)}`, request.url))
+        return redirectTo(new URL(`/auth/mfa-verify?next=${encodeURIComponent(here)}`, request.url))
       }
     }
   }

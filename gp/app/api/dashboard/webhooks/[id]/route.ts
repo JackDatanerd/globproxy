@@ -84,7 +84,10 @@ export async function DELETE(_req: Request, context: { params: Promise<{ id: str
     .eq('id', id)
     .eq('user_id', user.id)
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  if (error) {
+    console.error('[dashboard/webhooks/[id]] db error:', error)
+    return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
+  }
   if (!count) return NextResponse.json({ error: 'Webhook not found' }, { status: 404 })
   return NextResponse.json({ success: true })
 }

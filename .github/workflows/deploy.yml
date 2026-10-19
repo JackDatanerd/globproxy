@@ -31,6 +31,13 @@ on:
       - 'gp/**'
   workflow_dispatch: {}
 
+# Two overlapping pushes used to run two deploys at once, and whichever
+# finished last won regardless of commit order. Serialise them, and never
+# cancel one mid-deploy (a half-applied wrangler deploy is worse than a wait).
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
 jobs:
   # Gates the deploy job below via `needs:` — this is what actually stops
   # a schema-drifted push from reaching production, not the separate

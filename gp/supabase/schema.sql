@@ -3,7 +3,7 @@
 -- Run this entire file in Supabase SQL Editor (fresh project)
 -- ============================================================
 --
--- INCLUDES MIGRATIONS THROUGH: 0039_auth_mfa_hardening.sql
+-- INCLUDES MIGRATIONS THROUGH: 0041_post_credit_retry.sql
 --
 -- This line is the source of truth `scripts/check-schema-sync.mjs` reads
 -- to compare against supabase/migrations/ — it's what CI checks on every
@@ -187,7 +187,8 @@ create table public.orders (
   -- Migration 0038: refund bookkeeping + reconcile cron cursor.
   refunded_usd        numeric not null default 0,
   refunded_at         timestamptz,
-  reconcile_checked_at timestamptz
+  reconcile_checked_at timestamptz,
+  post_credit_done_at  timestamptz -- 0041: stamped once activation + referral follow-ups succeed
 );
 
 create unique index if not exists orders_paystack_reference_key
@@ -1577,6 +1578,7 @@ begin
   new.refunded_usd          := old.refunded_usd;
   new.refunded_at           := old.refunded_at;
   new.reconcile_checked_at  := old.reconcile_checked_at;
+  new.post_credit_done_at   := old.post_credit_done_at;
 
   return new;
 end;
@@ -1589,10 +1591,9 @@ create trigger protect_order_columns
 -- Credentials
 create policy "Own or created credentials" on public.proxy_credentials for select
   using (auth.uid() = user_id or auth.uid() = created_by);
-create policy "Create own credentials" on public.proxy_credentials for insert
-  with check (auth.uid() = user_id and created_by is null);
-create policy "Delete own unassigned credentials" on public.proxy_credentials for delete
-  using (auth.uid() = user_id and created_by is null);
+-- No INSERT / UPDATE / DELETE policies (and no table privileges, below):
+-- every write to proxy_credentials is server-side via service_role. See
+-- migration 0040 — the old insert/delete policies let any user forge rows.
 
 -- Transfers
 create policy "Own transfers" on public.reseller_transfers for select
@@ -1641,11 +1642,14 @@ create policy "Anyone can view benchmarks" on public.network_benchmarks for sele
 -- own browser session (app/api/dashboard/proxies), so they keep
 -- `authenticated`, backed by the auth.uid()-vs-p_user_id check inside each
 -- function above; everything else is service_role only.
-revoke all on function public.reserve_credential_bandwidth(uuid, numeric) from public;
-grant execute on function public.reserve_credential_bandwidth(uuid, numeric) to authenticated, service_role;
+-- 0040: reserve/release are service_role ONLY. They used to be granted to
+-- `authenticated`, which let a user call release_credential_bandwidth
+-- directly to hand back a live credential's reservation and mint bandwidth.
+revoke all on function public.reserve_credential_bandwidth(uuid, numeric) from public, anon, authenticated;
+grant execute on function public.reserve_credential_bandwidth(uuid, numeric) to service_role;
 
-revoke all on function public.release_credential_bandwidth(uuid, numeric) from public;
-grant execute on function public.release_credential_bandwidth(uuid, numeric) to authenticated, service_role;
+revoke all on function public.release_credential_bandwidth(uuid, numeric) from public, anon, authenticated;
+grant execute on function public.release_credential_bandwidth(uuid, numeric) to service_role;
 
 revoke all on function public.credit_bandwidth(uuid, numeric) from public;
 grant execute on function public.credit_bandwidth(uuid, numeric) to service_role;
@@ -1885,6 +1889,87 @@ $$;
 revoke all on function public.auth_email_unconfirmed(text) from public, anon, authenticated;
 grant execute on function public.auth_email_unconfirmed(text) to service_role;
 
+-- ── 0040: proxy_credentials lockdown ───────────────────────────
+-- 2. proxy_credentials: read-only for end users ------------------------
+drop policy if exists "Create own credentials" on public.proxy_credentials;
+drop policy if exists "Delete own unassigned credentials" on public.proxy_credentials;
+
+revoke insert, update, delete on public.proxy_credentials from anon, authenticated;
+
+-- A Geonode sub-user belongs to exactly one credential row. Partial unique
+-- index so the many NULL (pending) rows are unaffected. If this fails, the
+-- audit query above found duplicates: resolve those rows first.
+create unique index if not exists proxy_credentials_geonode_sub_user_key
+  on public.proxy_credentials (geonode_sub_user_id)
+  where geonode_sub_user_id is not null;
+
+alter table public.proxy_credentials
+  drop constraint if exists proxy_credentials_gb_allocated_sane;
+alter table public.proxy_credentials
+  add constraint proxy_credentials_gb_allocated_sane
+  check (gb_allocated >= 0 and gb_allocated <= 100000) not valid;
+
+alter table public.proxy_credentials
+  drop constraint if exists proxy_credentials_gb_used_nonneg;
+alter table public.proxy_credentials
+  add constraint proxy_credentials_gb_used_nonneg
+  check (gb_used is null or gb_used >= 0) not valid;
+
+-- 3. Atomic delete of a self-created credential ------------------------
+-- p_live_used_gb is the live Geonode figure the route fetched before
+-- deleting the sub-user (NULL if that call failed). The larger of it and
+-- the last synced gb_used is treated as consumed, so a failed or stale
+-- live read can never under-count usage and hand back too much.
+create or replace function public.delete_own_credential(
+  p_credential_id uuid,
+  p_user_id uuid,
+  p_live_used_gb numeric
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_cred     public.proxy_credentials%rowtype;
+  v_used     numeric;
+  v_release  numeric;
+begin
+  select * into v_cred
+  from public.proxy_credentials
+  where id = p_credential_id
+    and user_id = p_user_id
+    and created_by is null
+  for update;
+
+  if not found then
+    raise exception 'Credential not found' using errcode = 'P0002';
+  end if;
+
+  v_used    := greatest(coalesce(p_live_used_gb, 0), coalesce(v_cred.gb_used, 0), 0);
+  v_release := greatest(0, v_cred.gb_allocated - v_used);
+
+  delete from public.proxy_credentials where id = v_cred.id;
+
+  update public.bandwidth_accounts
+  set allocated_gb     = greatest(0, allocated_gb - v_release),
+      archived_used_gb = archived_used_gb + v_used
+  where user_id = p_user_id;
+
+  return jsonb_build_object('released_gb', v_release, 'archived_gb', v_used);
+end;
+$$;
+
+revoke all on function public.delete_own_credential(uuid, uuid, numeric) from public, anon, authenticated;
+grant execute on function public.delete_own_credential(uuid, uuid, numeric) to service_role;
+
+-- ── 0041: retriable post-credit steps ──────────────────────────
+create index if not exists orders_post_credit_pending_idx
+  on public.orders (paid_at)
+  where bandwidth_credited = true and post_credit_done_at is null;
+
 insert into public.schema_migrations (filename) values
-  ('0039_auth_mfa_hardening.sql')
+  ('0039_auth_mfa_hardening.sql'),
+  ('0040_proxy_credentials_lockdown.sql'),
+  ('0041_post_credit_retry.sql')
 on conflict do nothing;

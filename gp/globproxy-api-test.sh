@@ -8,7 +8,13 @@
 # dependency stopping the run.
 
 BASE="https://globproxy.com"
-KEY="gp_live_9ccee7b8a76fe4053832de94bee6decd6c3e8697725d902f"
+# Never commit a real key here. Create a throwaway key in the dashboard, then:
+#   GLOBPROXY_API_KEY=gp_live_... bash globproxy-api-test.sh
+KEY="${GLOBPROXY_API_KEY:-}"
+if [ -z "$KEY" ]; then
+  echo "Set GLOBPROXY_API_KEY to an API key from your dashboard first." >&2
+  exit 1
+fi
 AUTH="Authorization: Bearer $KEY"
 CT="Content-Type: application/json"
 

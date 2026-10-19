@@ -28,7 +28,10 @@ export async function GET() {
     .eq('user_id', user.id)
     .order('created_at', { ascending: false })
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  if (error) {
+    console.error('[dashboard/api-keys] db error:', error)
+    return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
+  }
   return NextResponse.json({ keys: data })
 }
 
@@ -76,7 +79,10 @@ export async function POST(req: Request) {
     .select('id, key_prefix, label, created_at')
     .single()
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  if (error) {
+    console.error('[dashboard/api-keys] db error:', error)
+    return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
+  }
 
   // `key` is only ever present in this one response.
   return NextResponse.json({ key: plaintext, meta: data }, { status: 201 })
@@ -99,7 +105,10 @@ export async function DELETE(req: Request) {
     .eq('user_id', user.id)
     .select('id')
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  if (error) {
+    console.error('[dashboard/api-keys] db error:', error)
+    return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
+  }
   if (!revoked || revoked.length === 0) {
     return NextResponse.json({ error: 'Key not found' }, { status: 404 })
   }

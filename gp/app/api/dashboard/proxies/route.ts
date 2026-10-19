@@ -2,6 +2,7 @@ import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { createSubUser, deleteSubUser } from '@/lib/geonode'
 import { validateTargeting } from '@/lib/proxyEndpoint'
+import { parseGb } from '@/lib/credentials'
 import { dispatchWebhook } from '@/lib/webhooks'
 import { NextResponse } from 'next/server'
 import { requireMfaVerified } from '@/lib/mfa'
@@ -27,16 +28,20 @@ export async function POST(req: Request) {
   const suspended = await requireActiveUser(user.id)
   if (suspended) return suspended
 
-  const body = await req.json()
+  const body = await req.json().catch(() => null)
+  if (!body || typeof body !== 'object') {
+    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+  }
+  const gb_allocated = parseGb(body.gb_allocated)
   const {
-    label, gb_allocated, country, state, city, asn,
+    label, country, state, city, asn,
     protocol = 'http', session_type = 'rotating',
     sticky_duration, endpoint_count = 1,
     auto_topup_enabled = false, auto_topup_threshold_gb, auto_topup_amount_gb,
   } = body
 
-  if (!gb_allocated || gb_allocated <= 0) {
-    return NextResponse.json({ error: 'gb_allocated must be greater than 0' }, { status: 400 })
+  if (gb_allocated === null) {
+    return NextResponse.json({ error: 'gb_allocated must be a number between 0.01 and 100000' }, { status: 400 })
   }
 
   const targetingError = validateTargeting({ country, state, city, asn })
@@ -66,7 +71,11 @@ export async function POST(req: Request) {
   // the commit (via allocated_gb) as a single locked statement, so there's
   // no window between "checked" and "reserved" for a concurrent request to
   // slip through.
-  const { error: reserveErr } = await supabase.rpc('reserve_credential_bandwidth', {
+  // Reservation + credential writes use the service-role client: users have
+  // no direct write access to proxy_credentials or the reservation counters
+  // (migration 0040), so these can't be replayed from a browser.
+  const admin = await createAdminClient()
+  const { error: reserveErr } = await admin.rpc('reserve_credential_bandwidth', {
     p_user_id: user.id,
     p_gb: gb_allocated,
   })
@@ -74,7 +83,7 @@ export async function POST(req: Request) {
     return NextResponse.json({
       error: reserveErr.message?.includes('Insufficient')
         ? `Insufficient bandwidth. Requested ${gb_allocated}GB is more than you have available.`
-        : reserveErr.message,
+        : 'Could not reserve bandwidth. Please try again.',
     }, { status: 402 })
   }
 
@@ -100,7 +109,7 @@ export async function POST(req: Request) {
   }
 
   // 3. Insert credential row
-  const { data: cred, error: insertErr } = await supabase
+  const { data: cred, error: insertErr } = await admin
     .from('proxy_credentials')
     .insert({
       user_id: user.id,
@@ -135,9 +144,10 @@ export async function POST(req: Request) {
       )
     }
     // Give back the reservation — nothing was actually persisted.
-    const { error: releaseErr } = await supabase.rpc('release_credential_bandwidth', { p_user_id: user.id, p_gb: gb_allocated })
+    const { error: releaseErr } = await admin.rpc('release_credential_bandwidth', { p_user_id: user.id, p_gb: gb_allocated })
     if (releaseErr) console.error('Failed to release bandwidth reservation after insert failure:', releaseErr)
-    return NextResponse.json({ error: insertErr.message }, { status: 500 })
+    console.error('proxy_credentials insert failed:', insertErr)
+    return NextResponse.json({ error: 'Could not create the session. Please try again.' }, { status: 500 })
   }
 
   // 4. Enable auto-allocate, if requested. A separate call rather than
@@ -153,7 +163,6 @@ export async function POST(req: Request) {
   // genuine race (e.g. status flipped between insert and this call).
   let autoTopupWarning: string | undefined
   if (auto_topup_enabled) {
-    const admin = await createAdminClient()
     const { error: autoErr } = await admin.rpc('set_auto_topup', {
       p_credential_id: cred.id,
       p_user_id: user.id,

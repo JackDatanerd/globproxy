@@ -46,6 +46,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, id: report.id })
   } catch (err: any) {
     console.error('Support report error:', err)
-    return NextResponse.json({ error: err.message }, { status: 500 })
+    console.error('[support/report] unexpected error:', err)
+    return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
   }
 }

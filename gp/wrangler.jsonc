@@ -3,6 +3,9 @@
   "name": "globproxy5",
   "compatibility_date": "2025-04-01",
   "compatibility_flags": ["nodejs_compat"],
+  // Persist Worker logs. Without this, every console.error in the payment,
+  // webhook and cron paths is gone the moment the request ends.
+  "observability": { "enabled": true },
   "main": "custom-worker.ts",
   "assets": { "directory": ".open-next/assets", "binding": "ASSETS" },
   // Native Cloudflare Cron Triggers — see custom-worker.ts for the full

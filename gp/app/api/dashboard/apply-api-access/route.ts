@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { requireActiveUser } from '@/lib/apiAuth'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { sendEmail, escapeHtml } from '@/lib/email'
 
@@ -14,6 +15,9 @@ export async function POST(req: Request) {
     if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
+
+    const inactive = await requireActiveUser(user.id)
+    if (inactive) return inactive
 
     const adminSupabase = await createAdminClient()
     const { data: profile } = await adminSupabase
@@ -106,6 +110,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ success: true })
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 })
+    console.error('[dashboard/apply-api-access] unexpected error:', err)
+    return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
   }
 }

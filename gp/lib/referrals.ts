@@ -40,7 +40,7 @@ export async function recordReferralSignup(
 export async function processReferralForOrder(
   admin: AdminClient,
   p: { user_id: string; order_id: string; amount_usd: number }
-): Promise<void> {
+): Promise<boolean> {
   try {
     const { data: referral, error: referralErr } = await admin
       .from('referrals')
@@ -50,9 +50,9 @@ export async function processReferralForOrder(
 
     if (referralErr) {
       console.error('[referrals] lookup failed', p.order_id, referralErr)
-      return
+      return false
     }
-    if (!referral) return // this user wasn't referred — nothing to do
+    if (!referral) return true // this user wasn't referred — nothing to do
 
     const { data: referrerProfile, error: profileErr } = await admin
       .from('profiles')
@@ -62,7 +62,7 @@ export async function processReferralForOrder(
 
     if (profileErr) {
       console.error('[referrals] referrer profile lookup failed', p.order_id, profileErr)
-      return
+      return false
     }
 
     if (referrerProfile?.affiliate_status === 'approved') {
@@ -74,7 +74,7 @@ export async function processReferralForOrder(
         p_order_id: p.order_id,
         p_gross_amount: p.amount_usd,
       })
-      if (error) console.error('[referrals] record_affiliate_commission failed', p.order_id, error)
+      if (error) { console.error('[referrals] record_affiliate_commission failed', p.order_id, error); return false }
     } else {
       // Standard referral: one-time GB bonus to both sides. Safe to call
       // on every order the referred user ever makes — credit_referral_bonus's
@@ -83,9 +83,11 @@ export async function processReferralForOrder(
         p_referral_id: referral.id,
         p_gb: REFERRAL_GB_BONUS,
       })
-      if (error) console.error('[referrals] credit_referral_bonus failed', p.order_id, error)
+      if (error) { console.error('[referrals] credit_referral_bonus failed', p.order_id, error); return false }
     }
+    return true
   } catch (e) {
     console.error('[referrals] processReferralForOrder threw — order credit already succeeded, this is non-fatal', p.order_id, e)
+    return false
   }
 }
