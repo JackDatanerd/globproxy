@@ -1,5 +1,7 @@
+import { appUrl } from '@/lib/appUrl'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { disableMfa } from '@/lib/mfa'
+import { disableMfa, publicMfaError } from '@/lib/mfa'
+import { requireActiveUser } from '@/lib/apiAuth'
 import { rateLimited } from '@/lib/rateLimit'
 import { clearMfaCookie } from '../_cookie'
 import { sendEmailSafe, securityNoticeHtml, escapeHtml } from '@/lib/email'
@@ -13,6 +15,9 @@ export async function POST(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user?.email) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const inactive = await requireActiveUser(user.id)
+  if (inactive) return inactive
 
   const { code } = await req.json().catch(() => ({}))
   if (!code || typeof code !== 'string') {
@@ -43,7 +48,7 @@ export async function POST(req: Request) {
             back on — that is faster than waiting on a reply from us.
           </p>
           <div style="text-align:center;margin:32px 0;">
-            <a href="${process.env.NEXT_PUBLIC_APP_URL}/auth/reset"
+            <a href="${appUrl()}/auth/reset"
                style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">
               Reset your password →
             </a>
@@ -57,6 +62,6 @@ export async function POST(req: Request) {
     const res = NextResponse.json({ success: true })
     return clearMfaCookie(res)
   } catch (e: any) {
-    return NextResponse.json({ error: e.message ?? 'Could not disable MFA.' }, { status: 400 })
+    return NextResponse.json({ error: publicMfaError(e, 'Could not disable MFA.') }, { status: 400 })
   }
 }

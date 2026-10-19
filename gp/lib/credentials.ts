@@ -48,8 +48,10 @@ export function toApiCredential(c: any) {
     session_type: c.session_type, protocol: c.protocol ?? 'http',
     sticky_duration: c.sticky_duration, endpoint_count: c.endpoint_count,
     host: c.host, port: c.port,
-    username: c.geonode_username, // raw sub-user name
-    geonode_username: c.geonode_username, // legacy alias of `username`, kept for existing integrations
+    username: c.geonode_username, // raw proxy username
+    // NOTE: a legacy `geonode_username` alias used to be returned here. It named
+    // our upstream supplier to every API customer, so it was removed — use
+    // `username` (or, better, `connection_username`).
     password: c.geonode_password ?? null,
     // The username to put in the proxy connection string — includes the
     // country/state/city/ASN/session targeting suffixes.

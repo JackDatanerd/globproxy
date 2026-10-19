@@ -2,7 +2,7 @@ import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { updateEndpoint, deleteEndpoint } from '@/lib/webhookEndpoints'
 import { NextResponse } from 'next/server'
-import { requireMfaVerified } from '@/lib/mfa'
+import { requireStepUp } from '@/lib/reauth'
 
 // Ownership is enforced inside lib/webhookEndpoints.ts by scoping every
 // write to user_id (RLS can't run the SSRF guard — see migration 0018).
@@ -13,7 +13,7 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
 
   // 2FA step-up: an account that enabled two-factor must hold a verified
   // session for this action — a password alone isn't enough. See lib/mfa.ts.
-  const mfaGate = await requireMfaVerified(req, user.id)
+  const mfaGate = await requireStepUp(req, user.id)
   if (mfaGate) return mfaGate
 
 

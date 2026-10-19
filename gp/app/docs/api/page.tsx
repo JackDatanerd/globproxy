@@ -264,8 +264,7 @@ export default function ApiDocsPage() {
             <p className="text-sm text-ink2 mt-4">
               A working proxy connection is <span className="font-mono text-ink">host</span>:<span className="font-mono text-ink">port</span> with{' '}
               <span className="font-mono text-ink">connection_username</span> and <span className="font-mono text-ink">password</span> — use{' '}
-              <span className="font-mono text-ink">connection_username</span> (not the raw <span className="font-mono text-ink">username</span>,
-              which is also returned as the legacy alias <span className="font-mono text-ink">geonode_username</span>) because it has your
+              <span className="font-mono text-ink">connection_username</span> (not the raw <span className="font-mono text-ink">username</span>) because it has your
               targeting baked in. The password is the same one shown in your dashboard — treat API keys with the same care as the passwords they can read. For a sticky session, generate a fresh <span className="font-mono text-ink">-session-*</span>{' '}
               suffix per connection rather than reusing this one indefinitely; that logic lives client-side, this
               endpoint just returns the base credential.

@@ -1,7 +1,9 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { validateEmail } from '@/lib/email-validation'
 import { rateLimited } from '@/lib/rateLimit'
-import { verifyTurnstile } from '@/lib/turnstile'
+import { verifyTurnstile, captchaOptions } from '@/lib/turnstile'
+import { holdUntil } from '@/lib/constantTime'
+import { sameOriginUrl } from '@/lib/appUrl'
 import { NextResponse } from 'next/server'
 
 // Until now a signup that never got its confirmation email (spam folder,
@@ -11,12 +13,10 @@ import { NextResponse } from 'next/server'
 // sending anything. This is the real "resend" path.
 //
 // Same enumeration discipline as signup/reset: one fixed response whichever
-// branch ran, padded to a minimum duration.
-const RESPONSE_FLOOR_MS = 700
+// branch ran, with the slow (email-sending) branch capped at the same floor.
+const RESPONSE_FLOOR_MS = 1800
 
-async function respond(startedAt: number) {
-  const elapsed = Date.now() - startedAt
-  if (elapsed < RESPONSE_FLOOR_MS) await new Promise(r => setTimeout(r, RESPONSE_FLOOR_MS - elapsed))
+function respond() {
   return NextResponse.json({ success: true, message: "If that address is waiting for confirmation, we've sent a new link." })
 }
 
@@ -34,30 +34,26 @@ export async function POST(req: Request) {
     const human = await verifyTurnstile(req, turnstileToken)
     if (!human.ok) return NextResponse.json({ error: human.error }, { status: 400 })
 
-    let safeRedirect: string | undefined
-    if (emailRedirectTo) {
-      try {
-        const appOrigin = new URL(process.env.NEXT_PUBLIC_APP_URL ?? '').origin
-        if (new URL(emailRedirectTo).origin === appOrigin) safeRedirect = emailRedirectTo
-      } catch { /* dropped */ }
-    }
+    const safeRedirect = sameOriginUrl(emailRedirectTo)
 
     const admin = await createAdminClient()
     const lower = email.trim().toLowerCase()
 
-    const { data: banned } = await admin.from('banned_emails').select('id').eq('email', lower).maybeSingle()
-    if (banned) return respond(startedAt)
+    const { data: banned } = await admin.rpc('is_email_banned', { check_email: lower })
+    if (banned) { await holdUntil(startedAt, RESPONSE_FLOOR_MS); return respond() }
 
     const { data: unconfirmed } = await admin.rpc('auth_email_unconfirmed', { check_email: lower })
-    if (!unconfirmed) return respond(startedAt)
+    if (!unconfirmed) { await holdUntil(startedAt, RESPONSE_FLOOR_MS); return respond() }
 
     const ssr = await createClient()
-    const { error } = await ssr.auth.resend({ type: 'signup', email: lower, options: { emailRedirectTo: safeRedirect } })
-    if (error) console.error('[auth/resend-confirmation] resend failed:', error.message)
-
-    return respond(startedAt)
+    const work = ssr.auth
+      .resend({ type: 'signup', email: lower, options: { emailRedirectTo: safeRedirect, ...captchaOptions(turnstileToken) } })
+      .then(({ error }) => { if (error) console.error('[auth/resend-confirmation] resend failed:', error.message) })
+    await holdUntil(startedAt, RESPONSE_FLOOR_MS, work)
+    return respond()
   } catch (err) {
     console.error('[auth/resend-confirmation] unexpected error', err)
-    return respond(startedAt)
+    await holdUntil(startedAt, RESPONSE_FLOOR_MS)
+    return respond()
   }
 }

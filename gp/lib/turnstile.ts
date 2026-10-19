@@ -8,10 +8,38 @@
 //   TURNSTILE_SECRET_KEY            (server secret)
 //   NEXT_PUBLIC_TURNSTILE_SITE_KEY  (public; inlined at build time)
 export function turnstileEnabled(): boolean {
-  return !!process.env.TURNSTILE_SECRET_KEY
+  return !!process.env.TURNSTILE_SECRET_KEY || supabaseCaptchaEnabled()
+}
+
+// Supabase-native CAPTCHA ("Authentication → Attack Protection → CAPTCHA",
+// provider Turnstile). Our API routes are NOT the only way into GoTrue — the
+// anon key is public, so anyone can call /signup, /token and /recover
+// directly and skip every check in this file. Turning on Supabase's own
+// CAPTCHA closes that: GoTrue then verifies a token on those calls itself.
+//
+// A Turnstile token is single-use, so when this flag is on the routes do NOT
+// call siteverify themselves (that would burn the token before GoTrue sees
+// it); they forward the token to Supabase instead (captchaOptions below) and
+// let GoTrue be the one verifier.
+//
+//   SUPABASE_CAPTCHA_ENABLED=true   (set together with the dashboard toggle)
+export function supabaseCaptchaEnabled(): boolean {
+  return process.env.SUPABASE_CAPTCHA_ENABLED === 'true'
+}
+
+/** Spread into the `options` of signUp / signInWithPassword / resetPasswordForEmail / resend. */
+export function captchaOptions(token: unknown): { captchaToken?: string } {
+  return supabaseCaptchaEnabled() && typeof token === 'string' && token ? { captchaToken: token } : {}
 }
 
 export async function verifyTurnstile(req: Request, token: unknown): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (supabaseCaptchaEnabled()) {
+    // GoTrue verifies the token itself; we only insist that one was supplied.
+    if (typeof token !== 'string' || !token) {
+      return { ok: false, error: 'Please complete the human-verification check and try again.' }
+    }
+    return { ok: true }
+  }
   const secret = process.env.TURNSTILE_SECRET_KEY
   if (!secret) return { ok: true }
   if (typeof token !== 'string' || !token) {

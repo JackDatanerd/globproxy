@@ -72,13 +72,10 @@ export async function GET(request: Request) {
 
   if (type === 'recovery') {
     if (!code) {
-      // No code means the implicit flow with a #hash. A standard 302 would
-      // drop the hash, so use an HTML redirect that re-appends it.
-      const target = JSON.stringify(`${origin}/auth/update-password`)
-      return new NextResponse(
-        `<html><body><script>window.location.href = ${target} + window.location.hash;</script></body></html>`,
-        { headers: { 'Content-Type': 'text/html' } }
-      )
+      // A recovery link with no code is the old implicit flow (tokens in the
+      // URL #hash). It is not accepted any more: update-password no longer
+      // installs sessions from the hash (that was a session-fixation hole).
+      return NextResponse.redirect(`${origin}/auth/reset?error=link_expired`)
     }
     return withEmailProofCookie(NextResponse.redirect(`${origin}/auth/update-password`), recoveryUserId)
   }

@@ -1,15 +1,15 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { createClient as createSupabaseJsClient } from '@supabase/supabase-js'
 import { cookies } from 'next/headers'
 import { NextResponse } from 'next/server'
 import { rateLimited } from '@/lib/rateLimit'
-import { validatePassword } from '@/lib/passwordPolicy'
+import { validatePasswordStrict } from '@/lib/passwordPolicy'
+import { verifyCurrentPassword, PASSWORD_THROTTLED_MSG } from '@/lib/passwordCheck'
 import { requireActiveUser } from '@/lib/apiAuth'
 import {
   isMfaEnrolled, getMfaCookieFromRequest, checkVerifiedSession, issueVerifiedSession,
 } from '@/lib/mfa'
 import { flushSecurityNotices } from '@/lib/securityEvents'
-import { RECOVERY_COOKIE_NAME, verifyRecoveryCookieValue, accessTokenIsRecentRecovery } from '@/lib/recoveryCookie'
+import { RECOVERY_COOKIE_NAME, verifyRecoveryCookieValue } from '@/lib/recoveryCookie'
 import { withMfaCookie } from '../mfa/_cookie'
 
 // One server-side path for BOTH "forgot my password" (recovery link) and
@@ -40,14 +40,17 @@ export async function POST(req: Request) {
 
   const { password, current_password } = await req.json().catch(() => ({}))
 
-  const policy = validatePassword(password, user.email)
+  const policy = await validatePasswordStrict(password, user.email)
   if (!policy.ok) return NextResponse.json({ error: policy.error }, { status: 400 })
 
-  const { data: { session } } = await supabase.auth.getSession()
+  // "Arrived through an e-mailed recovery link" is decided ONLY by the signed
+  // cookie /auth/callback sets after a real code exchange. The old fallback
+  // that trusted the access token's `amr` claim also accepted `otp` and
+  // `magiclink` — so merely confirming a signup or an e-mail change within the
+  // last 30 minutes counted as "recovery" and skipped the current-password
+  // check and the 2FA step-up.
   const cookieStore = await cookies()
-  const isRecovery =
-    (await verifyRecoveryCookieValue(cookieStore.get(RECOVERY_COOKIE_NAME)?.value, user.id)) ||
-    accessTokenIsRecentRecovery(session?.access_token)
+  const isRecovery = await verifyRecoveryCookieValue(cookieStore.get(RECOVERY_COOKIE_NAME)?.value, user.id)
 
   const enrolled = await isMfaEnrolled(user.id).catch(() => null)
   if (enrolled === null) {
@@ -69,15 +72,12 @@ export async function POST(req: Request) {
       }
     }
     // Verify the current password on a throwaway client (no cookies, no
-    // persisted session) so this can't disturb the caller's own session.
-    const probe = createSupabaseJsClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      { auth: { autoRefreshToken: false, persistSession: false } }
-    )
-    const { error: pwErr } = await probe.auth.signInWithPassword({ email: user.email, password: current_password })
-    if (pwErr) return NextResponse.json({ error: 'Your current password is incorrect.' }, { status: 400 })
-    await probe.auth.signOut().catch(() => {})
+    // persisted session). See lib/passwordCheck.ts: the throwaway session is
+    // discarded with scope 'local' — the default 'global' scope would end
+    // EVERY session of this account, the caller's own included.
+    const pw = await verifyCurrentPassword(user.id, user.email, current_password)
+    if (pw === 'throttled') return NextResponse.json({ error: PASSWORD_THROTTLED_MSG }, { status: 429 })
+    if (pw !== 'ok') return NextResponse.json({ error: 'Your current password is incorrect.' }, { status: 400 })
     if (current_password === password) {
       return NextResponse.json({ error: 'Choose a password different from your current one.' }, { status: 400 })
     }

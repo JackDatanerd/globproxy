@@ -1,3 +1,4 @@
+import { appUrl } from '@/lib/appUrl'
 import { createAdminClient } from '@/lib/supabase/server'
 import { provisionPendingCredentials } from '@/lib/credentials'
 import { dispatchWebhook } from '@/lib/webhooks'
@@ -192,7 +193,7 @@ async function sendConfirmationEmail(
   if (profile?.email && !p.is_canary) {
     // Approved affiliates earn cash, not GB — promising them (or the people
     // they refer) "1GB free" was simply untrue.
-    const refLink = `${process.env.NEXT_PUBLIC_APP_URL}/r/${profile.referral_code}`
+    const refLink = `${appUrl()}/r/${profile.referral_code}`
     const referralLine = profile.referral_code
       ? `<p style="color:#444;text-align:center;font-size:13px;margin-top:20px;">
            ${profile.affiliate_status === 'approved'
@@ -216,7 +217,7 @@ async function sendConfirmationEmail(
             is now in your account. It never expires — use it at your own pace.
           </p>
           <div style="text-align:center;margin:32px 0;">
-            <a href="${process.env.NEXT_PUBLIC_APP_URL}/dashboard/proxies"
+            <a href="${appUrl()}/dashboard/proxies"
                style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">
               Create your first proxy session →
             </a>

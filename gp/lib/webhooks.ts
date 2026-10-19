@@ -1,3 +1,4 @@
+import { appUrl } from '@/lib/appUrl'
 import { createAdminClient } from '@/lib/supabase/server'
 import { validateWebhookUrl, checkHostnameResolution } from '@/lib/ssrfGuard'
 import { sendEmail, escapeHtml } from '@/lib/email'
@@ -69,7 +70,7 @@ async function notifyAutoDisabled(supabase: SupabaseAdmin, ep: Endpoint) {
         <p><code>${escapeHtml(row?.url ?? ep.url)}</code></p>
         <p>Reason: ${escapeHtml(row?.disabled_reason ?? 'repeated delivery failures')}.</p>
         <p>Fix your receiver, then re-enable it in
-        <a href="${process.env.NEXT_PUBLIC_APP_URL}/dashboard/settings">Settings → Webhooks</a>.
+        <a href="${appUrl()}/dashboard/settings">Settings → Webhooks</a>.
         Failed deliveries are kept for 14 days and can be redelivered from there.</p></div>`,
     })
   } catch (e) {

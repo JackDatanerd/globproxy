@@ -1,5 +1,6 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { regenerateBackupCodes } from '@/lib/mfa'
+import { regenerateBackupCodes, publicMfaError } from '@/lib/mfa'
+import { requireActiveUser } from '@/lib/apiAuth'
 import { rateLimited } from '@/lib/rateLimit'
 import { sendEmailSafe, securityNoticeHtml, escapeHtml } from '@/lib/email'
 import { logSecurityEvent } from '@/lib/securityEvents'
@@ -12,6 +13,9 @@ export async function POST(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user?.email) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const inactive = await requireActiveUser(user.id)
+  if (inactive) return inactive
 
   const { code } = await req.json().catch(() => ({}))
   if (!code || typeof code !== 'string') {
@@ -47,6 +51,6 @@ export async function POST(req: Request) {
     })
     return NextResponse.json({ backup_codes })
   } catch (e: any) {
-    return NextResponse.json({ error: e.message ?? 'Could not regenerate backup codes.' }, { status: 400 })
+    return NextResponse.json({ error: publicMfaError(e, 'Could not regenerate backup codes.') }, { status: 400 })
   }
 }

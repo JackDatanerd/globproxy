@@ -158,9 +158,14 @@ export function SecurityActivityCard({ className = 'mb-5' }: { className?: strin
       .from('security_events')
       .select('id, event, ip, user_agent, created_at')
       .order('created_at', { ascending: false })
-      .limit(10)
+      .limit(60)
     if (error) { setLoadFailed(true); return }
-    setRows((data ?? []) as SecurityEventRow[])
+    // Routine sign-ins would otherwise push the rare, important events
+    // (password / 2FA / API-key changes) off a short list: keep every
+    // non-login event but only the three most recent sign-ins.
+    let logins = 0
+    const kept = ((data ?? []) as SecurityEventRow[]).filter(r => r.event !== 'login' || ++logins <= 3)
+    setRows(kept.slice(0, 15))
   }
 
   useEffect(() => { load() }, [])
@@ -206,6 +211,89 @@ export function SecurityActivityCard({ className = 'mb-5' }: { className?: strin
                 {[shortUa(r.user_agent), r.ip].filter(Boolean).join(' · ')}
                 {' · '}{new Date(r.created_at).toLocaleString()}
               </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+interface DeviceRow {
+  id: string
+  created_at: string | null
+  last_active: string | null
+  user_agent: string | null
+  ip: string | null
+  current: boolean
+}
+
+// Every browser/device currently signed in to this account, with a per-device
+// "sign out". (GoTrue keeps one row per login; /api/auth/sessions lists and
+// revokes them.)
+export function ActiveSessionsCard({ className = 'mb-5' }: { className?: string }) {
+  const [rows, setRows] = useState<DeviceRow[] | null>(null)
+  const [failed, setFailed] = useState(false)
+  const [busyId, setBusyId] = useState<string | null>(null)
+
+  async function load() {
+    try {
+      const res = await fetch('/api/auth/sessions')
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error)
+      setRows(data.sessions as DeviceRow[])
+      setFailed(false)
+    } catch { setFailed(true) }
+  }
+  useEffect(() => { load() }, [])
+
+  async function signOut(d: DeviceRow) {
+    if (!confirm('Sign this device out?')) return
+    setBusyId(d.id)
+    try {
+      const res = await fetch('/api/auth/sessions', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: d.id }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) toast.error(data.error ?? 'Could not sign that device out.')
+      else { toast.success('Device signed out.'); await load() }
+    } catch {
+      toast.error('Network error. Please try again.')
+    }
+    setBusyId(null)
+  }
+
+  return (
+    <div className={`bg-white border border-border rounded-xl p-6 ${className}`}>
+      <h2 className="font-display font-bold text-base text-ink">Where you’re signed in</h2>
+      <p className="text-xs text-muted mt-1">Sign out any device you don’t recognise.</p>
+      {failed ? (
+        <p className="text-sm text-muted mt-3">Couldn’t load your devices right now.</p>
+      ) : rows === null ? (
+        <p className="text-sm text-muted mt-3">Loading…</p>
+      ) : rows.length === 0 ? (
+        <p className="text-sm text-muted mt-3">No active sessions found.</p>
+      ) : (
+        <ul className="mt-3 divide-y divide-border">
+          {rows.map(d => (
+            <li key={d.id} className="py-2.5 flex items-center justify-between gap-3 text-sm">
+              <div className="min-w-0">
+                <div className="text-ink2 truncate">
+                  {shortUa(d.user_agent)}
+                  {d.current && <span className="ml-2 text-[10px] font-mono text-accent uppercase">this device</span>}
+                </div>
+                <div className="text-[11px] font-mono text-muted">
+                  {[d.ip, d.last_active ? `active ${new Date(d.last_active).toLocaleString()}` : null].filter(Boolean).join(' · ')}
+                </div>
+              </div>
+              {!d.current && (
+                <button onClick={() => signOut(d)} disabled={busyId === d.id}
+                  className="shrink-0 text-xs font-mono border border-border rounded-lg px-3 py-1.5 hover:border-red-300 hover:text-red-500 disabled:opacity-60 transition-colors">
+                  {busyId === d.id ? '…' : 'Sign out'}
+                </button>
+              )}
             </li>
           ))}
         </ul>

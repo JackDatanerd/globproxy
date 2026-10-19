@@ -1,6 +1,8 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { rateLimited } from '@/lib/rateLimit'
-import { verifyTurnstile } from '@/lib/turnstile'
+import { verifyTurnstile, captchaOptions } from '@/lib/turnstile'
+import { holdUntil } from '@/lib/constantTime'
+import { sameOriginUrl } from '@/lib/appUrl'
 import { NextResponse } from 'next/server'
 
 // Always the exact same response, whatever happened internally. Previously
@@ -22,25 +24,12 @@ function genericResponse() {
   })
 }
 
-// Identical response shape isn't the whole fix — wall-clock time still
-// leaks which branch ran. Banned / no-account / suspended all return
-// after one or two fast SELECTs; the "all clear" branch additionally
-// waits on supabase.auth.resetPasswordForEmail(), a real network call
-// that dispatches an email. That latency gap is itself a timing oracle
-// for "does this email have an active account," same class of leak as
-// auth/signup/route.ts had. Padding every exit to a shared floor
-// collapses the gap from trivially measurable to buried in jitter —
-// not a cryptographic guarantee, since real network latency varies, but
-// the realistic bar for this mitigation.
-const RESPONSE_FLOOR_MS = 1000
-
-async function respondGeneric(startedAt: number) {
-  const elapsed = Date.now() - startedAt
-  if (elapsed < RESPONSE_FLOOR_MS) {
-    await new Promise((resolve) => setTimeout(resolve, RESPONSE_FLOOR_MS - elapsed))
-  }
-  return genericResponse()
-}
+// Identical response shape isn't the whole fix — wall-clock time still leaks
+// which branch ran (the "all clear" branch waits on resetPasswordForEmail(), a
+// real network call that dispatches an email). holdUntil() pads fast branches
+// to the floor AND caps the slow one at the same floor (the send keeps running
+// via waitUntil), so every branch answers in about the same time.
+const RESPONSE_FLOOR_MS = 1800
 
 export async function POST(req: Request) {
   const startedAt = Date.now()
@@ -63,30 +52,14 @@ export async function POST(req: Request) {
     // endpoint doesn't rely entirely on that allow-list being correctly
     // locked down. An unrecognized redirectTo is just dropped, not rejected,
     // so the response shape doesn't change either way.
-    let safeRedirectTo: string | undefined
-    if (redirectTo) {
-      try {
-        const appOrigin = new URL(process.env.NEXT_PUBLIC_APP_URL ?? '').origin
-        if (new URL(redirectTo).origin === appOrigin) {
-          safeRedirectTo = redirectTo
-        } else {
-          console.error('[auth/reset] rejected redirectTo outside app origin:', redirectTo)
-        }
-      } catch {
-        console.error('[auth/reset] malformed redirectTo:', redirectTo)
-      }
-    }
+    const safeRedirectTo = sameOriginUrl(redirectTo)
+    if (redirectTo && !safeRedirectTo) console.error('[auth/reset] rejected redirectTo outside app origin:', redirectTo)
 
     const supabase = await createAdminClient()
 
-    // 1. Banned — don't send, don't reveal.
-    const { data: banned } = await supabase
-      .from('banned_emails')
-      .select('id')
-      .eq('email', email.toLowerCase())
-      .maybeSingle()
-
-    if (banned) return respondGeneric(startedAt)
+    // 1. Banned (plus-address aware) — don't send, don't reveal.
+    const { data: banned } = await supabase.rpc('is_email_banned', { check_email: email.toLowerCase() })
+    if (banned) { await holdUntil(startedAt, RESPONSE_FLOOR_MS); return genericResponse() }
 
     // 2. No account — don't send, don't reveal.
     const { data: profile } = await supabase
@@ -94,34 +67,21 @@ export async function POST(req: Request) {
       .select('is_suspended')
       .eq('email', email.toLowerCase())
       .maybeSingle()
-
-    if (!profile) return respondGeneric(startedAt)
+    if (!profile) { await holdUntil(startedAt, RESPONSE_FLOOR_MS); return genericResponse() }
 
     // 3. Suspended — don't send, don't reveal.
-    if (profile.is_suspended) return respondGeneric(startedAt)
+    if (profile.is_suspended) { await holdUntil(startedAt, RESPONSE_FLOOR_MS); return genericResponse() }
 
-    // 4. All clear — send reset email. Log failures server-side only; the
-    // response to the client stays generic either way.
-    //
-    // This MUST go through the cookie-aware ssr client, not `supabase`
-    // (the service-role admin client used for the lookups above). With
-    // PKCE flowType, resetPasswordForEmail() generates a code_challenge
-    // and needs to persist the matching code_verifier back to *this
-    // visitor's own browser* as a cookie, so it's available later when
-    // they click the link and /auth/callback exchanges the code for a
-    // session. The admin client is a plain @supabase/supabase-js instance
-    // with no cookies to write to — server-side, its storage falls back to
-    // an in-memory object that dies with this request, so no verifier ever
-    // reaches the browser. Supabase then has no choice but to fall back to
-    // an implicit-style link (#access_token=... in the hash), which this
-    // app's client is configured to reject (flowType: 'pkce'), so the
-    // update-password page saw "Auth session missing or expired" on every
-    // reset, even with a fresh, unexpired link.
+    // 4. All clear — send the reset email. Failures are logged server-side
+    // only. This MUST go through the cookie-aware ssr client: with PKCE,
+    // resetPasswordForEmail() writes the code_verifier cookie (before it
+    // contacts GoTrue) so /auth/callback can exchange the code later.
     const ssrClient = await createClient()
-    const { error } = await ssrClient.auth.resetPasswordForEmail(email, { redirectTo: safeRedirectTo })
-    if (error) console.error('[auth/reset] resetPasswordForEmail failed:', error.message)
-
-    return respondGeneric(startedAt)
+    const work = ssrClient.auth
+      .resetPasswordForEmail(email, { redirectTo: safeRedirectTo, ...captchaOptions(turnstileToken) })
+      .then(({ error }) => { if (error) console.error('[auth/reset] resetPasswordForEmail failed:', error.message) })
+    await holdUntil(startedAt, RESPONSE_FLOOR_MS, work)
+    return genericResponse()
   } catch (err: any) {
     console.error('[auth/reset] unexpected error', err)
     return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })

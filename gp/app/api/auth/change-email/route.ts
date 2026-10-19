@@ -1,10 +1,11 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { createClient as createSupabaseJsClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
 import { validateEmail } from '@/lib/email-validation'
 import { rateLimited } from '@/lib/rateLimit'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { requireMfaVerified } from '@/lib/mfa'
+import { verifyCurrentPassword, PASSWORD_THROTTLED_MSG } from '@/lib/passwordCheck'
+import { appUrl } from '@/lib/appUrl'
 import { logSecurityEvent, sendEmailChangeNotice, maskEmail } from '@/lib/securityEvents'
 
 // Email change used to have no UI at all (the Settings field is read-only)
@@ -36,14 +37,10 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'That is already your email address.' }, { status: 400 })
   }
 
-  const probe = createSupabaseJsClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { auth: { autoRefreshToken: false, persistSession: false } }
-  )
-  const { error: pwErr } = await probe.auth.signInWithPassword({ email: user.email, password: current_password })
-  if (pwErr) return NextResponse.json({ error: 'Your current password is incorrect.' }, { status: 400 })
-  await probe.auth.signOut().catch(() => {})
+  // Throwaway-client check, discarded with scope 'local' (see lib/passwordCheck.ts).
+  const pw = await verifyCurrentPassword(user.id, user.email, current_password)
+  if (pw === 'throttled') return NextResponse.json({ error: PASSWORD_THROTTLED_MSG }, { status: 429 })
+  if (pw !== 'ok') return NextResponse.json({ error: 'Your current password is incorrect.' }, { status: 400 })
 
   const admin = await createAdminClient()
   const generic = NextResponse.json({
@@ -53,13 +50,12 @@ export async function POST(req: Request) {
 
   // Same enumeration discipline as signup: an address that is banned or
   // already registered gets the identical response and nothing happens.
-  const { data: banned } = await admin.from('banned_emails').select('id').eq('email', target).maybeSingle()
+  const { data: banned } = await admin.rpc('is_email_banned', { check_email: target })
   if (banned) return generic
   const { data: taken } = await admin.rpc('auth_email_exists', { check_email: target })
   if (taken) return generic
 
-  let redirectTo: string | undefined
-  try { redirectTo = `${new URL(process.env.NEXT_PUBLIC_APP_URL ?? '').origin}/auth/callback?type=email_change` } catch { /* omitted */ }
+  const redirectTo = `${appUrl()}/auth/callback?type=email_change`
 
   const { error: updErr } = await supabase.auth.updateUser({ email: target }, { emailRedirectTo: redirectTo })
   if (updErr) {

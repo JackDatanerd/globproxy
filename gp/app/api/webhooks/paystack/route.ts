@@ -1,3 +1,4 @@
+import { appUrl } from '@/lib/appUrl'
 import { NextResponse } from 'next/server'
 import { verifyWebhookSignature, paymentMismatchReason } from '@/lib/paystack'
 import { activateBandwidth } from '@/lib/bandwidth'
@@ -183,7 +184,7 @@ async function handleChargeFailed(supabase: Admin, data: any) {
            <p><strong>Reference:</strong> ${escapeHtml(reference)}</p>
            <p><strong>Paystack reason:</strong> ${safeReason}</p>
            <p>Order marked 'failed' immediately. If the customer retries successfully on the same checkout it will still be credited automatically.</p>
-           <a href="${process.env.NEXT_PUBLIC_APP_URL}/admin">Open admin panel →</a>`,
+           <a href="${appUrl()}/admin">Open admin panel →</a>`,
   }).catch((e) => console.error('[webhook] charge.failed alert email threw', e))
 }
 

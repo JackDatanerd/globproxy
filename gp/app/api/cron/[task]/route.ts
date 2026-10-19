@@ -1,3 +1,4 @@
+import { appUrl } from '@/lib/appUrl'
 import { createAdminClient } from '@/lib/supabase/server'
 import { syncAllUsage } from '@/lib/usageSync'
 import { computeStockStatus } from '@/lib/stockStatus'
@@ -125,7 +126,7 @@ async function runStockCheck() {
              <p><strong>Actually used so far:</strong> ${stock.total_used_gb.toFixed(1)}GB</p>
              <p><strong>Exposure (allocated but not yet used):</strong> ${stock.exposure_gb.toFixed(1)}GB</p>
              ${exposureBreach ? '<p style="color:#e24b4a"><strong>If customers drew down their full remaining allocation right now, you would run short.</strong></p>' : ''}
-             <p><a href="${process.env.NEXT_PUBLIC_APP_URL}/admin/settings">Go to Admin Panel →</a></p>`,
+             <p><a href="${appUrl()}/admin/settings">Go to Admin Panel →</a></p>`,
     })
     return { action: 'alert_sent', ...stock, usage_sync: syncHealth }
   }
@@ -185,7 +186,7 @@ async function runBandwidthAlerts() {
       ? `<p style="margin-top:16px;font-size:13px;color:#666;">${profile.affiliate_status === 'approved'
            ? 'Tip: share your affiliate link and earn commission on every order —'
            : `Tip: refer a friend and you both get ${REFERRAL_GB_BONUS}GB free —`}
-           <a href="${process.env.NEXT_PUBLIC_APP_URL}/r/${profile.referral_code}">your link</a>.</p>`
+           <a href="${appUrl()}/r/${profile.referral_code}">your link</a>.</p>`
       : ''
 
     if (pct >= 95 && !acc.alerted_95_at) {
@@ -193,7 +194,7 @@ async function runBandwidthAlerts() {
         to: profile.email,
         subject: `🚨 Only ${avail.toFixed(1)}GB remaining — GlobProxy`,
         html: `<p>Hi ${firstName}, you've used ${pct.toFixed(0)}% of your bandwidth. Only ${avail.toFixed(1)}GB remains.</p>
-               <a href="${process.env.NEXT_PUBLIC_APP_URL}/dashboard/buy">Top up now →</a>
+               <a href="${appUrl()}/dashboard/buy">Top up now →</a>
                ${referralLine}`,
       })
       // (The bandwidth_threshold_crossed WEBHOOK no longer fires from this
@@ -208,7 +209,7 @@ async function runBandwidthAlerts() {
         to: profile.email,
         subject: `Heads up: ${avail.toFixed(1)}GB bandwidth remaining`,
         html: `<p>Hi ${firstName}, you've used ${pct.toFixed(0)}% of your bandwidth. ${avail.toFixed(1)}GB remains.</p>
-               <a href="${process.env.NEXT_PUBLIC_APP_URL}/dashboard/buy">Buy more →</a>
+               <a href="${appUrl()}/dashboard/buy">Buy more →</a>
                ${referralLine}`,
       })
       await supabase.from('bandwidth_accounts')
@@ -249,7 +250,7 @@ async function runDailySummary() {
       <p><strong>GB sold:</strong> ${gb.toFixed(1)} GB</p>
       <p><strong>Orders:</strong> ${orders?.length ?? 0}</p>
       <p><strong>New users:</strong> ${newUsers ?? 0}</p>
-      <a href="${process.env.NEXT_PUBLIC_APP_URL}/admin">Open admin panel →</a>
+      <a href="${appUrl()}/admin">Open admin panel →</a>
     </div>`,
   })
   return { revenue: rev, gb_sold: gb, new_users: newUsers }

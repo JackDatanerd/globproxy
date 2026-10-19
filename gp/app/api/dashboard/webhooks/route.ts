@@ -2,7 +2,8 @@ import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { listEndpoints, createEndpoint } from '@/lib/webhookEndpoints'
 import { NextResponse } from 'next/server'
-import { requireMfaVerified } from '@/lib/mfa'
+import { requireStepUp } from '@/lib/reauth'
+import { logSecurityEvent, notifySecurityChange } from '@/lib/securityEvents'
 
 // All webhook-endpoint rules live in lib/webhookEndpoints.ts, shared with
 // /api/v1/webhooks. `secret` is never selected on list — only the create
@@ -24,7 +25,7 @@ export async function POST(req: Request) {
 
   // 2FA step-up: an account that enabled two-factor must hold a verified
   // session for this action — a password alone isn't enough. See lib/mfa.ts.
-  const mfaGate = await requireMfaVerified(req, user.id)
+  const mfaGate = await requireStepUp(req, user.id)
   if (mfaGate) return mfaGate
 
 
@@ -34,5 +35,7 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}))
   const r = await createEndpoint(await createAdminClient(), user.id, body)
   if (!r.ok) return NextResponse.json({ error: r.message }, { status: r.status })
+  await logSecurityEvent({ userId: user.id, event: 'webhook_created', req })
+  await notifySecurityChange(user.id, 'A new webhook endpoint was added to your GlobProxy account', 'a new webhook endpoint was just added to your account. Account events will be delivered to it.')
   return NextResponse.json({ webhook: r.data })
 }

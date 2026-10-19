@@ -1,3 +1,4 @@
+import { appUrl } from '@/lib/appUrl'
 import { NextResponse } from 'next/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
@@ -118,7 +119,7 @@ export async function POST(req: Request) {
               <tr><td style="padding:8px 0;color:#888;font-size:13px;">Monthly volume</td><td style="padding:8px 0;font-size:13px;">${escapeHtml(monthly_volume)}</td></tr>
             </table>
             <div style="text-align:center;margin:32px 0;">
-              <a href="${process.env.NEXT_PUBLIC_APP_URL}/admin/resellers"
+              <a href="${appUrl()}/admin/resellers"
                  style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">
                 Review in admin panel →
               </a>

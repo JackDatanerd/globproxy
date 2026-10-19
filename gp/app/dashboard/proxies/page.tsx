@@ -33,6 +33,15 @@ export default async function ProxiesPage() {
     )
   }
 
+  // Never hand the browser the raw rows: their column names (and the
+  // supplier's internal sub-user id) would show in the page payload. Expose
+  // only neutral names.
+  const safeCreds = (creds ?? []).map((row: Record<string, any>) => {
+    const { geonode_username, geonode_password, geonode_sub_user_id: _drop, ...rest } = row
+    void _drop
+    return { ...rest, username: geonode_username ?? null, password: geonode_password ?? null }
+  })
+
   const total     = bw?.total_gb     ?? 0
   const used      = bw?.used_gb      ?? 0
   const available = bw?.available_gb ?? 0
@@ -108,7 +117,7 @@ export default async function ProxiesPage() {
 
       {/* Proxy list */}
       {creds && creds.length > 0 ? (
-        <ProxyList creds={creds} availableGb={available} />
+        <ProxyList creds={safeCreds as typeof creds} availableGb={available} />
       ) : total > 0 ? (
         <div className="bg-white border border-border rounded-xl p-12 text-center">
           <div className="text-3xl mb-3">⬡</div>

@@ -1,3 +1,4 @@
+import { appUrl } from '@/lib/appUrl'
 import { createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { sendEmail, escapeHtml } from '@/lib/email'
@@ -40,7 +41,7 @@ export async function POST(req: Request) {
              <p><strong>Page:</strong> ${escapeHtml(page_url ?? 'not provided')}</p>
              <p><strong>Message:</strong></p>
              <p>${escapeHtml(trimmed).replace(/\n/g, '<br/>')}</p>
-             <a href="${process.env.NEXT_PUBLIC_APP_URL}/admin">Open admin panel →</a>`,
+             <a href="${appUrl()}/admin">Open admin panel →</a>`,
     }).catch((e) => console.error('[support/report] alert email threw', e))
 
     return NextResponse.json({ ok: true, id: report.id })

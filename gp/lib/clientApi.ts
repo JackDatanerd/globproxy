@@ -7,6 +7,8 @@
 // the user just saw a red toast with no way forward. This normalises all
 // three.
 
+import { fetchWithReauth } from '@/lib/reauthPrompt'
+
 export class ApiError extends Error {
   status: number
   code?: string
@@ -20,7 +22,9 @@ export class ApiError extends Error {
 export async function apiFetch<T = any>(url: string, init?: RequestInit): Promise<T> {
   let res: Response
   try {
-    res = await fetch(url, init)
+    // Accounts without 2FA get a one-time "confirm your password" dialog on
+    // sensitive actions (403 reauth_required) and the request is retried.
+    res = await fetchWithReauth(url, init)
   } catch {
     throw new ApiError('Network error — check your connection and try again.', 0)
   }
@@ -30,6 +34,9 @@ export async function apiFetch<T = any>(url: string, init?: RequestInit): Promis
       const next = encodeURIComponent(window.location.pathname + window.location.search)
       window.location.href = `${data.redirect || '/auth/mfa-verify'}?next=${next}`
       throw new ApiError('Two-factor verification required — redirecting…', 403, 'mfa_required')
+    }
+    if (res.status === 403 && data?.code === 'reauth_required') {
+      throw new ApiError('Password confirmation is required for this action.', 403, 'reauth_required')
     }
     throw new ApiError(data?.error || `Request failed (${res.status})`, res.status, data?.code)
   }

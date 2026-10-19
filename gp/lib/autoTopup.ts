@@ -1,3 +1,4 @@
+import { appUrl } from '@/lib/appUrl'
 import { createAdminClient } from '@/lib/supabase/server'
 import { updateSubUserTrafficLimit } from '@/lib/geonode'
 import { sendEmail, escapeHtml } from '@/lib/email'
@@ -94,7 +95,7 @@ export async function runAutoTopups(userId?: string) {
                   The session will keep working until its current allocation runs out.
                 </p>
                 <div style="text-align:center;margin:32px 0;">
-                  <a href="${process.env.NEXT_PUBLIC_APP_URL}/dashboard/buy"
+                  <a href="${appUrl()}/dashboard/buy"
                      style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">
                     Buy more bandwidth →
                   </a>

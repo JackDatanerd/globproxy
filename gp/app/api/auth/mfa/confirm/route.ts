@@ -1,5 +1,6 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { confirmEnrollment } from '@/lib/mfa'
+import { confirmEnrollment, publicMfaError } from '@/lib/mfa'
+import { requireActiveUser } from '@/lib/apiAuth'
 import { rateLimited } from '@/lib/rateLimit'
 import { withMfaCookie } from '../_cookie'
 import { sendEmailSafe, securityNoticeHtml, escapeHtml } from '@/lib/email'
@@ -13,6 +14,9 @@ export async function POST(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user?.email) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const inactive = await requireActiveUser(user.id)
+  if (inactive) return inactive
 
   const { code } = await req.json().catch(() => ({}))
   if (!code || typeof code !== 'string') {
@@ -52,8 +56,11 @@ export async function POST(req: Request) {
       }),
     })
     const res = NextResponse.json({ backup_codes })
-    return withMfaCookie(res, session_token, session_ttl_s)
+    // session_token is empty only if the verified-browser row couldn't be
+    // written after enrollment committed — the codes are still returned and
+    // the user simply verifies once on their next page.
+    return session_token ? withMfaCookie(res, session_token, session_ttl_s) : res
   } catch (e: any) {
-    return NextResponse.json({ error: e.message ?? 'Could not confirm code.' }, { status: 400 })
+    return NextResponse.json({ error: publicMfaError(e, 'Could not confirm code.') }, { status: 400 })
   }
 }

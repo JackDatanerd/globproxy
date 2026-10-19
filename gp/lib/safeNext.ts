@@ -10,6 +10,9 @@ export function safeNextPath(raw: string | null | undefined, fallback = '/dashbo
   if (!/^\/(?!\/)[^\s\\\u0000-\u001f]*$/.test(raw)) return fallback
   if (raw.includes('@') || raw.includes('://')) return fallback
   // never bounce back into the auth plumbing
+  // (the 2FA-recovery page is the one deliberate exception: its emailed link
+  // sends a signed-out owner through sign-in and back)
+  if (raw.startsWith('/auth/mfa-recovery')) return raw
   if (raw.startsWith('/api/') || raw.startsWith('/auth/')) return fallback
   return raw
 }

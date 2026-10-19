@@ -4,6 +4,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { safeNextPath } from '@/lib/safeNext'
 import toast from 'react-hot-toast'
+import { fetchWithReauth } from '@/lib/reauthPrompt'
 
 type Step = 'loading' | 'scan' | 'confirm' | 'backup_codes' | 'error'
 
@@ -36,7 +37,8 @@ function MfaSetupFlow() {
       const { data: { session } } = await createClient().auth.getSession()
       if (!session) { router.replace('/auth/login'); return }
       try {
-        const res = await fetch('/api/auth/mfa/enroll', {
+        // Accounts without 2FA are asked to confirm their password first.
+        const res = await fetchWithReauth('/api/auth/mfa/enroll', {
           method: 'POST',
           headers: { Authorization: `Bearer ${session.access_token}` },
         })

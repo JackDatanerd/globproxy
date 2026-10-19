@@ -1,3 +1,4 @@
+import { appUrl } from '@/lib/appUrl'
 import { createAdminClient } from '@/lib/supabase/server'
 import { adminResetMfa, requireMfaVerified } from '@/lib/mfa'
 import { sendEmailSafe, escapeHtml } from '@/lib/email'
@@ -75,7 +76,7 @@ export async function POST(req: Request) {
             need to wait on a reply from us to lock things back down.
           </p>
           <div style="text-align:center;margin:32px 0;">
-            <a href="${process.env.NEXT_PUBLIC_APP_URL}/dashboard/settings"
+            <a href="${appUrl()}/dashboard/settings"
                style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">
               Go to account settings →
             </a>

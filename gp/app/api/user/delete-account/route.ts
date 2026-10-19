@@ -2,7 +2,8 @@ import { NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { deleteSubUser, GeonodeApiError } from '@/lib/geonode'
 import { sendEmail, escapeHtml } from '@/lib/email'
-import { requireMfaVerified } from '@/lib/mfa'
+import { requireStepUp } from '@/lib/reauth'
+import { logSecurityEvent } from '@/lib/securityEvents'
 
 export async function DELETE(req: Request) {
   try {
@@ -15,10 +16,14 @@ export async function DELETE(req: Request) {
 
     // 2FA step-up — account deletion is irreversible, so an enrolled account
     // needs a verified session, not just a password. See lib/mfa.ts.
-    const mfaGate = await requireMfaVerified(req, user.id)
+    const mfaGate = await requireStepUp(req, user.id)
     if (mfaGate) return mfaGate
 
     const adminSupabase = await createAdminClient()
+
+    // Audit trail (the profile row survives deletion, anonymised, so the
+    // event keeps its foreign key). Written before the wipe on purpose.
+    await logSecurityEvent({ userId: user.id, event: 'account_deleted', req, admin: adminSupabase })
 
     // Step 2: Fetch profile before wiping it
     const { data: profile } = await adminSupabase
@@ -189,7 +194,7 @@ export async function DELETE(req: Request) {
             <h2 style="text-align:center;color:#111;">Account deleted</h2>
             <p style="color:#444;text-align:center;">
               Hi ${escapeHtml(profile.full_name) || 'there'}, your GlobProxy account has been permanently
-              deleted as requested. Your name, email, payout details and proxy credentials have been removed. Records of past payments are kept as required for accounting.
+              deleted as requested. Your name, payout details and proxy credentials have been removed and the account can no longer be signed in to. The sign-in email address is kept on a disabled record so the account can&rsquo;t be re-registered or reactivated. Records of past payments are kept as required for accounting.
             </p>
             <p style="color:#444;text-align:center;">
               If you did not request this, please contact us immediately.

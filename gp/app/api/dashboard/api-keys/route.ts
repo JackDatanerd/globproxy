@@ -1,6 +1,7 @@
 import { createAdminClient, createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
-import { requireMfaVerified } from '@/lib/mfa'
+import { requireStepUp } from '@/lib/reauth'
+import { logSecurityEvent, notifySecurityChange } from '@/lib/securityEvents'
 import { parseAllowedIps } from '@/lib/ipAllowlist'
 
 const PREFIX = 'gp_live_'
@@ -45,7 +46,7 @@ export async function POST(req: Request) {
 
   // 2FA step-up: an account that enabled two-factor must hold a verified
   // session for this action — a password alone isn't enough. See lib/mfa.ts.
-  const mfaGate = await requireMfaVerified(req, user.id)
+  const mfaGate = await requireStepUp(req, user.id)
   if (mfaGate) return mfaGate
 
 
@@ -101,6 +102,11 @@ export async function POST(req: Request) {
     console.error('[api-keys] create failed', error)
     return NextResponse.json({ error: 'Could not create the key. Please try again.' }, { status: 500 })
   }
+
+  // Audit trail + tripwire: a new API key is the thing an intruder makes
+  // first. Awaited so Workers can't cancel the e-mail after the response.
+  await logSecurityEvent({ userId: user.id, event: 'api_key_created', req, meta: { label, key_prefix }, admin })
+  await notifySecurityChange(user.id, 'A new API key was created on your GlobProxy account', `a new API key (<strong>${label.replace(/[<>&"]/g, '')}</strong>, starting ${key_prefix}…) was just created on your account.`)
 
   // `key` is only ever present in this one response.
   return NextResponse.json({ key: plaintext, meta: data }, { status: 201 })

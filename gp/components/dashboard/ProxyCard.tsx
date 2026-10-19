@@ -77,8 +77,8 @@ export default function ProxyCard({ cred, index, expanded, onToggle, requestedTa
 
   const host = cred.host || 'proxy.globproxy.com'
   const port = cred.port || getProxyPort(cred.protocol, cred.session_type)
-  const baseUser = cred.geonode_username || '—'
-  const pass = cred.geonode_password || '—'
+  const baseUser = cred.username || '—'
+  const pass = cred.password || '—'
   const gbAllocated = cred.gb_allocated || 0
   const gbUsed = cred.gb_used || 0
   const pct = gbAllocated > 0 ? (gbUsed / gbAllocated) * 100 : 0

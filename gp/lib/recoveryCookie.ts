@@ -41,25 +41,3 @@ export async function verifyRecoveryCookieValue(value: string | undefined, userI
   if (!Number.isFinite(exp) || exp < Date.now()) return false
   return timingSafeEqual(mac, await sign(`${uid}.${expStr}`))
 }
-
-/**
- * Secondary signal for sessions that did not come through /auth/callback
- * (e.g. a legacy implicit-flow recovery link whose tokens the update-password
- * page installs client-side): GoTrue stamps how a session began in the access
- * token's `amr` claim. The token passed in must already have been validated
- * by supabase.auth.getUser() — this only reads the claim, it does not verify
- * the signature.
- */
-export function accessTokenIsRecentRecovery(accessToken: string | undefined): boolean {
-  if (!accessToken) return false
-  try {
-    const payload = accessToken.split('.')[1]
-    if (!payload) return false
-    const json = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')))
-    const amr: Array<{ method?: string; timestamp?: number }> = Array.isArray(json?.amr) ? json.amr : []
-    const now = Math.floor(Date.now() / 1000)
-    return amr.some(a => ['recovery', 'invite', 'otp', 'magiclink'].includes(a?.method ?? '') && typeof a.timestamp === 'number' && now - a.timestamp <= RECOVERY_TTL_S)
-  } catch {
-    return false
-  }
-}

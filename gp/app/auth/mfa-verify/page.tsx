@@ -109,6 +109,11 @@ function MfaVerifyFlow() {
           {useBackupCode ? 'Use your authenticator app instead' : "Lost your device? Use a backup code"}
         </button>
       </div>
+      <div className="text-center mt-2">
+        <a href="/auth/mfa-recovery" className="text-xs text-muted hover:text-accent transition-colors">
+          Lost your authenticator and your backup codes?
+        </a>
+      </div>
       <div className="flex items-center gap-3 my-6"><div className="flex-1 h-px bg-border" /><span className="text-xs text-muted">or</span><div className="flex-1 h-px bg-border" /></div>
       <p className="text-center text-sm"><button onClick={signOut} className="text-muted hover:text-ink transition-colors">Sign out and use a different account</button></p>
     </div>

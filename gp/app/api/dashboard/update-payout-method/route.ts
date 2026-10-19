@@ -3,7 +3,7 @@ import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { normalizeMpesaPhone } from '@/lib/mpesa'
 import { isValidTronAddress } from '@/lib/tron'
-import { requireMfaVerified } from '@/lib/mfa'
+import { requireStepUp } from '@/lib/reauth'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { rateLimited } from '@/lib/rateLimit'
 import { cleanText } from '@/lib/validation'
@@ -47,7 +47,7 @@ export async function POST(req: Request) {
     // 2FA step-up — redirecting payouts is the classic account-takeover
     // cash-out, so an enrolled account needs a verified session, not just a
     // password. See lib/mfa.ts.
-    const mfaGate = await requireMfaVerified(req, user.id)
+    const mfaGate = await requireStepUp(req, user.id)
     if (mfaGate) return mfaGate
 
     const adminSupabase = await createAdminClient()

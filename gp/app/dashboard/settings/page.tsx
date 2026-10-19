@@ -4,7 +4,7 @@ import { useSearchParams, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
 import TwoFactorSettings from '@/components/dashboard/TwoFactorSettings'
-import { ChangePasswordCard, ChangeEmailCard, SecurityActivityCard } from '@/components/dashboard/AccountSecurityCards'
+import { ChangePasswordCard, ChangeEmailCard, SecurityActivityCard, ActiveSessionsCard } from '@/components/dashboard/AccountSecurityCards'
 import { WEBHOOK_EVENTS, WEBHOOK_EVENT_LABELS } from '@/lib/webhookEvents'
 import { apiFetch, apiJson, copyText } from '@/lib/clientApi'
 import { formatGb } from '@/lib/format'
@@ -575,6 +575,8 @@ function SettingsPageInner() {
       </div>
 
       {profile && <TwoFactorSettings role={profile.role ?? 'user'} />}
+
+      <ActiveSessionsCard />
 
       <SecurityActivityCard />
 

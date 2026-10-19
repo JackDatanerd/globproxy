@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
+import TrustedBrowsers from '@/components/dashboard/TrustedBrowsers'
 
 interface Status {
   enrolled: boolean
@@ -169,6 +170,7 @@ export default function TwoFactorSettings({ role: _role }: { role?: string } = {
               Disable
             </button>
           </div>
+          <TrustedBrowsers />
         </>
       ) : (
         <form onSubmit={mode === 'disable' ? handleDisable : handleRegenerate} className="flex flex-col gap-3">

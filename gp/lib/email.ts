@@ -60,15 +60,32 @@ export function securityNoticeHtml(opts: { heading: string; bodyHtml: string }):
   `
 }
 
+function htmlToText(html: string): string {
+  return html
+    .replace(/<a\s[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi, (_m, href: string, label: string) => `${label.replace(/<[^>]+>/g, '').trim()} (${href})`)
+    .replace(/<(br|\/p|\/h\d|\/div)\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 export async function sendEmail(p: { to: string; subject: string; html: string }) {
   // Enforced here, not just at each call site, so a future caller that
   // interpolates user input into `subject` can't reintroduce this by
   // forgetting to sanitize it themselves.
   const safeSubject = sanitizeHeaderValue(p.subject)
+  if (!process.env.RESEND_API_KEY) {
+    // Without this the request went out as "Bearer undefined" and failed with a
+    // confusing 401 for every email in the product.
+    throw new Error('RESEND_API_KEY is not configured')
+  }
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ from: resolveFromHeader(), to: p.to, subject: safeSubject, html: p.html }),
+    // A plain-text alternative alongside the HTML: mail clients that block
+    // images/HTML still show something readable, and HTML-only mail scores worse with spam filters.
+    body: JSON.stringify({ from: resolveFromHeader(), to: p.to, subject: safeSubject, html: p.html, text: htmlToText(p.html) }),
   })
   if (!res.ok) {
     // Previously nothing checked this — every caller in the app (payment

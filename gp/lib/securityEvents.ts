@@ -1,5 +1,6 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { sendEmailSafe, securityNoticeHtml, escapeHtml } from '@/lib/email'
+import { appUrl } from '@/lib/appUrl'
 
 type AdminClient = Awaited<ReturnType<typeof createAdminClient>>
 
@@ -14,6 +15,17 @@ export type SecurityEventType =
   | 'mfa_locked'
   | 'mfa_reset_by_admin'
   | 'signout_others'
+  | 'email_changed'
+  | 'login_throttled'
+  | 'mfa_browser_trusted'
+  | 'mfa_browser_revoked'
+  | 'session_revoked'
+  | 'api_key_created'
+  | 'webhook_created'
+  | 'account_deleted'
+  | 'mfa_recovery_requested'
+  | 'mfa_recovery_cancelled'
+  | 'mfa_recovery_completed'
 
 export function requestMeta(req?: Request): { ip: string | null; ua: string | null } {
   if (!req) return { ip: null, ua: null }
@@ -92,7 +104,7 @@ export async function recordLogin(userId: string, req: Request): Promise<{ newDe
 }
 
 // ── Email templates ─────────────────────────────────────────────────────
-const APP_URL = () => process.env.NEXT_PUBLIC_APP_URL ?? ''
+const APP_URL = () => appUrl()
 
 function resetButton(): string {
   return `
@@ -194,6 +206,77 @@ export async function sendEmailChangeNotice(oldEmail: string, fullName: string |
   })
 }
 
+export async function sendLoginThrottleNotice(to: string, fullName: string | null | undefined, ip: string | null) {
+  await sendEmailSafe({
+    to,
+    subject: 'Repeated failed sign-in attempts on your GlobProxy account',
+    html: securityNoticeHtml({
+      heading: 'Sign-in paused',
+      bodyHtml: `
+        <p style="color:#444;text-align:center;">
+          Hi ${escapeHtml(fullName) || 'there'}, there were many failed attempts to sign in to your GlobProxy account
+          (${escapeHtml(to)})${ip ? `, most recently from ${escapeHtml(ip)}` : ''}. Sign-in is paused for 15 minutes.
+        </p>
+        <p style="color:#444;text-align:center;">
+          If that was you, wait and try again. If it wasn't, someone is guessing your password —
+          reset it now and consider turning on two-factor authentication.
+        </p>
+        ${resetButton()}
+        ${supportLine()}`,
+    }),
+  })
+}
+
+/** Tripwire e-mail for a sensitive change made while signed in (API key, webhook, payout, ...). */
+export async function sendSecurityChangeNotice(to: string, fullName: string | null | undefined, heading: string, detailHtml: string) {
+  await sendEmailSafe({
+    to,
+    subject: heading,
+    html: securityNoticeHtml({
+      heading,
+      bodyHtml: `
+        <p style="color:#444;text-align:center;">Hi ${escapeHtml(fullName) || 'there'}, ${detailHtml}</p>
+        <p style="color:#444;text-align:center;">
+          If this wasn't you, reset your password right away and sign out of other devices.
+        </p>
+        ${resetButton()}
+        ${supportLine()}`,
+    }),
+  })
+}
+
+/** Looks the user up and sends a tripwire notice; never throws. */
+export async function notifySecurityChange(userId: string, heading: string, detailHtml: string): Promise<void> {
+  try {
+    const admin = await createAdminClient()
+    const { data: p } = await admin.from('profiles').select('email, full_name, is_deleted').eq('id', userId).maybeSingle()
+    if (p?.email && p.email !== '[deleted]' && !p.is_deleted) {
+      await sendSecurityChangeNotice(p.email, p.full_name, heading, detailHtml)
+    }
+  } catch (e) {
+    console.error('[security] notifySecurityChange failed', e)
+  }
+}
+
+export async function sendEmailChangedNotice(oldEmail: string, fullName: string | null | undefined, newEmailMasked: string) {
+  await sendEmailSafe({
+    to: oldEmail,
+    subject: 'The email address on your GlobProxy account was changed',
+    html: securityNoticeHtml({
+      heading: 'Email address changed',
+      bodyHtml: `
+        <p style="color:#444;text-align:center;">
+          Hi ${escapeHtml(fullName) || 'there'}, the sign-in email on your GlobProxy account was just changed from
+          ${escapeHtml(oldEmail)} to ${escapeHtml(newEmailMasked)}. This is the final confirmation — the change is complete.
+        </p>
+        <p style="color:#444;text-align:center;">
+          If you didn't do this, your account may be compromised. Contact support immediately.
+        </p>
+        ${supportLine()}`,
+    }),
+  })
+}
+
 export function maskEmail(email: string): string {
   const [local, domain] = email.split('@')
   if (!domain) return '***'
@@ -210,7 +293,7 @@ export async function flushSecurityNotices(userId?: string, minAgeMs = 0): Promi
   const admin = await createAdminClient()
   let q = admin
     .from('security_events')
-    .select('id, user_id, event, created_at')
+    .select('id, user_id, event, created_at, meta')
     .eq('notify', true)
     .is('notified_at', null)
     .order('created_at', { ascending: true })
@@ -244,6 +327,16 @@ export async function flushSecurityNotices(userId?: string, minAgeMs = 0): Promi
           subject: 'Your GlobProxy password was changed',
           html: passwordChangedHtml(profile.full_name, profile.email),
         })
+      }
+    }
+    if (ev.event === 'email_changed' && !stale) {
+      // Goes to the OLD address — the profile already carries the new one.
+      const meta = (ev.meta ?? {}) as { old_email?: string; new_email_masked?: string }
+      if (meta.old_email) {
+        const { data: profile } = await admin.from('profiles').select('full_name').eq('id', ev.user_id).maybeSingle()
+        try {
+          await sendEmailChangedNotice(meta.old_email, profile?.full_name, meta.new_email_masked ?? 'your new address')
+        } catch { ok = false }
       }
     }
     if (ok) {

@@ -1,11 +1,30 @@
 import type { NextConfig } from 'next'
 
+const CSP_REPORT_ONLY = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.paystack.co https://challenges.cloudflare.com",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' data: https://fonts.gstatic.com",
+  "img-src 'self' data: blob: https:",
+  "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://api.paystack.co https://checkout.paystack.com https://challenges.cloudflare.com",
+  "frame-src https://checkout.paystack.com https://js.paystack.co https://challenges.cloudflare.com",
+  "frame-ancestors 'self'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "object-src 'none'",
+  'report-uri /api/csp-report',
+].join('; ')
+
 const nextConfig: NextConfig = {
   experimental: { serverActions: { allowedOrigins: ['globproxy.com', '*.workers.dev'] } },
-  // Baseline security headers on every response. Deliberately no
-  // Content-Security-Policy yet: the app loads Paystack's inline popup,
-  // Cloudflare Turnstile and Supabase, and a wrong CSP breaks checkout
-  // silently — add one in Report-Only mode first.
+  // Baseline security headers on every response.
+  //
+  // Content-Security-Policy ships in REPORT-ONLY mode first: the app loads
+  // Paystack's inline popup, Cloudflare Turnstile and Supabase, and a wrong
+  // enforced CSP breaks checkout silently. Violations are POSTed to
+  // /api/csp-report (visible in the Worker logs). Once a week of traffic shows
+  // no legitimate violations, rename the header to Content-Security-Policy and
+  // replace 'unsafe-inline' with nonces.
   async headers() {
     return [
       {
@@ -16,6 +35,7 @@ const nextConfig: NextConfig = {
           { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
           { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
           { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), payment=(self)' },
+          { key: 'Content-Security-Policy-Report-Only', value: CSP_REPORT_ONLY },
         ],
       },
     ]

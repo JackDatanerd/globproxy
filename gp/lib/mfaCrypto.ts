@@ -18,8 +18,11 @@
 //
 // Rotation: set MFA_ENCRYPTION_KEY to the new value and move the old one to
 // MFA_ENCRYPTION_KEY_PREVIOUS. Decryption tries both; the next successful
-// verification re-encrypts under the new key. NEVER remove the key while
-// encrypted rows exist — those accounts could no longer verify.
+// TOTP verification of each account re-encrypts its secret under the new key
+// (see secretNeedsRewrite). Backup-code hashes are one-way HMACs, so they
+// can only be re-keyed by regenerating the set: keep the previous key until
+// users have regenerated (or used up) their old codes. NEVER remove a key
+// while rows still depend on it — those accounts could no longer verify.
 
 const PREFIX = 'enc:v1:'
 let warned = false
@@ -92,12 +95,12 @@ export async function decryptSecret(stored: string): Promise<string> {
   if (!isEncryptedSecret(stored)) return stored // legacy plaintext row
   const body = stored.slice(PREFIX.length)
   const dot = body.indexOf('.')
-  if (dot === -1) throw new Error('Malformed encrypted MFA secret')
+  if (dot === -1) throw new MfaConfigError('Malformed encrypted MFA secret')
   const iv = fromB64(body.slice(0, dot))
   const ct = fromB64(body.slice(dot + 1))
   const keys = [currentKey(), previousKey()].filter((k): k is string => !!k)
   if (keys.length === 0) {
-    throw new Error('MFA secret is encrypted but MFA_ENCRYPTION_KEY is not configured')
+    throw new MfaConfigError('MFA secret is encrypted but MFA_ENCRYPTION_KEY is not configured')
   }
   for (const k of keys) {
     try {
@@ -105,12 +108,32 @@ export async function decryptSecret(stored: string): Promise<string> {
       return dec.decode(pt)
     } catch { /* try the next key */ }
   }
-  throw new Error('Could not decrypt MFA secret with the configured key(s)')
+  throw new MfaConfigError('Could not decrypt MFA secret with the configured key(s)')
 }
 
-/** True when the stored value should be rewritten under the current key. */
-export function needsReencrypt(stored: string): boolean {
-  return encryptionEnabled() && !isEncryptedSecret(stored)
+/** Raised for operator-side misconfiguration (missing / wrong key). Never shown to end users. */
+export class MfaConfigError extends Error {}
+
+/**
+ * True when the stored value should be rewritten under the current key:
+ * legacy plaintext, or encrypted under the PREVIOUS key (not decryptable
+ * with the current one). Without the second case a rotation could never
+ * complete and the previous key could never be retired.
+ */
+export async function secretNeedsRewrite(stored: string): Promise<boolean> {
+  if (!encryptionEnabled()) return false
+  if (!isEncryptedSecret(stored)) return true
+  const body = stored.slice(PREFIX.length)
+  const dot = body.indexOf('.')
+  if (dot === -1) return false
+  try {
+    const iv = fromB64(body.slice(0, dot))
+    const ct = fromB64(body.slice(dot + 1))
+    await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, await aesKey(currentKey()!), ct)
+    return false
+  } catch {
+    return true
+  }
 }
 
 async function legacySha256(code: string): Promise<string> {

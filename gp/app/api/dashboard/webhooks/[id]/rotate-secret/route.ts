@@ -1,7 +1,7 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { rotateSecret } from '@/lib/webhookEndpoints'
-import { requireMfaVerified } from '@/lib/mfa'
+import { requireStepUp } from '@/lib/reauth'
 import { NextResponse } from 'next/server'
 
 // Replaces the signing secret; the old one stops working immediately and
@@ -13,7 +13,7 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
 
   // 2FA step-up, same as webhook create/update: rotating the signing secret
   // is a security-sensitive change. See lib/mfa.ts.
-  const mfaGate = await requireMfaVerified(req, user.id)
+  const mfaGate = await requireStepUp(req, user.id)
   if (mfaGate) return mfaGate
 
   const suspended = await requireActiveUser(user.id)

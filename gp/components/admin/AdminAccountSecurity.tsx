@@ -1,6 +1,6 @@
 'use client'
 import TwoFactorSettings from '@/components/dashboard/TwoFactorSettings'
-import { ChangePasswordCard, SecurityActivityCard } from '@/components/dashboard/AccountSecurityCards'
+import { ChangePasswordCard, SecurityActivityCard, ActiveSessionsCard } from '@/components/dashboard/AccountSecurityCards'
 
 // Account & security for the admin's own login on Platform Settings (admin
 // has its own settings page instead of visiting /dashboard/settings). Uses
@@ -14,6 +14,7 @@ export default function AdminAccountSecurity() {
     <>
       <ChangePasswordCard className="mt-5" />
       <TwoFactorSettings role="admin" />
+      <ActiveSessionsCard className="mt-5" />
       <SecurityActivityCard className="mt-5" />
     </>
   )
