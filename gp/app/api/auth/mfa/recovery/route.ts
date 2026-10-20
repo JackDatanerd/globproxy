@@ -4,9 +4,10 @@ import { rateLimited } from '@/lib/rateLimit'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { verifyCurrentPassword, PASSWORD_THROTTLED_MSG } from '@/lib/passwordCheck'
 import {
-  requestRecovery, recoveryStatus, confirmRecovery, cancelRecovery, completeRecovery,
+  requestRecovery, recoveryStatus, confirmRecovery, cancelRecovery, completeRecovery, pendingRecoveryFor,
 } from '@/lib/mfaRecovery'
-import { sessionIdFromJwt } from '@/lib/mfa'
+import { sessionIdFromJwt } from '@/lib/sessionDevices'
+import { requireMfaVerified, cancelOpenRecoveryRequests } from '@/lib/mfa'
 import { clearMfaCookie } from '../_cookie'
 import { NextResponse } from 'next/server'
 
@@ -17,7 +18,9 @@ import { NextResponse } from 'next/server'
 //   confirm   (signed in as owner, token)  -> starts the waiting period
 //   cancel    (token only)                 -> the real owner stops it
 //   complete  (signed in as owner, token)  -> after the wait: 2FA removed
-// None of these is gated by the 2FA step-up (that is the whole point).
+//   pending / cancel_mine (signed in AND 2FA-verified) -> the owner, who still
+//             has their authenticator, sees and stops a request in Settings
+// None of the first five is gated by the 2FA step-up (that is the whole point).
 export async function POST(req: Request) {
   const cross = rejectCrossSite(req)
   if (cross) return cross
@@ -45,6 +48,17 @@ export async function POST(req: Request) {
 
     const admin = await createAdminClient()
     const { data: profile } = await admin.from('profiles').select('full_name').eq('id', user.id).maybeSingle()
+
+    if (action === 'pending' || action === 'cancel_mine') {
+      // Here the 2FA gate DOES apply: only someone who still holds the
+      // authenticator may see or stop a pending removal from Settings (a
+      // locked-out owner uses the emailed link instead).
+      const mfaBlock = await requireMfaVerified(req, user.id)
+      if (mfaBlock) return mfaBlock
+      if (action === 'pending') return NextResponse.json({ pending: await pendingRecoveryFor(user.id) })
+      const n = await cancelOpenRecoveryRequests(admin, user.id, req, 'owner_from_settings')
+      return NextResponse.json({ cancelled: n })
+    }
 
     if (action === 'request') {
       if (typeof body.password !== 'string' || !body.password) {

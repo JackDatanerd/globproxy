@@ -1,6 +1,6 @@
-import { rejectCrossSite } from '@/lib/apiAuth'
+import { rejectCrossSite, requireActiveUser } from '@/lib/apiAuth'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { listTrustedBrowsers, revokeTrustedBrowser, getMfaCookieFromRequest } from '@/lib/mfa'
+import { listTrustedBrowsers, revokeTrustedBrowser, getMfaCookieFromRequest, requireMfaVerified } from '@/lib/mfa'
 import { logSecurityEvent } from '@/lib/securityEvents'
 import { rateLimited } from '@/lib/rateLimit'
 import { NextResponse } from 'next/server'
@@ -12,6 +12,10 @@ export async function GET(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const inactive = await requireActiveUser(user.id)
+  if (inactive) return inactive
+  const mfaBlock = await requireMfaVerified(req, user.id)
+  if (mfaBlock) return mfaBlock
   try {
     return NextResponse.json({ browsers: await listTrustedBrowsers(user.id, getMfaCookieFromRequest(req)) })
   } catch (e: any) {
@@ -28,6 +32,10 @@ export async function DELETE(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const inactive = await requireActiveUser(user.id)
+  if (inactive) return inactive
+  const mfaBlock = await requireMfaVerified(req, user.id)
+  if (mfaBlock) return mfaBlock
 
   const { id } = await req.json().catch(() => ({}))
   if (typeof id !== 'string') return NextResponse.json({ error: 'Missing browser id.' }, { status: 400 })

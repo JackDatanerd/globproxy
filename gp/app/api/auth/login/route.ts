@@ -1,9 +1,10 @@
 import { rejectCrossSite } from '@/lib/apiAuth'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { rateLimited } from '@/lib/rateLimit'
+import { rateLimited, clientKey } from '@/lib/rateLimit'
 import { verifyTurnstile, captchaOptions } from '@/lib/turnstile'
-import { throttleHit, throttleClear, THROTTLE_MSG } from '@/lib/authThrottle'
-import { recordLogin, sendNewDeviceNotice, sendLoginThrottleNotice, logSecurityEvent } from '@/lib/securityEvents'
+import { throttleHit, throttleClear, THROTTLE_MSG, THROTTLE_ACCOUNT_MSG } from '@/lib/authThrottle'
+import { recordLogin, sendNewDeviceNotice, sendLoginThrottleNotice, logSecurityEvent, isKnownLoginIp, requestMeta } from '@/lib/securityEvents'
+import { recordSessionDevice } from '@/lib/sessionDevices'
 import { NextResponse } from 'next/server'
 
 // Server-side sign-in. The login page used to call
@@ -34,24 +35,36 @@ export async function POST(req: Request) {
   const human = await verifyTurnstile(req, turnstileToken)
   if (!human.ok) return NextResponse.json({ error: human.error, code: 'captcha_failed' }, { status: 400 })
 
-  // Per-ACCOUNT throttle on top of the per-IP limiter: 10 attempts / 15 min
-  // per email address no matter how many IPs the guesses come from. The
-  // counter is cleared by a successful sign-in. The response is identical for
-  // existing and non-existing addresses.
-  const gate = await throttleHit('login', email, 10, 15 * 60)
-  if (gate !== 'ok') {
-    if (gate === 'blocked_first') {
+  // Two layers on top of the per-IP limiter, deliberately NOT a plain
+  // per-account lockout (that would let anyone who can send ten requests keep
+  // the real owner out forever):
+  //  1. account + connection: 10 attempts / 15 min. Only the connection that
+  //     kept guessing is paused; the owner on their own network is untouched.
+  //  2. account-wide ceiling: 40 / 15 min across every connection. Past it the
+  //     owner is alerted and only connections the account has signed in from
+  //     before may keep trying, so a botnet can't grind passwords and a
+  //     stranger can't lock the owner out.
+  const norm = email.trim().toLowerCase()
+  const conn = clientKey(req) ?? 'noip'
+  const gate = await throttleHit('login', `${norm}|${conn}`, 10, 15 * 60)
+  if (gate !== 'ok') return NextResponse.json({ error: THROTTLE_MSG, code: 'throttled' }, { status: 429 })
+
+  const acctGate = await throttleHit('loginacct', norm, 40, 15 * 60)
+  if (acctGate !== 'ok') {
+    if (acctGate === 'blocked_first') {
       // One alert per window to the real owner (if there is one).
       try {
         const adm = await createAdminClient()
-        const { data: owner } = await adm.from('profiles').select('id, email, full_name').eq('email', email.trim().toLowerCase()).maybeSingle()
+        const { data: owner } = await adm.from('profiles').select('id, email, full_name').eq('email', norm).maybeSingle()
         if (owner?.id && owner.email && owner.email !== '[deleted]') {
           await logSecurityEvent({ userId: owner.id, event: 'login_throttled', req, admin: adm })
           await sendLoginThrottleNotice(owner.email, owner.full_name, req.headers.get('cf-connecting-ip'))
         }
       } catch (e) { console.error('[auth/login] throttle alert failed', e) }
     }
-    return NextResponse.json({ error: THROTTLE_MSG, code: 'throttled' }, { status: 429 })
+    if (!(await isKnownLoginIp(norm, requestMeta(req).ip))) {
+      return NextResponse.json({ error: THROTTLE_ACCOUNT_MSG, code: 'throttled' }, { status: 429 })
+    }
   }
 
   const supabase = await createClient()
@@ -77,7 +90,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: msg }, { status: status === 429 ? 429 : 400 })
   }
 
-  await throttleClear('login', email)
+  await throttleClear('login', `${norm}|${conn}`)
 
   const admin = await createAdminClient()
   const { data: profile } = await admin
@@ -97,6 +110,7 @@ export async function POST(req: Request) {
     )
   }
 
+  await recordSessionDevice(data.user.id, data.session?.access_token, req)
   const { newDevice, ip, ua } = await recordLogin(data.user.id, req)
   if (newDevice && data.user.email) {
     await sendNewDeviceNotice(data.user.email, profile?.full_name, ip, ua)

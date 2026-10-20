@@ -29,6 +29,8 @@ export default function TwoFactorSettings({ role: _role }: { role?: string } = {
   const [submitting, setSubmitting] = useState(false)
   const [newCodes, setNewCodes] = useState<string[] | null>(null)
   const [loadError, setLoadError] = useState('')
+  const [pending, setPending] = useState<{ state: 'waiting' | 'ready'; ready_at: string } | null>(null)
+  const [cancellingRecovery, setCancellingRecovery] = useState(false)
 
   async function loadStatus() {
     setLoadError('')
@@ -36,7 +38,12 @@ export default function TwoFactorSettings({ role: _role }: { role?: string } = {
       const { data: { session } } = await createClient().auth.getSession()
       const res = await fetch('/api/auth/mfa/status', { headers: { Authorization: `Bearer ${session?.access_token}` } })
       if (res.ok) {
-        setStatus(await res.json())
+        const st: Status = await res.json()
+        setStatus(st)
+        // Someone (maybe not you) may have started removing 2FA by e-mail —
+        // surface it here, where the real owner will actually look.
+        if (st.confirmed && st.verified) loadPending()
+        else setPending(null)
       } else {
         // Never fall back to showing "NOT ENABLED" when the lookup itself
         // failed — an enrolled account would be offered an Enable button.
@@ -45,6 +52,30 @@ export default function TwoFactorSettings({ role: _role }: { role?: string } = {
       }
     } catch {
       setLoadError('Could not load your two-factor status right now.')
+    }
+  }
+
+  async function loadPending() {
+    try {
+      const res = await authedFetch('/api/auth/mfa/recovery', { action: 'pending' })
+      if (!res.ok) return
+      const data = await res.json().catch(() => ({}))
+      setPending(data.pending ?? null)
+    } catch { /* the banner is a bonus; never block the card on it */ }
+  }
+
+  async function cancelPending() {
+    setCancellingRecovery(true)
+    try {
+      const res = await authedFetch('/api/auth/mfa/recovery', { action: 'cancel_mine' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error)
+      setPending(null)
+      toast.success('Two-factor removal cancelled. If you didn’t start it, change your password too.')
+    } catch (e: any) {
+      toast.error(e?.message || 'Could not cancel that right now.')
+    } finally {
+      setCancellingRecovery(false)
     }
   }
 
@@ -143,6 +174,30 @@ export default function TwoFactorSettings({ role: _role }: { role?: string } = {
           <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">NOT ENABLED</span>
         )}
       </div>
+
+      {status.confirmed && pending && (
+        <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-3 mb-4">
+          <p className="font-medium mb-1">Two-factor removal in progress</p>
+          <p className="mb-2">
+            {pending.state === 'ready'
+              ? 'A request to remove two-factor authentication from this account is ready to be completed.'
+              : `A request to remove two-factor authentication from this account will be ready on ${new Date(pending.ready_at).toLocaleString()}.`}
+            {' '}If this wasn’t you, cancel it and change your password.
+          </p>
+          <button onClick={cancelPending} disabled={cancellingRecovery}
+            className="font-mono border border-red-300 rounded-lg px-3 py-1.5 bg-white hover:bg-red-100 transition-colors disabled:opacity-60">
+            {cancellingRecovery ? 'Cancelling…' : 'Cancel removal'}
+          </button>
+        </div>
+      )}
+
+      {status.confirmed && status.backup_codes_remaining !== null && status.backup_codes_remaining <= 3 && (
+        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 mb-4">
+          {status.backup_codes_remaining === 0
+            ? 'You have no backup codes left. Regenerate a set now so losing your authenticator can’t lock you out.'
+            : `Only ${status.backup_codes_remaining} backup code${status.backup_codes_remaining === 1 ? '' : 's'} left. Regenerate a fresh set so losing your authenticator can’t lock you out.`}
+        </p>
+      )}
 
       {!status.confirmed && (
         <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 mb-4">

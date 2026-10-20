@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
 import { requireMfaVerified } from '@/lib/mfa'
+import { requireStepUp } from '@/lib/reauth'
 
 export type AdminSupabase = Awaited<ReturnType<typeof createAdminClient>>
 
@@ -29,7 +30,13 @@ export async function authorizeAdmin(req: Request): Promise<AdminAuthResult> {
     return { ok: false, response: NextResponse.json({ error: 'Forbidden' }, { status: 403 }) }
   }
 
-  const mfaCheck = await requireMfaVerified(req, user.id)
+  // Reads need the verified second factor (when enrolled). Anything that
+  // changes state needs the full step-up: 2FA for enrolled admins, and for
+  // admins who haven't turned 2FA on (it is optional) a password re-entry in
+  // the last 10 minutes — otherwise a stolen admin session alone could change
+  // roles, mark payouts paid or reset someone's 2FA with no further proof.
+  const isRead = req.method === 'GET' || req.method === 'HEAD'
+  const mfaCheck = isRead ? await requireMfaVerified(req, user.id) : await requireStepUp(req, user.id)
   if (mfaCheck) return { ok: false, response: mfaCheck }
 
   return { ok: true, supabase, adminId: user.id }

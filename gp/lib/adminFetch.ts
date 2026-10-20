@@ -1,5 +1,6 @@
 'use client'
 import { createClient } from '@/lib/supabase/client'
+import { fetchWithReauth } from '@/lib/reauthPrompt'
 
 // One place for every admin-panel button to call an /api/admin/* route.
 // Previously each component hand-rolled getSession + fetch + res.json():
@@ -15,12 +16,19 @@ export async function adminPost<T = any>(
     if (!session?.access_token) {
       return { ok: false, status: 401, data: { error: 'Your session has expired — refresh the page and sign in again.' } as any }
     }
-    const res = await fetch(path, {
+    // fetchWithReauth: admins without 2FA get the password prompt and the
+    // call is retried (the admin routes require a fresh step-up).
+    const res = await fetchWithReauth(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
       body: JSON.stringify(body ?? {}),
     })
     const data = await res.json().catch(() => ({}))
+    if (res.status === 403 && (data as any)?.code === 'mfa_required') {
+      const next = encodeURIComponent(window.location.pathname + window.location.search)
+      window.location.href = `${(data as any).redirect || '/auth/mfa-verify'}?next=${next}`
+      return { ok: false, status: 403, data: { ...data, error: 'Two-factor verification required — redirecting…' } as any }
+    }
     return { ok: res.ok && !data?.error, status: res.status, data }
   } catch {
     return { ok: false, status: 0, data: { error: 'Network error — check your connection and try again.' } as any }

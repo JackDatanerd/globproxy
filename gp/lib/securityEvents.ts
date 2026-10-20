@@ -29,6 +29,8 @@ export type SecurityEventType =
   | 'mfa_recovery_confirmed'
   | 'mfa_recovery_cancelled'
   | 'mfa_recovery_completed'
+  | 'mfa_verified'
+  | 'mfa_failed'
 
 export function requestMeta(req?: Request): { ip: string | null; ua: string | null } {
   if (!req) return { ip: null, ua: null }
@@ -103,6 +105,28 @@ export async function recordLogin(userId: string, req: Request): Promise<{ newDe
   } catch (e) {
     console.error('[security_events] recordLogin failed', e)
     return { newDevice: false, ip, ua }
+  }
+}
+
+/**
+ * True when this account has signed in from this IP in the last 90 days.
+ * Used only while an account is under a sustained, distributed guessing
+ * attack, so the real owner on a familiar connection is never locked out by
+ * strangers' failed attempts.
+ */
+export async function isKnownLoginIp(email: string, ip: string | null): Promise<boolean> {
+  if (!ip) return false
+  try {
+    const admin = await createAdminClient()
+    const { data: owner } = await admin.from('profiles').select('id').eq('email', email.trim().toLowerCase()).maybeSingle()
+    if (!owner?.id) return false
+    const since = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()
+    const { data } = await admin.from('security_events').select('id')
+      .eq('user_id', owner.id).eq('event', 'login').eq('ip', ip).gte('created_at', since).limit(1)
+    return (data?.length ?? 0) > 0
+  } catch (e) {
+    console.error('[security_events] isKnownLoginIp failed', e)
+    return false
   }
 }
 
@@ -261,8 +285,8 @@ export async function notifySecurityChange(userId: string, heading: string, deta
   }
 }
 
-export async function sendEmailChangedNotice(oldEmail: string, fullName: string | null | undefined, newEmailMasked: string) {
-  await sendEmailSafe({
+export async function sendEmailChangedNotice(oldEmail: string, fullName: string | null | undefined, newEmailMasked: string): Promise<boolean> {
+  return sendEmailSafe({
     to: oldEmail,
     subject: 'The email address on your GlobProxy account was changed',
     html: securityNoticeHtml({
@@ -337,9 +361,10 @@ export async function flushSecurityNotices(userId?: string, minAgeMs = 0): Promi
       const meta = (ev.meta ?? {}) as { old_email?: string; new_email_masked?: string }
       if (meta.old_email) {
         const { data: profile } = await admin.from('profiles').select('full_name').eq('id', ev.user_id).maybeSingle()
-        try {
-          await sendEmailChangedNotice(meta.old_email, profile?.full_name, meta.new_email_masked ?? 'your new address')
-        } catch { ok = false }
+        // sendEmailSafe never throws — a failed provider call comes back as
+        // false, which must send the event back to the queue (it is the
+        // old address's only warning that the login email changed).
+        ok = await sendEmailChangedNotice(meta.old_email, profile?.full_name, meta.new_email_masked ?? 'your new address')
       }
     }
     if (ok) {
@@ -350,4 +375,56 @@ export async function flushSecurityNotices(userId?: string, minAgeMs = 0): Promi
     }
   }
   return sent
+}
+
+// ── Signup against an address that already has an account ───────────────
+// The signup form answers identically for every address (no enumeration), so
+// the only way the real owner learns anything is this email.
+export async function sendSignupExistingNotice(to: string, state: 'active' | 'deleted') {
+  const body = state === 'deleted'
+    ? `<p style="color:#444;text-align:center;">
+         Someone (hopefully you) tried to create a GlobProxy account with this email address. The address
+         belonged to an account that has since been closed, so it can't be used to sign up again.
+       </p>
+       <p style="color:#444;text-align:center;">
+         If you'd like to come back, contact support and we'll help. If this wasn't you, ignore this email.
+       </p>
+       ${supportLine()}`
+    : `<p style="color:#444;text-align:center;">
+         Someone (hopefully you) tried to create a GlobProxy account with this email address — but you
+         already have one. Sign in instead, or reset your password if you've forgotten it.
+       </p>
+       <p style="text-align:center;margin:24px 0;">
+         <a href="${APP_URL()}/auth/login" style="background:#fff;color:#111;border:1px solid #ccc;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:bold;margin-right:8px;">Sign in</a>
+         <a href="${APP_URL()}/auth/reset" style="background:#111;color:#fff;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:bold;">Reset password</a>
+       </p>
+       <p style="color:#444;text-align:center;">If it wasn't you, ignore this email — nothing has changed.</p>
+       ${supportLine()}`
+  await sendEmailSafe({
+    to,
+    subject: state === 'deleted' ? 'About signing up to GlobProxy' : 'You already have a GlobProxy account',
+    html: securityNoticeHtml({ heading: state === 'deleted' ? 'This address can\'t be reused' : 'You already have an account', bodyHtml: body }),
+  })
+}
+
+// ── Backup codes running low ───────────────────────────────────────────
+export async function sendBackupCodesLowNotice(to: string, fullName: string | null | undefined, remaining: number) {
+  await sendEmailSafe({
+    to,
+    subject: remaining === 0 ? 'You have no GlobProxy backup codes left' : 'Your GlobProxy backup codes are running low',
+    html: securityNoticeHtml({
+      heading: remaining === 0 ? 'No backup codes left' : 'Backup codes running low',
+      bodyHtml: `
+        <p style="color:#444;text-align:center;">
+          Hi ${escapeHtml(fullName) || 'there'}, a backup code was just used to sign in to your GlobProxy account.
+          You have <strong>${remaining}</strong> left.
+        </p>
+        <p style="color:#444;text-align:center;">
+          Sign in and generate a fresh set under Settings → Two-factor authentication so you don't get locked
+          out if you lose your authenticator. If you didn't use a backup code, reset your password now.
+        </p>
+        ${resetButton()}
+        ${supportLine()}`,
+    }),
+  })
 }

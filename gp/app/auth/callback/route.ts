@@ -2,9 +2,9 @@ import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { safeNextPath } from '@/lib/safeNext'
 import { RECOVERY_COOKIE_NAME, RECOVERY_TTL_S, makeRecoveryCookieValue } from '@/lib/recoveryCookie'
+import { recordSessionDevice } from '@/lib/sessionDevices'
 
-// Marks THIS session as having just arrived via an emailed link (recovery or
-// invite), so /api/auth/password lets it set a new password without the
+// Marks THIS session as having just arrived via an emailed recovery link, so /api/auth/password lets it set a new password without the
 // current one. See lib/recoveryCookie.ts.
 async function withEmailProofCookie(res: NextResponse, userId: string | null): Promise<NextResponse> {
   if (userId) {
@@ -53,22 +53,24 @@ export async function GET(request: Request) {
     // decides what the visitor is shown; it must never be what grants the
     // "arrived by e-mail proof" cookie (set a new password with no current
     // password and no 2FA). The cookie is minted only when GoTrue's own record
-    // agrees that a recovery / invite e-mail was sent to this account
-    // recently, which a code from an ordinary sign-in or confirmation link
-    // can't satisfy.
-    if (data.user && (type === 'recovery' || type === 'invite')) {
-      const stamp = type === 'recovery' ? data.user.recovery_sent_at : data.user.invited_at
-      const maxAgeMs = type === 'recovery' ? 2 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000
-      const sentAt = stamp ? new Date(stamp).getTime() : NaN
-      if (Number.isFinite(sentAt) && Date.now() - sentAt <= maxAgeMs) {
+    // agrees that a recovery e-mail was sent to this account recently — and
+    // "recently" is GoTrue's own one-hour link lifetime plus slack, so the
+    // stamp (which GoTrue never clears) can't be borrowed for long. There is
+    // no invite flow in this app, so an `invite` type is just a normal link.
+    if (data.user && type === 'recovery') {
+      const sentAt = data.user.recovery_sent_at ? new Date(data.user.recovery_sent_at).getTime() : NaN
+      if (Number.isFinite(sentAt) && Date.now() - sentAt <= 65 * 60 * 1000) {
         recoveryUserId = data.user.id
       } else {
-        console.error('[auth/callback] refused', type, 'proof: no recent e-mail of that kind on this account')
+        console.error('[auth/callback] refused recovery proof: no recent recovery e-mail on this account')
         await s.auth.signOut({ scope: 'local' }).catch(() => {})
-        const dest = type === 'recovery' ? '/auth/reset' : '/auth/login'
-        return NextResponse.redirect(`${origin}${dest}?error=link_expired`)
+        return NextResponse.redirect(`${origin}/auth/reset?error=link_expired`)
       }
     }
+
+    // The visitor's real IP / user-agent for the "Where you're signed in" card
+    // (auth.sessions only has this server's).
+    if (data.user) await recordSessionDevice(data.user.id, data.session?.access_token, request)
 
     // signup/route.ts stores intended_role: 'reseller' in auth user_metadata
     // for the "Apply to resell" signup variant. The working application flow

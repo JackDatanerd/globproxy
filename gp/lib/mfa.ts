@@ -5,7 +5,7 @@ import {
   encryptSecret, decryptSecret, secretNeedsRewrite, MfaConfigError,
   hashBackupCode, backupCodeHashCandidates,
 } from '@/lib/mfaCrypto'
-import { sendLockoutNotice, logSecurityEvent } from '@/lib/securityEvents'
+import { sendLockoutNotice, sendBackupCodesLowNotice, logSecurityEvent } from '@/lib/securityEvents'
 import { NextResponse } from 'next/server'
 
 type AdminClient = Awaited<ReturnType<typeof createAdminClient>>
@@ -217,14 +217,23 @@ async function checkCode(
       if (ok && (await secretNeedsRewrite(factor.secret))) {
         // Lazy upgrade: legacy plaintext, or encrypted under the previous
         // key, is rewritten under the current key.
-        const plain = await decryptSecret(factor.secret)
-        await supabase.from('mfa_totp_factors').update({ secret: await encryptSecret(plain) }).eq('user_id', userId)
+        // Best-effort: the code is ALREADY consumed at this point, so a failure
+        // here must not surface as an error (it would refund the attempt and
+        // tell the user to retry a code that can no longer be replayed).
+        try {
+          const plain = await decryptSecret(factor.secret)
+          const { error: rwErr } = await supabase.from('mfa_totp_factors').update({ secret: await encryptSecret(plain) }).eq('user_id', userId)
+          if (rwErr) console.error('[mfa] secret rewrite failed', userId, rwErr.message)
+        } catch (rwEx) {
+          console.error('[mfa] secret rewrite threw', userId, rwEx)
+        }
       }
     }
     if (!ok) throw new WrongCode()
     return parsed.kind
   } catch (e) {
     if (e instanceof WrongCode) {
+      await logSecurityEvent({ userId, event: 'mfa_failed', req: ctx?.req, admin: supabase, meta: { kind: parsed.kind } })
       if (gate === 'ok_last') await announceLockout(supabase, userId, ctx?.req)
       if (replayed) throw new Error('That code was already used. Wait for the next one to appear in your authenticator and try again.')
       throw new Error(parsed.kind === 'backup' ? wrongMsg.backup : wrongMsg.totp)
@@ -403,11 +412,49 @@ export async function verifyFactor(
   const { token, ttlS } = await createVerifiedSession(supabase, userId, ttl, { req: opts.req, remembered })
   if (remembered) await logSecurityEvent({ userId, event: 'mfa_browser_trusted', req: opts.req, admin: supabase })
 
+  await logSecurityEvent({ userId, event: 'mfa_verified', req: opts.req, admin: supabase, meta: { kind, remembered } })
+  // Proof the real owner still holds the authenticator: any 2FA-removal
+  // request that was started in the meantime is no longer needed.
+  await cancelOpenRecoveryRequests(supabase, userId, opts.req, 'sign_in')
+
   const result: VerifyResult = { session_token: token, session_ttl_s: ttlS, used_backup_code: kind === 'backup' }
   if (kind === 'backup') {
-    result.backup_codes_remaining = await countRemainingBackupCodes(userId, supabase)
+    const remaining = await countRemainingBackupCodes(userId, supabase)
+    result.backup_codes_remaining = remaining
+    if (remaining <= 2) {
+      try {
+        const { data: profile } = await supabase.from('profiles').select('email, full_name').eq('id', userId).maybeSingle()
+        if (profile?.email && profile.email !== '[deleted]') await sendBackupCodesLowNotice(profile.email, profile.full_name, remaining)
+      } catch (e) {
+        console.error('[mfa] low backup code notice failed', e)
+      }
+    }
   }
   return result
+}
+
+/**
+ * Cancels every still-open 2FA recovery request for the user. Called when the
+ * owner proves they hold the authenticator (successful sign-in code), and
+ * available to the signed-in cancel button. Returns how many were cancelled.
+ */
+export async function cancelOpenRecoveryRequests(supabase: AdminClient, userId: string, req?: Request, reason = 'owner'): Promise<number> {
+  try {
+    const { data, error } = await supabase
+      .from('mfa_recovery_requests')
+      .update({ cancelled_at: new Date().toISOString() })
+      .eq('user_id', userId)
+      .is('completed_at', null)
+      .is('cancelled_at', null)
+      .select('id')
+    if (error) { console.error('[mfa] cancelOpenRecoveryRequests failed', error.message); return 0 }
+    const n = data?.length ?? 0
+    if (n > 0) await logSecurityEvent({ userId, event: 'mfa_recovery_cancelled', req, admin: supabase, meta: { reason }, notify: false })
+    return n
+  } catch (e) {
+    console.error('[mfa] cancelOpenRecoveryRequests threw', e)
+    return 0
+  }
 }
 
 // ── Backup codes ──────────────────────────────────────────────────────
@@ -668,23 +715,8 @@ export async function adminResetMfa(userId: string): Promise<void> {
 }
 
 /** The GoTrue session id carried in an access token (null if absent/unparseable). */
-export function sessionIdFromJwt(accessToken: string | undefined): string | null {
-  try {
-    const payload = accessToken?.split('.')[1]
-    if (!payload) return null
-    const json = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')))
-    return typeof json?.session_id === 'string' ? json.session_id : null
-  } catch {
-    return null
-  }
-}
+export { sessionIdFromJwt } from '@/lib/sessionDevices'
 
-/**
- * Ends the account's login sessions except `keepSessionId` (all of them when
- * omitted). Used when 2FA is removed through recovery or by an admin: whoever
- * else is signed in has to sign in again. Best effort — a failure is logged,
- * never allowed to undo the reset that already committed.
- */
 export async function revokeOtherSessions(userId: string, keepSessionId?: string | null): Promise<void> {
   try {
     const supabase = await createAdminClient()

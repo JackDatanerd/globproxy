@@ -1,8 +1,8 @@
-import { rejectCrossSite } from '@/lib/apiAuth'
+import { rejectCrossSite, requireActiveUser } from '@/lib/apiAuth'
 import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { rateLimited } from '@/lib/rateLimit'
-import { revokeOtherVerifiedSessions, getMfaCookieFromRequest } from '@/lib/mfa'
+import { revokeOtherVerifiedSessions, getMfaCookieFromRequest, requireMfaVerified } from '@/lib/mfa'
 import { logSecurityEvent } from '@/lib/securityEvents'
 
 // "Sign out of all other devices": revokes every other Supabase session for
@@ -17,6 +17,13 @@ export async function POST(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // Without this a password-only session could sign the owner out everywhere
+  // and wipe every trusted browser (revokeOtherVerifiedSessions keeps only the
+  // caller's own cookie, which a not-yet-verified session doesn't have).
+  const inactive = await requireActiveUser(user.id)
+  if (inactive) return inactive
+  const mfaBlock = await requireMfaVerified(req, user.id)
+  if (mfaBlock) return mfaBlock
 
   const { error } = await supabase.auth.signOut({ scope: 'others' })
   if (error) {

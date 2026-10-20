@@ -26,7 +26,9 @@ export default function DashTopbar({
     // without this a shared machine would stay MFA-verified until the
     // cookie's natural expiry even after the account signs out.
     await fetch('/api/auth/mfa/logout', { method: 'POST' }).catch(() => {})
-    const { error } = await createClient().auth.signOut()
+    const { error } = // Local scope: signing out here must not end the user's other devices
+    // (that is what "Sign out of all other devices" is for).
+    await createClient().auth.signOut({ scope: 'local' })
     if (error) {
       // Previously reported "Signed out" and navigated away even when the
       // session was still alive.

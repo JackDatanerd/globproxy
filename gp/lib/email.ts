@@ -65,7 +65,7 @@ function htmlToText(html: string): string {
     .replace(/<a\s[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi, (_m, href: string, label: string) => `${label.replace(/<[^>]+>/g, '').trim()} (${href})`)
     .replace(/<(br|\/p|\/h\d|\/div)\s*\/?>/gi, '\n')
     .replace(/<[^>]+>/g, '')
-    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&') // &amp; LAST so "&amp;lt;" decodes to "&lt;", not "<"
     .replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n')
     .trim()
 }

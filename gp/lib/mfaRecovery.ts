@@ -83,6 +83,25 @@ function stateOf(r: Row): RecoveryState {
   return Date.now() - readyAt > RECOVERY_READY_WINDOW_MS ? 'expired' : 'ready'
 }
 
+/**
+ * The newest still-open recovery request on this account, for the owner's
+ * Settings page. Only 'confirmed' ones matter there (an unconfirmed request
+ * hasn't started any clock); expired ones are ignored.
+ */
+export async function pendingRecoveryFor(userId: string): Promise<{ state: 'waiting' | 'ready'; ready_at: string } | null> {
+  const admin = await createAdminClient()
+  const { data, error } = await admin.from('mfa_recovery_requests')
+    .select('id, user_id, created_at, expires_at, confirmed_at, ready_at, cancelled_at, completed_at')
+    .eq('user_id', userId).is('cancelled_at', null).is('completed_at', null).not('confirmed_at', 'is', null)
+    .order('created_at', { ascending: false }).limit(3)
+  if (error) throw new Error('Could not check for a pending recovery right now.')
+  for (const r of (data ?? []) as Row[]) {
+    const st = stateOf(r)
+    if ((st === 'waiting' || st === 'ready') && r.ready_at) return { state: st, ready_at: r.ready_at }
+  }
+  return null
+}
+
 /** Step 1 — the signed-in owner (password already verified by the route) asks for recovery. */
 export async function requestRecovery(userId: string, email: string, fullName: string | null | undefined, req?: Request): Promise<void> {
   if (!(await isMfaEnrolled(userId))) throw new Error('Two-factor authentication is not turned on for this account.')

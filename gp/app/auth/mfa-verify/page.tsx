@@ -59,7 +59,7 @@ function MfaVerifyFlow() {
   async function signOut() {
     // Our own gp_mfa cookie is invisible to Supabase's signOut — revoke it too.
     await fetch('/api/auth/mfa/logout', { method: 'POST' }).catch(() => {})
-    await createClient().auth.signOut()
+    await createClient().auth.signOut({ scope: 'local' })
     router.push('/auth/login')
   }
 

@@ -23,5 +23,7 @@ export const SECURITY_EVENT_LABELS: Record<string, string> = {
   mfa_recovery_requested: 'Two-factor recovery requested',
   mfa_recovery_confirmed: 'Two-factor recovery confirmed — waiting period started',
   mfa_recovery_cancelled: 'Two-factor recovery cancelled',
+  mfa_verified: 'Two-factor code accepted',
+  mfa_failed: 'Incorrect two-factor code entered',
   mfa_recovery_completed: 'Two-factor authentication removed through recovery',
 }

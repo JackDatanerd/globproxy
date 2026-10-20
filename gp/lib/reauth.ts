@@ -21,7 +21,9 @@ export const SUDO_TTL_S = 10 * 60
 const enc = new TextEncoder()
 
 async function sign(payload: string): Promise<string> {
-  const secret = process.env.SUPABASE_SERVICE_ROLE_KEY ?? ''
+  const secret = process.env.SUPABASE_SERVICE_ROLE_KEY
+  // Fail closed: an empty key would make every cookie forgeable.
+  if (!secret) throw new Error('SUPABASE_SERVICE_ROLE_KEY is not set; refusing to sign cookies')
   const key = await crypto.subtle.importKey('raw', enc.encode(`gp-sudo:${secret}`), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
   const sig = await crypto.subtle.sign('HMAC', key, enc.encode(payload))
   return Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('')
@@ -47,7 +49,11 @@ export async function verifySudoCookieValue(value: string | undefined, userId: s
   if (uid !== userId) return false
   const exp = Number(expStr)
   if (!Number.isFinite(exp) || exp < Date.now()) return false
-  return timingSafeEqual(mac, await sign(`${uid}.${expStr}`))
+  try {
+    return timingSafeEqual(mac, await sign(`${uid}.${expStr}`))
+  } catch {
+    return false
+  }
 }
 
 /** Expire the sudo cookie (sign-out, password change). */

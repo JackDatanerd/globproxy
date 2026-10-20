@@ -37,4 +37,8 @@ export async function throttleClear(scope: string, identifier: string): Promise<
   }
 }
 
-export const THROTTLE_MSG = 'Too many attempts for this account. Wait 15 minutes, or use "Forgot password" to get back in right away.'
+// Hard limit, per account AND connection: only the address that kept guessing is paused.
+export const THROTTLE_MSG = 'Too many sign-in attempts from this connection. Wait 15 minutes and try again, or use "Forgot password".'
+// Account-wide ceiling under a sustained distributed attack: only connections
+// this account has signed in from before may keep trying.
+export const THROTTLE_ACCOUNT_MSG = 'There have been a lot of sign-in attempts on this account. From a new location, use "Forgot password" to get back in; otherwise wait 15 minutes.'

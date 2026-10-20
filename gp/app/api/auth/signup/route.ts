@@ -7,6 +7,8 @@ import { REF_COOKIE, REF_SUB_COOKIE, readCookie, hashIp } from '@/lib/referralAt
 import { validatePasswordStrict } from '@/lib/passwordPolicy'
 import { verifyTurnstile, captchaOptions } from '@/lib/turnstile'
 import { holdUntil } from '@/lib/constantTime'
+import { throttleHit } from '@/lib/authThrottle'
+import { sendSignupExistingNotice } from '@/lib/securityEvents'
 import { sameOriginUrl } from '@/lib/appUrl'
 import { NextResponse } from 'next/server'
 
@@ -139,7 +141,17 @@ export async function POST(req: Request) {
         await holdUntil(startedAt, RESPONSE_FLOOR_MS, work)
         return genericResponse()
       }
-      await holdUntil(startedAt, RESPONSE_FLOOR_MS)
+      // Confirmed address: the form still answers identically, but the real
+      // owner is told by email (instead of waiting for a message that never
+      // comes). Capped per address so it can't be used to mail-bomb someone.
+      // Suspended accounts get nothing; a closed account gets its own note.
+      const { data: state } = await supabase.rpc('auth_account_state', { check_email: normalized })
+      const work = (async () => {
+        if (state !== 'active' && state !== 'deleted') return
+        if ((await throttleHit('signup-notice', normalized, 2, 60 * 60)) !== 'ok') return
+        await sendSignupExistingNotice(normalized, state)
+      })().catch(e => console.error('[auth/signup] existing-account notice failed', e))
+      await holdUntil(startedAt, RESPONSE_FLOOR_MS, work)
       return genericResponse()
     }
 

@@ -158,13 +158,15 @@ export function SecurityActivityCard({ className = 'mb-5' }: { className?: strin
       .from('security_events')
       .select('id, event, ip, user_agent, created_at')
       .order('created_at', { ascending: false })
-      .limit(60)
+      .limit(100)
     if (error) { setLoadFailed(true); return }
-    // Routine sign-ins would otherwise push the rare, important events
-    // (password / 2FA / API-key changes) off a short list: keep every
-    // non-login event but only the three most recent sign-ins.
-    let logins = 0
-    const kept = ((data ?? []) as SecurityEventRow[]).filter(r => r.event !== 'login' || ++logins <= 3)
+    // Routine events (sign-ins, accepted / rejected 2FA codes) would otherwise
+    // push the rare, important ones (password / 2FA / API-key changes) off a
+    // short list: keep every other event but only the three most recent of
+    // each routine kind.
+    const ROUTINE = new Set(['login', 'mfa_verified', 'mfa_failed'])
+    const seen: Record<string, number> = {}
+    const kept = ((data ?? []) as SecurityEventRow[]).filter(r => !ROUTINE.has(r.event) || (seen[r.event] = (seen[r.event] ?? 0) + 1) <= 3)
     setRows(kept.slice(0, 15))
   }
 
@@ -281,7 +283,7 @@ export function ActiveSessionsCard({ className = 'mb-5' }: { className?: string 
             <li key={d.id} className="py-2.5 flex items-center justify-between gap-3 text-sm">
               <div className="min-w-0">
                 <div className="text-ink2 truncate">
-                  {shortUa(d.user_agent)}
+                  {shortUa(d.user_agent) || 'Signed-in device'}
                   {d.current && <span className="ml-2 text-[10px] font-mono text-accent uppercase">this device</span>}
                 </div>
                 <div className="text-[11px] font-mono text-muted">
