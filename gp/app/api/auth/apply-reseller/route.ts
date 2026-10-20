@@ -1,3 +1,5 @@
+import { requireMfaVerified } from '@/lib/mfa'
+import { rejectCrossSite } from '@/lib/apiAuth'
 import { appUrl } from '@/lib/appUrl'
 import { NextResponse } from 'next/server'
 import { requireActiveUser } from '@/lib/apiAuth'
@@ -10,6 +12,9 @@ function cleanStr(v: unknown, max: number): string {
 }
 
 export async function POST(req: Request) {
+  const cross = rejectCrossSite(req)
+  if (cross) return cross
+
   try {
     // Authenticate with the regular session client — never trust a
     // client-asserted user id for a write like this.
@@ -21,6 +26,8 @@ export async function POST(req: Request) {
 
     const inactive = await requireActiveUser(user.id)
     if (inactive) return inactive
+    const mfaBlock = await requireMfaVerified(req, user.id)
+    if (mfaBlock) return mfaBlock
 
     const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', `apply:${user.id}`)
     if (limited) return limited

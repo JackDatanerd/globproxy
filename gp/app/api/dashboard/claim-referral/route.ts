@@ -1,3 +1,4 @@
+import { requireMfaVerified } from '@/lib/mfa'
 import { NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
@@ -26,6 +27,8 @@ export async function POST(req: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  const mfaBlock = await requireMfaVerified(req, user.id)
+  if (mfaBlock) return mfaBlock
   const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', 'claim-referral')
   if (limited) return limited
   const inactive = await requireActiveUser(user.id)

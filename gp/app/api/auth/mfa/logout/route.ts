@@ -1,3 +1,4 @@
+import { rejectCrossSite } from '@/lib/apiAuth'
 import { revokeVerifiedSession, getMfaCookieFromRequest } from '@/lib/mfa'
 import { clearMfaCookie } from '../_cookie'
 import { RECOVERY_COOKIE_NAME } from '@/lib/recoveryCookie'
@@ -10,6 +11,9 @@ import { NextResponse } from 'next/server'
 // remaining TTL (up to 30 days with "trust this browser") even after the
 // account signed out. Every sign-out path calls this first.
 export async function POST(req: Request) {
+  const cross = rejectCrossSite(req)
+  if (cross) return cross
+
   await revokeVerifiedSession(getMfaCookieFromRequest(req))
   const res = NextResponse.json({ success: true })
   // Also drop the other short-lived proofs: a password-recovery marker or a

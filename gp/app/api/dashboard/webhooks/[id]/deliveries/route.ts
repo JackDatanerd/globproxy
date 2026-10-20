@@ -1,3 +1,4 @@
+import { requireMfaVerified } from '@/lib/mfa'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { listDeliveries } from '@/lib/webhookEndpoints'
 import { NextResponse } from 'next/server'
@@ -8,6 +9,8 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  const mfaBlock = await requireMfaVerified(req, user.id)
+  if (mfaBlock) return mfaBlock
   const { id } = await context.params
   const url = new URL(req.url)
   const r = await listDeliveries(await createAdminClient(), user.id, id, {

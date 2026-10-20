@@ -1,6 +1,6 @@
 import { appUrl } from '@/lib/appUrl'
 import { createAdminClient } from '@/lib/supabase/server'
-import { adminResetMfa, requireMfaVerified } from '@/lib/mfa'
+import { adminResetMfa, requireMfaVerified, revokeOtherSessions } from '@/lib/mfa'
 import { sendEmailSafe, escapeHtml } from '@/lib/email'
 import { logSecurityEvent } from '@/lib/securityEvents'
 import { logAdminAction } from '@/lib/adminAudit'
@@ -52,6 +52,9 @@ export async function POST(req: Request) {
   if (target.role === 'admin') return NextResponse.json({ error: 'Cannot reset MFA on an admin account this way — admins manage their own MFA from Settings.' }, { status: 403 })
 
   await adminResetMfa(user_id)
+  // Whoever else is signed in to that account (the reason for a reset may be a
+  // takeover) must sign in again.
+  await revokeOtherSessions(user_id)
   await logSecurityEvent({ userId: user_id, actorId: caller.id, event: 'mfa_reset_by_admin', req, admin: supabase })
   await logAdminAction(supabase, { adminId: caller.id, action: 'user.mfa_reset', targetUserId: user_id })
 

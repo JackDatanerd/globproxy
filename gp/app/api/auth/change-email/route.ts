@@ -1,3 +1,4 @@
+import { rejectCrossSite } from '@/lib/apiAuth'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { validateEmail } from '@/lib/email-validation'
@@ -14,6 +15,9 @@ import { logSecurityEvent, sendEmailChangeNotice, maskEmail } from '@/lib/securi
 // 2FA step-up (if enrolled), Supabase's own double-confirmation (both the
 // old and the new address must click), and a notice to the OLD address.
 export async function POST(req: Request) {
+  const cross = rejectCrossSite(req)
+  if (cross) return cross
+
   const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', 'password')
   if (limited) return limited
 

@@ -7,6 +7,7 @@ type AdminClient = Awaited<ReturnType<typeof createAdminClient>>
 export type SecurityEventType =
   | 'login'
   | 'password_changed'
+  | 'password_reset_requested'
   | 'email_change_requested'
   | 'mfa_enabled'
   | 'mfa_disabled'
@@ -24,6 +25,7 @@ export type SecurityEventType =
   | 'webhook_created'
   | 'account_deleted'
   | 'mfa_recovery_requested'
+  | 'mfa_recovery_confirmed'
   | 'mfa_recovery_cancelled'
   | 'mfa_recovery_completed'
 

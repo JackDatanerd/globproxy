@@ -1,3 +1,4 @@
+import { rejectCrossSite } from '@/lib/apiAuth'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { rateLimited } from '@/lib/rateLimit'
 import { requireActiveUser } from '@/lib/apiAuth'
@@ -5,6 +6,7 @@ import { verifyCurrentPassword, PASSWORD_THROTTLED_MSG } from '@/lib/passwordChe
 import {
   requestRecovery, recoveryStatus, confirmRecovery, cancelRecovery, completeRecovery,
 } from '@/lib/mfaRecovery'
+import { sessionIdFromJwt } from '@/lib/mfa'
 import { clearMfaCookie } from '../_cookie'
 import { NextResponse } from 'next/server'
 
@@ -17,6 +19,9 @@ import { NextResponse } from 'next/server'
 //   complete  (signed in as owner, token)  -> after the wait: 2FA removed
 // None of these is gated by the 2FA step-up (that is the whole point).
 export async function POST(req: Request) {
+  const cross = rejectCrossSite(req)
+  if (cross) return cross
+
   const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', 'mfa')
   if (limited) return limited
 
@@ -55,7 +60,8 @@ export async function POST(req: Request) {
       return NextResponse.json(await confirmRecovery(user.id, user.email, profile?.full_name, token, req))
     }
     if (action === 'complete') {
-      await completeRecovery(user.id, user.email, profile?.full_name, token, req)
+      const { data: { session } } = await supabase.auth.getSession()
+      await completeRecovery(user.id, user.email, profile?.full_name, token, req, sessionIdFromJwt(session?.access_token))
       return clearMfaCookie(NextResponse.json({ success: true }))
     }
     return NextResponse.json({ error: 'Unknown action.' }, { status: 400 })

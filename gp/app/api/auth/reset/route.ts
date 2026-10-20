@@ -1,3 +1,5 @@
+import { logSecurityEvent } from '@/lib/securityEvents'
+import { rejectCrossSite } from '@/lib/apiAuth'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { rateLimited } from '@/lib/rateLimit'
 import { verifyTurnstile, captchaOptions } from '@/lib/turnstile'
@@ -32,6 +34,9 @@ function genericResponse() {
 const RESPONSE_FLOOR_MS = 1800
 
 export async function POST(req: Request) {
+  const cross = rejectCrossSite(req)
+  if (cross) return cross
+
   const startedAt = Date.now()
   try {
     const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', 'reset')
@@ -64,7 +69,7 @@ export async function POST(req: Request) {
     // 2. No account — don't send, don't reveal.
     const { data: profile } = await supabase
       .from('profiles')
-      .select('is_suspended')
+      .select('id, is_suspended')
       .eq('email', email.toLowerCase())
       .maybeSingle()
     if (!profile) { await holdUntil(startedAt, RESPONSE_FLOOR_MS); return genericResponse() }
@@ -76,6 +81,12 @@ export async function POST(req: Request) {
     // only. This MUST go through the cookie-aware ssr client: with PKCE,
     // resetPasswordForEmail() writes the code_verifier cookie (before it
     // contacts GoTrue) so /auth/callback can exchange the code later.
+    // Audit trail for the owner (Settings → Recent activity): a reset request
+    // is the first step of most account takeovers. Logged only for real,
+    // active accounts, so the response (identical either way) leaks nothing.
+    await logSecurityEvent({ userId: profile.id, event: 'password_reset_requested', req, admin: supabase })
+      .catch(e => console.error('[auth/reset] event log failed', e))
+
     const ssrClient = await createClient()
     const work = ssrClient.auth
       .resetPasswordForEmail(email, { redirectTo: safeRedirectTo, ...captchaOptions(turnstileToken) })

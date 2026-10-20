@@ -1,3 +1,4 @@
+import { rejectCrossSite } from '@/lib/apiAuth'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { cookies } from 'next/headers'
 import { NextResponse } from 'next/server'
@@ -11,6 +12,7 @@ import {
 import { flushSecurityNotices } from '@/lib/securityEvents'
 import { RECOVERY_COOKIE_NAME, verifyRecoveryCookieValue } from '@/lib/recoveryCookie'
 import { withMfaCookie } from '../mfa/_cookie'
+import { clearSudoCookie } from '@/lib/reauth'
 
 // One server-side path for BOTH "forgot my password" (recovery link) and
 // "change my password" (Settings). Previously both called
@@ -28,6 +30,9 @@ import { withMfaCookie } from '../mfa/_cookie'
 // "verified browser" is revoked (the DB trigger from migration 0039 does the
 // latter even for direct API calls), and the notice email goes out.
 export async function POST(req: Request) {
+  const cross = rejectCrossSite(req)
+  if (cross) return cross
+
   const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', 'password')
   if (limited) return limited
 
@@ -71,10 +76,7 @@ export async function POST(req: Request) {
         )
       }
     }
-    // Verify the current password on a throwaway client (no cookies, no
-    // persisted session). See lib/passwordCheck.ts: the throwaway session is
-    // discarded with scope 'local' — the default 'global' scope would end
-    // EVERY session of this account, the caller's own included.
+    // Verified in SQL (lib/passwordCheck.ts) — no GoTrue sign-in involved.
     const pw = await verifyCurrentPassword(user.id, user.email, current_password)
     if (pw === 'throttled') return NextResponse.json({ error: PASSWORD_THROTTLED_MSG }, { status: 429 })
     if (pw !== 'ok') return NextResponse.json({ error: 'Your current password is incorrect.' }, { status: 400 })
@@ -83,8 +85,21 @@ export async function POST(req: Request) {
     }
   }
 
-  const { error: updErr } = await supabase.auth.updateUser({ password })
-  if (updErr) return NextResponse.json({ error: updErr.message }, { status: 400 })
+  // The caller's identity and (unless this is an e-mailed recovery) current
+  // password were verified above, so the change is applied with the admin API.
+  // supabase.auth.updateUser() would be refused for sessions older than 24 h
+  // whenever Supabase's "Secure password change" is on (it then demands a
+  // re-authentication nonce this app has no UI for), leaving long-lived
+  // sessions unable to change their password at all.
+  const admin = await createAdminClient()
+  const { error: updErr } = await admin.auth.admin.updateUserById(user.id, { password })
+  if (updErr) {
+    console.error('[auth/password] update failed', user.id, updErr.status, updErr.message)
+    const msg = /password/i.test(updErr.message) && updErr.status && updErr.status < 500
+      ? 'That password was not accepted. Try a longer or less common one.'
+      : 'Could not change your password right now. Please try again.'
+    return NextResponse.json({ error: msg }, { status: updErr.status && updErr.status < 500 ? 400 : 503 })
+  }
 
   // Revoke every other login session for this account.
   const { error: outErr } = await supabase.auth.signOut({ scope: 'others' })
@@ -98,6 +113,7 @@ export async function POST(req: Request) {
     const { token, ttlS } = await issueVerifiedSession(user.id)
     withMfaCookie(res, token, ttlS)
   }
+  clearSudoCookie(res)
   res.cookies.set(RECOVERY_COOKIE_NAME, '', { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax', path: '/', maxAge: 0 })
 
   await flushSecurityNotices(user.id).catch(e => console.error('[auth/password] notice flush failed', e))

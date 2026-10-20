@@ -50,6 +50,18 @@ export async function verifySudoCookieValue(value: string | undefined, userId: s
   return timingSafeEqual(mac, await sign(`${uid}.${expStr}`))
 }
 
+/** Expire the sudo cookie (sign-out, password change). */
+export function clearSudoCookie(res: NextResponse): NextResponse {
+  res.cookies.set(SUDO_COOKIE_NAME, '', {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+    maxAge: 0,
+  })
+  return res
+}
+
 export function readCookie(req: Request, name: string): string | undefined {
   const header = req.headers.get('cookie')
   if (!header) return undefined

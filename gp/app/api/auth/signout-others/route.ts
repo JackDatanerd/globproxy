@@ -1,3 +1,4 @@
+import { rejectCrossSite } from '@/lib/apiAuth'
 import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { rateLimited } from '@/lib/rateLimit'
@@ -7,6 +8,9 @@ import { logSecurityEvent } from '@/lib/securityEvents'
 // "Sign out of all other devices": revokes every other Supabase session for
 // the account and every other MFA verified-browser, keeping this one.
 export async function POST(req: Request) {
+  const cross = rejectCrossSite(req)
+  if (cross) return cross
+
   const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', 'password')
   if (limited) return limited
 

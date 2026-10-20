@@ -1,3 +1,4 @@
+import { requireMfaVerified } from '@/lib/mfa'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { isCrossSiteRequest } from '@/lib/appUrl'
@@ -19,9 +20,11 @@ async function currentUser() {
   return user
 }
 
-export async function GET() {
+export async function GET(req: Request) {
   const user = await currentUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const mfaBlock = await requireMfaVerified(req, user.id)
+  if (mfaBlock) return mfaBlock
   const admin = await createAdminClient()
   const { data, error } = await admin.from('profiles').select('billing_address, tax_id').eq('id', user.id).maybeSingle()
   if (error) {
@@ -35,6 +38,8 @@ export async function PUT(req: Request) {
   if (isCrossSiteRequest(req)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   const user = await currentUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const mfaBlock = await requireMfaVerified(req, user.id)
+  if (mfaBlock) return mfaBlock
   const inactive = await requireActiveUser(user.id)
   if (inactive) return inactive
 

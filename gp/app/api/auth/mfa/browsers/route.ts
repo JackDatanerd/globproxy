@@ -1,3 +1,4 @@
+import { rejectCrossSite } from '@/lib/apiAuth'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { listTrustedBrowsers, revokeTrustedBrowser, getMfaCookieFromRequest } from '@/lib/mfa'
 import { logSecurityEvent } from '@/lib/securityEvents'
@@ -19,6 +20,9 @@ export async function GET(req: Request) {
 }
 
 export async function DELETE(req: Request) {
+  const cross = rejectCrossSite(req)
+  if (cross) return cross
+
   const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', 'mfa')
   if (limited) return limited
   const supabase = await createClient()

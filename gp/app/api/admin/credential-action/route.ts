@@ -20,7 +20,7 @@ export async function POST(req: Request) {
 
   const { data: cred } = await supabase
     .from('proxy_credentials')
-    .select('id, user_id, geonode_sub_user_id, gb_allocated, status, owner:user_id(is_suspended, is_deleted)')
+    .select('id, user_id, upstream_sub_user_id, gb_allocated, status, owner:user_id(is_suspended, is_deleted)')
     .eq('id', body.credentialId)
     .single()
   if (!cred) return NextResponse.json({ error: 'Credential not found' }, { status: 404 })

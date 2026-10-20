@@ -18,7 +18,9 @@ export const SECURITY_EVENT_LABELS: Record<string, string> = {
   api_key_created: 'API key created',
   webhook_created: 'Webhook endpoint created',
   account_deleted: 'Account deleted',
+  password_reset_requested: 'Password reset requested',
   mfa_recovery_requested: 'Two-factor recovery requested',
+  mfa_recovery_confirmed: 'Two-factor recovery confirmed — waiting period started',
   mfa_recovery_cancelled: 'Two-factor recovery cancelled',
   mfa_recovery_completed: 'Two-factor authentication removed through recovery',
 }

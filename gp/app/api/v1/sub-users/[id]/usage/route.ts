@@ -19,9 +19,9 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
     let usedGb = Number(cred.gb_used ?? 0)
     let syncedAt: string | null = cred.usage_synced_at ?? null
     const fresh = syncedAt && Date.now() - new Date(syncedAt).getTime() < LIVE_REFRESH_MIN_INTERVAL_MS
-    if (cred.status === 'active' && cred.geonode_sub_user_id && !fresh) {
+    if (cred.status === 'active' && cred.upstream_sub_user_id && !fresh) {
       try {
-        usedGb = await getSubUserUsage(cred.geonode_sub_user_id)
+        usedGb = await getSubUserUsage(cred.upstream_sub_user_id)
         syncedAt = new Date().toISOString()
         await supabase.from('proxy_credentials').update({ gb_used: usedGb, usage_synced_at: syncedAt }).eq('id', cred.id)
       } catch (e) {

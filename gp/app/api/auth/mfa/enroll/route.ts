@@ -1,3 +1,4 @@
+import { rejectCrossSite } from '@/lib/apiAuth'
 import { createClient } from '@/lib/supabase/server'
 import { startEnrollment, publicMfaError } from '@/lib/mfa'
 import { requireActiveUser } from '@/lib/apiAuth'
@@ -6,6 +7,9 @@ import { rateLimited } from '@/lib/rateLimit'
 import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
+  const cross = rejectCrossSite(req)
+  if (cross) return cross
+
   const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', 'mfa')
   if (limited) return limited
 

@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useRef, useState, Suspense } from 'react'
+import { useEffect, useState, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { safeNextPath } from '@/lib/safeNext'
@@ -27,11 +27,14 @@ function MfaSetupFlow() {
   // per visit (React StrictMode double-invokes effects in dev, which would
   // otherwise race two secrets and leave the DB holding the one the QR
   // code doesn't show).
-  const started = useRef(false)
 
   useEffect(() => {
-    if (started.current) return
-    started.current = true
+    // No "run once" ref: React dev StrictMode mounts, cleans up and mounts again,
+    // and a ref guard made the second mount skip the request while the first
+    // run's result was discarded as cancelled — the page then sat on
+    // "Setting up…" forever. start-enrollment is idempotent (same secret for
+    // 15 minutes, atomic in SQL) and the password prompt de-duplicates, so a
+    // repeat call is harmless.
     let cancelled = false
     ;(async () => {
       const { data: { session } } = await createClient().auth.getSession()

@@ -29,9 +29,9 @@ export async function POST(req: Request) {
   // the admin can simply retry) instead of being logged and ignored.
   const { data: creds } = await supabase
     .from('proxy_credentials')
-    .select('id, geonode_sub_user_id, status')
+    .select('id, upstream_sub_user_id, status')
     .eq('user_id', user_id)
-    .not('geonode_sub_user_id', 'is', null)
+    .not('upstream_sub_user_id', 'is', null)
 
   const failed = await cleanupGeonodeSubUsers(creds ?? [])
   if (failed.length) {

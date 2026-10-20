@@ -86,6 +86,9 @@ export async function sendEmail(p: { to: string; subject: string; html: string }
     // A plain-text alternative alongside the HTML: mail clients that block
     // images/HTML still show something readable, and HTML-only mail scores worse with spam filters.
     body: JSON.stringify({ from: resolveFromHeader(), to: p.to, subject: safeSubject, html: p.html, text: htmlToText(p.html) }),
+    // Without a bound, one hung provider call would hold every request that
+    // awaits an e-mail (2FA confirm, disable, recovery, ...) until the platform kills it.
+    signal: AbortSignal.timeout(10_000),
   })
   if (!res.ok) {
     // Previously nothing checked this — every caller in the app (payment

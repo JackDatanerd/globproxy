@@ -48,7 +48,7 @@ function genPassword(): string {
 }
 
 export interface GCred {
-  geonode_sub_user_id: string
+  upstream_sub_user_id: string
   username: string
   password: string
   host: string
@@ -129,7 +129,7 @@ export async function createSubUser(p: CreateSubUserParams): Promise<GCred> {
   }
 
   return {
-    geonode_sub_user_id: String(result.id),
+    upstream_sub_user_id: String(result.id),
     username: result.username ?? username,
     password: result.password ?? password,
     host: PROXY_HOST,
@@ -372,7 +372,7 @@ export interface PeriodStat {
 }
 
 // Time-series usage for a single sub-user (by Geonode username, NOT the
-// numeric geonode_sub_user_id — confirmed from the spec's own example
+// numeric upstream_sub_user_id — confirmed from the spec's own example
 // values, and matches what subUserId comes back as in
 // per-subuser-host-country below). Always grouped by periodStart; there is
 // no per-subuser breakdown on this endpoint, which is why the usage-history
@@ -634,7 +634,7 @@ export async function debugCreateSubUser(): Promise<{
       const d = rawResponse as any
       const result = d.result ?? d.data ?? d
       parsedGcred = {
-        geonode_sub_user_id: String(result.id ?? username),
+        upstream_sub_user_id: String(result.id ?? username),
         username: result.username ?? username,
         password: result.password ?? password,
         host: PROXY_HOST,
@@ -645,7 +645,7 @@ export async function debugCreateSubUser(): Promise<{
       // Immediately clean up — don't leave test sub-users in Geonode
       try {
         const delRes = await gfetch(
-          `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${parsedGcred.geonode_sub_user_id}`,
+          `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${parsedGcred.upstream_sub_user_id}`,
           { method: 'DELETE', headers: headers() }
         )
         cleanupDeleted = delRes.ok

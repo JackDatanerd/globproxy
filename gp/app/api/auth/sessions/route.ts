@@ -1,23 +1,14 @@
+import { rejectCrossSite } from '@/lib/apiAuth'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { rateLimited } from '@/lib/rateLimit'
 import { logSecurityEvent } from '@/lib/securityEvents'
+import { sessionIdFromJwt } from '@/lib/mfa'
 import { NextResponse } from 'next/server'
 
 // Signed-in devices. GoTrue keeps one row per login in auth.sessions; two
 // SECURITY DEFINER helpers (migration 0043, service_role only) list and revoke
 // them. The raw rows hold more than the browser should see, so only a fixed
 // set of fields is forwarded.
-function sessionIdFromJwt(accessToken: string | undefined): string | null {
-  try {
-    const payload = accessToken?.split('.')[1]
-    if (!payload) return null
-    const json = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')))
-    return typeof json?.session_id === 'string' ? json.session_id : null
-  } catch {
-    return null
-  }
-}
-
 export async function GET() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -45,6 +36,9 @@ export async function GET() {
 }
 
 export async function DELETE(req: Request) {
+  const cross = rejectCrossSite(req)
+  if (cross) return cross
+
   const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', 'password')
   if (limited) return limited
 

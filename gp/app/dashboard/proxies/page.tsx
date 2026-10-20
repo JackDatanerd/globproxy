@@ -11,11 +11,11 @@ export default async function ProxiesPage() {
 
   // Explicit columns, never '*': customers can read their whole row, and the
   // internal provisioning columns (last_provision_error, provision_attempts,
-  // provisioning_claimed_at, geonode_sub_user_id…) have no business in the
+  // provisioning_claimed_at, upstream_sub_user_id…) have no business in the
   // browser payload. The supplier-named columns below are renamed server-side.
   const [{ data: creds, error: credsError }, { data: bw, error: bwError }] = await Promise.all([
     supabase.from('proxy_credentials')
-      .select('id, user_id, created_by, label, status, gb_allocated, gb_used, country, state, city, asn, session_type, protocol, sticky_duration, endpoint_count, host, port, geonode_username, geonode_password, activated_at, created_at, auto_topup_enabled, auto_topup_threshold_gb, auto_topup_amount_gb')
+      .select('id, user_id, created_by, label, status, gb_allocated, gb_used, country, state, city, asn, session_type, protocol, sticky_duration, endpoint_count, host, port, upstream_username, upstream_password, activated_at, created_at, auto_topup_enabled, auto_topup_threshold_gb, auto_topup_amount_gb')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false }),
     // maybeSingle: a brand-new account legitimately has no row (not an error);
@@ -43,8 +43,8 @@ export default async function ProxiesPage() {
   // supplier's internal sub-user id) would show in the page payload. Expose
   // only neutral names.
   const safeCreds = (creds ?? []).map((row: Record<string, any>) => {
-    const { geonode_username, geonode_password, ...rest } = row
-    return { ...rest, username: geonode_username ?? null, password: geonode_password ?? null }
+    const { upstream_username, upstream_password, ...rest } = row
+    return { ...rest, username: upstream_username ?? null, password: upstream_password ?? null }
   })
 
   const total     = bw?.total_gb     ?? 0

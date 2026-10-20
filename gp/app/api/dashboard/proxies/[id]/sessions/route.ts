@@ -1,3 +1,4 @@
+import { requireMfaVerified } from '@/lib/mfa'
 import { createClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { genSessionId } from '@/lib/proxyEndpoint'
@@ -11,6 +12,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  const mfaBlock = await requireMfaVerified(req, user.id)
+  if (mfaBlock) return mfaBlock
   const { data, error } = await supabase
     .from('proxy_sessions')
     .select('id, session_token, label, pinned, collapsed, terminated_at, created_at')
@@ -33,6 +36,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  const mfaBlock = await requireMfaVerified(req, user.id)
+  if (mfaBlock) return mfaBlock
   // Creating a new sticky session is a write — was missing from the
   // suspended-user sweep in lib/apiAuth.ts (checkout, dashboard/proxies
   // POST, dashboard/sessions/[sessionId]) since this route was added

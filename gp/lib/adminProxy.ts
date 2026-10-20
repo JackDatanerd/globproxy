@@ -13,22 +13,22 @@ import { syncUserUsage } from '@/lib/usageSync'
 // NOTE: the cap is applied to the sub-user's cumulative counter. It never
 // touches activeUntil (that would reset usage — see geonode.ts).
 
-type CredRow = { id: string; geonode_sub_user_id: string | null; gb_allocated: number | string | null; status: string }
+type CredRow = { id: string; upstream_sub_user_id: string | null; gb_allocated: number | string | null; status: string }
 
 export type ProxyToggleResult = { changed: number; failed: { id: string; error: string }[] }
 
 export async function disableCredential(supabase: AdminSupabase, cred: CredRow): Promise<void> {
-  if (cred.geonode_sub_user_id) {
-    const usedGb = await getSubUserUsage(cred.geonode_sub_user_id)
-    await updateSubUserTrafficLimit(cred.geonode_sub_user_id, Math.max(1, Math.ceil(usedGb * 1024)))
+  if (cred.upstream_sub_user_id) {
+    const usedGb = await getSubUserUsage(cred.upstream_sub_user_id)
+    await updateSubUserTrafficLimit(cred.upstream_sub_user_id, Math.max(1, Math.ceil(usedGb * 1024)))
   }
   const { error } = await supabase.from('proxy_credentials').update({ status: 'suspended' }).eq('id', cred.id)
   if (error) throw new Error(error.message)
 }
 
 export async function enableCredential(supabase: AdminSupabase, cred: CredRow): Promise<void> {
-  if (cred.geonode_sub_user_id) {
-    await updateSubUserTrafficLimit(cred.geonode_sub_user_id, Math.round(Number(cred.gb_allocated ?? 0) * 1024))
+  if (cred.upstream_sub_user_id) {
+    await updateSubUserTrafficLimit(cred.upstream_sub_user_id, Math.round(Number(cred.gb_allocated ?? 0) * 1024))
   }
   const { error } = await supabase.from('proxy_credentials').update({ status: 'active' }).eq('id', cred.id)
   if (error) throw new Error(error.message)
@@ -42,7 +42,7 @@ export async function disableUserCredentials(supabase: AdminSupabase, userId: st
 
   const { data: creds } = await supabase
     .from('proxy_credentials')
-    .select('id, geonode_sub_user_id, gb_allocated, status')
+    .select('id, upstream_sub_user_id, gb_allocated, status')
     .eq('user_id', userId)
     .eq('status', 'active')
 
@@ -62,7 +62,7 @@ export async function disableUserCredentials(supabase: AdminSupabase, userId: st
 export async function enableUserCredentials(supabase: AdminSupabase, userId: string): Promise<ProxyToggleResult> {
   const { data: creds } = await supabase
     .from('proxy_credentials')
-    .select('id, geonode_sub_user_id, gb_allocated, status')
+    .select('id, upstream_sub_user_id, gb_allocated, status')
     .eq('user_id', userId)
     .eq('status', 'suspended')
 

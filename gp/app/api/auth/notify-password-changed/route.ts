@@ -1,3 +1,4 @@
+import { rejectCrossSite } from '@/lib/apiAuth'
 import { createClient } from '@/lib/supabase/server'
 import { flushSecurityNotices } from '@/lib/securityEvents'
 import { rateLimited } from '@/lib/rateLimit'
@@ -17,6 +18,9 @@ import { NextResponse } from 'next/server'
 // (each event is claimed before sending), so a stray or repeated call can
 // never produce a duplicate email or email anyone else.
 export async function POST(req: Request) {
+  const cross = rejectCrossSite(req)
+  if (cross) return cross
+
   const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', 'password')
   if (limited) return limited
 

@@ -1,3 +1,4 @@
+import { requireMfaVerified } from '@/lib/mfa'
 import { createAdminClient, createClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { initializeTransaction, generateReference } from '@/lib/paystack'
@@ -40,6 +41,12 @@ export async function POST(req: Request) {
 
     const suspended = await requireActiveUser(user.id)
     if (suspended) return suspended
+
+    // Buying is a money-moving action: an account with 2FA must have passed
+    // the step-up in this browser (the cookie is sent whichever way the
+    // caller authenticated).
+    const mfaBlock = await requireMfaVerified(req, user.id)
+    if (mfaBlock) return mfaBlock
 
     // A payment dispute (chargeback) is open on this account: no new purchases
     // until it is settled — otherwise buy → use → dispute can be repeated.

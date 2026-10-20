@@ -10,7 +10,7 @@
 #
 # Re-pull the source file first with:
 #   curl -X GET "https://monitor.geonode.com/services/RESIDENTIAL-PREMIUM/targeting-options" \
-#     -u <geonode_username>:<password> -o "geonode-residential-premium.json"
+#     -u <upstream_username>:<password> -o "geonode-residential-premium.json"
 
 import json, os, re, sys
 

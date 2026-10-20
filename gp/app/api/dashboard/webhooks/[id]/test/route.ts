@@ -1,3 +1,4 @@
+import { requireMfaVerified } from '@/lib/mfa'
 import { createClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { sendTestWebhook } from '@/lib/webhooks'
@@ -9,11 +10,13 @@ import { NextResponse } from 'next/server'
 // earlier TEST deliveries now. It used to key off last_success_at /
 // last_failure_at, which every real delivery also moves — so a busy
 // endpoint could not be tested at all — and it was a read-then-act race.
-export async function POST(_req: Request, context: { params: Promise<{ id: string }> }) {
+export async function POST(req: Request, context: { params: Promise<{ id: string }> }) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  const mfaBlock = await requireMfaVerified(req, user.id)
+  if (mfaBlock) return mfaBlock
   const suspended = await requireActiveUser(user.id)
   if (suspended) return suspended
 

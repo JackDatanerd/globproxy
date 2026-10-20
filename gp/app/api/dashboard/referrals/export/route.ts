@@ -1,3 +1,4 @@
+import { requireMfaVerified } from '@/lib/mfa'
 import { createClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { toCsv, csvResponse } from '@/lib/csv'
@@ -32,6 +33,8 @@ export async function GET(req: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  const mfaBlock = await requireMfaVerified(req, user.id)
+  if (mfaBlock) return mfaBlock
   const inactive = await requireActiveUser(user.id)
   if (inactive) return inactive
 

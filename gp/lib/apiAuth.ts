@@ -3,6 +3,7 @@ import { allowApiRequest } from '@/lib/rateLimit'
 import { ipAllowed } from '@/lib/ipAllowlist'
 import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { NextResponse } from 'next/server'
+import { isCrossSiteRequest } from '@/lib/appUrl'
 
 // Shared gate for every app/api/v1/* route.
 //
@@ -228,4 +229,17 @@ export async function requireApiAccess(req: Request, opts: { scope?: ApiScope } 
     console.error('[requireApiAccess] unexpected error:', e)
     return { ok: false, response: apiError(500, 'internal_error', 'Internal error validating API key. Please try again.') }
   }
+}
+
+/**
+ * CSRF / login-CSRF guard for the cookie-authenticated and sign-in routes
+ * under app/api/auth/*. Those routes parse JSON whatever the Content-Type is,
+ * so a cross-site <form enctype="text/plain"> can post a JSON-looking body;
+ * SameSite=Lax cookies stop that for signed-in actions, but NOT for sign-in
+ * itself (a victim's browser can be made to sign in as the attacker).
+ * Browsers always send Origin on cross-site POST/DELETE; requests without one
+ * (curl, server-to-server) are not browser CSRF and pass.
+ */
+export function rejectCrossSite(req: Request): NextResponse | null {
+  return isCrossSiteRequest(req) ? NextResponse.json({ error: 'Forbidden' }, { status: 403 }) : null
 }

@@ -50,13 +50,13 @@ export function rollbackProfilePatch(before: Record<string, any>): Record<string
 // swallowing the error leaves a real, billable, still-working sub-user
 // behind an account that reads as deleted.
 export async function cleanupGeonodeSubUsers(
-  creds: { id: string; geonode_sub_user_id: string | null }[]
+  creds: { id: string; upstream_sub_user_id: string | null }[]
 ): Promise<{ id: string; error: string }[]> {
   const failed: { id: string; error: string }[] = []
   for (const cred of creds) {
-    if (!cred.geonode_sub_user_id) continue
+    if (!cred.upstream_sub_user_id) continue
     try {
-      await deleteSubUser(cred.geonode_sub_user_id)
+      await deleteSubUser(cred.upstream_sub_user_id)
     } catch (e: any) {
       if (e instanceof GeonodeApiError && e.status === 404) continue
       console.error('Failed to clean up Geonode sub-user during account deletion', cred.id, e)
@@ -73,7 +73,7 @@ export async function cleanupGeonodeSubUsers(
 export async function purgeAccountSecrets(supabase: AdminSupabase, userId: string, hadCredentials: boolean): Promise<void> {
   if (hadCredentials) {
     await supabase.from('proxy_credentials')
-      .update({ status: 'suspended', geonode_password: null, geonode_username: null, geonode_sub_user_id: null })
+      .update({ status: 'suspended', upstream_password: null, upstream_username: null, upstream_sub_user_id: null })
       .eq('user_id', userId)
   }
   await supabase.from('webhook_endpoints').delete().eq('user_id', userId)

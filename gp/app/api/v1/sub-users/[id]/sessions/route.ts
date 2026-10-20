@@ -12,7 +12,7 @@ function view(s: any, cred: any) {
     id: s.id, label: s.label, pinned: s.pinned, collapsed: s.collapsed,
     session_token: s.session_token,
     // Ready-to-use username that pins this session's exit IP.
-    connection_username: cred.geonode_username ? buildProxyUsername(cred.geonode_username, cred, s.session_token) : null,
+    connection_username: cred.upstream_username ? buildProxyUsername(cred.upstream_username, cred, s.session_token) : null,
     created_at: s.created_at,
   }
 }

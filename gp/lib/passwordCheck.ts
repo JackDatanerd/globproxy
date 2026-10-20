@@ -1,33 +1,37 @@
-import { createClient as createSupabaseJsClient } from '@supabase/supabase-js'
+import { createAdminClient } from '@/lib/supabase/server'
 import { throttleHit, throttleClear } from '@/lib/authThrottle'
 
 export type PasswordCheck = 'ok' | 'wrong' | 'throttled'
 
 /**
- * Verifies an account's CURRENT password (used by change-password,
- * change-email and the re-auth prompt).
+ * Verifies an account's CURRENT password (change-password, change-email,
+ * 2FA recovery request and the re-auth prompt).
  *
- * The check signs in on a throwaway client. That creates a real GoTrue
- * session, which must be discarded with scope 'local': signOut()'s default
- * scope is 'global', which terminates EVERY session of the user — including
- * the caller's own — so the old code signed people out of all their devices
- * just for confirming their password.
+ * The comparison happens in Postgres (auth_verify_password, migration 0050):
+ * bcrypt against the hash GoTrue stores. It deliberately does NOT sign in
+ * through GoTrue — that path (a) fails every time when Supabase CAPTCHA is
+ * enabled because the probe has no token, (b) creates and deletes a real
+ * session per check, and (c) counts against GoTrue's per-IP sign-in limit,
+ * which for server-side calls is shared by every customer.
  *
- * Attempts are also counted per account (8 per 15 minutes), so these
- * endpoints can't be used by a stolen session to brute-force the password.
+ * Attempts are counted per account (8 per 15 minutes), so a stolen session
+ * can't use these endpoints to brute-force the password. A database error is
+ * treated as 'wrong' (fail closed): this gate protects sensitive actions.
  */
-export async function verifyCurrentPassword(userId: string, email: string, password: string): Promise<PasswordCheck> {
+export async function verifyCurrentPassword(userId: string, _email: string, password: string): Promise<PasswordCheck> {
   const gate = await throttleHit('pwcheck', userId, 8, 15 * 60)
   if (gate !== 'ok') return 'throttled'
+  if (typeof password !== 'string' || !password || new TextEncoder().encode(password).length > 72) return 'wrong'
 
-  const probe = createSupabaseJsClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { auth: { autoRefreshToken: false, persistSession: false } }
-  )
-  const { error } = await probe.auth.signInWithPassword({ email, password })
-  if (error) return 'wrong'
-  await probe.auth.signOut({ scope: 'local' }).catch(() => {})
+  try {
+    const admin = await createAdminClient()
+    const { data, error } = await admin.rpc('auth_verify_password', { p_user_id: userId, p_password: password })
+    if (error) throw error
+    if (data !== true) return 'wrong'
+  } catch (e) {
+    console.error('[passwordCheck] auth_verify_password failed', e)
+    return 'wrong'
+  }
   await throttleClear('pwcheck', userId)
   return 'ok'
 }

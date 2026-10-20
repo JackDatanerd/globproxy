@@ -49,7 +49,26 @@ export async function GET(request: Request) {
       return NextResponse.redirect(`${origin}${dest}?error=link_expired${type === 'recovery' ? '' : '&kind=confirm'}`)
     }
 
-    if ((type === 'recovery' || type === 'invite') && data.user) recoveryUserId = data.user.id
+    // `type` is just a query parameter anyone can add to a link. It only
+    // decides what the visitor is shown; it must never be what grants the
+    // "arrived by e-mail proof" cookie (set a new password with no current
+    // password and no 2FA). The cookie is minted only when GoTrue's own record
+    // agrees that a recovery / invite e-mail was sent to this account
+    // recently, which a code from an ordinary sign-in or confirmation link
+    // can't satisfy.
+    if (data.user && (type === 'recovery' || type === 'invite')) {
+      const stamp = type === 'recovery' ? data.user.recovery_sent_at : data.user.invited_at
+      const maxAgeMs = type === 'recovery' ? 2 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000
+      const sentAt = stamp ? new Date(stamp).getTime() : NaN
+      if (Number.isFinite(sentAt) && Date.now() - sentAt <= maxAgeMs) {
+        recoveryUserId = data.user.id
+      } else {
+        console.error('[auth/callback] refused', type, 'proof: no recent e-mail of that kind on this account')
+        await s.auth.signOut({ scope: 'local' }).catch(() => {})
+        const dest = type === 'recovery' ? '/auth/reset' : '/auth/login'
+        return NextResponse.redirect(`${origin}${dest}?error=link_expired`)
+      }
+    }
 
     // signup/route.ts stores intended_role: 'reseller' in auth user_metadata
     // for the "Apply to resell" signup variant. The working application flow

@@ -1,3 +1,4 @@
+import { rejectCrossSite } from '@/lib/apiAuth'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { validateEmail } from '@/lib/email-validation'
 import { rateLimited } from '@/lib/rateLimit'
@@ -21,6 +22,9 @@ function respond() {
 }
 
 export async function POST(req: Request) {
+  const cross = rejectCrossSite(req)
+  if (cross) return cross
+
   const startedAt = Date.now()
   try {
     const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', 'resend')

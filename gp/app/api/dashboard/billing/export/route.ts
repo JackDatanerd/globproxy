@@ -1,3 +1,4 @@
+import { requireMfaVerified } from '@/lib/mfa'
 import { createClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { toCsv, csvResponse } from '@/lib/csv'
@@ -15,10 +16,12 @@ import { NextResponse } from 'next/server'
 // legitimate bookkeeping context too (e.g. reconciling why a charge never
 // landed), so this deliberately doesn't filter payment_status the way the
 // invoice page does.
-export async function GET() {
+export async function GET(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const mfaBlock = await requireMfaVerified(req, user.id)
+  if (mfaBlock) return mfaBlock
 
   const inactive = await requireActiveUser(user.id)
   if (inactive) return inactive

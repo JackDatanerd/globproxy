@@ -40,7 +40,7 @@ export async function runAutoTopups(userId?: string, admin?: Awaited<ReturnType<
       .eq('auto_topup_enabled', true)
       .eq('status', 'active')
       .is('created_by', null) // reseller-allocated credentials are never eligible — same rule the RPC enforces
-      .not('geonode_sub_user_id', 'is', null)
+      .not('upstream_sub_user_id', 'is', null)
       .order('id')
     if (userId) q = q.eq('user_id', userId)
     return q.range(from, to)

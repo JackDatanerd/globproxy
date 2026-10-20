@@ -14,7 +14,7 @@ import { appUrl } from '@/lib/appUrl'
 
 type AdminClient = Awaited<ReturnType<typeof createAdminClient>>
 
-type CredRow = { id: string; geonode_sub_user_id: string | null; gb_used: number | null }
+type CredRow = { id: string; upstream_sub_user_id: string | null; gb_used: number | null }
 
 // Per-run ceilings. Cloudflare Workers caps subrequests per invocation and
 // every Geonode PATCH / Supabase write / email counts against it, so each
@@ -27,7 +27,7 @@ function buildChanges(creds: CredRow[], usageMap: Map<string, number>) {
   return creds
     .map(cred => ({
       id: cred.id,
-      gb_used: cred.geonode_sub_user_id ? usageMap.get(cred.geonode_sub_user_id) : undefined,
+      gb_used: cred.upstream_sub_user_id ? usageMap.get(cred.upstream_sub_user_id) : undefined,
       prevGbUsed: cred.gb_used ?? 0,
     }))
     // Only write rows that actually changed (skip both "Geonode didn't
@@ -75,8 +75,8 @@ export async function syncAllUsage(admin?: AdminClient) {
   const { rows: creds, error: credsErr } = await fetchAllRows<any>((from, to) =>
     supabase
       .from('proxy_credentials')
-      .select('id, user_id, label, status, geonode_sub_user_id, gb_used, gb_allocated, auto_topup_enabled, exhausted_alerted_at')
-      .not('geonode_sub_user_id', 'is', null)
+      .select('id, user_id, label, status, upstream_sub_user_id, gb_used, gb_allocated, auto_topup_enabled, exhausted_alerted_at')
+      .not('upstream_sub_user_id', 'is', null)
       .order('id')
       .range(from, to)
   )
@@ -153,14 +153,14 @@ async function reconcileLimits(
   let patched = 0
   for (const c of active) {
     if (patched >= MAX_LIMIT_PATCHES_PER_RUN) break
-    const snap = subUsers.get(String(c.geonode_sub_user_id))
+    const snap = subUsers.get(String(c.upstream_sub_user_id))
     if (!snap || snap.limitMb === null) continue // not on Geonode, or no limit reported — nothing to compare
 
     try {
       if (suspendedUsers.has(c.user_id)) {
         const cap = suspendedCapMb(snap.usedMb)
         if (snap.limitMb > cap + 1) {
-          await updateSubUserTrafficLimit(c.geonode_sub_user_id, cap)
+          await updateSubUserTrafficLimit(c.upstream_sub_user_id, cap)
           patched++
         }
         continue
@@ -188,7 +188,7 @@ async function reconcileLimits(
 // auto-fixed: deleting/refunding automatically on the strength of "absent
 // from a listing" is exactly the kind of irreversible guess to avoid.
 function reportMissingUpstream(active: any[], subUsers: Map<string, SubUserSnapshot>): number {
-  const missing = active.filter(c => !subUsers.has(String(c.geonode_sub_user_id)))
+  const missing = active.filter(c => !subUsers.has(String(c.upstream_sub_user_id)))
   if (missing.length > 0) {
     console.error(`[usage-sync] ${missing.length} active credential(s) have no sub-user on Geonode:`, missing.slice(0, 20).map(c => c.id))
   }
@@ -207,7 +207,7 @@ async function sweepOrphans(
   allCreds: any[],
   subUsers: Map<string, SubUserSnapshot>
 ): Promise<number> {
-  const knownIds = new Set(allCreds.map(c => String(c.geonode_sub_user_id)))
+  const knownIds = new Set(allCreds.map(c => String(c.upstream_sub_user_id)))
   const candidates: string[] = []
   for (const [id, snap] of subUsers) {
     if (snap.username && snap.username.startsWith('gp_') && !knownIds.has(id)) candidates.push(id)
@@ -270,7 +270,7 @@ async function notifyExhaustion(
   const due: any[] = []
 
   for (const c of active) {
-    const used = usageMap.get(String(c.geonode_sub_user_id)) ?? Number(c.gb_used ?? 0)
+    const used = usageMap.get(String(c.upstream_sub_user_id)) ?? Number(c.gb_used ?? 0)
     const exhausted = used >= Number(c.gb_allocated) - EPS
     if (!exhausted) {
       if (c.exhausted_alerted_at) rearm.push(c.id)
@@ -333,22 +333,22 @@ export async function syncUserUsage(userId: string) {
   const supabase = await createAdminClient()
   const { data: creds } = await supabase
     .from('proxy_credentials')
-    .select('id, geonode_sub_user_id, gb_used')
+    .select('id, upstream_sub_user_id, gb_used')
     .eq('status', 'active')
     .eq('user_id', userId)
-    .not('geonode_sub_user_id', 'is', null)
+    .not('upstream_sub_user_id', 'is', null)
 
   const usageMap = new Map<string, number>()
   let failures = 0
   for (const c of creds ?? []) {
-    if (!c.geonode_sub_user_id) continue
+    if (!c.upstream_sub_user_id) continue
     try {
-      usageMap.set(c.geonode_sub_user_id, await getSubUserUsage(c.geonode_sub_user_id))
+      usageMap.set(c.upstream_sub_user_id, await getSubUserUsage(c.upstream_sub_user_id))
     } catch (e) {
       // Non-fatal per credential — a transient failure on one sub-user
       // shouldn't block reconciling the rest of this user's credentials.
       failures++
-      console.error('Live usage fetch failed for', c.geonode_sub_user_id, e)
+      console.error('Live usage fetch failed for', c.upstream_sub_user_id, e)
     }
   }
 

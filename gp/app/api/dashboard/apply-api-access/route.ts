@@ -1,3 +1,4 @@
+import { requireMfaVerified } from '@/lib/mfa'
 import { appUrl } from '@/lib/appUrl'
 import { NextResponse } from 'next/server'
 import { requireActiveUser } from '@/lib/apiAuth'
@@ -19,6 +20,8 @@ export async function POST(req: Request) {
 
     const inactive = await requireActiveUser(user.id)
     if (inactive) return inactive
+    const mfaBlock = await requireMfaVerified(req, user.id)
+    if (mfaBlock) return mfaBlock
 
     const adminSupabase = await createAdminClient()
     const { data: profile } = await adminSupabase

@@ -1,3 +1,4 @@
+import { requireMfaVerified } from '@/lib/mfa'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { deleteCredential, updateCredentialSettings } from '@/lib/credentials'
@@ -11,6 +12,8 @@ export async function DELETE(
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  const mfaBlock = await requireMfaVerified(req, user.id)
+  if (mfaBlock) return mfaBlock
   const suspended = await requireActiveUser(user.id)
   if (suspended) return suspended
 
@@ -42,6 +45,8 @@ export async function PATCH(
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  const mfaBlock = await requireMfaVerified(req, user.id)
+  if (mfaBlock) return mfaBlock
   const suspended = await requireActiveUser(user.id)
   if (suspended) return suspended
 

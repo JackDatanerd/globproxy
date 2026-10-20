@@ -4,8 +4,11 @@ import { deleteSubUser, GeonodeApiError } from '@/lib/geonode'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { requireStepUp } from '@/lib/reauth'
 import { logSecurityEvent } from '@/lib/securityEvents'
+import { rejectCrossSite } from '@/lib/apiAuth'
 
 export async function DELETE(req: Request) {
+  const cross = rejectCrossSite(req)
+  if (cross) return cross
   try {
     // Step 1: Verify requesting user
     const supabase = await createClient()
@@ -20,10 +23,6 @@ export async function DELETE(req: Request) {
     if (mfaGate) return mfaGate
 
     const adminSupabase = await createAdminClient()
-
-    // Audit trail (the profile row survives deletion, anonymised, so the
-    // event keeps its foreign key). Written before the wipe on purpose.
-    await logSecurityEvent({ userId: user.id, event: 'account_deleted', req, admin: adminSupabase })
 
     // Step 2: Fetch profile before wiping it
     const { data: profile } = await adminSupabase
@@ -42,18 +41,18 @@ export async function DELETE(req: Request) {
     // of which Geonode sub-users need cleanup).
     const { data: creds } = await adminSupabase
       .from('proxy_credentials')
-      .select('id, geonode_sub_user_id')
+      .select('id, upstream_sub_user_id')
       .eq('user_id', user.id)
-      .not('geonode_sub_user_id', 'is', null)
+      .not('upstream_sub_user_id', 'is', null)
 
     // Every sub-user must really be gone before anything local changes: this
     // used to swallow failures, so an outage left live, usable proxies behind
     // an account marked deleted. 404 = already gone (a retry after a partial
     // run), which is fine — so this route is safe to call again.
     for (const cred of creds ?? []) {
-      if (!cred.geonode_sub_user_id) continue
+      if (!cred.upstream_sub_user_id) continue
       try {
-        await deleteSubUser(cred.geonode_sub_user_id)
+        await deleteSubUser(cred.upstream_sub_user_id)
       } catch (e) {
         if (e instanceof GeonodeApiError && e.status === 404) continue
         console.error('Failed to clean up Geonode sub-user during account deletion — aborting', cred.id, e)
@@ -144,13 +143,20 @@ export async function DELETE(req: Request) {
       return NextResponse.json({ error: 'Could not delete the account. Please try again.' }, { status: 500 })
     }
 
+    // Audit trail (the profile row survives deletion, anonymised, so the
+    // event keeps its foreign key). Written once the deletion has actually
+    // committed (anonymised + banned): when it was written first, a refused
+    // or failed attempt — upstream cleanup down (502), already-deleted
+    // retries — still left an "account deleted" entry behind each time.
+    await logSecurityEvent({ userId: user.id, event: 'account_deleted', req, admin: adminSupabase })
+
     // Step 6: Credentials: sub-users are gone upstream, so mark them
     // suspended (no 'deleted' status value exists) and drop the stored
     // proxy password + Geonode ids. The unique index on
-    // geonode_sub_user_id (migration 0040) also stops a stale id lingering.
+    // upstream_sub_user_id (migration 0040) also stops a stale id lingering.
     if ((creds ?? []).length) {
       await adminSupabase.from('proxy_credentials')
-        .update({ status: 'suspended', geonode_password: null, geonode_username: null, geonode_sub_user_id: null })
+        .update({ status: 'suspended', upstream_password: null, upstream_username: null, upstream_sub_user_id: null })
         .eq('user_id', user.id)
     }
 

@@ -33,7 +33,7 @@ export function providerConfigured(): boolean {
 export const MAX_CREDENTIALS_PER_ACCOUNT = 100
 
 export const CRED_COLS =
-  'id, label, status, gb_allocated, gb_used, country, state, city, asn, session_type, protocol, sticky_duration, endpoint_count, host, port, geonode_username, geonode_password, activated_at, created_at, created_by, auto_topup_enabled, auto_topup_threshold_gb, auto_topup_amount_gb'
+  'id, label, status, gb_allocated, gb_used, country, state, city, asn, session_type, protocol, sticky_duration, endpoint_count, host, port, upstream_username, upstream_password, activated_at, created_at, created_by, auto_topup_enabled, auto_topup_threshold_gb, auto_topup_amount_gb'
 
 // Public API shape for a credential. `password` is returned because the
 // credential is unusable without it (the dashboard reads the same column
@@ -52,14 +52,14 @@ export function toApiCredential(c: any) {
     session_type: c.session_type, protocol: c.protocol ?? 'http',
     sticky_duration: c.sticky_duration, endpoint_count: c.endpoint_count,
     host: c.host, port: c.port,
-    username: c.geonode_username, // raw proxy username
-    // NOTE: a legacy `geonode_username` alias used to be returned here. It named
+    username: c.upstream_username, // raw proxy username
+    // NOTE: a legacy `upstream_username` alias used to be returned here. It named
     // our upstream supplier to every API customer, so it was removed — use
     // `username` (or, better, `connection_username`).
-    password: c.geonode_password ?? null,
+    password: c.upstream_password ?? null,
     // The username to put in the proxy connection string — includes the
     // country/state/city/ASN/session targeting suffixes.
-    connection_username: c.geonode_username ? buildProxyUsername(c.geonode_username, c) : null,
+    connection_username: c.upstream_username ? buildProxyUsername(c.upstream_username, c) : null,
     auto_topup: {
       enabled: !!c.auto_topup_enabled,
       threshold_gb: c.auto_topup_threshold_gb ?? null,
@@ -153,9 +153,9 @@ export async function createCredential(
       .insert({
         user_id: userId,
         label: input.label,
-        geonode_sub_user_id: gcred?.geonode_sub_user_id ?? null,
-        geonode_username: gcred?.username ?? null,
-        geonode_password: gcred?.password ?? null,
+        upstream_sub_user_id: gcred?.upstream_sub_user_id ?? null,
+        upstream_username: gcred?.username ?? null,
+        upstream_password: gcred?.password ?? null,
         host: gcred?.host ?? 'proxy.globproxy.com',
         port: gcred?.port ?? getProxyPort(input.protocol, input.session_type),
         protocol: input.protocol,
@@ -179,8 +179,8 @@ export async function createCredential(
     if (insertErr || !cred) {
       console.error('[credentials] insert failed', insertErr)
       if (gcred) {
-        await deleteSubUser(gcred.geonode_sub_user_id).catch((e) =>
-          console.error('[credentials] FAILED to clean up orphaned Geonode sub-user', gcred?.geonode_sub_user_id, e))
+        await deleteSubUser(gcred.upstream_sub_user_id).catch((e) =>
+          console.error('[credentials] FAILED to clean up orphaned Geonode sub-user', gcred?.upstream_sub_user_id, e))
       }
       await release('insert failure')
       // Lost a race for the last slot against a concurrent create.
@@ -249,12 +249,12 @@ export async function deleteCredential(
 
   // Live usage BEFORE deleting upstream — it may not be queryable afterward.
   let liveUsedGb: number | null = null
-  if (cred.geonode_sub_user_id) {
-    try { liveUsedGb = await getSubUserUsage(cred.geonode_sub_user_id) }
+  if (cred.upstream_sub_user_id) {
+    try { liveUsedGb = await getSubUserUsage(cred.upstream_sub_user_id) }
     catch (e) { console.error('[credentials] live usage check failed, falling back to synced gb_used', e) }
 
     try {
-      await deleteSubUser(cred.geonode_sub_user_id)
+      await deleteSubUser(cred.upstream_sub_user_id)
     } catch (e) {
       if (!isGone(e)) {
         console.error('[credentials] upstream delete failed — nothing changed', id, e)
@@ -307,15 +307,15 @@ export function expectedLimitMb(gbAllocated: number): number {
 export async function syncCredentialLimit(admin: Admin, credentialId: string): Promise<string | null> {
   for (let round = 0; round < 2; round++) {
     const { data: cred } = await admin
-      .from('proxy_credentials').select('status, geonode_sub_user_id, gb_allocated')
+      .from('proxy_credentials').select('status, upstream_sub_user_id, gb_allocated')
       .eq('id', credentialId).maybeSingle()
     // 'pending' has no sub-user yet; provisioning reads gb_allocated fresh.
-    if (!cred || cred.status !== 'active' || !cred.geonode_sub_user_id) return null
+    if (!cred || cred.status !== 'active' || !cred.upstream_sub_user_id) return null
 
     const sent = Number(cred.gb_allocated)
     try {
       // trafficLimitMB only — NEVER activeUntil (it resets usage upstream).
-      await updateSubUserTrafficLimit(cred.geonode_sub_user_id, expectedLimitMb(sent))
+      await updateSubUserTrafficLimit(cred.upstream_sub_user_id, expectedLimitMb(sent))
     } catch (e) {
       console.error('[credentials] DB committed but Geonode limit PATCH failed — queued for automatic retry', credentialId, e)
       await markLimitSyncNeeded(admin, credentialId)
@@ -395,9 +395,9 @@ export async function provisionPendingCredentials(
       // remove the sub-user we just made instead of orphaning it.
       const { data: updated, error: updErr } = await admin.from('proxy_credentials').update({
         status: 'active',
-        geonode_sub_user_id: gcred.geonode_sub_user_id,
-        geonode_username: gcred.username,
-        geonode_password: gcred.password,
+        upstream_sub_user_id: gcred.upstream_sub_user_id,
+        upstream_username: gcred.username,
+        upstream_password: gcred.password,
         host: gcred.host, port: gcred.port,
         activated_at: new Date().toISOString(),
         last_provision_error: null,
@@ -405,8 +405,8 @@ export async function provisionPendingCredentials(
 
       if (updErr || !updated?.length) {
         if (updErr) console.error('[provision] failed to persist activated credential', cred.id, updErr)
-        await deleteSubUser(gcred.geonode_sub_user_id).catch((e) =>
-          console.error('[provision] FAILED to clean up orphaned sub-user', gcred.geonode_sub_user_id, e))
+        await deleteSubUser(gcred.upstream_sub_user_id).catch((e) =>
+          console.error('[provision] FAILED to clean up orphaned sub-user', gcred.upstream_sub_user_id, e))
         failed++
         continue
       }
@@ -415,7 +415,7 @@ export async function provisionPendingCredentials(
       // just created the sub-user with — bring the live cap up to date.
       const nowAllocated = Number(updated[0].gb_allocated)
       if (nowAllocated !== Number(cred.gb_allocated)) {
-        try { await updateSubUserTrafficLimit(gcred.geonode_sub_user_id, nowAllocated * 1024) }
+        try { await updateSubUserTrafficLimit(gcred.upstream_sub_user_id, nowAllocated * 1024) }
         catch { await markLimitSyncNeeded(admin, cred.id) }
       }
 
@@ -437,13 +437,13 @@ export async function reconcileLimitSync(limit = 5): Promise<{ checked: number; 
   if (!providerConfigured()) return { checked: 0, fixed: 0 }
   const admin = await createAdminClient()
   const { data: rows } = await admin
-    .from('proxy_credentials').select('id, gb_allocated, geonode_sub_user_id')
+    .from('proxy_credentials').select('id, gb_allocated, upstream_sub_user_id')
     .eq('status', 'active').eq('last_provision_error', LIMIT_SYNC_MARKER)
-    .not('geonode_sub_user_id', 'is', null).limit(limit)
+    .not('upstream_sub_user_id', 'is', null).limit(limit)
   let fixed = 0
   for (const r of rows ?? []) {
     try {
-      await updateSubUserTrafficLimit(r.geonode_sub_user_id!, Number(r.gb_allocated) * 1024)
+      await updateSubUserTrafficLimit(r.upstream_sub_user_id!, Number(r.gb_allocated) * 1024)
       await admin.from('proxy_credentials').update({ last_provision_error: null })
         .eq('id', r.id).eq('last_provision_error', LIMIT_SYNC_MARKER)
       fixed++

@@ -1,3 +1,4 @@
+import { rejectCrossSite } from '@/lib/apiAuth'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { rateLimited } from '@/lib/rateLimit'
 import { verifyTurnstile, captchaOptions } from '@/lib/turnstile'
@@ -16,6 +17,9 @@ import { NextResponse } from 'next/server'
 // calling Supabase's /token endpoint directly. For that, also enable
 // "Attack protection → CAPTCHA" and rate limits in the Supabase dashboard.
 export async function POST(req: Request) {
+  const cross = rejectCrossSite(req)
+  if (cross) return cross
+
   const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', 'login')
   if (limited) return limited
 

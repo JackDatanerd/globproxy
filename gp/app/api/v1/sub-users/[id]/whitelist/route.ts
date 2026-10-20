@@ -12,7 +12,7 @@ import type { ApiAuthResult } from '@/lib/apiAuth'
 async function loadOwnedCredential(supabase: Extract<ApiAuthResult, { ok: true }>['supabase'], id: string, userId: string) {
   const { data: cred } = await supabase
     .from('proxy_credentials')
-    .select('id, user_id, geonode_sub_user_id')
+    .select('id, user_id, upstream_sub_user_id')
     .eq('id', id)
     .eq('user_id', userId)
     .single()
@@ -29,11 +29,11 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
     const cred = await loadOwnedCredential(supabase, id, user.id)
     if (!cred) return apiError(404, 'not_found', 'Sub-user not found')
 
-    if (!cred.geonode_sub_user_id) {
+    if (!cred.upstream_sub_user_id) {
       return NextResponse.json({ ips: [], provisioning: true })
     }
 
-    const ips = await listWhitelistedIps(cred.geonode_sub_user_id)
+    const ips = await listWhitelistedIps(cred.upstream_sub_user_id)
     return NextResponse.json({ ips })
   } catch (e) {
     return whitelistErrorResponse(e)
@@ -59,11 +59,11 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
 
     const cred = await loadOwnedCredential(supabase, id, user.id)
     if (!cred) return apiError(404, 'not_found', 'Sub-user not found')
-    if (!cred.geonode_sub_user_id) {
+    if (!cred.upstream_sub_user_id) {
       return apiError(409, 'conflict', 'This sub-user is still being provisioned — try again shortly.')
     }
 
-    const ips = await addWhitelistedIp(cred.geonode_sub_user_id, ip, description)
+    const ips = await addWhitelistedIp(cred.upstream_sub_user_id, ip, description)
     return NextResponse.json({ ips }, { status: 201 })
   } catch (e) {
     return whitelistErrorResponse(e)
@@ -86,11 +86,11 @@ export async function DELETE(req: Request, context: { params: Promise<{ id: stri
 
     const cred = await loadOwnedCredential(supabase, id, user.id)
     if (!cred) return apiError(404, 'not_found', 'Sub-user not found')
-    if (!cred.geonode_sub_user_id) {
+    if (!cred.upstream_sub_user_id) {
       return apiError(409, 'conflict', 'This sub-user is still being provisioned — try again shortly.')
     }
 
-    const ips = await removeWhitelistedIp(cred.geonode_sub_user_id, ip)
+    const ips = await removeWhitelistedIp(cred.upstream_sub_user_id, ip)
     return NextResponse.json({ ips })
   } catch (e) {
     return whitelistErrorResponse(e)

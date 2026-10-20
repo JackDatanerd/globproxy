@@ -36,9 +36,9 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
       return apiError(400, 'invalid_request', `granularity "hour" supports at most ${MAX_STATS_GRANULARITY_UNITS / 24} days.`)
     }
 
-    const cred = await getOwnedCredential(supabase, user.id, id, 'id, status, geonode_username')
+    const cred = await getOwnedCredential(supabase, user.id, id, 'id, status, upstream_username')
     if (!cred) return apiError(404, 'not_found', 'Sub-user not found')
-    if (!cred.geonode_username) {
+    if (!cred.upstream_username) {
       return apiError(409, 'conflict', 'This sub-user has not been activated yet, so it has no usage history.')
     }
 
@@ -46,7 +46,7 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
     const from = new Date(to.getTime() - days * 24 * 3_600_000)
     let stats
     try {
-      stats = await getPeriodStats(cred.geonode_username, from, to, granularity)
+      stats = await getPeriodStats(cred.upstream_username, from, to, granularity)
     } catch (e) {
       console.error('[v1 usage history] provider stats failed', id, e)
       return apiError(502, 'upstream_unavailable', 'Usage statistics are temporarily unavailable. Try again shortly.')

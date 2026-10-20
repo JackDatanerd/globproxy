@@ -1,3 +1,4 @@
+import { rejectCrossSite } from '@/lib/apiAuth'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { validateEmail } from '@/lib/email-validation'
 import { rateLimited } from '@/lib/rateLimit'
@@ -33,6 +34,9 @@ function genericResponse() {
 const RESPONSE_FLOOR_MS = 1800
 
 export async function POST(req: Request) {
+  const cross = rejectCrossSite(req)
+  if (cross) return cross
+
   const startedAt = Date.now()
   try {
     const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', 'signup')
@@ -93,38 +97,42 @@ export async function POST(req: Request) {
       // password on that unconfirmed account was chosen by WHOEVER FIRST
       // typed this address — possibly someone who isn't its owner
       // (pre-hijacking: register the victim's address with a password you
-      // know, wait for them to click the link). So the newest signup wins:
-      // the stored password and metadata are replaced with what was just
-      // submitted before the link goes out. An unconfirmed account can't be
-      // used to sign in, so nothing is lost by replacing it.
+      // know, wait for them to click the link). So the newest signup wins.
+      //
+      // ORDER MATTERS. The new confirmation must be accepted by the mail
+      // provider FIRST: signUp() issues a new token, which kills every older
+      // link. Only then is the password replaced (auth_replace_unconfirmed_
+      // password, atomic and only while the account is still unconfirmed).
+      // Doing it the other way round let a rate-limited re-signup replace the
+      // password while the owner's existing link stayed valid.
       const { data: unconfirmedId } = await supabase.rpc('auth_unconfirmed_user_id', { check_email: normalized })
       if (unconfirmedId) {
-        const { error: updErr } = await supabase.auth.admin.updateUserById(unconfirmedId as string, {
-          password,
-          user_metadata: { full_name, intended_role },
-        })
-        if (updErr) {
-          // Never send a confirmation for an account whose password we couldn't take over.
-          console.error('[auth/signup] could not refresh unconfirmed account — not re-sending', updErr.message)
-        } else {
-          const ssr = await createClient()
-          const work = (async () => {
-            // signUp() on an unconfirmed address re-sends the confirmation AND
-            // (unlike resend()) starts a PKCE flow, so the link can sign the
-            // visitor straight in from this same browser.
-            const { error: signErr } = await ssr.auth.signUp({
-              email: normalized, password,
-              options: { data: { full_name, intended_role }, emailRedirectTo: safeEmailRedirectTo, ...captchaOptions(turnstileToken) },
-            })
-            if (signErr) {
-              console.error('[auth/signup] re-signup for unconfirmed account failed, falling back to resend:', signErr.message)
-              const { error: resendErr } = await ssr.auth.resend({ type: 'signup', email: normalized, options: { emailRedirectTo: safeEmailRedirectTo } })
-              if (resendErr) console.error('[auth/signup] resend for unconfirmed account failed:', resendErr.message)
-            }
-          })()
-          await holdUntil(startedAt, RESPONSE_FLOOR_MS, work)
-          return genericResponse()
-        }
+        const ssr = await createClient()
+        const work = (async () => {
+          // signUp() on an unconfirmed address re-sends the confirmation AND
+          // (unlike resend()) starts a PKCE flow, so the link can sign the
+          // visitor straight in from this same browser. If it fails nothing
+          // else is touched: no resend() fallback, because that would mail a
+          // link for an account whose password we did not replace.
+          const { error: signErr } = await ssr.auth.signUp({
+            email: normalized, password,
+            options: { data: { full_name, intended_role }, emailRedirectTo: safeEmailRedirectTo, ...captchaOptions(turnstileToken) },
+          })
+          if (signErr) {
+            console.error('[auth/signup] re-signup for unconfirmed account failed:', signErr.status, signErr.message)
+            return
+          }
+          const { data: replaced, error: pwErr } = await supabase.rpc('auth_replace_unconfirmed_password', {
+            p_user_id: unconfirmedId as string, p_password: password,
+          })
+          if (pwErr) console.error('[auth/signup] could not replace unconfirmed password:', pwErr.message)
+          else if (replaced) {
+            await supabase.auth.admin.updateUserById(unconfirmedId as string, { user_metadata: { full_name, intended_role } })
+              .catch(e => console.error('[auth/signup] metadata refresh failed:', e?.message))
+          }
+        })()
+        await holdUntil(startedAt, RESPONSE_FLOOR_MS, work)
+        return genericResponse()
       }
       await holdUntil(startedAt, RESPONSE_FLOOR_MS)
       return genericResponse()

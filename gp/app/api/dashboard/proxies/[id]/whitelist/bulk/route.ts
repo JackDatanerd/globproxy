@@ -1,3 +1,4 @@
+import { requireMfaVerified } from '@/lib/mfa'
 import { createClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { bulkAddWhitelistedIps, bulkRemoveWhitelistedIps } from '@/lib/geonode'
@@ -7,7 +8,7 @@ import { NextResponse } from 'next/server'
 async function loadOwnedCredential(supabase: Awaited<ReturnType<typeof createClient>>, id: string, userId: string) {
   const { data: cred } = await supabase
     .from('proxy_credentials')
-    .select('id, user_id, geonode_sub_user_id')
+    .select('id, user_id, upstream_sub_user_id')
     .eq('id', id)
     .eq('user_id', userId)
     .single()
@@ -23,6 +24,8 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  const mfaBlock = await requireMfaVerified(req, user.id)
+  if (mfaBlock) return mfaBlock
   const suspended = await requireActiveUser(user.id)
   if (suspended) return suspended
 
@@ -51,12 +54,12 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
 
   const cred = await loadOwnedCredential(supabase, id, user.id)
   if (!cred) return NextResponse.json({ error: 'Credential not found' }, { status: 404 })
-  if (!cred.geonode_sub_user_id) {
+  if (!cred.upstream_sub_user_id) {
     return NextResponse.json({ error: 'This credential is still being provisioned — try again shortly.' }, { status: 409 })
   }
 
   try {
-    const ips = await bulkAddWhitelistedIps(cred.geonode_sub_user_id, items)
+    const ips = await bulkAddWhitelistedIps(cred.upstream_sub_user_id, items)
     return NextResponse.json({ ips }, { status: 201 })
   } catch (e) {
     return whitelistErrorResponse(e)
@@ -72,6 +75,8 @@ export async function DELETE(req: Request, context: { params: Promise<{ id: stri
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  const mfaBlock = await requireMfaVerified(req, user.id)
+  if (mfaBlock) return mfaBlock
   const suspended = await requireActiveUser(user.id)
   if (suspended) return suspended
 
@@ -97,12 +102,12 @@ export async function DELETE(req: Request, context: { params: Promise<{ id: stri
 
   const cred = await loadOwnedCredential(supabase, id, user.id)
   if (!cred) return NextResponse.json({ error: 'Credential not found' }, { status: 404 })
-  if (!cred.geonode_sub_user_id) {
+  if (!cred.upstream_sub_user_id) {
     return NextResponse.json({ error: 'This credential is still being provisioned — try again shortly.' }, { status: 409 })
   }
 
   try {
-    const result = await bulkRemoveWhitelistedIps(cred.geonode_sub_user_id, ips)
+    const result = await bulkRemoveWhitelistedIps(cred.upstream_sub_user_id, ips)
     return NextResponse.json({ ips: result })
   } catch (e) {
     return whitelistErrorResponse(e)

@@ -196,6 +196,7 @@ async function checkCode(
   if (!parsed) throw new Error(BAD_FORMAT_MSG)
 
   const gate = await beginAttempt(supabase, userId)
+  let replayed = false
   try {
     let ok = false
     if (parsed.kind === 'backup') {
@@ -206,7 +207,13 @@ async function checkCode(
       }
     } else {
       const counter = await matchTotpCounter(factor, email, parsed.code)
-      ok = counter !== null && (await consumeTotp(supabase, userId, counter))
+      if (counter !== null) {
+        ok = await consumeTotp(supabase, userId, counter)
+        // A correct code that was already accepted (same 30-second step):
+        // say so instead of "incorrect", so a user who submits the same code
+        // twice (login, then a step-up) knows to wait for the next one.
+        replayed = !ok
+      }
       if (ok && (await secretNeedsRewrite(factor.secret))) {
         // Lazy upgrade: legacy plaintext, or encrypted under the previous
         // key, is rewritten under the current key.
@@ -219,6 +226,7 @@ async function checkCode(
   } catch (e) {
     if (e instanceof WrongCode) {
       if (gate === 'ok_last') await announceLockout(supabase, userId, ctx?.req)
+      if (replayed) throw new Error('That code was already used. Wait for the next one to appear in your authenticator and try again.')
       throw new Error(parsed.kind === 'backup' ? wrongMsg.backup : wrongMsg.totp)
     }
     // Infrastructure failure, not the user's fault — don't let it eat budget.
@@ -571,6 +579,14 @@ async function createVerifiedSession(
   ttlMs: number,
   meta: { req?: Request; remembered?: boolean } = {},
 ): Promise<{ token: string; ttlS: number }> {
+  // A browser that already holds a verified token for THIS account and is
+  // verifying again replaces it, instead of leaving the old row behind (it
+  // would show up as a duplicate in the trusted-browser list until expiry).
+  const previous = meta.req ? getMfaCookieFromRequest(meta.req) : undefined
+  if (previous) {
+    await supabase.from('mfa_verified_sessions')
+      .delete().eq('token_hash', await sha256Hex(previous)).eq('user_id', userId)
+  }
   const token = randomHexToken()
   const tokenHash = await sha256Hex(token)
   const expiresAt = new Date(Date.now() + ttlMs).toISOString()
@@ -649,6 +665,34 @@ export async function disableMfa(userId: string, email: string, code: string, re
 export async function adminResetMfa(userId: string): Promise<void> {
   const supabase = await createAdminClient()
   await wipeMfa(supabase, userId)
+}
+
+/** The GoTrue session id carried in an access token (null if absent/unparseable). */
+export function sessionIdFromJwt(accessToken: string | undefined): string | null {
+  try {
+    const payload = accessToken?.split('.')[1]
+    if (!payload) return null
+    const json = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')))
+    return typeof json?.session_id === 'string' ? json.session_id : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Ends the account's login sessions except `keepSessionId` (all of them when
+ * omitted). Used when 2FA is removed through recovery or by an admin: whoever
+ * else is signed in has to sign in again. Best effort — a failure is logged,
+ * never allowed to undo the reset that already committed.
+ */
+export async function revokeOtherSessions(userId: string, keepSessionId?: string | null): Promise<void> {
+  try {
+    const supabase = await createAdminClient()
+    const { error } = await supabase.rpc('revoke_other_auth_sessions', { p_user_id: userId, p_keep: keepSessionId ?? null })
+    if (error) throw error
+  } catch (e) {
+    console.error('[mfa] revokeOtherSessions failed', userId, e)
+  }
 }
 
 // One Postgres transaction via wipe_mfa() (migration 0024).

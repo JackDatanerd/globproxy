@@ -206,14 +206,14 @@ export async function runConfiguredBenchmark(supabase: SupabaseAdminClient): Pro
 
   const { data: cred } = await supabase
     .from('proxy_credentials')
-    .select('host, port, protocol, geonode_username, geonode_password, status, gb_allocated, gb_used')
+    .select('host, port, protocol, upstream_username, upstream_password, status, gb_allocated, gb_used')
     .eq('id', setting.value)
     .single()
 
   if (!cred) return { action: 'skipped', reason: 'configured benchmark_credential_id does not exist' }
   if (cred.status !== 'active') return { action: 'skipped', reason: `benchmark credential is not active (status: ${cred.status})` }
   if (cred.protocol !== 'http') return { action: 'skipped', reason: `benchmark credential uses ${cred.protocol} — only http proxy probing is implemented so far` }
-  if (!cred.geonode_username || !cred.geonode_password) return { action: 'skipped', reason: 'benchmark credential is missing proxy auth' }
+  if (!cred.upstream_username || !cred.upstream_password) return { action: 'skipped', reason: 'benchmark credential is missing proxy auth' }
   // Guard against ever burning through the credential's whole allocation
   // on probe traffic alone — these requests are tiny (a few hundred
   // bytes each) but this keeps a runaway retry loop or a misconfigured
@@ -223,7 +223,7 @@ export async function runConfiguredBenchmark(supabase: SupabaseAdminClient): Pro
     return { action: 'skipped', reason: 'benchmark credential has exhausted its allocated GB' }
   }
 
-  const results = await runNetworkProbe(cred.host, cred.port, cred.geonode_username, cred.geonode_password)
+  const results = await runNetworkProbe(cred.host, cred.port, cred.upstream_username, cred.upstream_password)
 
   for (const r of results) {
     const { error } = await supabase.from('network_benchmarks').insert({

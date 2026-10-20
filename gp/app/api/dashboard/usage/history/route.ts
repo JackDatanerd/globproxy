@@ -1,3 +1,4 @@
+import { requireMfaVerified } from '@/lib/mfa'
 import { createClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { rateLimited } from '@/lib/rateLimit'
@@ -31,7 +32,7 @@ const HOST_COUNTRY_HARD_CAP = 1000 // rows per credential = 2 pages of 500
 type CredRow = {
   id: string
   label: string | null
-  geonode_username: string | null
+  upstream_username: string | null
   country: string | null
   gb_used: number | null
 }
@@ -39,9 +40,9 @@ type CredRow = {
 async function loadScopedCredentials(supabase: Awaited<ReturnType<typeof createClient>>, userId: string) {
   const { data } = await supabase
     .from('proxy_credentials')
-    .select('id, label, geonode_username, country, gb_used')
+    .select('id, label, upstream_username, country, gb_used')
     .eq('user_id', userId)
-    .not('geonode_username', 'is', null)
+    .not('upstream_username', 'is', null)
     .order('gb_used', { ascending: false })
     .limit(MAX_CREDENTIALS)
 
@@ -49,7 +50,7 @@ async function loadScopedCredentials(supabase: Awaited<ReturnType<typeof createC
     .from('proxy_credentials')
     .select('id', { count: 'exact', head: true })
     .eq('user_id', userId)
-    .not('geonode_username', 'is', null)
+    .not('upstream_username', 'is', null)
 
   const creds = (data ?? []) as CredRow[]
   return { creds, truncated: (totalCount ?? creds.length) > creds.length }
@@ -136,6 +137,8 @@ export async function GET(req: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  const mfaBlock = await requireMfaVerified(req, user.id)
+  if (mfaBlock) return mfaBlock
   const inactive = await requireActiveUser(user.id)
   if (inactive) return inactive
 
@@ -168,7 +171,7 @@ export async function GET(req: Request) {
   // sub-user deleted upstream but not yet reconciled locally) doesn't blank
   // out the whole page for every other credential that's fine.
   const seriesResults = await Promise.allSettled(
-    creds.map(c => getPeriodStats(c.geonode_username!, dateFrom, dateTo, 'day'))
+    creds.map(c => getPeriodStats(c.upstream_username!, dateFrom, dateTo, 'day'))
   )
   const perCredentialSeries: PeriodStat[][] = []
   let anySeriesFailure = false
@@ -178,7 +181,7 @@ export async function GET(req: Request) {
   }
 
   const breakdownResults = await Promise.allSettled(
-    creds.map(c => getHostCountryStatsWithMeta(c.geonode_username!, dateFrom, dateTo, 'day', 500, HOST_COUNTRY_HARD_CAP))
+    creds.map(c => getHostCountryStatsWithMeta(c.upstream_username!, dateFrom, dateTo, 'day', 500, HOST_COUNTRY_HARD_CAP))
   )
   const perCredentialBreakdown: { label: string; stats: HostCountryStat[] }[] = []
   let anyBreakdownFailure = false

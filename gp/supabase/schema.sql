@@ -550,9 +550,9 @@ create table public.proxy_credentials (
   user_id              uuid references public.profiles(id) on delete cascade not null,
   created_by           uuid references public.profiles(id),
   label                text,
-  geonode_sub_user_id  text, -- Geonode's numeric sub-user ID; required for usage/delete calls, NOT geonode_username
-  geonode_username     text,
-  geonode_password     text,
+  upstream_sub_user_id  text, -- upstream supplier's numeric sub-user ID; required for usage/delete calls, NOT upstream_username
+  upstream_username     text,
+  upstream_password     text,
   host                 text default 'proxy.globproxy.com', -- see migration 0013 — never default to the real Geonode hostname
   port                 integer default 9000,
   protocol             text default 'http' check (protocol in ('http','socks5')),
@@ -2274,9 +2274,9 @@ revoke insert, update, delete on public.proxy_credentials from anon, authenticat
 -- A Geonode sub-user belongs to exactly one credential row. Partial unique
 -- index so the many NULL (pending) rows are unaffected. If this fails, the
 -- audit query above found duplicates: resolve those rows first.
-create unique index if not exists proxy_credentials_geonode_sub_user_key
-  on public.proxy_credentials (geonode_sub_user_id)
-  where geonode_sub_user_id is not null;
+create unique index if not exists proxy_credentials_upstream_sub_user_key
+  on public.proxy_credentials (upstream_sub_user_id)
+  where upstream_sub_user_id is not null;
 
 alter table public.proxy_credentials
   drop constraint if exists proxy_credentials_gb_allocated_sane;
@@ -3802,4 +3802,98 @@ update public.proxy_credentials
 
 insert into public.schema_migrations (filename) values
   ('0049_dashboard_ui_closeout.sql')
+on conflict do nothing;
+
+-- ── 0050: Auth & MFA pass 2 ─────────────────────────────────────
+create extension if not exists pgcrypto with schema extensions;
+
+-- ── 2. password check in SQL ──────────────────────────────────────────
+create or replace function public.auth_verify_password(p_user_id uuid, p_password text)
+returns boolean
+language plpgsql security definer set search_path = public, auth, extensions, pg_temp
+as $$
+declare v_hash text;
+begin
+  if p_password is null or p_password = '' then return false; end if;
+  select encrypted_password into v_hash
+    from auth.users
+   where id = p_user_id and deleted_at is null;
+  if v_hash is null or v_hash = '' then return false; end if;
+  return extensions.crypt(p_password, v_hash) = v_hash;
+end;
+$$;
+
+revoke all on function public.auth_verify_password(uuid, text) from public, anon, authenticated;
+grant execute on function public.auth_verify_password(uuid, text) to service_role;
+
+-- ── 3. conditional password replacement for unconfirmed accounts ──────
+create or replace function public.auth_replace_unconfirmed_password(p_user_id uuid, p_password text)
+returns boolean
+language plpgsql security definer set search_path = public, auth, extensions, pg_temp
+as $$
+begin
+  if p_password is null or length(p_password) < 1 then return false; end if;
+  update auth.users
+     set encrypted_password = extensions.crypt(p_password, extensions.gen_salt('bf', 10)),
+         updated_at = now()
+   where id = p_user_id
+     and email_confirmed_at is null
+     and deleted_at is null;
+  return found;
+end;
+$$;
+
+revoke all on function public.auth_replace_unconfirmed_password(uuid, text) from public, anon, authenticated;
+grant execute on function public.auth_replace_unconfirmed_password(uuid, text) to service_role;
+
+-- ── 4. atomic recovery completion ─────────────────────────────────────
+create or replace function public.mfa_complete_recovery(p_request_id uuid, p_user_id uuid, p_window interval)
+returns boolean
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+declare v_id uuid;
+begin
+  update public.mfa_recovery_requests
+     set completed_at = now()
+   where id = p_request_id
+     and user_id = p_user_id
+     and completed_at is null
+     and cancelled_at is null
+     and confirmed_at is not null
+     and ready_at <= now()
+     and ready_at + p_window > now()
+  returning id into v_id;
+  if v_id is null then return false; end if;
+  -- Same transaction: if the wipe fails, the claim rolls back with it.
+  perform public.wipe_mfa(p_user_id);
+  return true;
+end;
+$$;
+
+revoke all on function public.mfa_complete_recovery(uuid, uuid, interval) from public, anon, authenticated;
+grant execute on function public.mfa_complete_recovery(uuid, uuid, interval) to service_role;
+
+-- ── 5. revoke login sessions in bulk ──────────────────────────────────
+-- Used after 2FA is removed (self-service recovery keeps the caller's own
+-- session; an admin reset ends them all) so anyone else still signed in must
+-- sign in again.
+create or replace function public.revoke_other_auth_sessions(p_user_id uuid, p_keep uuid)
+returns integer
+language plpgsql security definer set search_path = public, auth, pg_temp
+as $$
+declare n integer;
+begin
+  delete from auth.sessions
+   where user_id = p_user_id
+     and (p_keep is null or id <> p_keep);
+  get diagnostics n = row_count;
+  return n;
+end;
+$$;
+
+revoke all on function public.revoke_other_auth_sessions(uuid, uuid) from public, anon, authenticated;
+grant execute on function public.revoke_other_auth_sessions(uuid, uuid) to service_role;
+
+insert into public.schema_migrations (filename) values
+  ('0050_auth_mfa_pass2.sql')
 on conflict do nothing;

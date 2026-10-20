@@ -1,5 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/server'
-import { adminResetMfa, isMfaEnrolled } from '@/lib/mfa'
+import { isMfaEnrolled, revokeOtherSessions } from '@/lib/mfa'
 import { sendEmailSafe, securityNoticeHtml, escapeHtml } from '@/lib/email'
 import { logSecurityEvent } from '@/lib/securityEvents'
 import { appUrl } from '@/lib/appUrl'
@@ -19,6 +19,11 @@ import { appUrl } from '@/lib/appUrl'
 // the e-mail itself — that is exactly what the real owner uses.
 export const RECOVERY_LINK_TTL_MS = 60 * 60 * 1000
 export const RECOVERY_WAIT_MS = 48 * 60 * 60 * 1000
+// Once the waiting period ends the request stays usable for a limited time
+// only. An open-ended 'ready' request would be a standing key: anyone who
+// later found the e-mailed link (old mailbox, browser history, proxy logs)
+// and held a session could still remove 2FA months afterwards.
+export const RECOVERY_READY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
 
 async function sha256Hex(input: string): Promise<string> {
   const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input))
@@ -73,7 +78,9 @@ function stateOf(r: Row): RecoveryState {
   if (r.completed_at) return 'completed'
   if (r.cancelled_at) return 'cancelled'
   if (!r.confirmed_at) return new Date(r.expires_at).getTime() < Date.now() ? 'expired' : 'awaiting_confirmation'
-  return r.ready_at && new Date(r.ready_at).getTime() <= Date.now() ? 'ready' : 'waiting'
+  const readyAt = r.ready_at ? new Date(r.ready_at).getTime() : null
+  if (readyAt === null || readyAt > Date.now()) return 'waiting'
+  return Date.now() - readyAt > RECOVERY_READY_WINDOW_MS ? 'expired' : 'ready'
 }
 
 /** Step 1 — the signed-in owner (password already verified by the route) asks for recovery. */
@@ -81,7 +88,20 @@ export async function requestRecovery(userId: string, email: string, fullName: s
   if (!(await isMfaEnrolled(userId))) throw new Error('Two-factor authentication is not turned on for this account.')
   const admin = await createAdminClient()
 
-  // Only one live request at a time: a new one supersedes the old.
+  // A request that is already CONFIRMED (waiting or ready) is never replaced
+  // from here: anyone holding the password and a session could otherwise keep
+  // cancelling the real owner's recovery by starting new ones. The owner can
+  // stop or finish it with the link in its e-mails. Unconfirmed requests are
+  // simply superseded (only the newest link works).
+  const { data: live } = await admin.from('mfa_recovery_requests')
+    .select('id, expires_at, confirmed_at, ready_at')
+    .eq('user_id', userId).is('cancelled_at', null).is('completed_at', null)
+    .not('confirmed_at', 'is', null)
+  const active = (live ?? []).some((r: any) =>
+    r.ready_at && Date.now() - new Date(r.ready_at).getTime() <= RECOVERY_READY_WINDOW_MS)
+  if (active) {
+    throw new Error('A recovery request is already in progress for this account. Use the link in its e-mails to cancel or finish it.')
+  }
   await admin.from('mfa_recovery_requests')
     .update({ cancelled_at: new Date().toISOString() })
     .eq('user_id', userId).is('cancelled_at', null).is('completed_at', null)
@@ -139,6 +159,7 @@ export async function confirmRecovery(userId: string, email: string, fullName: s
     .eq('id', r.id).is('confirmed_at', null).is('cancelled_at', null)
     .select('id').maybeSingle()
   if (!updated) throw new Error('This recovery request is no longer active.')
+  await logSecurityEvent({ userId, event: 'mfa_recovery_confirmed', req, admin })
 
   await sendEmailSafe({
     to: email,
@@ -170,27 +191,28 @@ export async function cancelRecovery(token: string, req?: Request): Promise<bool
 }
 
 /** Step 3 — after the waiting period, signed in as the same account: 2FA is removed. */
-export async function completeRecovery(userId: string, email: string, fullName: string | null | undefined, token: string, req?: Request): Promise<void> {
+export async function completeRecovery(userId: string, email: string, fullName: string | null | undefined, token: string, req?: Request, keepSessionId?: string | null): Promise<void> {
   const r = await findByToken(token)
   if (!r || r.user_id !== userId) throw new Error('This recovery link is not valid for the account you are signed in to.')
   const state = stateOf(r)
   if (state === 'waiting') throw new Error('The waiting period has not ended yet.')
   if (state !== 'ready') throw new Error('This recovery request is not active.')
 
-  // Claim first, so two concurrent calls can't both proceed.
+  // Claim the request AND remove 2FA in one transaction (mfa_complete_recovery,
+  // migration 0050): two concurrent calls can't both proceed, and a failure
+  // part-way can't burn the request while leaving 2FA in place.
   const admin = await createAdminClient()
-  const { data: claimed } = await admin.from('mfa_recovery_requests')
-    .update({ completed_at: new Date().toISOString() })
-    .eq('id', r.id).is('completed_at', null).is('cancelled_at', null)
-    .select('id').maybeSingle()
-  if (!claimed) throw new Error('This recovery request is no longer active.')
-
-  try {
-    await adminResetMfa(userId)
-  } catch (e) {
-    await admin.from('mfa_recovery_requests').update({ completed_at: null }).eq('id', r.id)
-    throw e
+  const { data: done, error } = await admin.rpc('mfa_complete_recovery', {
+    p_request_id: r.id, p_user_id: userId, p_window: `${RECOVERY_READY_WINDOW_MS / 1000} seconds`,
+  })
+  if (error) {
+    console.error('[mfaRecovery] mfa_complete_recovery failed', error.message)
+    throw new Error('Could not finish recovery right now. Please try again.')
   }
+  if (!done) throw new Error('This recovery request is no longer active.')
+  // 2FA is gone; end every OTHER login session so whoever else may be signed
+  // in must sign in again (and the owner can immediately re-enrol).
+  await revokeOtherSessions(userId, keepSessionId)
   await logSecurityEvent({ userId, event: 'mfa_recovery_completed', req, admin })
   await sendEmailSafe({
     to: email,
