@@ -60,6 +60,11 @@ export async function PATCH(
       error.code === 'P0002' || msg.includes('not found') ? 404 :
       msg.includes('reseller') ? 403 :
       400
+    // Only our own RAISE EXCEPTION texts (P0001) are customer-facing.
+    if (error.code !== 'P0001' && error.code !== 'P0002') {
+      console.error('[auto-topup] set_auto_topup failed', id, error)
+      return NextResponse.json({ error: 'Could not update auto-allocate settings. Please try again.' }, { status: 500 })
+    }
     return NextResponse.json({ error: msg }, { status })
   }
 

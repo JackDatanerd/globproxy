@@ -22,7 +22,8 @@ export default function BillingPage() {
     try {
       const sb = createClient()
       const { data: { user } } = await sb.auth.getUser()
-      if (!user) return
+      // Expired session: go sign in again rather than showing a misleading empty history.
+      if (!user) { window.location.href = '/auth/login'; return }
       const PAGE = 1000
       const all: any[] = []
       for (let from = 0; ; from += PAGE) {

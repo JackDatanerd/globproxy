@@ -76,7 +76,8 @@ export async function POST(req: Request) {
       .eq('id', user.id)
 
     if (updateError) {
-      return NextResponse.json({ error: updateError.message }, { status: 500 })
+      console.error('[dashboard/apply-api-access] update failed:', updateError)
+      return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
     }
 
     const adminEmail = process.env.ADMIN_EMAIL

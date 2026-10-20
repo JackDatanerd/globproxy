@@ -25,6 +25,7 @@ interface HistoryResponse {
 const RANGES = [
   { label: '7 days', value: 7 },
   { label: '30 days', value: 30 },
+  { label: '90 days', value: 90 },
 ] as const
 
 // Dependency-free SVG line chart. No charting library is in package.json
@@ -110,7 +111,7 @@ function TrendChart({ points }: { points: SeriesPoint[] }) {
 }
 
 export default function UsageHistoryChart() {
-  const [range, setRange] = useState<7 | 30>(7)
+  const [range, setRange] = useState<7 | 30 | 90>(7)
   const [data, setData] = useState<HistoryResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)

@@ -50,6 +50,17 @@ export default async function DashboardPage() {
         </div>
       )}
 
+      {!bwRes.error && total > 0 && (left <= 0 || left / total <= 0.1) && (
+        <div className="mb-4 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-4 py-3 text-sm flex items-center justify-between gap-3 flex-wrap">
+          <span>
+            {left <= 0
+              ? 'You\u2019ve used all your bandwidth \u2014 your proxies will stop working until you add more.'
+              : `Only ${formatGb(left)} GB of bandwidth left (${formatPct(left, total)}%). Top up before your proxies run dry.`}
+          </span>
+          <Link href="/dashboard/buy" className="font-medium text-accent hover:underline flex-shrink-0">Buy bandwidth →</Link>
+        </div>
+      )}
+
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div>
           <h1 className="font-display font-bold text-2xl text-ink">Good day, {firstName} 👋</h1>

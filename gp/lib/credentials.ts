@@ -75,7 +75,15 @@ export async function getOwnedCredential(admin: Admin, userId: string, id: strin
   return (data as any) ?? null
 }
 
-const errMsg = (e: unknown) => String((e as any)?.message ?? e).slice(0, 300)
+// What gets PERSISTED in proxy_credentials.last_provision_error. Customers hold
+// SELECT on that table, so the raw upstream error (it names the supplier and
+// can carry its account state, e.g. "...createSubUser failed: 402 {insufficient
+// balance}") must never be written there. Store a neutral code; the full
+// detail is already logged server-side (console.error) at every call site.
+const errMsg = (e: unknown) => {
+  const status = (e as any)?.status
+  return typeof status === 'number' ? `upstream_error_${status}` : 'provision_failed'
+}
 const isGone = (e: unknown) => e instanceof GeonodeApiError && e.status === 404
 
 // ── Create ────────────────────────────────────────────────────────────
@@ -332,6 +340,12 @@ export async function topupCredential(
     if (topupErr.code === '23514') return fail(400, 'invalid_request', 'A single sub-user can hold at most 100000 GB; this top-up would exceed that.')
     if (topupErr.code === 'P0002' || msg.includes('not found')) return fail(404, 'not_found', 'Sub-user not found')
     if (msg.includes('reseller')) return fail(403, 'forbidden', msg)
+    // Only our own RAISE EXCEPTION texts (P0001) are written for customers; any
+    // other database error is logged and replaced with a generic message.
+    if (topupErr.code !== 'P0001') {
+      console.error('[credentials] topup_credential failed', id, topupErr)
+      return fail(500, 'internal_error', 'Could not add bandwidth to this session. Please try again.')
+    }
     return fail(400, 'invalid_request', msg)
   }
 

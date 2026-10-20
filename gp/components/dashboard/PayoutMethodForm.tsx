@@ -10,9 +10,11 @@ type Props = {
   currentBankDetails: { bankName?: string; accountName?: string; accountNumber?: string; country?: string; swift?: string } | null
   currentMpesaPhone: string | null
   updatedAt: string | null
+  // The real hold from lib/referrals (AFFILIATE_HOLD_HOURS), passed by the server page so this copy can't drift from it.
+  holdHours?: number
 }
 
-export default function PayoutMethodForm({ currentMethod, currentWalletAddress, currentBankDetails, currentMpesaPhone, updatedAt }: Props) {
+export default function PayoutMethodForm({ currentMethod, currentWalletAddress, currentBankDetails, currentMpesaPhone, updatedAt, holdHours = 48 }: Props) {
   const router = useRouter()
   const [method, setMethod] = useState<'usdt' | 'bank' | 'mpesa'>(currentMethod ?? 'usdt')
   const [walletAddress, setWalletAddress] = useState(currentWalletAddress ?? '')
@@ -71,7 +73,7 @@ export default function PayoutMethodForm({ currentMethod, currentWalletAddress, 
         {updatedAt && (
           <div className="text-[10px] text-muted mt-2">
             Last changed {new Date(updatedAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })} —
-            changes take 48 hours to clear our security hold before they're eligible for a payout.
+            changes take {holdHours} hours to clear our security hold before they're eligible for a payout.
           </div>
         )}
       </div>
@@ -83,7 +85,7 @@ export default function PayoutMethodForm({ currentMethod, currentWalletAddress, 
       <div>
         <div className="text-sm font-medium text-ink mb-1">Set your payout method</div>
         <div className="text-xs text-muted">
-          For security, a new or changed payout method takes 48 hours before it's eligible for a payout — this protects you if your account is ever compromised. We'll also email you every time this changes.
+          For security, a new or changed payout method takes {holdHours} hours before it's eligible for a payout — this protects you if your account is ever compromised. We'll also email you every time this changes.
         </div>
       </div>
       <div className="flex gap-2">

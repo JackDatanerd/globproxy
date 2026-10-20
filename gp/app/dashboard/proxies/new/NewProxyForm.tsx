@@ -40,7 +40,8 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
     protocol:        'http' as 'http' | 'socks5',
     session_type:    'rotating' as 'rotating' | 'sticky',
     sticky_duration: 10,
-    gb_allocated:    1,
+    // Never start over budget: an account with under 1 GB free used to open the form with the red "exceeds your balance" warning.
+    gb_allocated:    availableGb > 0 && availableGb < 1 ? (Math.floor(availableGb * 100) / 100 || availableGb) : 1,
     auto_topup_enabled:      defaultAutoTopup?.enabled ?? false,
     auto_topup_threshold_gb: defaultAutoTopup?.threshold_gb ?? 1,
     auto_topup_amount_gb:    defaultAutoTopup?.amount_gb ?? 5,

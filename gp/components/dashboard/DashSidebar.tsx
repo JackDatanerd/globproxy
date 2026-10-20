@@ -92,7 +92,14 @@ export default function DashSidebar({ role, open = false, onClose }: Props) {
     nav = [...adminNav.slice(0, 5), apiKeyItem, ...adminNav.slice(5)] // up to Credentials, then API Keys, then Affiliates + Sales Cycles + Settings
   }
 
-  const label = role === 'admin' ? 'Admin Panel' : role === 'reseller' ? 'Reseller Panel' : 'My Account'
+  // An admin browsing their OWN account pages (/dashboard/*) used to be shown
+  // only the admin nav — no way to reach their proxies, billing or settings.
+  const adminOnOwnAccount = role === 'admin' && path.startsWith('/dashboard')
+  if (adminOnOwnAccount) {
+    nav = [...userNav.slice(0, 6), apiKeyItem, userNav[6], { label: '← Admin Panel', href: '/admin' }]
+  }
+
+  const label = adminOnOwnAccount ? 'My Account' : role === 'admin' ? 'Admin Panel' : role === 'reseller' ? 'Reseller Panel' : 'My Account'
 
   return (
     <>

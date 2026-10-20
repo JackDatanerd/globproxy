@@ -13,6 +13,8 @@ import clsx from 'clsx'
 interface Props {
   cred: any
   index: number
+  // Unallocated GB on the account — what a manual top-up draws from.
+  availableGb?: number
   expanded: boolean
   onToggle: () => void
   // Lets the list jump straight to a tab (the near-limit banner opens
@@ -35,7 +37,7 @@ type Lang = 'py' | 'node' | 'browser'
 // detail the old always-open card showed, just organized into tabs so the
 // expanded state doesn't turn into another giant scroll once someone has a
 // handful of sessions.
-export default function ProxyCard({ cred, index, expanded, onToggle, requestedTab }: Props) {
+export default function ProxyCard({ cred, index, availableGb, expanded, onToggle, requestedTab }: Props) {
   const router = useRouter()
   const [showPass, setShowPass] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -86,8 +88,21 @@ export default function ProxyCard({ cred, index, expanded, onToggle, requestedTa
   const gbUsed = cred.gb_used || 0
   const pct = gbAllocated > 0 ? (gbUsed / gbAllocated) * 100 : 0
 
-  const isWarmingUp = cred.activated_at &&
-    (Date.now() - new Date(cred.activated_at).getTime()) < 10 * 60 * 1000
+  // Re-evaluated on a timer while inside the 10-minute window: computed once
+  // per render it stayed on "warming up" until something else re-rendered the
+  // card, long after the credentials were live.
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  const warmEndsAt = cred.activated_at ? new Date(cred.activated_at).getTime() + 10 * 60 * 1000 : 0
+  useEffect(() => {
+    if (!warmEndsAt || Date.now() >= warmEndsAt) return
+    const t = setInterval(() => {
+      const n = Date.now()
+      setNowMs(n)
+      if (n >= warmEndsAt) clearInterval(t)
+    }, 15_000)
+    return () => clearInterval(t)
+  }, [warmEndsAt])
+  const isWarmingUp = !!cred.activated_at && nowMs < warmEndsAt
 
   const isSticky = cred.session_type === 'sticky'
   const isSocks5 = cred.protocol === 'socks5'
@@ -98,8 +113,8 @@ export default function ProxyCard({ cred, index, expanded, onToggle, requestedTa
   // lines and "copy all" pasted the same endpoint N times. One rotating
   // endpoint already serves any number of connections, each on a fresh IP —
   // show it once.
-  const user = buildProxyUsername(baseUser, { ...cred, session_type: 'rotating', sticky_duration: null })
-  const endpoints: string[] = isSticky ? [] : [`${host}:${port}:${user}:${pass}`]
+  const rotatingUser = buildProxyUsername(baseUser, { ...cred, session_type: 'rotating', sticky_duration: null })
+  const endpoints: string[] = isSticky ? [] : [`${host}:${port}:${rotatingUser}:${pass}`]
 
   // Ad hoc sticky endpoint for the header's quick-copy button. The
   // managed, persisted sessions (SessionManager, "Sticky sessions" tab)
@@ -114,9 +129,13 @@ export default function ProxyCard({ cred, index, expanded, onToggle, requestedTa
   // endpoint the customer had already copied stale immediately. Named
   // sessions (SessionManager) are the explicit way to get a fresh IP.
   const quickStickySessionId = useMemo(() => deriveSessionId(cred.id, 0), [cred.id])
-  const quickStickyEndpoint = isSticky
-    ? `${host}:${port}:${buildProxyUsername(baseUser, cred, quickStickySessionId)}:${pass}`
-    : null
+  // The username everything on the card shows and every snippet embeds. For a
+  // sticky session this MUST carry the lifetime/session suffix (the sticky
+  // port with a bare username is not a sticky connection, and the chosen
+  // duration would never apply); rotating sessions use the bare form.
+  const stickyUser = isSticky ? buildProxyUsername(baseUser, cred, quickStickySessionId) : null
+  const user = stickyUser ?? rotatingUser
+  const quickStickyEndpoint = stickyUser ? `${host}:${port}:${stickyUser}:${pass}` : null
 
   async function copy(text: string, label = 'Copied') {
     if (await copyText(text)) toast.success(label)
@@ -168,6 +187,10 @@ export default function ProxyCard({ cred, index, expanded, onToggle, requestedTa
     e.preventDefault()
     const gb = Number(topupAmount)
     if (!Number.isFinite(gb) || gb <= 0) { toast.error('Enter a GB amount greater than 0'); return }
+    if (availableGb !== undefined && gb > availableGb + 0.005) {
+      toast.error(`You only have ${formatGb(availableGb)} GB unallocated — buy more bandwidth or free some from another session.`)
+      return
+    }
     setTopupLoading(true)
     try {
       const data = await apiJson('POST', `/api/dashboard/proxies/${cred.id}/topup`, { gb_amount: gb })
@@ -304,7 +327,16 @@ const agent = new HttpsProxyAgent(
       <div className={clsx('absolute left-0 top-0 bottom-0 w-[3px] rounded-l-xl', railColor)} />
 
       {/* Collapsed row header — click to expand */}
-      <div onClick={onToggle} className="flex items-center gap-4 pl-6 pr-4 py-3.5 cursor-pointer select-none">
+      <div
+        onClick={onToggle}
+        role="button" tabIndex={0} aria-expanded={expanded}
+        aria-label={`${cred.label || `Session #${index + 1}`} — ${expanded ? 'collapse' : 'expand'} details`}
+        onKeyDown={e => {
+          // Only the header itself: Enter/Space on the nested copy button must keep its own meaning.
+          if (e.target !== e.currentTarget) return
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle() }
+        }}
+        className="flex items-center gap-4 pl-6 pr-4 py-3.5 cursor-pointer select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded-xl">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-sm font-medium text-ink truncate">{cred.label || `Session #${index + 1}`}</span>
@@ -337,6 +369,7 @@ const agent = new HttpsProxyAgent(
 
         {cred.status === 'active' && (isSticky ? !!quickStickyEndpoint : endpoints.length > 0) && (
           <button onClick={quickCopy} title={isSticky ? 'Quick copy a sticky endpoint' : 'Quick copy endpoint'}
+            aria-label={isSticky ? 'Quick copy a sticky endpoint' : 'Quick copy endpoint'}
             className={clsx(
               'w-8 h-8 rounded-lg border flex items-center justify-center transition-colors flex-shrink-0',
               justCopied ? 'border-accent2 text-accent2 bg-accent2-light' : 'border-border text-ink2 hover:border-accent hover:text-accent hover:bg-accent-light'
@@ -345,7 +378,7 @@ const agent = new HttpsProxyAgent(
           </button>
         )}
 
-        <span className={clsx('text-muted transition-transform flex-shrink-0', expanded && 'rotate-90')}>▶</span>
+        <span aria-hidden="true" className={clsx('text-muted transition-transform flex-shrink-0', expanded && 'rotate-90')}>▶</span>
       </div>
 
       {/* Expanded body */}
@@ -369,28 +402,28 @@ const agent = new HttpsProxyAgent(
           {cred.status === 'active' && (
             <>
               {/* Tabs */}
-              <div className="flex items-center gap-5 border-b border-border mb-4">
-                <button onClick={() => setTab('cred')}
+              <div role="tablist" aria-label="Session details" className="flex items-center gap-5 border-b border-border mb-4 overflow-x-auto">
+                <button role="tab" aria-selected={tab === 'cred'} onClick={() => setTab('cred')}
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'cred' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
                   Credentials
                 </button>
-                <button onClick={() => setTab('bandwidth')}
+                <button role="tab" aria-selected={tab === 'bandwidth'} onClick={() => setTab('bandwidth')}
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'bandwidth' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
                   Bandwidth{pct >= WARN_PCT && <span className={clsx('ml-1', pct >= URGENT_PCT ? 'text-red-400' : 'text-amber-400')}>●</span>}
                 </button>
-                <button onClick={() => setTab('endpoints')}
+                <button role="tab" aria-selected={tab === 'endpoints'} onClick={() => setTab('endpoints')}
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'endpoints' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
                   {isSticky ? 'Sticky sessions' : 'Endpoint'}
                 </button>
-                <button onClick={() => setTab('whitelist')}
+                <button role="tab" aria-selected={tab === 'whitelist'} onClick={() => setTab('whitelist')}
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'whitelist' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
                   IP whitelist
                 </button>
-                <button onClick={() => setTab('edit')}
+                <button role="tab" aria-selected={tab === 'edit'} onClick={() => setTab('edit')}
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'edit' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
                   Edit
                 </button>
-                <button onClick={() => setTab('code')}
+                <button role="tab" aria-selected={tab === 'code'} onClick={() => setTab('code')}
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'code' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
                   Code snippets
                 </button>
@@ -421,6 +454,13 @@ const agent = new HttpsProxyAgent(
                   ))}
                 </div>
               )}
+              {tab === 'cred' && isSticky && (
+                <p className="text-[10.5px] text-muted mb-2">
+                  Sticky username: the <span className="font-mono">-lifetime-…-session-…</span> part keeps your exit IP for the
+                  chosen duration. This one is a ready-made example; open <strong>Sticky sessions</strong> to create named
+                  sessions, each with its own IP.
+                </p>
+              )}
 
               {tab === 'bandwidth' && (
                 <div className="mb-2">
@@ -439,7 +479,16 @@ const agent = new HttpsProxyAgent(
 
                       {/* Manual top-up */}
                       <form onSubmit={handleTopup} className="mb-4">
-                        <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-1.5">Top up now</div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <div className="text-[10px] font-mono text-muted uppercase tracking-widest">Top up now</div>
+                          {availableGb !== undefined && (
+                            <button type="button" disabled={availableGb <= 0}
+                              onClick={() => setTopupAmount(String(Math.floor(availableGb * 100) / 100))}
+                              className="text-[10px] font-mono text-accent hover:opacity-70 disabled:opacity-40 disabled:no-underline">
+                              {formatGb(availableGb)} GB available · use all
+                            </button>
+                          )}
+                        </div>
                         <div className="flex gap-2">
                           <input
                             type="number" inputMode="decimal" min="0.01" step="any" placeholder="GB to add"
@@ -452,7 +501,9 @@ const agent = new HttpsProxyAgent(
                           </button>
                         </div>
                         <p className="text-[10.5px] text-muted mt-1.5">
-                          Draws from your account balance and applies immediately — no new session needed.
+                          {availableGb !== undefined && availableGb <= 0
+                            ? 'Your account has no unallocated bandwidth left — buy more to top this session up.'
+                            : 'Draws from your unallocated account balance and applies immediately — no new session needed.'}
                         </p>
                       </form>
 

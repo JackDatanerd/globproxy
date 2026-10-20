@@ -13,16 +13,18 @@ import {
 } from '@/lib/referrals'
 
 const FUNNEL_PAGE = 25
+const COMMISSION_PAGE = 15
 const usd = formatUsd
 const shortDate = (s: string) => new Date(s).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: 'UTC' })
 
-export default async function ReferralsPage({ searchParams }: { searchParams: Promise<{ page?: string }> }) {
+export default async function ReferralsPage({ searchParams }: { searchParams: Promise<{ page?: string; cpage?: string }> }) {
   const sp = await searchParams
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/auth/login')
 
   const page = Math.max(1, Math.min(100_000, parseInt(sp.page ?? '1', 10) || 1))
+  const cpage = Math.max(1, Math.min(100_000, parseInt(sp.cpage ?? '1', 10) || 1))
   const accruing = currentAccruingCycle()
 
   const { data: profile } = await supabase.from('profiles')
@@ -38,14 +40,15 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
   // at 1000 rows, and "this cycle so far" used to be summed from only the
   // latest 20 commissions.
   const admin = await createAdminClient()
-  const [{ data: summaryRows, error: summaryErr }, { data: funnel, error: funnelErr }, { data: commissions, error: commissionsErr }, { data: payouts, error: payoutsErr }, { count: referredByAnyone }] = await Promise.all([
+  const [{ data: summaryRows, error: summaryErr }, { data: funnel, error: funnelErr }, { data: commissions, error: commissionsErr, count: commissionsCount }, { data: payouts, error: payoutsErr }, { count: referredByAnyone }] = await Promise.all([
     admin.rpc('my_affiliate_summary', { p_user_id: user.id, p_cycle_start: accruing.cycleStart, p_cycle_end: accruing.cycleEnd }),
     admin.rpc('my_referral_funnel', { p_user_id: user.id, p_limit: FUNNEL_PAGE, p_offset: (page - 1) * FUNNEL_PAGE }),
     isAffiliate
       ? supabase.from('affiliate_commissions')
-          .select('id, gross_amount_usd, commission_rate, commission_amount_usd, status, created_at, payout_id')
-          .eq('referrer_id', user.id).order('created_at', { ascending: false }).limit(15)
-      : Promise.resolve({ data: [] as any[], error: null }),
+          .select('id, gross_amount_usd, commission_rate, commission_amount_usd, status, created_at, payout_id', { count: 'exact' })
+          .eq('referrer_id', user.id).order('created_at', { ascending: false }).order('id', { ascending: false })
+          .range((cpage - 1) * COMMISSION_PAGE, cpage * COMMISSION_PAGE - 1)
+      : Promise.resolve({ data: [] as any[], error: null, count: 0 as number | null }),
     isAffiliate
       ? supabase.from('affiliate_payouts')
           .select('id, cycle_start, cycle_end, amount_usd, status, payout_method, paid_at, payment_reference')
@@ -81,6 +84,7 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
   const funnelRows = (funnel as any[]) ?? []
   const funnelTotal = Number(funnelRows[0]?.total_count ?? 0)
   const funnelPages = Math.max(1, Math.ceil(funnelTotal / FUNNEL_PAGE))
+  const commissionPages = Math.max(1, Math.ceil(Number(commissionsCount ?? 0) / COMMISSION_PAGE))
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'https://globproxy.com'
 
   const commissionState = (c: any) => {
@@ -160,6 +164,7 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
             currentBankDetails={profile?.payout_bank_details as any}
             currentMpesaPhone={profile?.payout_mpesa_phone ?? null}
             updatedAt={profile?.payout_method_updated_at ?? null}
+            holdHours={AFFILIATE_HOLD_HOURS}
           />
         </div>
       )}
@@ -198,7 +203,13 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
             </div>
 
             <div className="bg-white border border-border rounded-xl p-5">
-              <div className="text-sm font-medium text-ink mb-3">Recent commissions</div>
+              <div className="flex items-center justify-between mb-3">
+                <div className="text-sm font-medium text-ink">Commissions <span className="text-muted font-mono font-normal">({Number(commissionsCount ?? 0)})</span></div>
+                <div className="flex gap-3 text-[11px] font-mono">
+                  <a href="/api/dashboard/referrals/export?dataset=commissions" className="text-accent hover:underline">Export CSV ↓</a>
+                  <a href="/api/dashboard/referrals/export?dataset=payouts" className="text-accent hover:underline">Payouts CSV ↓</a>
+                </div>
+              </div>
               {commissions && commissions.length > 0 ? (
                 <div className="flex flex-col gap-2">
                   {commissions.map((c: any) => {
@@ -218,7 +229,16 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
                   })}
                 </div>
               ) : (
-                <div className="text-xs text-muted">No commissions yet — they&apos;ll show up here as your referrals order.</div>
+                <div className="text-xs text-muted">
+                  {cpage > 1 ? 'No commissions on this page.' : 'No commissions yet — they\u2019ll show up here as your referrals order.'}
+                </div>
+              )}
+              {commissionPages > 1 && (
+                <div className="flex items-center justify-between mt-4 text-xs font-mono text-muted">
+                  {cpage > 1 ? <Link href={`/dashboard/referrals?cpage=${cpage - 1}${page > 1 ? `&page=${page}` : ''}`} className="text-accent hover:underline">← Newer</Link> : <span />}
+                  <span>Page {cpage} of {commissionPages}</span>
+                  {cpage < commissionPages ? <Link href={`/dashboard/referrals?cpage=${cpage + 1}${page > 1 ? `&page=${page}` : ''}`} className="text-accent hover:underline">Older →</Link> : <span />}
+                </div>
               )}
             </div>
           </div>
@@ -242,6 +262,13 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
           <AffiliateApplyForm />
         )}
       </div>
+
+      {funnelRows.length === 0 && page > 1 && (
+        <div className="bg-white border border-border rounded-xl p-5 mt-4 text-xs text-muted">
+          No referrals on this page.{' '}
+          <Link href="/dashboard/referrals" className="text-accent hover:underline">Back to the first page →</Link>
+        </div>
+      )}
 
       {funnelRows.length > 0 && (
         <div className="bg-white border border-border rounded-xl p-5 mt-4">
@@ -274,9 +301,9 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
           </div>
           {funnelPages > 1 && (
             <div className="flex items-center justify-between mt-4 text-xs font-mono text-muted">
-              {page > 1 ? <Link href={`/dashboard/referrals?page=${page - 1}`} className="text-accent hover:underline">← Newer</Link> : <span />}
+              {page > 1 ? <Link href={`/dashboard/referrals?page=${page - 1}${cpage > 1 ? `&cpage=${cpage}` : ''}`} className="text-accent hover:underline">← Newer</Link> : <span />}
               <span>Page {page} of {funnelPages}</span>
-              {page < funnelPages ? <Link href={`/dashboard/referrals?page=${page + 1}`} className="text-accent hover:underline">Older →</Link> : <span />}
+              {page < funnelPages ? <Link href={`/dashboard/referrals?page=${page + 1}${cpage > 1 ? `&cpage=${cpage}` : ''}`} className="text-accent hover:underline">Older →</Link> : <span />}
             </div>
           )}
         </div>

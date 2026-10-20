@@ -3,6 +3,8 @@ import { useMemo, useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import ProxyCard from '@/components/dashboard/ProxyCard'
 import { formatGb } from '@/lib/format'
+import { buildProxyUsername, getProxyPort, deriveSessionId } from '@/lib/proxyEndpoint'
+import toast from 'react-hot-toast'
 
 interface Props {
   creds: any[]
@@ -64,21 +66,29 @@ export default function ProxyList({ creds, availableGb }: Props) {
   useEffect(() => {
     try {
       const raw = localStorage.getItem(DISMISS_KEY)
-      setDismissed(raw ? JSON.parse(raw) : {})
+      const stored: Record<string, boolean> = raw ? JSON.parse(raw) : {}
+      // Drop entries for deleted sessions so the stored map can't grow forever.
+      const live = new Set(creds.map(c => c.id))
+      const pruned = Object.fromEntries(Object.entries(stored).filter(([k]) => live.has(k.split(':')[0])))
+      if (Object.keys(pruned).length !== Object.keys(stored).length) localStorage.setItem(DISMISS_KEY, JSON.stringify(pruned))
+      setDismissed(pruned)
     } catch {}
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  function dismissKeyFor(credId: string, tier: string) { return `${credId}:${tier}` }
+  // The key includes the credential's current allocation: after a top-up the
+  // allocation changes, so a later re-drain past 80%/95% is a NEW warning
+  // instead of staying silenced by a dismissal made before the refill.
+  function dismissKeyFor(cred: any, tier: string) { return `${cred.id}:${tier}:${Number(cred.gb_allocated ?? 0)}` }
 
-  function dismiss(credId: string, tier: string) {
+  function dismiss(cred: any, tier: string) {
     setDismissed(prev => {
-      const next = { ...prev, [dismissKeyFor(credId, tier)]: true }
+      const next = { ...prev, [dismissKeyFor(cred, tier)]: true }
       try { localStorage.setItem(DISMISS_KEY, JSON.stringify(next)) } catch {}
       return next
     })
   }
 
-  const visibleWarnings = nearLimit.filter(({ cred, tier }) => !dismissed[dismissKeyFor(cred.id, tier)])
+  const visibleWarnings = nearLimit.filter(({ cred, tier }) => !dismissed[dismissKeyFor(cred, tier)])
 
   function jumpTo(credId: string) {
     // The target may be hidden by the current search/status filter — clear
@@ -103,6 +113,40 @@ export default function ProxyList({ creds, availableGb }: Props) {
       return haystack.includes(q)
     })
   }, [creds, query, statusFilter])
+
+  // One file with every active session's connection details — for loading a
+  // scraper fleet or a proxy manager without opening 30 cards. Sticky sessions
+  // export one stable endpoint each (the same one the card's quick-copy gives);
+  // named sticky sessions live in each card's Sticky sessions tab.
+  function exportAll(format: 'csv' | 'txt') {
+    const rows = creds
+      .filter(c => c.status === 'active' && c.username && c.password)
+      .map(c => {
+        const sticky = c.session_type === 'sticky'
+        const host = c.host || 'proxy.globproxy.com'
+        const port = c.port || getProxyPort(c.protocol, c.session_type)
+        const user = sticky
+          ? buildProxyUsername(c.username, c, deriveSessionId(c.id, 0))
+          : buildProxyUsername(c.username, { ...c, session_type: 'rotating', sticky_duration: null })
+        return { label: c.label || '', type: c.session_type, protocol: c.protocol || 'http', host, port, user, pass: c.password }
+      })
+    if (rows.length === 0) { toast.error('No active sessions to export.'); return }
+    const csvCell = (v: unknown) => {
+      let s = String(v ?? '')
+      // Spreadsheet formula injection: labels are free text.
+      if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+    }
+    const body = format === 'csv'
+      ? ['label,type,protocol,host,port,username,password', ...rows.map(r => [r.label, r.type, r.protocol, r.host, r.port, r.user, r.pass].map(csvCell).join(','))].join('\n') + '\n'
+      : rows.map(r => `${r.host}:${r.port}:${r.user}:${r.pass}`).join('\n') + '\n'
+    const blob = new Blob([body], { type: format === 'csv' ? 'text/csv' : 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = `globproxy-endpoints.${format}`
+    a.click(); URL.revokeObjectURL(url)
+    toast.success(`Exported ${rows.length} session${rows.length === 1 ? '' : 's'} — the file contains passwords, keep it private.`)
+  }
 
   const counts = useMemo(() => ({
     all: creds.length,
@@ -141,7 +185,7 @@ export default function ProxyList({ creds, availableGb }: Props) {
                   Set up auto-topup
                 </button>
               )}
-              <button onClick={() => dismiss(cred.id, tier)} aria-label="Dismiss"
+              <button onClick={() => dismiss(cred, tier)} aria-label="Dismiss"
                 className="text-current opacity-50 hover:opacity-100 flex-shrink-0 px-1">✕</button>
             </div>
           ))}
@@ -170,6 +214,16 @@ export default function ProxyList({ creds, availableGb }: Props) {
           ))}
         </div>
         <span className="ml-auto text-[11px] font-mono text-muted">{filtered.length} shown</span>
+        <div className="flex gap-1.5">
+          <button onClick={() => exportAll('txt')} title="Download host:port:user:pass for every active session"
+            className="text-[11px] font-mono px-3 py-1.5 rounded-full border border-border text-ink2 hover:border-accent hover:text-accent transition-colors">
+            Export .txt
+          </button>
+          <button onClick={() => exportAll('csv')} title="Download a CSV of every active session"
+            className="text-[11px] font-mono px-3 py-1.5 rounded-full border border-border text-ink2 hover:border-accent hover:text-accent transition-colors">
+            Export .csv
+          </button>
+        </div>
       </div>
 
       {filtered.length > 0 ? (
@@ -178,6 +232,7 @@ export default function ProxyList({ creds, availableGb }: Props) {
             <div key={cred.id} ref={el => { cardRefs.current[cred.id] = el }}>
               <ProxyCard
                 cred={cred}
+                availableGb={availableGb}
                 // Creation order across the FULL list (oldest = #1): the
                 // list is newest-first and filtered, so a plain map index
                 // renumbered every unlabeled session on each new session and

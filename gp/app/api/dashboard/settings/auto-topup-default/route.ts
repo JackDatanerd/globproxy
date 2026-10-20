@@ -41,7 +41,11 @@ export async function PATCH(req: Request) {
     p_amount_gb: amountGb,
   })
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 400 })
+  if (error) {
+    if (error.code === 'P0001') return NextResponse.json({ error: error.message }, { status: 400 })
+    console.error('[auto-topup-default] set_default_auto_topup failed', error)
+    return NextResponse.json({ error: 'Could not save your default. Please try again.' }, { status: 500 })
+  }
 
   return NextResponse.json({
     success: true,

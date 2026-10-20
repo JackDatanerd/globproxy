@@ -9,15 +9,21 @@ export default async function ProxiesPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/auth/login')
 
-  const [{ data: creds, error: credsError }, { data: bw }] = await Promise.all([
+  // Explicit columns, never '*': customers can read their whole row, and the
+  // internal provisioning columns (last_provision_error, provision_attempts,
+  // provisioning_claimed_at, geonode_sub_user_id…) have no business in the
+  // browser payload. The supplier-named columns below are renamed server-side.
+  const [{ data: creds, error: credsError }, { data: bw, error: bwError }] = await Promise.all([
     supabase.from('proxy_credentials')
-      .select('*')
+      .select('id, user_id, created_by, label, status, gb_allocated, gb_used, country, state, city, asn, session_type, protocol, sticky_duration, endpoint_count, host, port, geonode_username, geonode_password, activated_at, created_at, auto_topup_enabled, auto_topup_threshold_gb, auto_topup_amount_gb')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false }),
+    // maybeSingle: a brand-new account legitimately has no row (not an error);
+    // a real failure is surfaced below instead of reading as "no bandwidth".
     supabase.from('bandwidth_accounts')
       .select('total_gb, used_gb, available_gb')
       .eq('user_id', user.id)
-      .single(),
+      .maybeSingle(),
   ])
 
   // A failed query used to fall through to the "No sessions yet" empty state,
@@ -37,8 +43,7 @@ export default async function ProxiesPage() {
   // supplier's internal sub-user id) would show in the page payload. Expose
   // only neutral names.
   const safeCreds = (creds ?? []).map((row: Record<string, any>) => {
-    const { geonode_username, geonode_password, geonode_sub_user_id: _drop, ...rest } = row
-    void _drop
+    const { geonode_username, geonode_password, ...rest } = row
     return { ...rest, username: geonode_username ?? null, password: geonode_password ?? null }
   })
 
@@ -49,6 +54,11 @@ export default async function ProxiesPage() {
 
   return (
     <div className="max-w-4xl">
+      {bwError && (
+        <div className="mb-4 bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm">
+          We couldn&apos;t load your bandwidth balance, so the figures below may be incomplete. Your bandwidth is unaffected — refresh to try again.
+        </div>
+      )}
       {/* Header */}
       <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
         <div>
@@ -101,7 +111,7 @@ export default async function ProxiesPage() {
       )}
 
       {/* No bandwidth state */}
-      {total === 0 && (
+      {total === 0 && !bwError && (
         <div className="bg-white border border-border rounded-xl p-12 text-center mb-6">
           <div className="text-3xl mb-3">⬡</div>
           <h2 className="font-display font-bold text-lg text-ink mb-2">No bandwidth yet</h2>
@@ -117,7 +127,7 @@ export default async function ProxiesPage() {
 
       {/* Proxy list */}
       {creds && creds.length > 0 ? (
-        <ProxyList creds={safeCreds as typeof creds} availableGb={available} />
+        <ProxyList creds={safeCreds as unknown as React.ComponentProps<typeof ProxyList>["creds"]} availableGb={available} />
       ) : total > 0 ? (
         <div className="bg-white border border-border rounded-xl p-12 text-center">
           <div className="text-3xl mb-3">⬡</div>

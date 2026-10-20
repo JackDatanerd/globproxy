@@ -57,13 +57,16 @@ export function whitelistErrorResponse(e: unknown): NextResponse {
       return NextResponse.json({ error: 'IP whitelist service is temporarily unavailable. Please try again shortly.', code: 'upstream_unavailable' }, { status: 502 })
     }
     if (e.status === 404) {
-      return NextResponse.json({ error: e.body?.message || 'Not found', code: 'not_found' }, { status: 404 })
+      console.error('Whitelist upstream 404:', e.body)
+      return NextResponse.json({ error: 'That whitelist entry could not be found.', code: 'not_found' }, { status: 404 })
     }
     if (e.status === 409) {
-      return NextResponse.json({ error: e.body?.message || 'That IP is already whitelisted, or the whitelist limit has been reached.', code: 'conflict' }, { status: 409 })
+      console.error('Whitelist upstream 409:', e.body)
+      return NextResponse.json({ error: 'That IP is already whitelisted, or the whitelist limit has been reached.', code: 'conflict' }, { status: 409 })
     }
     if (e.status === 400) {
-      return NextResponse.json({ error: e.body?.message || 'Invalid request.', code: 'invalid_request' }, { status: 400 })
+      console.error('Whitelist upstream 400:', e.body)
+      return NextResponse.json({ error: 'That request was rejected. Check the IP address and description and try again.', code: 'invalid_request' }, { status: 400 })
     }
     console.error('Unexpected Geonode whitelist error:', e.status, e.body)
     return NextResponse.json({ error: 'IP whitelist service is temporarily unavailable.', code: 'upstream_unavailable' }, { status: 502 })

@@ -5,12 +5,12 @@ import { getPeriodStats, getHostCountryStatsWithMeta, GeonodeApiError, type Peri
 import { toCsv, csvResponse } from '@/lib/csv'
 import { NextResponse } from 'next/server'
 
-// Only two ranges are exposed in the UI — keeping the allowed set closed
+// Only three ranges (7/30/90 days) are exposed in the UI — keeping the allowed set closed
 // (rather than accepting any integer) means every call this route ever
 // makes stays comfortably under Geonode's 720-unit-at-granularity=day cap
 // and under Cloudflare Workers' per-invocation subrequest budget (see the
 // credential cap below).
-const ALLOWED_RANGE_DAYS = [7, 30] as const
+const ALLOWED_RANGE_DAYS = [7, 30, 90] as const
 type RangeDays = (typeof ALLOWED_RANGE_DAYS)[number]
 
 function parseRange(value: string | null): RangeDays {

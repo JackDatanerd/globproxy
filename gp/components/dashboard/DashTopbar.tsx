@@ -46,7 +46,7 @@ export default function DashTopbar({
           {menuOpen ? '✕' : '☰'}
         </button>
       )}
-      <Link href="/" className="font-display font-black text-xl text-ink tracking-tight">Glob<span className="text-accent">Proxy</span></Link>
+      <Link href="/dashboard" className="font-display font-black text-xl text-ink tracking-tight">Glob<span className="text-accent">Proxy</span></Link>
       <div className="flex-1" />
       <div className="flex items-center gap-3">
         {profile?.role === 'reseller' && <span className="bg-accent2-light text-accent2 text-[10px] font-mono tracking-widest px-2.5 py-1 rounded-full">RESELLER</span>}
