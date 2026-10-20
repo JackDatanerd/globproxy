@@ -44,3 +44,7 @@ yarn-error.log*
 # wrangler
 .wrangler/
 tsconfig.tsbuildinfo
+
+# Supplier reference dumps used only to regenerate lib/locations/data.ts
+# (see scripts/generate-locations.py). Keep them local — never commit them.
+geonode-*.json

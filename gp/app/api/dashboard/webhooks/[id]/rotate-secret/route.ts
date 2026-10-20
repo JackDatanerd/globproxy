@@ -1,4 +1,5 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
+import { rateLimitedUser } from '@/lib/rateLimit'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { rotateSecret } from '@/lib/webhookEndpoints'
 import { requireStepUp } from '@/lib/reauth'
@@ -10,6 +11,10 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  // Per-user throttle (lib/rateLimit.ts) — this route rotates a signing secret on every call.
+  const throttled = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'webhook-rotate')
+  if (throttled) return throttled
 
   // 2FA step-up, same as webhook create/update: rotating the signing secret
   // is a security-sensitive change. See lib/mfa.ts.

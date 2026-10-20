@@ -17,7 +17,7 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
     // at the provider, so an unthrottled loop here could exhaust its limits
     // for every customer. 10/minute per key on top of the general limiter.
     if (!(await allowApiRequest('API_HISTORY_RATE_LIMITER', key.id))) {
-      return apiError(429, 'rate_limited', 'Usage history is limited to 10 requests/minute per key. Retry after the Retry-After interval.', { 'Retry-After': '15' })
+      return apiError(429, 'rate_limited', 'Usage history is limited to 10 requests/minute per key. Retry after the Retry-After interval.', { 'Retry-After': '60', 'X-RateLimit-Limit': '10' })
     }
 
     const { id } = await context.params

@@ -29,14 +29,9 @@
 // scheduled() invocation — costs nothing, and means route.ts needed zero
 // changes for this migration.
 //
-// ACTION NEEDED AFTER THIS DEPLOYS AND IS VERIFIED WORKING: delete
-// .github/workflows/cron-usage.yml, cron-stock.yml, and cron-daily.yml —
-// they are the real dispatcher this replaces (cron-job.org, separately,
-// has already been disabled). Leaving them running alongside this would
-// double-fire every task. Do NOT delete them before confirming the
-// Cloudflare triggers actually fired successfully at least once each —
-// check the Triggers tab / wrangler tail, don't just trust the deploy
-// succeeding.
+// (The old .github/workflows/cron-*.yml dispatchers this replaced have been
+// deleted. If any of them ever reappears alongside this, every task would
+// double-fire.)
 //
 // SCHEDULE: matched to the real, already-proven cadence in those three
 // workflows (see CRON_TASKS below for the mapping and reasoning) rather
@@ -99,8 +94,96 @@ const CRON_TASKS: Record<string, string[]> = {
   '5 8 * * *': ['canary'],
 }
 
+// ── Edge cache for anonymous page views ──────────────────────────────
+// The app runs with OpenNext's "dummy" incremental cache (open-next.config.ts),
+// so Next's own caching — including `export const revalidate` — does nothing
+// here, and every view of a marketing page or the public /status page ran a
+// full server render (the status page, a database query too) for every
+// visitor. This serves repeat anonymous GETs of a fixed allow-list of pages
+// from Cloudflare's per-colo cache for a few minutes instead.
+//
+// What keeps it safe:
+//  - only these exact public paths, only GET, only requests with NO cookie
+//    and NO Authorization header (so anything personalised, or any signed-in
+//    visitor, always reaches the real app);
+//  - only requests with no query string (that excludes `?ref=` referral
+//    landings and every Next `?_rsc=` client-navigation fetch) and none of
+//    the RSC / server-action headers — otherwise a cached HTML page could be
+//    handed to a client that asked for flight data;
+//  - only 200 text/html responses that set no cookie are stored.
+// Worst case after a deploy or a status change is ~EDGE_CACHE_TTL_SECONDS of
+// staleness on those pages. The x-edge-cache header says HIT or MISS.
+const EDGE_CACHE_TTL_SECONDS = 300
+const EDGE_CACHEABLE_PATHS: RegExp[] = [
+  /^\/$/,
+  /^\/status$/,
+  /^\/(privacy|terms|refunds)$/,
+  /^\/docs\/api$/,
+  /^\/blog(\/[^/]+)?$/,
+  /^\/locations(\/[^/]+)?$/,
+]
+
+function isEdgeCacheable(request: Request, url: URL): boolean {
+  if (request.method !== 'GET') return false
+  if (url.search !== '') return false
+  if (!EDGE_CACHEABLE_PATHS.some((re) => re.test(url.pathname))) return false
+  const h = request.headers
+  if (h.has('cookie') || h.has('authorization')) return false
+  if (h.has('rsc') || h.has('next-action') || h.has('next-router-state-tree') || h.has('next-router-prefetch')) return false
+  return true
+}
+
+async function fetchWithEdgeCache(request: Request, env: any, ctx: any): Promise<Response> {
+  let url: URL
+  try {
+    url = new URL(request.url)
+  } catch {
+    return handler.fetch(request, env, ctx)
+  }
+  if (!isEdgeCacheable(request, url)) return handler.fetch(request, env, ctx)
+
+  // One synthetic key per path: the real request's headers must not split
+  // (or poison) the cache.
+  const key = new Request(`${url.origin}${url.pathname}`, { method: 'GET' })
+  let cache: Cache | undefined
+  try {
+    cache = (caches as unknown as { default: Cache }).default
+    const hit = await cache.match(key)
+    if (hit) {
+      const out = new Response(hit.body, hit)
+      // The stored copy carries `public, max-age=…` only so Cloudflare's cache
+      // will keep it. The BROWSER must not: the same URL renders differently
+      // once the visitor signs in (e.g. the homepage call-to-action), so a
+      // browser-cached anonymous copy would linger after login.
+      out.headers.set('Cache-Control', 'private, no-cache, max-age=0, must-revalidate')
+      out.headers.set('x-edge-cache', 'HIT')
+      return out
+    }
+  } catch (e) {
+    console.error('[edge-cache] lookup failed, serving uncached', e)
+    cache = undefined
+  }
+
+  const res: Response = await handler.fetch(request, env, ctx)
+  const storable =
+    cache &&
+    res.status === 200 &&
+    !res.headers.has('set-cookie') &&
+    (res.headers.get('content-type') ?? '').toLowerCase().includes('text/html')
+
+  if (storable && cache) {
+    const forCache = new Response(res.clone().body, res)
+    forCache.headers.set('Cache-Control', `public, max-age=${EDGE_CACHE_TTL_SECONDS}`)
+    ctx.waitUntil(cache.put(key, forCache).catch((e: unknown) => console.error('[edge-cache] store failed', e)))
+  }
+
+  const out = new Response(res.body, res)
+  out.headers.set('x-edge-cache', 'MISS')
+  return out
+}
+
 export default {
-  fetch: handler.fetch,
+  fetch: fetchWithEdgeCache,
 
   async scheduled(event: any, env: any, ctx: any) {
     const tasks = CRON_TASKS[event.cron]
@@ -114,13 +197,43 @@ export default {
     // what makes them available on `env` here, same as they're available
     // as process.env.* inside the Next.js request-handling code this
     // self-invokes.
-    const base = env.NEXT_PUBLIC_APP_URL || 'https://globproxy.com'
+    // Only the host matters (the request never leaves this Worker), but it
+    // must parse: a stray trailing slash in the secret used to produce
+    // "https://host//api/cron/…", which the router answers with a redirect —
+    // not ok, so the whole chain stopped silently every tick.
+    let base = 'https://globproxy.com'
+    try {
+      if (env.NEXT_PUBLIC_APP_URL) base = new URL(env.NEXT_PUBLIC_APP_URL).origin
+    } catch {
+      console.error('[scheduled] NEXT_PUBLIC_APP_URL is not a valid URL — falling back to', base)
+    }
 
     // waitUntil so the scheduled invocation doesn't get torn down before
     // the chain (and everything each step awaits — email sends, Geonode
     // calls, Supabase writes) actually finishes.
     ctx.waitUntil(runTaskChain(base, env.CRON_SECRET ?? '', tasks, handler, env, ctx))
   },
+}
+
+// Looks for an `error` string anywhere in the first few levels of a task's
+// JSON result ({ task, result: { provision: { error } } } and the like).
+// Returns it, or null. Never throws: a body that isn't JSON is just "no error".
+async function taskReportedError(res: Response): Promise<string | null> {
+  try {
+    const body = await res.clone().json()
+    const find = (v: any, depth: number): string | null => {
+      if (!v || typeof v !== 'object' || depth > 4) return null
+      if (typeof v.error === 'string' && v.error) return v.error
+      for (const k of Object.keys(v)) {
+        const hit = find(v[k], depth + 1)
+        if (hit) return hit
+      }
+      return null
+    }
+    return find(body?.result, 0)
+  } catch {
+    return null
+  }
 }
 
 // Runs tasks in order, stopping at the first failure — same semantics as
@@ -146,6 +259,14 @@ async function runTaskChain(
         console.error(`[scheduled] cron task "${task}" returned ${res.status}:`, await res.text().catch(() => ''))
         return // stop the chain, matching needs:
       }
+      // Several tasks (reconcile, provision, webhooks, …) catch their own
+      // failures so they can never block the chain, and report them as
+      // `{ error }` inside a 200 response — which the status check above
+      // reads as success. Surface those in the persisted log instead of
+      // letting them vanish. The chain still continues: that is exactly why
+      // those tasks swallow their errors.
+      const reported = await taskReportedError(res)
+      if (reported) console.error(`[scheduled] cron task "${task}" finished but reported an error:`, reported)
     } catch (e) {
       console.error(`[scheduled] cron task "${task}" threw:`, e)
       return // stop the chain, matching needs:

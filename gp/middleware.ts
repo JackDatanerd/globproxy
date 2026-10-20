@@ -15,6 +15,34 @@ type CookieToSet = {
 // and the hash-and-look-up shape are needed here.
 const MFA_COOKIE_NAME = 'gp_mfa'
 
+// Every Supabase call below sits on the request path of every page. Without
+// a ceiling, a slow Supabase stalls every page view until the Worker itself
+// gives up; with one, the failure is quick and handled (see the catch in
+// middleware()).
+const UPSTREAM_TIMEOUT_MS = 4000
+
+class UpstreamTimeout extends Error {}
+
+function withTimeout<T>(work: PromiseLike<T>, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new UpstreamTimeout(`${label} timed out after ${UPSTREAM_TIMEOUT_MS}ms`)), UPSTREAM_TIMEOUT_MS)
+  })
+  return Promise.race([Promise.resolve(work), timeout]).finally(() => clearTimeout(timer))
+}
+
+type Settled<T> = { ok: true; value: T } | { ok: false; error: unknown }
+
+// Turns a promise into one that never rejects, so work started early (and
+// possibly abandoned by an early return) cannot surface as an unhandled
+// rejection later.
+function settle<T>(work: Promise<T>): Promise<Settled<T>> {
+  return work.then(
+    (value) => ({ ok: true as const, value }),
+    (error) => ({ ok: false as const, error })
+  )
+}
+
 async function sha256Hex(input: string): Promise<string> {
   const data = new TextEncoder().encode(input)
   const digest = await crypto.subtle.digest('SHA-256', data)
@@ -27,9 +55,12 @@ async function sha256Hex(input: string): Promise<string> {
 // rather than via lib/supabase/server.ts's createAdminClient() to keep
 // this file's only dependency on Supabase the same @supabase/supabase-js
 // import already used for the request-scoped ssr client above.
-async function hasValidMfaSession(request: NextRequest, userId: string): Promise<boolean> {
-  const token = request.cookies.get(MFA_COOKIE_NAME)?.value
-  if (!token) return false
+//
+// THROWS when the lookup itself fails (the caller turns that into a 503).
+// It used to return false, which sent the user to /auth/mfa-verify as if
+// their session had expired — indistinguishable from a real expiry, and
+// useless to someone whose verification page then hit the same outage.
+async function hasValidMfaSession(token: string, userId: string): Promise<boolean> {
   const admin = createSupabaseJsClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
@@ -41,54 +72,21 @@ async function hasValidMfaSession(request: NextRequest, userId: string): Promise
     .select('user_id, expires_at')
     .eq('token_hash', tokenHash)
     .maybeSingle()
-  // Stays fail-closed on error (same reasoning as lib/mfa.ts's
-  // checkVerifiedSession, kept in sync manually since this copy is
-  // deliberately duplicated — see the header comment on why). The logging
-  // is what actually matters here: this gates every protected page load,
-  // so if the underlying service-role read is broken for infra reasons,
-  // it previously looked identical to "your session expired" on every
-  // single request, with nothing anywhere pointing at why.
   if (error) {
-    console.error('[mfa] hasValidMfaSession query failed — treating as unverified, check this reason before assuming the session actually expired', userId, error)
-    return false
+    console.error('[mfa] hasValidMfaSession query failed — failing closed with a 503', userId, error)
+    throw new Error(`mfa_verified_sessions lookup failed: ${error.message}`)
   }
   if (!data || data.user_id !== userId) return false
   return new Date(data.expires_at).getTime() > Date.now()
 }
 
+const UNAVAILABLE_HTML =
+  '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Temporarily unavailable</title>' +
+  '<body style="font-family:sans-serif;max-width:420px;margin:15vh auto;padding:0 24px;text-align:center;color:#111">' +
+  '<h2>Temporarily unavailable</h2><p style="color:#555">We couldn\'t verify your account just now. Please refresh in a few seconds.</p></body>'
+
 export async function middleware(request: NextRequest) {
-  let response = NextResponse.next({ request })
-
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        getAll: () => request.cookies.getAll(),
-        setAll: (toSet: CookieToSet[]) => {
-          toSet.forEach(({ name, value }) => request.cookies.set(name, value))
-          response = NextResponse.next({ request })
-          toSet.forEach(({ name, value, options }) =>
-            response.cookies.set(name, value, options)
-          )
-        },
-      },
-    }
-  )
-
-  const { data: { user } } = await supabase.auth.getUser()
   const path = request.nextUrl.pathname
-
-  // Redirects must carry the cookies Supabase just set on `response` — a
-  // refreshed session after getUser(), or the deletions from signOut().
-  // A bare NextResponse.redirect() drops them, which strands a user whose
-  // refresh token was rotated (the next request replays a consumed token
-  // and fails) and leaves a signed-out session cookie in the browser.
-  const redirectTo = (url: URL) => {
-    const redirect = NextResponse.redirect(url)
-    response.cookies.getAll().forEach((c) => redirect.cookies.set(c))
-    return redirect
-  }
 
   // '/invoice' added alongside '/dashboard'/'/reseller'/'/admin': it's an
   // order's billing/PII document, equivalent in sensitivity to what's
@@ -104,102 +102,192 @@ export async function middleware(request: NextRequest) {
   // that gate by path below to avoid redirecting a user into a loop of
   // "go verify" → "go verify" → ...
   const isMfaFlowPath = path === '/auth/mfa-setup' || path === '/auth/mfa-verify'
+  const needsAuth = isProtected || isMfaFlowPath
 
-  // Where to come back to after signing in. Path + query, same-site only —
-  // the login page and callback both re-validate it with safeNextPath().
-  const here = path + request.nextUrl.search
+  let response = NextResponse.next({ request })
 
-  // Not logged in — redirect to login, remembering where they were headed.
-  if ((isProtected || isMfaFlowPath) && !user) {
-    const loginUrl = new URL('/auth/login', request.url)
-    if (isProtected) loginUrl.searchParams.set('next', here)
-    return redirectTo(loginUrl)
+  // Anything returned from here on must carry the cookies Supabase just set
+  // on `response` — a refreshed session after getUser(), or the deletions
+  // from signOut(). A bare NextResponse drops them, which strands a user
+  // whose refresh token was rotated (the next request replays a consumed
+  // token and fails) and leaves a signed-out session cookie in the browser.
+  // That applies to redirects AND to the 503 below: the 503 used to be built
+  // bare, so a database hiccup landing on the very request that rotated the
+  // token threw the new one away.
+  const withSessionCookies = (res: NextResponse) => {
+    response.cookies.getAll().forEach((c) => res.cookies.set(c))
+    return res
   }
+  const redirectTo = (url: URL) => withSessionCookies(NextResponse.redirect(url))
 
-  if (user) {
-    // Single profile fetch covers the admin/reseller/suspension checks
-    // and the MFA-required flag together.
-    const { data: profile, error: profileError } = await supabase
-      .from('profiles')
-      .select('role, is_suspended, is_deleted, mfa_enabled')
-      .eq('id', user.id)
-      .maybeSingle()
+  // Plain 503, deliberately not a redirect to /auth/login: the login page
+  // bounces signed-in users back to /dashboard, which would loop.
+  const unavailable = () =>
+    withSessionCookies(
+      new NextResponse(UNAVAILABLE_HTML, {
+        status: 503,
+        headers: { 'Content-Type': 'text/html; charset=utf-8', 'Retry-After': '5', 'Cache-Control': 'no-store' },
+      })
+    )
 
-    // Fail CLOSED. This query used to ignore its error, so any transient
-    // failure left `profile` null — and every check below (deleted,
-    // suspended, role gates, MFA step-up) is written as `profile?.x`, which
-    // silently evaluates to "all clear". A hiccup therefore let suspended
-    // and MFA-protected accounts straight through for that request. On a
-    // protected path, an unreadable profile is a temporary outage, not a
-    // pass. (Plain 503, deliberately not a redirect to /auth/login: the
-    // login page bounces signed-in users back to /dashboard, which would
-    // loop.)
-    if (profileError && (isProtected || isMfaFlowPath)) {
-      console.error('[middleware] profile lookup failed — failing closed', user.id, profileError.message)
-      return new NextResponse(
-        '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Temporarily unavailable</title>' +
-        '<body style="font-family:sans-serif;max-width:420px;margin:15vh auto;padding:0 24px;text-align:center;color:#111">' +
-        '<h2>Temporarily unavailable</h2><p style="color:#555">We couldn\'t verify your account just now. Please refresh in a few seconds.</p></body>',
-        { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Retry-After': '5' } }
+  try {
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          getAll: () => request.cookies.getAll(),
+          setAll: (toSet: CookieToSet[]) => {
+            toSet.forEach(({ name, value }) => request.cookies.set(name, value))
+            response = NextResponse.next({ request })
+            toSet.forEach(({ name, value, options }) =>
+              response.cookies.set(name, value, options)
+            )
+          },
+        },
+      }
+    )
+
+    const { data: { user }, error: authError } = await withTimeout(supabase.auth.getUser(), 'auth.getUser')
+
+    // "No session" and "Supabase Auth could not be reached" both come back
+    // with user === null. Treating the second as a logout bounces every
+    // signed-in user to the login page during an outage. A real missing or
+    // invalid session is a 4xx (AuthSessionMissingError and friends); only
+    // network failures and 5xx count as an outage.
+    const authOutage =
+      !!authError &&
+      (authError.name === 'AuthRetryableFetchError' ||
+        (typeof (authError as { status?: number }).status === 'number' && (authError as { status: number }).status >= 500))
+    if (authOutage && needsAuth) {
+      console.error('[middleware] auth backend unreachable — returning 503 instead of treating the visitor as logged out', authError?.message)
+      return unavailable()
+    }
+
+    // Where to come back to after signing in. Path + query, same-site only —
+    // the login page and callback both re-validate it with safeNextPath().
+    const here = path + request.nextUrl.search
+
+    // Not logged in — redirect to login, remembering where they were headed.
+    if (needsAuth && !user) {
+      const loginUrl = new URL('/auth/login', request.url)
+      if (isProtected) loginUrl.searchParams.set('next', here)
+      return redirectTo(loginUrl)
+    }
+
+    if (user) {
+      // The step-up lookup only matters for an account with MFA on, which we
+      // don't know until the profile comes back — but when the browser holds a
+      // verified-session cookie it is almost always going to be needed, so it
+      // is started now and runs alongside the profile read instead of after
+      // it. Wrapped so an abandoned result can never become an unhandled
+      // rejection.
+      const mfaToken = request.cookies.get(MFA_COOKIE_NAME)?.value
+      const mfaLookup =
+        isProtected && mfaToken
+          ? settle(withTimeout(hasValidMfaSession(mfaToken, user.id), 'mfa session lookup'))
+          : null
+
+      // Single profile fetch covers the admin/reseller/suspension checks
+      // and the MFA-required flag together.
+      const { data: profile, error: profileError } = await withTimeout(
+        supabase
+          .from('profiles')
+          .select('role, is_suspended, is_deleted, mfa_enabled')
+          .eq('id', user.id)
+          .maybeSingle(),
+        'profiles lookup'
       )
-    }
 
-    // Deleted — sign out and redirect. This is the actual enforcement
-    // point referenced throughout the app (lib/apiAuth.ts,
-    // app/dashboard/layout.tsx, app/reseller/layout.tsx, migration 0029's
-    // own comments) as "middleware.ts's is_deleted check" — closing this
-    // here, alongside is_suspended right below, is what makes every one
-    // of /dashboard, /reseller, /admin, /invoice actually stop working
-    // for a deleted account on its very next request, regardless of
-    // whether the access token itself is technically still unexpired.
-    // Layout-level checks on /dashboard and /reseller are a second,
-    // defense-in-depth backstop for the same thing — this is what's
-    // supposed to catch it first, for every protected path at once,
-    // including /admin and /invoice which never got an equivalent
-    // layout-level check of their own.
-    if (profile?.is_deleted && !path.startsWith('/auth')) {
-      await supabase.auth.signOut()
-      return redirectTo(new URL('/auth/login?deleted=1', request.url))
-    }
+      // Fail CLOSED. This query used to ignore its error, so any transient
+      // failure left `profile` null — and every check below (deleted,
+      // suspended, role gates, MFA step-up) is written as `profile?.x`, which
+      // silently evaluates to "all clear". A hiccup therefore let suspended
+      // and MFA-protected accounts straight through for that request. On a
+      // protected path, an unreadable profile is a temporary outage, not a
+      // pass.
+      if (profileError && needsAuth) {
+        console.error('[middleware] profile lookup failed — failing closed', user.id, profileError.message)
+        return unavailable()
+      }
+      // Same rule for "no error, but no row": every check below would read an
+      // absent profile as "not deleted, not suspended, MFA off". The API side
+      // (requireActiveUser) already treats a missing profile as a failure;
+      // the page side now agrees instead of waving the request through.
+      if (!profile && !profileError && needsAuth) {
+        console.error('[middleware] signed-in user has no profiles row — failing closed', user.id)
+        return unavailable()
+      }
 
-    // Suspended — sign out and redirect
-    if (profile?.is_suspended && !path.startsWith('/auth')) {
-      await supabase.auth.signOut()
-      return redirectTo(new URL('/auth/login?suspended=1', request.url))
-    }
+      // Deleted — sign out and redirect. This is the actual enforcement
+      // point referenced throughout the app (lib/apiAuth.ts,
+      // app/dashboard/layout.tsx, app/reseller/layout.tsx, migration 0029's
+      // own comments) as "middleware.ts's is_deleted check" — closing this
+      // here, alongside is_suspended right below, is what makes every one
+      // of /dashboard, /reseller, /admin, /invoice actually stop working
+      // for a deleted account on its very next request, regardless of
+      // whether the access token itself is technically still unexpired.
+      // The layouts under /dashboard, /reseller and /admin repeat their own
+      // role / MFA checks as a second backstop; this is what catches it
+      // first, for every protected path at once.
+      if (profile?.is_deleted && !path.startsWith('/auth')) {
+        await withTimeout(supabase.auth.signOut(), 'auth.signOut')
+        return redirectTo(new URL('/auth/login?deleted=1', request.url))
+      }
 
-    // Non-admin hitting /admin — send to dashboard
-    if (path.startsWith('/admin') && profile?.role !== 'admin') {
-      return redirectTo(new URL('/dashboard', request.url))
-    }
+      // Suspended — sign out and redirect
+      if (profile?.is_suspended && !path.startsWith('/auth')) {
+        await withTimeout(supabase.auth.signOut(), 'auth.signOut')
+        return redirectTo(new URL('/auth/login?suspended=1', request.url))
+      }
 
-    // Reseller-only routes
-    if (path.startsWith('/reseller') && !['reseller', 'admin'].includes(profile?.role ?? '')) {
-      return redirectTo(new URL('/dashboard', request.url))
-    }
+      // Non-admin hitting /admin — send to dashboard
+      if (path.startsWith('/admin') && profile?.role !== 'admin') {
+        return redirectTo(new URL('/dashboard', request.url))
+      }
 
-    // ── MFA step-up ──────────────────────────────────────────────────
-    // MFA is OPTIONAL for every role (admin and reseller included): the app
-    // recommends it (see MfaRecommendBanner) but never forces enrollment.
-    // What IS enforced is the other direction — once an account has turned
-    // it on, a password alone no longer gets into any protected page: the
-    // browser must hold a valid verified-session cookie, else it is sent to
-    // /auth/mfa-verify.
-    //
-    // This only guards PAGES (the matcher excludes /api). Routes that can
-    // spend money, mint credentials, move payouts, delete data or act as an
-    // admin enforce the same rule themselves via requireMfaVerified() in
-    // lib/mfa.ts — see that file. profiles.mfa_enabled is not user-writable
-    // (migration 0039 pins it), so trusting it here is sound.
-    if (isProtected && !isMfaFlowPath && profile?.mfa_enabled) {
-      const verified = await hasValidMfaSession(request, user.id)
-      if (!verified) {
-        return redirectTo(new URL(`/auth/mfa-verify?next=${encodeURIComponent(here)}`, request.url))
+      // Reseller-only routes
+      if (path.startsWith('/reseller') && !['reseller', 'admin'].includes(profile?.role ?? '')) {
+        return redirectTo(new URL('/dashboard', request.url))
+      }
+
+      // ── MFA step-up ──────────────────────────────────────────────────
+      // MFA is OPTIONAL for every role (admin and reseller included): the app
+      // recommends it (see MfaRecommendBanner) but never forces enrollment.
+      // What IS enforced is the other direction — once an account has turned
+      // it on, a password alone no longer gets into any protected page: the
+      // browser must hold a valid verified-session cookie, else it is sent to
+      // /auth/mfa-verify.
+      //
+      // This only guards PAGES (the matcher excludes /api). Routes that can
+      // spend money, mint credentials, move payouts, delete data or act as an
+      // admin enforce the same rule themselves via requireMfaVerified() in
+      // lib/mfa.ts — see that file. profiles.mfa_enabled is not user-writable
+      // (migration 0039 pins it), so trusting it here is sound.
+      if (isProtected && !isMfaFlowPath && profile?.mfa_enabled) {
+        let verified = false
+        if (mfaLookup) {
+          const result = await mfaLookup
+          if (!result.ok) throw result.error // → 503 via the catch below
+          verified = result.value
+        }
+        if (!verified) {
+          return redirectTo(new URL(`/auth/mfa-verify?next=${encodeURIComponent(here)}`, request.url))
+        }
       }
     }
-  }
 
-  return response
+    return response
+  } catch (e) {
+    // A Supabase call timed out, threw, or the client could not be built
+    // (e.g. missing env). Protected pages can't be served without knowing who
+    // is asking, so they get the 503. Everything else — the marketing site,
+    // pricing, docs, the login page itself — is public content and keeps
+    // working, rendered as for a logged-out visitor, instead of the whole
+    // site going down with the database.
+    console.error('[middleware] upstream failure', path, e)
+    return needsAuth ? unavailable() : response
+  }
 }
 
 export const config = {
@@ -219,5 +307,11 @@ export const config = {
   // cookie or Bearer token per-route) and don't need middleware's
   // redirect/suspension logic, which stays exactly as before, scoped to
   // /dashboard, /reseller, /admin, /invoice inside the function body.
-  matcher: ['/((?!api|_next/static|_next/image|favicon\\.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|webmanifest|xml|txt)$).*)'],
+  //
+  // `api` is matched as a whole path segment (api/ or a bare api), so a page
+  // that merely STARTS with those letters ("/apiary", "/api-docs") is not
+  // silently skipped. Static file types that never need a session (scripts,
+  // styles, fonts, source maps, media) are excluded so they don't each pay
+  // for an auth round trip.
+  matcher: ['/((?!api/|api$|_next/static|_next/image|favicon\\.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|avif|ico|webmanifest|xml|txt|js|css|map|woff|woff2|ttf|otf|json|pdf|mp4|webm|html)$).*)'],
 }

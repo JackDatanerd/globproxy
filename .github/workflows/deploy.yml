@@ -86,6 +86,11 @@ jobs:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
           NEXT_PUBLIC_APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL }}
+          # Turnstile's PUBLIC site key is baked into the client bundle at
+          # build time exactly like the three above. Leaving it out of this
+          # block meant the widget could never render, whatever was set on the
+          # Worker. Optional: empty/unset simply leaves Turnstile off.
+          NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ secrets.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
 
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
@@ -125,6 +130,51 @@ jobs:
           ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL }}
           FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
           STOCK_ALERT_THRESHOLD: ${{ secrets.STOCK_ALERT_THRESHOLD }}
+
+      # Optional Worker secrets. They are NOT in the `secrets:` list above on
+      # purpose: that list needs every entry to have a value, so adding an
+      # optional one there would fail every deploy until it was set. This step
+      # pushes each one only when it has a value in GitHub, and leaves the
+      # Worker's existing value alone when it doesn't — so it can never wipe a
+      # key someone set by hand in the Cloudflare dashboard.
+      #
+      #   TURNSTILE_SECRET_KEY        bot check on login / signup / reset. Pair
+      #                               it with the NEXT_PUBLIC_TURNSTILE_SITE_KEY
+      #                               build variable above (the server ignores
+      #                               the secret when the site key is missing).
+      #   MFA_ENCRYPTION_KEY          encrypts TOTP secrets + keys backup-code
+      #                               hashes. Without it they are stored in
+      #                               plaintext / unkeyed (lib/mfaCrypto.ts).
+      #   MFA_ENCRYPTION_KEY_PREVIOUS only during a key rotation.
+      #
+      # CAUTION: setting MFA_ENCRYPTION_KEY here to a value DIFFERENT from the
+      # one already live makes existing encrypted TOTP secrets undecryptable
+      # unless the old value is supplied as MFA_ENCRYPTION_KEY_PREVIOUS in the
+      # same deploy.
+      - name: Push optional Worker secrets
+        working-directory: gp
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          TURNSTILE_SECRET_KEY: ${{ secrets.TURNSTILE_SECRET_KEY }}
+          MFA_ENCRYPTION_KEY: ${{ secrets.MFA_ENCRYPTION_KEY }}
+          MFA_ENCRYPTION_KEY_PREVIOUS: ${{ secrets.MFA_ENCRYPTION_KEY_PREVIOUS }}
+          NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ secrets.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
+        run: |
+          for name in TURNSTILE_SECRET_KEY MFA_ENCRYPTION_KEY MFA_ENCRYPTION_KEY_PREVIOUS; do
+            value="${!name}"
+            if [ -n "$value" ]; then
+              printf '%s' "$value" | npx wrangler secret put "$name"
+            else
+              echo "::notice::$name is not set in GitHub secrets — leaving the Worker's current value untouched"
+            fi
+          done
+          if [ -z "$MFA_ENCRYPTION_KEY" ]; then
+            echo "::warning::MFA_ENCRYPTION_KEY is not set in GitHub secrets. If it is not set on the Worker either, TOTP secrets are stored in plaintext. Generate one with: openssl rand -base64 32"
+          fi
+          if [ -n "$TURNSTILE_SECRET_KEY" ] && [ -z "$NEXT_PUBLIC_TURNSTILE_SITE_KEY" ]; then
+            echo "::warning::TURNSTILE_SECRET_KEY is set but NEXT_PUBLIC_TURNSTILE_SITE_KEY is not — the widget cannot render, so the server will ignore Turnstile until both are set."
+          fi
 
       - name: Notify IndexNow (Bing/Yandex) of current sitemap
         # Runs only after the deploy step above succeeds (default sequential

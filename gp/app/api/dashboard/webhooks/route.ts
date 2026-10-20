@@ -1,4 +1,5 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
+import { rateLimitedUser } from '@/lib/rateLimit'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { listEndpoints, createEndpoint } from '@/lib/webhookEndpoints'
 import { NextResponse } from 'next/server'
@@ -22,6 +23,10 @@ export async function POST(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  // Per-user throttle (lib/rateLimit.ts) — this route creates an outbound integration on every call.
+  const throttled = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'webhook-create')
+  if (throttled) return throttled
 
   // 2FA step-up: an account that enabled two-factor must hold a verified
   // session for this action — a password alone isn't enough. See lib/mfa.ts.

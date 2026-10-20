@@ -8,7 +8,11 @@ export const metadata: Metadata = {
   alternates: { canonical: '/status' },
 }
 
-export const revalidate = 300 // 5 min — this is a status page, not a live dashboard
+// No `export const revalidate` here on purpose: this deployment runs OpenNext's
+// "dummy" incremental cache, so it would do nothing — and the page reads
+// cookies via the Supabase client, which makes it per-request anyway. The
+// 5-minute caching for anonymous visitors is done at the edge instead, in
+// custom-worker.ts (EDGE_CACHEABLE_PATHS).
 
 type Benchmark = {
   target_label: string

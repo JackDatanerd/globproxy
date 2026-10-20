@@ -39,7 +39,9 @@ function previousKey(): string | null {
 function warnOnce() {
   if (warned) return
   warned = true
-  console.warn('[mfa] MFA_ENCRYPTION_KEY is not set — TOTP secrets are stored in plaintext and backup codes use unkeyed SHA-256. Set it (openssl rand -base64 32).')
+  // console.error, not warn: this is a standing security misconfiguration in
+  // production, and the Worker's log view is usually filtered to errors.
+  console.error('[mfa] MFA_ENCRYPTION_KEY is not set — TOTP secrets are stored in plaintext and backup codes use unkeyed SHA-256. Set it (openssl rand -base64 32) as the MFA_ENCRYPTION_KEY GitHub secret and redeploy.')
 }
 
 const enc = new TextEncoder()

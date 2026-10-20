@@ -165,7 +165,9 @@ export default function ApiDocsPage() {
             <span className="font-mono text-ink">30 per minute</span> for requests that change something (POST, PATCH, DELETE),
             since those provision real resources. Over the limit you get <span className="font-mono text-ink">429</span> with{' '}
             <span className="font-mono text-ink">code: "rate_limited"</span> and a <span className="font-mono text-ink">Retry-After</span>{' '}
-            header — back off for that many seconds. <span className="font-mono text-ink">/usage/history</span> has its own, tighter limit of 10 per minute per key (each call fans out to many provider requests). Live usage on <span className="font-mono text-ink">/usage</span> is refreshed
+            header — back off for that many seconds (always a full minute: the limits are per-minute windows). The limit that was hit
+            is also sent as <span className="font-mono text-ink">X-RateLimit-Limit</span>. There is also a generous per-address ceiling that
+            only affects clients sending large volumes of invalid keys. <span className="font-mono text-ink">/usage/history</span> has its own, tighter limit of 10 per minute per key (each call fans out to many provider requests). Live usage on <span className="font-mono text-ink">/usage</span> is refreshed
             from the provider at most every 30 seconds per sub-user, so polling it faster just returns the same number.
           </p>
           <p className="text-sm text-ink2 leading-relaxed mt-3">
@@ -593,8 +595,8 @@ export default function ApiDocsPage() {
             Get an HTTPS POST when something happens on your account. Create endpoints in{' '}
             <Link href="/dashboard/settings" className="text-accent hover:underline">Settings → Webhooks</Link> or over the API
             (below). Each endpoint subscribes to the events it wants; up to 10 endpoints per account. Endpoint URLs must be public{' '}
-            <span className="font-mono text-ink">https://</span> addresses — private, loopback and link-local destinations (including
-            hostnames that resolve to them) and redirects are rejected.
+            <span className="font-mono text-ink">https://</span> addresses on port 443 (or 8443) — private, loopback and link-local
+            destinations (including hostnames that resolve to them), GlobProxy's own domains and redirects are rejected.
           </p>
 
           <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Events</p>

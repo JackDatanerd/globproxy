@@ -1,7 +1,7 @@
 import { logSecurityEvent } from '@/lib/securityEvents'
 import { rejectCrossSite } from '@/lib/apiAuth'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { rateLimited } from '@/lib/rateLimit'
+import { rateLimited, rateLimitedTarget } from '@/lib/rateLimit'
 import { verifyTurnstile, captchaOptions } from '@/lib/turnstile'
 import { holdUntil } from '@/lib/constantTime'
 import { sameOriginUrl } from '@/lib/appUrl'
@@ -50,6 +50,11 @@ export async function POST(req: Request) {
 
     const human = await verifyTurnstile(req, turnstileToken)
     if (!human.ok) return NextResponse.json({ error: human.error }, { status: 400 })
+
+    // Per target address, across every caller — counted only after the
+    // human check so a bot that can't pass it can't burn a victim's budget.
+    const targetLimited = await rateLimitedTarget('reset', email)
+    if (targetLimited) return targetLimited
 
     // redirectTo is client-supplied. Supabase enforces its own project-level
     // redirect URL allow-list, but that's an external config, not something

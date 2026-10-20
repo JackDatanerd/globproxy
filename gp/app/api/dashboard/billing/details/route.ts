@@ -2,6 +2,7 @@ import { requireMfaVerified } from '@/lib/mfa'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { isCrossSiteRequest } from '@/lib/appUrl'
+import { rateLimitedUser } from '@/lib/rateLimit'
 import { NextResponse } from 'next/server'
 
 // The buyer details printed on future invoices (company name is edited with the
@@ -40,6 +41,9 @@ export async function PUT(req: Request) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const mfaBlock = await requireMfaVerified(req, user.id)
   if (mfaBlock) return mfaBlock
+  // Per-user throttle (lib/rateLimit.ts) — this route writes customer billing details on every call.
+  const throttled = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'billing-details')
+  if (throttled) return throttled
   const inactive = await requireActiveUser(user.id)
   if (inactive) return inactive
 

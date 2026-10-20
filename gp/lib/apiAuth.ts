@@ -1,5 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/server'
-import { allowApiRequest } from '@/lib/rateLimit'
+import { allowApiRequest, allowApiClient, RATE_LIMIT_WINDOW_SECONDS } from '@/lib/rateLimit'
 import { ipAllowed } from '@/lib/ipAllowlist'
 import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { NextResponse } from 'next/server'
@@ -93,6 +93,13 @@ export async function requireActiveUser(userId: string): Promise<NextResponse | 
 }
 
 const BEARER_RE = /^Bearer\s+(\S+)\s*$/i
+// Cheap shape check run before any database work: right prefix, then at
+// least 16 and at most 128 non-space characters. Deliberately much looser than
+// the format keys are minted in (gp_live_ + 48 hex) — it only turns away
+// obviously malformed values without any risk of rejecting a real key. The
+// per-address limiter (allowApiClient) is what actually bounds invalid-key
+// traffic.
+const TOKEN_SHAPE_RE = /^gp_live_\S{16,128}$/
 const LAST_USED_WRITE_INTERVAL_MS = 60_000
 
 function requiredScope(method: string): ApiScope {
@@ -113,8 +120,21 @@ export async function requireApiAccess(req: Request, opts: { scope?: ApiScope } 
   try {
     const match = req.headers.get('authorization')?.match(BEARER_RE)
     const token = match?.[1]
-    if (!token || !token.startsWith('gp_live_')) {
+    if (!token || !TOKEN_SHAPE_RE.test(token)) {
       return { ok: false, response: unauthorized() }
+    }
+
+    // Per-address ceiling BEFORE the key lookup. Every lookup below is a
+    // service-role database query, and the per-key limiters further down only
+    // apply once a key is known to be valid — so without this, a caller
+    // sending made-up keys could drive unlimited queries.
+    if (!(await allowApiClient(req))) {
+      return {
+        ok: false,
+        response: apiError(429, 'rate_limited', 'Too many requests from this address. Retry after the Retry-After interval.', {
+          'Retry-After': String(RATE_LIMIT_WINDOW_SECONDS),
+        }),
+      }
     }
 
     const supabase = await createAdminClient()
@@ -157,12 +177,16 @@ export async function requireApiAccess(req: Request, opts: { scope?: ApiScope } 
 
     // Per-key limits, checked after the key is known-valid (cheap, no profile
     // lookup wasted on a throttled caller) but before any real work.
-    const retryHeaders = { 'Retry-After': '15' }
+    // The limiter works in fixed 60-second windows and cannot say how much of
+    // the current one is left, so the honest Retry-After is the whole window.
+    // (It used to say 15, which sent well-behaved clients straight back into
+    // another 429.)
+    const retryHeaders = { 'Retry-After': String(RATE_LIMIT_WINDOW_SECONDS) }
     if (!(await allowApiRequest('API_RATE_LIMITER', apiKey.id))) {
-      return { ok: false, response: apiError(429, 'rate_limited', 'Rate limit exceeded (120 requests/minute per key). Retry after the Retry-After interval.', retryHeaders) }
+      return { ok: false, response: apiError(429, 'rate_limited', 'Rate limit exceeded (120 requests/minute per key). Retry after the Retry-After interval.', { ...retryHeaders, 'X-RateLimit-Limit': '120' }) }
     }
     if (needed === 'write' && !(await allowApiRequest('API_WRITE_RATE_LIMITER', apiKey.id))) {
-      return { ok: false, response: apiError(429, 'rate_limited', 'Write rate limit exceeded (30 mutating requests/minute per key). Retry after the Retry-After interval.', retryHeaders) }
+      return { ok: false, response: apiError(429, 'rate_limited', 'Write rate limit exceeded (30 mutating requests/minute per key). Retry after the Retry-After interval.', { ...retryHeaders, 'X-RateLimit-Limit': '30' }) }
     }
 
     const { data: profile } = await supabase

@@ -1,4 +1,5 @@
 import { appUrl } from '@/lib/appUrl'
+import { rateLimitedUser } from '@/lib/rateLimit'
 import { createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { sendEmail, escapeHtml } from '@/lib/email'
@@ -17,6 +18,10 @@ export async function POST(req: Request) {
     const supabase = await createAdminClient()
     const { data: { user } } = await supabase.auth.getUser(token)
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+    // Per-user throttle (lib/rateLimit.ts) — this route emails staff on every call.
+    const throttled = await rateLimitedUser('USER_EMAIL_RATE_LIMITER', user.id, 'support-report')
+    if (throttled) return throttled
 
     const suspended = await requireActiveUser(user.id)
     if (suspended) return suspended

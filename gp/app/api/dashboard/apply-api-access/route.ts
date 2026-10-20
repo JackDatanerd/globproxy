@@ -1,5 +1,6 @@
 import { requireMfaVerified } from '@/lib/mfa'
 import { appUrl } from '@/lib/appUrl'
+import { rateLimitedUser } from '@/lib/rateLimit'
 import { NextResponse } from 'next/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
@@ -17,6 +18,10 @@ export async function POST(req: Request) {
     if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
+
+    // Per-user throttle (lib/rateLimit.ts) — this route emails staff on every call.
+    const throttled = await rateLimitedUser('USER_EMAIL_RATE_LIMITER', user.id, 'apply-api-access')
+    if (throttled) return throttled
 
     const inactive = await requireActiveUser(user.id)
     if (inactive) return inactive

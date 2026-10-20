@@ -1,6 +1,10 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "globproxy5",
+  // Not bumped deliberately: newer compatibility dates change runtime
+  // behaviour (Node HTTP modules, etc.) and this repo has no workerd-based
+  // test to prove the app is unaffected. Move it forward together with a
+  // preview deploy, not as a drive-by edit.
   "compatibility_date": "2025-04-01",
   "compatibility_flags": ["nodejs_compat"],
   // Persist Worker logs. Without this, every console.error in the payment,
@@ -8,10 +12,13 @@
   "observability": { "enabled": true },
   "main": "custom-worker.ts",
   "assets": { "directory": ".open-next/assets", "binding": "ASSETS" },
+  // Left at Cloudflare's defaults on purpose: this file does not know whether
+  // anything still uses the *.workers.dev address (previews, staging). While
+  // it stays reachable, next.config.ts marks every *.workers.dev response
+  // noindex so it can't compete with the real domain in search. Once nothing
+  // depends on it, add `"workers_dev": false, "preview_urls": false` here.
   // Native Cloudflare Cron Triggers — see custom-worker.ts for the full
-  // rationale (replaces cron-job.org, already disabled, and the three
-  // GitHub Actions cron-*.yml workflows, to be deleted once this is
-  // verified live). Keep in sync with custom-worker.ts's CRON_TASKS map.
+  // rationale. Keep in sync with custom-worker.ts's CRON_TASKS map.
   "triggers": {
     "crons": [
       "*/5 * * * *",
@@ -21,18 +28,24 @@
       "5 8 * * *"
     ]
   },
-  // Cloudflare's native rate-limiting binding — auto-provisioned on deploy,
-  // no separate `wrangler kv namespace create`-style step needed. Shared by
-  // auth/signup and auth/reset (see lib/rateLimit.ts). namespace_id just
-  // needs to be unique among rate-limit bindings in this account; 1001 has
-  // no significance beyond that.
+  // Cloudflare's native rate-limiting bindings — auto-provisioned on deploy,
+  // no separate `wrangler kv namespace create`-style step needed. See
+  // lib/rateLimit.ts for what each one protects. namespace_id just needs to
+  // be unique among rate-limit bindings in this account; the numbers have no
+  // significance beyond that. `period` must be 10 or 60 (Cloudflare limit).
+  // The edge-pipeline bindings below use the 11xx block on purpose: other work
+  // keeps adding bindings at the next free low number, and a duplicated id would
+  // silently make two limiters share one counter.
   "unsafe": {
     "bindings": [
+      // Unauthenticated / credential-handling auth endpoints, per client
+      // address per route group. 20/min rather than a tighter figure because
+      // mobile carriers put many subscribers behind one shared IPv4 address.
       {
         "name": "AUTH_RATE_LIMITER",
         "type": "ratelimit",
         "namespace_id": "1001",
-        "simple": { "limit": 10, "period": 60 }
+        "simple": { "limit": 20, "period": 60 }
       },
       // Public v1 API, per API key (lib/apiAuth.ts). 120 requests / minute
       // overall, and a tighter 30 / minute for mutating calls (create /
@@ -81,6 +94,41 @@
         "type": "ratelimit",
         "namespace_id": "1006",
         "simple": { "limit": 30, "period": 60 }
+      },
+      // Per target email across all callers: signup / password reset /
+      // resend-confirmation. Bounds how many emails anyone can make us send
+      // to one inbox, however many addresses the requests come from.
+      {
+        "name": "AUTH_TARGET_RATE_LIMITER",
+        "type": "ratelimit",
+        "namespace_id": "1101",
+        "simple": { "limit": 5, "period": 60 }
+      },
+      // v1 API, per client address, checked BEFORE the key lookup. Deliberately
+      // very high: resellers often share one egress address across many keys
+      // (each allowed 120/min), and this must never throttle them. 6000/min is
+      // 100 requests/second from a single address — it only exists to cap how
+      // many database lookups invalid-key traffic can trigger.
+      {
+        "name": "API_IP_RATE_LIMITER",
+        "type": "ratelimit",
+        "namespace_id": "1102",
+        "simple": { "limit": 6000, "period": 60 }
+      },
+      // Per signed-in user: session-authenticated routes that spend money,
+      // create upstream resources, or make our server call out.
+      {
+        "name": "USER_ACTION_RATE_LIMITER",
+        "type": "ratelimit",
+        "namespace_id": "1103",
+        "simple": { "limit": 30, "period": 60 }
+      },
+      // Per signed-in user: routes that email staff on every call.
+      {
+        "name": "USER_EMAIL_RATE_LIMITER",
+        "type": "ratelimit",
+        "namespace_id": "1104",
+        "simple": { "limit": 3, "period": 60 }
       }
     ]
   }

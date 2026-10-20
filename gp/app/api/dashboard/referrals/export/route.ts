@@ -1,5 +1,6 @@
 import { requireMfaVerified } from '@/lib/mfa'
 import { createClient } from '@/lib/supabase/server'
+import { rateLimitedUser } from '@/lib/rateLimit'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { toCsv, csvResponse } from '@/lib/csv'
 import { NextResponse } from 'next/server'
@@ -32,6 +33,10 @@ export async function GET(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  // Per-user throttle (lib/rateLimit.ts) — this route pages through up to 50k rows on every call.
+  const throttled = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'referrals-export')
+  if (throttled) return throttled
 
   const mfaBlock = await requireMfaVerified(req, user.id)
   if (mfaBlock) return mfaBlock

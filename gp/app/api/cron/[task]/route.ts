@@ -632,7 +632,6 @@ export async function POST(req: Request, context: { params: Promise<{ task: stri
       case 'security':  result = await runSecurity();         break
       case 'provision': result = await runProvision();        break
       case 'webhooks':  result = await runWebhooks();         break
-      case 'reconcile': result = await runReconcile();        break
       case 'benchmark': result = await runBenchmark();        break
       default: return NextResponse.json({ error: `Unknown task: ${task}` }, { status: 400 })
     }

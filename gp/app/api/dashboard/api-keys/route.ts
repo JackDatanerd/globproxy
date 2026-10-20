@@ -1,4 +1,5 @@
 import { createAdminClient, createClient } from '@/lib/supabase/server'
+import { rateLimitedUser } from '@/lib/rateLimit'
 import { NextResponse } from 'next/server'
 import { requireStepUp } from '@/lib/reauth'
 import { logSecurityEvent, notifySecurityChange } from '@/lib/securityEvents'
@@ -46,6 +47,10 @@ export async function POST(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  // Per-user throttle (lib/rateLimit.ts) — this route mints a credential on every call.
+  const throttled = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'api-key-create')
+  if (throttled) return throttled
 
   // 2FA step-up: an account that enabled two-factor must hold a verified
   // session for this action — a password alone isn't enough. See lib/mfa.ts.

@@ -56,7 +56,8 @@ function isBlockedIpv4(ip: string): boolean {
 // ── IPv6 ──────────────────────────────────────────────────────────────
 // Parses any textual IPv6 form (compressed, expanded, with an embedded
 // dotted-quad tail) into 8 16-bit groups. Returns null if it isn't IPv6.
-function parseIpv6(raw: string): number[] | null {
+// Exported so lib/rateLimit.ts can collapse a client address to its /64.
+export function parseIpv6(raw: string): number[] | null {
   let h = raw.toLowerCase()
   if (!h.includes(':')) return null
   const zone = h.indexOf('%')
@@ -143,6 +144,41 @@ export function isBlockedHostLiteral(hostname: string): boolean {
   return false
 }
 
+// ── Our own infrastructure ────────────────────────────────────────────
+// A webhook that targets this very platform (or any *.workers.dev Worker)
+// would make our delivery code POST signed payloads back into our own
+// routes, or into other Workers on the account, over the public network.
+// Never a legitimate receiver, so it is refused outright.
+const OWN_HOST_BASES = ['globproxy.com', 'workers.dev']
+
+export function isOwnHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, '')
+  if (!h) return false
+  const bases = [...OWN_HOST_BASES]
+  try {
+    const app = process.env.NEXT_PUBLIC_APP_URL
+    if (app) bases.push(new URL(app).hostname.toLowerCase())
+  } catch {
+    /* malformed env value — the static list above still applies */
+  }
+  return bases.some((b) => h === b || h.endsWith('.' + b))
+}
+
+// Standard HTTPS plus the one common alternative. Anything else (22, 25,
+// 6379, 9200 …) would turn "webhook delivery" into a port scanner pointed at
+// third-party hosts from our egress addresses. Enforced when an endpoint is
+// created or edited (validateWebhookUrlFull), not on every delivery, so an
+// endpoint saved before this rule existed keeps working until it is edited.
+const ALLOWED_WEBHOOK_PORTS = new Set(['', '443', '8443'])
+
+export function validateWebhookPort(u: URL): string | null {
+  // URL.port is '' for the default port, including an explicit ":443".
+  if (!ALLOWED_WEBHOOK_PORTS.has(u.port)) {
+    return 'Webhook URL must use the default HTTPS port (443) or 8443'
+  }
+  return null
+}
+
 // Returns an error message if the URL isn't acceptable, or null if it's fine.
 export function validateWebhookUrl(raw: string): string | null {
   if (typeof raw !== 'string' || raw.length > MAX_URL_LENGTH) return 'Enter a valid URL (max 2048 characters)'
@@ -156,6 +192,9 @@ export function validateWebhookUrl(raw: string): string | null {
   if (u.username || u.password) return 'Webhook URL must not contain embedded credentials'
   if (isBlockedHostLiteral(u.hostname)) {
     return 'Webhook URL cannot point to a private, loopback, or link-local address'
+  }
+  if (isOwnHost(u.hostname)) {
+    return 'Webhook URL cannot point to GlobProxy itself'
   }
   return null
 }
@@ -218,5 +257,8 @@ export async function checkHostnameResolution(
 export async function validateWebhookUrlFull(raw: string): Promise<string | null> {
   const literal = validateWebhookUrl(raw)
   if (literal) return literal
-  return checkHostnameResolution(new URL(raw).hostname, { requireResolvable: true })
+  const u = new URL(raw)
+  const port = validateWebhookPort(u)
+  if (port) return port
+  return checkHostnameResolution(u.hostname, { requireResolvable: true })
 }
