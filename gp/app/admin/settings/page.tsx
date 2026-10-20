@@ -2,6 +2,8 @@ import { createClient, createAdminClient } from '@/lib/supabase/server'
 import AdminStockPanel from '@/components/admin/AdminStockPanel'
 import AdminAccountSecurity from '@/components/admin/AdminAccountSecurity'
 import BenchmarkSettings from '@/components/admin/BenchmarkSettings'
+import MpesaSettings from '@/components/admin/MpesaSettings'
+import { loadMpesaConfig, getKesQuote } from '@/lib/fx'
 
 export default async function AdminSettingsPage() {
   const session = await createClient()
@@ -19,6 +21,16 @@ export default async function AdminSettingsPage() {
           .order('created_at', { ascending: false })
       : Promise.resolve({ data: [] }),
   ])
+
+  // M-Pesa panel data. A settings/FX failure must not take the whole page down.
+  let mpesa: Awaited<ReturnType<typeof loadMpesaConfig>> | null = null
+  let mpesaLive: Awaited<ReturnType<typeof getKesQuote>> = null
+  try {
+    mpesa = await loadMpesaConfig(admin)
+    mpesaLive = await getKesQuote(admin)
+  } catch (e) {
+    console.error('[admin/settings] M-Pesa config load failed', e)
+  }
 
   const currentCredentialId = setting?.value || null
   let currentCredentialLabel: string | null = null
@@ -42,6 +54,15 @@ export default async function AdminSettingsPage() {
         </div>
         <p className="text-xs text-muted mt-3 font-light">Set this URL in Paystack → Settings → Webhooks. Paystack sends every event type to it; the handler acts on <span className="font-mono">charge.success</span>, <span className="font-mono">charge.failed</span>, <span className="font-mono">refund.processed</span> and <span className="font-mono">charge.dispute.create / resolve</span>, and ignores the rest.</p>
       </div>
+
+      {mpesa && (
+        <MpesaSettings
+          enabled={mpesa.enabled}
+          markupPct={mpesa.markupPct}
+          manualRate={mpesa.manualRate}
+          live={mpesaLive ? { rate: mpesaLive.rate, market: mpesaLive.market, source: mpesaLive.source, asOf: mpesaLive.asOf } : null}
+        />
+      )}
 
       <BenchmarkSettings
         currentCredentialId={currentCredentialId}

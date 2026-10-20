@@ -1,7 +1,8 @@
 'use client'
 import { Suspense, useEffect, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { PLANS } from '@/lib/plans'
+import { PLANS, resolveOrder, CUSTOM_MIN_GB, CUSTOM_MAX_GB } from '@/lib/plans'
+import { kesFor } from '@/lib/fx'
 import { confirmPayment } from '@/lib/verifyPayment'
 import { formatUsd } from '@/lib/format'
 import toast from 'react-hot-toast'
@@ -22,28 +23,63 @@ function ReasonBanner() {
   )
 }
 
+type Choice = string // a plan slug, or 'custom'
+type Method = 'card' | 'mpesa'
+
+const formatKes = (n: number) => `KES ${n.toLocaleString('en-KE')}`
+
 export default function BuyPage() {
   const router = useRouter()
-  const [plan, setPlan] = useState(PLANS[1])
-
-  // "Pay now" on a pending order (Billing) links here with ?plan=<slug>.
-  useEffect(() => {
-    const slug = new URLSearchParams(window.location.search).get('plan')
-    const found = slug ? PLANS.find(p => p.slug === slug) : undefined
-    if (found) setPlan(found)
-  }, [])
+  const [choice, setChoice] = useState<Choice>('starter')
+  const [customGb, setCustomGb] = useState('25')
+  const [method, setMethod] = useState<Method>('card')
+  // KES per USD from /api/checkout/options; null = M-Pesa not offered right now.
+  const [kesRate, setKesRate] = useState<number | null>(null)
   const [loading, setLoading] = useState(false)
   const [statusText, setStatusText] = useState<string | null>(null)
 
+  const quote = resolveOrder(choice, choice === 'custom' ? Number(customGb) : undefined)
+  const kesTotal = quote && kesRate ? kesFor(quote.total, kesRate) : null
+  const mpesaOn = method === 'mpesa' && kesRate != null
+
+  // "Pay now" / "Try again" on an order (Billing) links here with
+  // ?plan=<slug|custom>&gb=<n>&method=<card|mpesa>.
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search)
+    const slug = q.get('plan')
+    if (slug === 'custom') {
+      const gb = q.get('gb')
+      if (gb && resolveOrder('custom', Number(gb))) { setChoice('custom'); setCustomGb(gb) }
+    } else if (slug && PLANS.some(p => p.slug === slug)) {
+      setChoice(slug)
+    }
+    if (q.get('method') === 'mpesa') setMethod('mpesa')
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/checkout/options')
+      .then(r => r.json())
+      .then(d => { if (!cancelled && d?.mpesa?.available && Number(d.mpesa.rate) > 0) setKesRate(Number(d.mpesa.rate)) })
+      .catch(() => { /* card always works; M-Pesa just stays hidden */ })
+    return () => { cancelled = true }
+  }, [])
+
   async function handleBuy() {
-    if (plan.custom) { window.location.href='mailto:sales@globproxy.com?subject=Scale Plan Inquiry'; return }
+    if (!quote) { toast.error(`Enter a whole number of GB between ${CUSTOM_MIN_GB} and ${CUSTOM_MAX_GB}.`); return }
+    if (method === 'mpesa' && !kesTotal) { toast.error('M-Pesa is unavailable right now — please pay by card.'); return }
     setLoading(true)
     setStatusText('Starting checkout...')
     try {
       const res = await fetch('/api/checkout', {
         method: 'POST',
         headers: { 'Content-Type':'application/json' },
-        body: JSON.stringify({ plan: plan.slug }),
+        body: JSON.stringify({
+          plan: quote.slug,
+          ...(quote.custom ? { gb: quote.gb } : {}),
+          method: mpesaOn ? 'mpesa' : 'card',
+          ...(mpesaOn && kesTotal ? { expected_kes: kesTotal } : {}),
+        }),
       })
 
       // Read as text first, not res.json() directly — a Cloudflare/WAF-level
@@ -64,6 +100,13 @@ export default function BuyPage() {
         return
       }
 
+      if (res.status === 409 && data.rate_changed && Number(data.rate) > 0) {
+        // The exchange rate refreshed since the page loaded: show the new price
+        // and let the customer confirm it, rather than charging an unseen amount.
+        setKesRate(Number(data.rate))
+        toast(`The exchange rate just updated — the price is now ${formatKes(Number(data.amount_kes))}. Review it and press pay again.`, { duration: 9000, icon: '💱' })
+        setLoading(false); setStatusText(null); return
+      }
       if (!data.access_code && !data.url) { toast.error(data.error || 'Something went wrong'); setLoading(false); setStatusText(null); return }
 
       // Primary path: open Paystack's checkout inline, in a modal, so the
@@ -81,7 +124,8 @@ export default function BuyPage() {
               setStatusText('Confirming payment...')
               // Polls while Paystack/our credit is still settling, so a slow
               // charge isn't reported as a failure.
-              const result = await confirmPayment(tranx.reference || data.reference)
+              // M-Pesa STK pushes can take up to a minute to settle, so wait longer.
+              const result = await confirmPayment(tranx.reference || data.reference, mpesaOn ? { attempts: 20 } : {})
               if (result.success) {
                 toast.success('Bandwidth credited to your account!')
                 router.push('/dashboard')
@@ -142,8 +186,8 @@ export default function BuyPage() {
         <h2 className="font-display font-bold text-base text-ink mb-4">Select a plan</h2>
         <div className="grid grid-cols-2 gap-3">
           {PLANS.map(p => (
-            <button key={p.name} onClick={() => setPlan(p)}
-              className={clsx('text-left p-4 rounded-xl border-2 transition-all', plan.name===p.name ? 'border-accent bg-accent-light' : 'border-border hover:border-accent/40 bg-white')}>
+            <button key={p.name} onClick={() => setChoice(p.slug)}
+              className={clsx('text-left p-4 rounded-xl border-2 transition-all', choice===p.slug ? 'border-accent bg-accent-light' : 'border-border hover:border-accent/40 bg-white')}>
               <div className="flex justify-between items-start">
                 <div>
                   <div className="font-medium text-ink text-sm">{p.name}</div>
@@ -155,31 +199,89 @@ export default function BuyPage() {
                 </div>
               </div>
               {p.gb === 1 && <div className="mt-2 text-[10px] font-mono text-accent bg-accent-light px-2 py-0.5 rounded-full inline-block">pay-as-you-go</div>}
-              {p.custom && <div className="mt-2 text-[10px] font-mono text-accent2 bg-accent2-light px-2 py-0.5 rounded-full inline-block">contact us</div>}
             </button>
           ))}
+          <div
+            className={clsx('col-span-2 p-4 rounded-xl border-2 transition-all', choice==='custom' ? 'border-accent bg-accent-light' : 'border-border hover:border-accent/40 bg-white')}
+            onClick={() => setChoice('custom')}>
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <div className="font-medium text-ink text-sm">Custom amount</div>
+                <div className="text-xs text-muted mt-0.5">Any whole number of GB, {CUSTOM_MIN_GB}–{CUSTOM_MAX_GB}. Bigger orders get the bigger-plan rate.</div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <input
+                  type="number" inputMode="numeric" min={CUSTOM_MIN_GB} max={CUSTOM_MAX_GB} step={1}
+                  value={customGb}
+                  onFocus={() => setChoice('custom')}
+                  onChange={e => { setChoice('custom'); setCustomGb(e.target.value) }}
+                  aria-label="Custom GB amount"
+                  className="w-20 border border-border rounded-lg px-2 py-1.5 text-sm text-ink text-right focus:outline-none focus:border-accent bg-white" />
+                <span className="text-sm text-muted">GB</span>
+              </div>
+            </div>
+            {choice === 'custom' && (() => {
+              const q = resolveOrder('custom', Number(customGb))
+              return q
+                ? <div className="mt-2 text-xs text-ink2 font-mono">{q.gb} GB → {formatUsd(q.total)} ({formatUsd(q.total / q.gb)}/GB)</div>
+                : <div className="mt-2 text-xs text-red-500">Enter a whole number between {CUSTOM_MIN_GB} and {CUSTOM_MAX_GB}.</div>
+            })()}
+          </div>
         </div>
       </div>
 
+      {kesRate != null && (
+        <div className="bg-white border border-border rounded-xl p-6 mb-5">
+          <h2 className="font-display font-bold text-base text-ink mb-4">Payment method</h2>
+          <div className="grid grid-cols-2 gap-3">
+            {([['card', 'Card', 'Visa / Mastercard · charged in USD'], ['mpesa', 'M-Pesa', 'STK push to your phone · charged in KES']] as const).map(([m, label, sub]) => (
+              <button key={m} onClick={() => setMethod(m)}
+                className={clsx('text-left p-4 rounded-xl border-2 transition-all', method===m ? 'border-accent bg-accent-light' : 'border-border hover:border-accent/40 bg-white')}>
+                <div className="font-medium text-ink text-sm">{label}</div>
+                <div className="text-[11px] text-muted mt-0.5">{sub}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="bg-white border border-border rounded-xl p-6 mb-5">
         <h2 className="font-display font-bold text-base text-ink mb-4">Order summary</h2>
-        {[['Plan',plan.name],['Bandwidth',`${plan.gb} GB`],['Price per GB',formatUsd(plan.price)],['Bandwidth expiry','Never'],['Payment','Paystack (secure checkout)']].map(([l,v])=>(
+        {[
+          ['Plan', quote ? quote.name : '—'],
+          ['Bandwidth', quote ? `${quote.gb} GB` : '—'],
+          ['Price per GB', quote ? formatUsd(quote.total / quote.gb) : '—'],
+          ['Bandwidth expiry', 'Never'],
+          ['Payment', mpesaOn ? 'M-Pesa via Paystack' : 'Card via Paystack (secure checkout)'],
+          ...(mpesaOn && kesRate ? [['Exchange rate', `1 USD = ${kesRate.toFixed(2)} KES`]] : []),
+        ].map(([l,v])=>(
           <div key={l} className="flex justify-between text-sm py-2 border-b border-border last:border-none">
             <span className="text-muted font-light">{l}</span>
             <span className="text-ink font-medium">{v}</span>
           </div>
         ))}
-        <div className="flex justify-between mt-4">
+        <div className="flex justify-between items-baseline mt-4">
           <span className="font-medium text-ink">Total</span>
-          <span className="font-display font-bold text-xl text-ink">{formatUsd(plan.total)}</span>
+          <span className="text-right">
+            <span className="font-display font-bold text-xl text-ink">{quote ? (mpesaOn && kesTotal ? formatKes(kesTotal) : formatUsd(quote.total)) : '—'}</span>
+            {mpesaOn && quote && <span className="block text-[11px] font-mono text-muted">≈ {formatUsd(quote.total)} · invoiced in USD</span>}
+          </span>
         </div>
       </div>
 
-      <button onClick={handleBuy} disabled={loading}
+      <button onClick={handleBuy} disabled={loading || !quote}
         className="w-full bg-accent text-white py-4 rounded-xl font-medium text-base shadow-[0_2px_12px_rgba(0,87,255,.25)] hover:-translate-y-0.5 hover:shadow-[0_4px_20px_rgba(0,87,255,.35)] transition-all disabled:opacity-60 disabled:transform-none">
-        {loading ? (statusText || 'Please wait...') : plan.custom ? 'Contact sales →' : `Pay ${formatUsd(plan.total)} via Paystack →`}
+        {loading
+          ? (statusText || 'Please wait...')
+          : !quote ? 'Enter a valid amount'
+          : mpesaOn && kesTotal ? `Pay ${formatKes(kesTotal)} with M-Pesa →`
+          : `Pay ${formatUsd(quote.total)} by card →`}
       </button>
+      {mpesaOn && (
+        <p className="text-center text-xs text-muted mt-3">You&apos;ll get an M-Pesa prompt on your phone — enter your PIN to confirm. Keep this page open until it completes.</p>
+      )}
       <p className="text-center text-xs text-muted mt-3 font-mono">Secured by Paystack · No subscription · GB never expires</p>
+      <p className="text-center text-xs text-muted mt-2">Need more than {CUSTOM_MAX_GB} GB, or a custom arrangement? <a href="mailto:sales@globproxy.com?subject=Bandwidth%20inquiry" className="text-accent hover:underline">Contact sales</a>.</p>
     </div>
   )
 }

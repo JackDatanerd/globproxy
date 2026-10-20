@@ -158,7 +158,7 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
           </div>
           <div>
             <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-1">Payment method</div>
-            <div className="text-ink capitalize">{order.payment_method}</div>
+            <div className="text-ink">{order.payment_method === 'mpesa' ? 'M-Pesa' : order.payment_method === 'paystack' ? 'Card (Paystack)' : String(order.payment_method)}</div>
           </div>
           <div>
             <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-1">Status</div>
@@ -213,6 +213,13 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
             )}
           </tfoot>
         </table>
+        {order.pay_currency && order.pay_currency !== 'USD' && order.pay_amount != null && (
+          <p className="text-xs text-muted mt-4">
+            Paid in {order.pay_currency}: {order.pay_currency} {Number(order.pay_amount).toLocaleString('en-KE')} was charged
+            {order.fx_rate ? ` at 1 USD = ${Number(order.fx_rate).toFixed(2)} ${order.pay_currency}` : ''} (rate fixed when the order was placed).
+            The invoice total above is in USD.
+          </p>
+        )}
 
         {order.paystack_reference && (
           <div className="text-[11px] font-mono text-muted mb-8">

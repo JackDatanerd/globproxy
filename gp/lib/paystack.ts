@@ -7,6 +7,11 @@ export async function initializeTransaction(params: {
   reference: string
   metadata: Record<string, string>
   callback_url: string
+  // M-Pesa: charge `amount_major` in `currency` (whole KES) and restrict the
+  // checkout to the mobile-money channel. Omitted = the original USD card flow.
+  currency?: 'USD' | 'KES'
+  amount_major?: number
+  channels?: string[]
 }) {
   const res = await fetch(`${BASE}/transaction/initialize`, {
     signal: AbortSignal.timeout(15000), // a hung Paystack call must not pin the Worker request
@@ -17,8 +22,9 @@ export async function initializeTransaction(params: {
     },
     body: JSON.stringify({
       email: params.email,
-      amount: Math.round(params.amount_usd * 100), // cents (USD)
-      currency: 'USD',
+      amount: Math.round((params.amount_major ?? params.amount_usd) * 100), // minor units (cents)
+      currency: params.currency ?? 'USD',
+      ...(params.channels ? { channels: params.channels } : {}),
       reference: params.reference,
       callback_url: params.callback_url,
       metadata: params.metadata, // flat object — matches how webhook reads it
@@ -98,28 +104,50 @@ export function verifyWebhookSignature(body: string, signature: string): boolean
   return crypto.timingSafeEqual(a, b)
 }
 
-// Returns true if the amount Paystack actually charged (in cents) matches
+// What Paystack should have charged for an order, in its own currency and
+// minor units. USD card orders: amount_usd. M-Pesa orders: the KES amount that
+// was locked onto the order at checkout (pay_amount), because that — not the
+// USD price — is what the customer was actually asked to pay.
+export function expectedCharge(order: {
+  amount_usd: number | string
+  pay_currency?: string | null
+  pay_amount?: number | string | null
+}): { currency: string; minor: number } {
+  const cur = String(order.pay_currency ?? 'USD').toUpperCase()
+  if (cur !== 'USD' && order.pay_amount != null) {
+    return { currency: cur, minor: Math.round(Number(order.pay_amount) * 100) }
+  }
+  return { currency: 'USD', minor: Math.round(Number(order.amount_usd) * 100) }
+}
+
+// Returns true if the amount Paystack actually charged (in minor units) matches
 // what the order expects.
-export function amountMatchesOrder(paidAmountCents: number, orderAmountUsd: number): boolean {
-  return Number(paidAmountCents) === Math.round(Number(orderAmountUsd) * 100)
+export function amountMatchesOrder(paidMinor: number, order: Parameters<typeof expectedCharge>[0]): boolean {
+  return Number(paidMinor) === expectedCharge(order).minor
 }
 
 // Single source of truth for "does this Paystack payment actually pay for
 // this order?" — shared by the webhook, /api/verify-payment and the
 // reconcile cron so the three can't drift. Returns null when everything
 // lines up, otherwise a short human-readable reason. Currency is only
-// rejected when Paystack states one and it isn't USD (checkout always
-// initializes in USD); a missing field is not treated as a mismatch so a
+// rejected when Paystack states one and it isn't the order's (USD for cards,
+// KES for M-Pesa); a missing field is not treated as a mismatch so a
 // payload-shape quirk can never strand a genuine payment.
 export function paymentMismatchReason(
   paid: { amount: number; currency?: string | null; reference?: string | null },
-  order: { amount_usd: number | string; paystack_reference: string | null },
+  order: {
+    amount_usd: number | string
+    paystack_reference: string | null
+    pay_currency?: string | null
+    pay_amount?: number | string | null
+  },
 ): string | null {
-  if (paid.currency && String(paid.currency).toUpperCase() !== 'USD') {
-    return `currency ${paid.currency} (expected USD)`
+  const exp = expectedCharge(order)
+  if (paid.currency && String(paid.currency).toUpperCase() !== exp.currency) {
+    return `currency ${paid.currency} (expected ${exp.currency})`
   }
-  if (!amountMatchesOrder(paid.amount, Number(order.amount_usd))) {
-    return `amount ${paid.amount} cents (expected ${Math.round(Number(order.amount_usd) * 100)})`
+  if (Number(paid.amount) !== exp.minor) {
+    return `amount ${paid.amount} minor units (expected ${exp.minor} ${exp.currency})`
   }
   if (paid.reference && order.paystack_reference && paid.reference !== order.paystack_reference) {
     return `reference ${paid.reference} does not match the order's ${order.paystack_reference}`

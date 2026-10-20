@@ -38,7 +38,7 @@ export async function POST(req: Request) {
     // reference can only replay the same idempotent credit.
     const { data: order, error } = await supabase
       .from('orders')
-      .select('id, user_id, payment_status, amount_usd, gb_amount, paystack_reference, bandwidth_credited, is_canary')
+      .select('id, user_id, payment_status, amount_usd, gb_amount, paystack_reference, bandwidth_credited, is_canary, pay_currency, pay_amount')
       .eq('paystack_reference', reference)
       .maybeSingle()
 

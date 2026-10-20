@@ -1,7 +1,8 @@
 import { createAdminClient, createClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { initializeTransaction, generateReference } from '@/lib/paystack'
-import { getPurchasablePlan } from '@/lib/plans'
+import { resolveOrder } from '@/lib/plans'
+import { getKesQuote, kesFor } from '@/lib/fx'
 import { appUrl, isCrossSiteRequest } from '@/lib/appUrl'
 import { rateLimited } from '@/lib/rateLimit'
 import { NextResponse } from 'next/server'
@@ -53,14 +54,36 @@ export async function POST(req: Request) {
       }, { status: 403 })
     }
 
-    let plan: unknown
+    let body: any
     try {
-      ;({ plan } = await req.json())
+      body = await req.json()
     } catch {
       return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
     }
-    const planData = typeof plan === 'string' ? getPurchasablePlan(plan) : undefined
+    // A fixed plan, or a custom GB quantity — priced here, never trusted from the client.
+    const planData = resolveOrder(body?.plan, body?.gb)
     if (!planData) return NextResponse.json({ error: 'Invalid plan' }, { status: 400 })
+
+    const method: 'card' | 'mpesa' = body?.method === 'mpesa' ? 'mpesa' : 'card'
+    let kes: { amount: number; rate: number } | null = null
+    if (method === 'mpesa') {
+      const quote = await getKesQuote(supabase)
+      if (!quote) {
+        return NextResponse.json({ error: 'M-Pesa is temporarily unavailable. Please pay by card or try again later.' }, { status: 503 })
+      }
+      const amount = kesFor(planData.total, quote.rate)
+      // The customer saw a KES price on the buy page. If the rate has refreshed
+      // since and the price moved by more than a rounding hair, make them
+      // re-confirm the new amount rather than charging a number they didn't see.
+      const expected = Number(body?.expected_kes)
+      if (Number.isFinite(expected) && expected > 0 && Math.abs(amount / expected - 1) > 0.01) {
+        return NextResponse.json({
+          error: 'The exchange rate just updated. Please review the new amount and try again.',
+          rate_changed: true, rate: quote.rate, amount_kes: amount,
+        }, { status: 409 })
+      }
+      kes = { amount, rate: quote.rate }
+    }
 
     if (!user.email) {
       return NextResponse.json({ error: 'Your account has no email address. Add one before purchasing.' }, { status: 400 })
@@ -78,9 +101,12 @@ export async function POST(req: Request) {
       user_id: user.id,
       gb_amount: planData.gb,
       amount_usd: planData.total,
-      payment_method: 'paystack',
+      payment_method: method === 'mpesa' ? 'mpesa' : 'paystack',
       payment_status: 'pending',
       paystack_reference: reference,
+      // M-Pesa: the KES amount the customer is asked to pay, locked now, plus the
+      // rate it came from. Verification expects exactly this, not the USD price.
+      ...(kes ? { pay_currency: 'KES', pay_amount: kes.amount, fx_rate: kes.rate } : {}),
     }).select().single()
 
     if (error || !order) throw error ?? new Error('order insert returned no row')
@@ -90,12 +116,14 @@ export async function POST(req: Request) {
       txn = await initializeTransaction({
         email: user.email,
         amount_usd: planData.total,
+        ...(kes ? { currency: 'KES' as const, amount_major: kes.amount, channels: ['mobile_money'] } : {}),
         reference,
         metadata: {
           order_id: order.id,
           user_id: user.id,
           gb_amount: String(planData.gb),
           plan: planData.slug,
+          ...(kes ? { currency: 'KES', amount_kes: String(kes.amount) } : {}),
         },
         callback_url: `${base}/dashboard?payment=success&reference=${reference}`,
       })
@@ -126,6 +154,7 @@ export async function POST(req: Request) {
       url: txn.authorization_url,
       access_code: txn.access_code,
       reference,
+      ...(kes ? { amount_kes: kes.amount } : {}),
     })
   } catch (err: any) {
     console.error('Checkout error:', err)

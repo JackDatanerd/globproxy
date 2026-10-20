@@ -3,7 +3,7 @@
 -- Run this entire file in Supabase SQL Editor (fresh project)
 -- ============================================================
 --
--- INCLUDES MIGRATIONS THROUGH: 0047_payments_billing_closeout.sql
+-- INCLUDES MIGRATIONS THROUGH: 0048_mpesa_checkout.sql
 --
 -- This line is the source of truth `scripts/check-schema-sync.mjs` reads
 -- to compare against supabase/migrations/ — it's what CI checks on every
@@ -1945,6 +1945,9 @@ begin
   new.dispute_status        := old.dispute_status;
   new.dispute_opened_at     := old.dispute_opened_at;
   new.dispute_resolution    := old.dispute_resolution;
+  new.pay_currency          := old.pay_currency;
+  new.pay_amount            := old.pay_amount;
+  new.fx_rate               := old.fx_rate;
 
   return new;
 end;
@@ -3763,4 +3766,28 @@ grant execute on function public.apply_order_refund(uuid, text, numeric) to serv
 
 insert into public.schema_migrations (filename) values
   ('0047_payments_billing_closeout.sql')
+on conflict do nothing;
+
+-- ============================================================
+-- Migration 0048 — M-Pesa checkout (protect_order_columns folded in above)
+-- ============================================================
+alter table public.orders add column if not exists pay_currency text not null default 'USD';
+alter table public.orders add column if not exists pay_amount numeric;
+alter table public.orders add column if not exists fx_rate numeric;
+
+alter table public.orders drop constraint if exists orders_pay_currency_check;
+alter table public.orders add constraint orders_pay_currency_check check (pay_currency in ('USD', 'KES'));
+alter table public.orders drop constraint if exists orders_pay_amount_check;
+alter table public.orders add constraint orders_pay_amount_check
+  check ((pay_currency = 'USD' and pay_amount is null) or (pay_currency <> 'USD' and coalesce(pay_amount, 0) > 0 and coalesce(fx_rate, 0) > 0));
+
+insert into public.platform_settings (key, value) values
+  ('mpesa_enabled', 'true'),
+  ('kes_fx_markup_pct', '2'),
+  ('kes_fx_manual', ''),
+  ('kes_fx_cache', '')
+on conflict (key) do nothing;
+
+insert into public.schema_migrations (filename) values
+  ('0048_mpesa_checkout.sql')
 on conflict do nothing;

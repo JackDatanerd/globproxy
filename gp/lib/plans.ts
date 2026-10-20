@@ -65,8 +65,7 @@ export const PLANS: Plan[] = [
     total: 1000,
     tagline: 'High-volume operations',
     savings: 'Save 43%',
-    features: ['500 GB+ non-expiring bandwidth', 'Custom geo allocation', 'Dedicated account manager', 'White-label credentials', '24/7 priority support'],
-    custom: true,
+    features: ['500 GB non-expiring bandwidth', 'Custom geo allocation', 'Dedicated account manager', 'White-label credentials', '24/7 priority support'],
   },
 ]
 
@@ -75,8 +74,47 @@ export function getPlan(slug: string): Plan | undefined {
 }
 
 // Only plans actually purchasable through /api/checkout — excludes `custom`
-// (contact-sales-only) tiers like Scale.
+// (contact-sales-only) tiers. Every current plan, Scale included, is
+// self-serve; the flag stays for future contact-only tiers.
 export function getPurchasablePlan(slug: string): Plan | undefined {
   const plan = getPlan(slug)
   return plan && !plan.custom ? plan : undefined
+}
+
+// ── Custom quantity ────────────────────────────────────────────────────────
+// Buy any whole number of GB from 1 to 499 (500+ is the Scale plan). The
+// per-GB rate is the one of the largest plan that fits the quantity, so
+// volume discounts apply continuously rather than only at exact plan sizes —
+// and the total is capped at the next plan up, so nobody ever pays more for
+// fewer GB than a bigger bundle costs (9 GB is $35, not $40.50, because 10 GB
+// is $35). Used by BOTH the buy page (to show the price) and /api/checkout
+// (to decide what to charge) so the two can never disagree.
+export const CUSTOM_MIN_GB = 1
+export const CUSTOM_MAX_GB = 499
+
+export interface OrderQuote {
+  slug: PlanSlug | 'custom'
+  name: string
+  gb: number
+  total: number // USD
+  custom: boolean
+}
+
+const round2 = (n: number) => Math.round(n * 100) / 100
+
+export function quoteCustomGb(gb: number): OrderQuote | null {
+  if (!Number.isInteger(gb) || gb < CUSTOM_MIN_GB || gb > CUSTOM_MAX_GB) return null
+  const tier = [...PLANS].reverse().find(p => p.gb <= gb) ?? PLANS[0]
+  let total = round2(gb * tier.price)
+  const next = PLANS.find(p => p.gb > gb)
+  if (next) total = Math.min(total, next.total)
+  return { slug: 'custom', name: `${gb} GB`, gb, total, custom: true }
+}
+
+// What /api/checkout sells: a fixed plan by slug, or 'custom' with a GB count.
+export function resolveOrder(slug: unknown, gb?: unknown): OrderQuote | null {
+  if (typeof slug !== 'string') return null
+  if (slug === 'custom') return quoteCustomGb(typeof gb === 'number' ? gb : NaN)
+  const plan = getPurchasablePlan(slug)
+  return plan ? { slug: plan.slug, name: plan.name, gb: plan.gb, total: plan.total, custom: false } : null
 }

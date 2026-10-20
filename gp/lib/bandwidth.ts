@@ -195,12 +195,16 @@ async function sendConfirmationEmail(
     // that just committed, so it is readable now. Best-effort — the email
     // still goes out (without the invoice line) if this lookup fails.
     const { data: orderRow } = await supabase
-      .from('orders').select('invoice_number').eq('id', p.order_id).maybeSingle()
+      .from('orders').select('invoice_number, pay_currency, pay_amount').eq('id', p.order_id).maybeSingle()
     const invoiceNo = orderRow?.invoice_number ?? null
+    const chargedLine = orderRow?.pay_currency && orderRow.pay_currency !== 'USD' && orderRow.pay_amount != null
+      ? `<tr><td style="padding:6px 0;border-bottom:1px solid #eee;">Charged via M-Pesa</td><td style="padding:6px 0;border-bottom:1px solid #eee;text-align:right;">${escapeHtml(orderRow.pay_currency)} ${Number(orderRow.pay_amount).toLocaleString('en-KE')}</td></tr>`
+      : ''
     const receiptBlock = `
           <table style="width:100%;border-collapse:collapse;margin:24px 0;font-size:14px;color:#333;">
             <tr><td style="padding:6px 0;border-bottom:1px solid #eee;">Bandwidth</td><td style="padding:6px 0;border-bottom:1px solid #eee;text-align:right;">${p.gb_amount} GB</td></tr>
             <tr><td style="padding:6px 0;border-bottom:1px solid #eee;">Amount paid</td><td style="padding:6px 0;border-bottom:1px solid #eee;text-align:right;">$${Number(p.amount_usd).toFixed(2)} USD</td></tr>
+            ${chargedLine}
             ${invoiceNo ? `<tr><td style="padding:6px 0;">Invoice</td><td style="padding:6px 0;text-align:right;"><a href="${appUrl()}/invoice/${p.order_id}" style="color:#2563eb;">${escapeHtml(invoiceNo)}</a></td></tr>` : ''}
           </table>`
     // Approved affiliates earn cash, not GB — promising them (or the people

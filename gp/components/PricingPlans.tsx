@@ -4,6 +4,7 @@ import { formatUsd } from '@/lib/format'
 
 export default function PricingPlans({ buyHref = '/auth/signup' }: { buyHref?: string }) {
   return (
+    <div>
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
       {plans.map(p => (
         <div key={p.name} className={`bg-white rounded-2xl p-8 relative transition-all hover:-translate-y-0.5 ${p.featured ? 'border-2 border-accent shadow-[0_0_0_4px_rgba(0,87,255,.07)]' : 'border border-border hover:shadow-lg'}`}>
@@ -32,6 +33,10 @@ export default function PricingPlans({ buyHref = '/auth/signup' }: { buyHref?: s
           </Link>
         </div>
       ))}
+    </div>
+    <p className="text-center text-sm text-muted font-light mt-6">
+      Pay by card (USD) or M-Pesa (KES). Need a different amount? Buy any quantity from 1 to 499 GB in your dashboard.
+    </p>
     </div>
   )
 }

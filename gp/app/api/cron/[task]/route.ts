@@ -319,7 +319,7 @@ async function runReconcile() {
     const recheck = new Date(now - 60 * 60 * 1000).toISOString()
 
     const { data: candidates, error } = await supabase.from('orders')
-      .select('id, user_id, payment_status, amount_usd, gb_amount, paystack_reference, is_canary')
+      .select('id, user_id, payment_status, amount_usd, gb_amount, paystack_reference, is_canary, pay_currency, pay_amount')
       .eq('bandwidth_credited', false)
       .in('payment_status', ['pending', 'cancelled', 'failed'])
       .not('paystack_reference', 'is', null)

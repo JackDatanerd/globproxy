@@ -121,7 +121,12 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
                     <div className="text-xs font-mono text-muted">{profile?.email || '-'}</div>
                   </td>
                   <td className="px-6 py-4 font-mono text-sm font-medium text-ink">{o.gb_amount} GB</td>
-                  <td className="px-6 py-4 font-mono text-sm text-ink">${o.amount_usd}</td>
+                  <td className="px-6 py-4 font-mono text-sm text-ink">
+                    ${o.amount_usd}
+                    {o.pay_currency && o.pay_currency !== 'USD' && o.pay_amount != null && (
+                      <div className="text-[10px] text-muted">{o.pay_currency} {Number(o.pay_amount).toLocaleString('en-KE')} · M-Pesa</div>
+                    )}
+                  </td>
                   <td className="px-6 py-4 font-mono text-sm">{refunded > 0 ? <span className="text-red-500">−${refunded.toFixed(2)}</span> : <span className="text-muted">—</span>}</td>
                   <td className="px-6 py-4 font-mono text-xs text-muted">{o.invoice_number ?? '—'}</td>
                   <td className="px-6 py-4">

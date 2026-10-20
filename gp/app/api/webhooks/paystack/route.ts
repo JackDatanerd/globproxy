@@ -71,7 +71,7 @@ async function handleChargeSuccess(supabase: Admin, data: any) {
   const orderId: string = typeof metadata?.order_id === 'string' && UUID_RE.test(metadata.order_id) ? metadata.order_id : ''
   let query = supabase
     .from('orders')
-    .select('id, user_id, payment_status, amount_usd, gb_amount, paystack_reference, bandwidth_credited, is_canary')
+    .select('id, user_id, payment_status, amount_usd, gb_amount, paystack_reference, bandwidth_credited, is_canary, pay_currency, pay_amount')
   query = orderId ? query.eq('id', orderId) : query.eq('paystack_reference', reference)
   const { data: order, error: orderErr } = await query.maybeSingle()
 
@@ -220,17 +220,42 @@ async function handleRefundProcessed(supabase: Admin, data: any) {
   }
 
   const { data: order, error } = await supabase
-    .from('orders').select('id, user_id, amount_usd, gb_amount, is_canary').eq('paystack_reference', txRef).maybeSingle()
+    .from('orders').select('id, user_id, amount_usd, gb_amount, is_canary, pay_currency, pay_amount').eq('paystack_reference', txRef).maybeSingle()
   if (error) throw error
   if (!order) {
     await alertAdminPayment('Refund processed for an unknown order', { transaction_reference: txRef, refund_reference: refundRef })
     return
   }
 
+  // Refunds arrive in the currency the customer paid in. apply_order_refund
+  // works in USD (the invoice currency), so an M-Pesa (KES) refund is converted
+  // by the order's OWN locked ratio — never today's FX rate — which makes a full
+  // KES refund exactly the full USD price and keeps partials proportional.
+  const paidCur = String(order.pay_currency ?? 'USD').toUpperCase()
+  const refundCur = data?.currency ? String(data.currency).toUpperCase() : paidCur
+  if (refundCur !== paidCur) {
+    await alertAdminPayment('Refund in an unexpected currency — handle manually', {
+      order_id: order.id, refund_reference: refundRef, order_currency: paidCur, refund_currency: refundCur, amount: data?.amount,
+    })
+    return
+  }
+  let refundUsd = refundCents / 100
+  if (paidCur !== 'USD') {
+    const paidMajor = Number(order.pay_amount)
+    if (!(paidMajor > 0)) {
+      await alertAdminPayment('Refund on a non-USD order with no recorded charge amount — handle manually', { order_id: order.id, refund_reference: refundRef })
+      return
+    }
+    const refundMajor = refundCents / 100
+    refundUsd = refundMajor >= paidMajor - 0.005
+      ? Number(order.amount_usd)
+      : Math.round((refundMajor / paidMajor) * Number(order.amount_usd) * 100) / 100
+  }
+
   const { data: result, error: rpcErr } = await supabase.rpc('apply_order_refund', {
     p_order_id: order.id,
     p_refund_reference: refundRef,
-    p_refund_usd: refundCents / 100,
+    p_refund_usd: refundUsd,
   })
   if (rpcErr) throw rpcErr
 

@@ -153,6 +153,9 @@ export default function BillingPage() {
                   <td className="px-6 py-4 text-sm font-medium text-ink">{o.gb_amount} GB</td>
                   <td className="px-6 py-4 text-sm font-mono text-ink">
                     {formatUsd(o.amount_usd)}
+                    {o.pay_currency && o.pay_currency !== 'USD' && o.pay_amount != null && (
+                      <div className="text-[10px] text-muted">{o.pay_currency} {Number(o.pay_amount).toLocaleString('en-KE')} via M-Pesa</div>
+                    )}
                     {Number(o.refunded_usd ?? 0) > 0 && o.payment_status === 'paid' && (
                       <div className="text-[10px] text-red-400">−{formatUsd(o.refunded_usd)} refunded</div>
                     )}
@@ -181,10 +184,14 @@ export default function BillingPage() {
                       </a>
                     )}
                     {(o.payment_status === 'pending' || o.payment_status === 'failed') && (() => {
+                      // Re-open the buy page on the same selection: a fixed plan when
+                      // the order matches one exactly, otherwise a custom quantity.
                       const plan = PLANS.find(p => !p.custom && p.gb === Number(o.gb_amount) && p.total === Number(o.amount_usd))
-                      return plan ? (
+                      const gbInt = Number(o.gb_amount)
+                      const sel = plan ? `plan=${plan.slug}` : Number.isInteger(gbInt) ? `plan=custom&gb=${gbInt}` : null
+                      return sel ? (
                         <Link
-                          href={`/dashboard/buy?plan=${plan.slug}`}
+                          href={`/dashboard/buy?${sel}${o.payment_method === 'mpesa' ? '&method=mpesa' : ''}`}
                           className="text-[10px] font-mono text-accent hover:underline border border-accent/30 px-3 py-1 rounded-lg inline-block mr-2"
                         >
                           {o.payment_status === 'pending' ? 'Pay now' : 'Try again'}
