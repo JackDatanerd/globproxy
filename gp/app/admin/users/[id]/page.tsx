@@ -7,6 +7,7 @@ import AdminDeleteUserButton from '@/components/admin/AdminDeleteUserButton'
 import AdminUserControls from '@/components/admin/AdminUserControls'
 import AdminCredentialAction from '@/components/admin/AdminCredentialAction'
 import { formatGb } from '@/lib/format'
+import { formatRatePct } from '@/lib/rates'
 
 export default async function AdminUserDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
@@ -16,12 +17,14 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
     .from('profiles')
     .select('*')
     .eq('id', id)
-    .eq('is_deleted', false)
     .single()
 
   if (!profile) notFound()
+  // A deleted account stays viewable (its orders and the admin history are
+  // still the record) but gets no controls.
+  const deleted = !!profile.is_deleted
 
-  const [{ data: bw }, { data: creds }, { data: audit }] = await Promise.all([
+  const [{ data: bw }, { data: creds }, { data: audit }, { data: orders }, { data: adjustments }, { data: secEvents }, { count: activeKeys }, { data: referralStats }, { data: payouts }] = await Promise.all([
     supabase.from('bandwidth_accounts')
       .select('total_gb, used_gb, allocated_gb, available_gb')
       .eq('user_id', id)
@@ -36,7 +39,38 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
       .eq('target_user_id', id)
       .order('created_at', { ascending: false })
       .limit(15),
+    supabase.from('orders')
+      .select('id, created_at, gb_amount, amount_usd, refunded_usd, payment_status, invoice_number, dispute_status, is_canary')
+      .eq('user_id', id)
+      .order('created_at', { ascending: false })
+      .limit(10),
+    supabase.from('bandwidth_adjustments')
+      .select('id, gb_delta, reason, created_at, admin:admin_id(email)')
+      .eq('user_id', id)
+      .order('created_at', { ascending: false })
+      .limit(10),
+    supabase.from('security_events')
+      .select('id, event, ip, created_at, actor_id')
+      .eq('user_id', id)
+      .order('created_at', { ascending: false })
+      .limit(10),
+    supabase.from('api_keys')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', id)
+      .is('revoked_at', null),
+    // Referrals this account has made (as an affiliate / referrer).
+    supabase.from('referrals')
+      .select('id, flagged')
+      .eq('referrer_id', id),
+    supabase.from('affiliate_payouts')
+      .select('id, amount_usd, status, cycle_start, cycle_end, paid_at')
+      .eq('referrer_id', id)
+      .order('cycle_start', { ascending: false })
+      .limit(5),
   ])
+  const isAffiliate = !!profile.affiliate_status
+  const referralCount = referralStats?.length ?? 0
+  const flaggedCount = (referralStats ?? []).filter((r: any) => r.flagged).length
 
   const stats = [
     ['Total purchased', bw?.total_gb ?? 0, 'text-ink'],
@@ -51,7 +85,15 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
         ← All users
       </Link>
 
-      {profile.is_suspended && (
+      {deleted && (
+        <div className="mt-4 bg-surface border border-border text-ink2 text-sm rounded-xl px-4 py-3">
+          <span className="font-medium">Deleted account</span>
+          {profile.deleted_at && <span className="font-mono text-xs"> · {new Date(profile.deleted_at).toLocaleString('en-GB')}</span>}
+          <span className="text-muted"> — personal data removed; orders and the admin history below are kept for accounting. No actions are available.</span>
+        </div>
+      )}
+
+      {!deleted && profile.is_suspended && (
         <div className="mt-4 bg-red-50 border border-red-200 text-red-600 text-sm rounded-xl px-4 py-3">
           <span className="font-medium">Suspended</span>
           {profile.suspended_at && <span className="font-mono text-xs"> · {new Date(profile.suspended_at).toLocaleString('en-GB')}</span>}
@@ -69,7 +111,7 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
             </span>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        {!deleted && <div className="flex items-center gap-2">
           <AdminUserControls user={{ id: profile.id, email: profile.email, role: profile.role, is_suspended: profile.is_suspended, api_access: profile.api_access, mfa_enabled: profile.mfa_enabled }} />
           {profile.mfa_enabled && profile.role !== 'admin' && <AdminMfaResetButton userId={id} />}
           <AdminSyncUsageButton userId={id} label="Sync this user's usage now" />
@@ -77,7 +119,7 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
               so the only way to hit "Cannot delete an admin account" is by
               editing the request by hand, not by a normal click. */}
           {profile.role !== 'admin' && <AdminDeleteUserButton userId={id} email={profile.email} />}
-        </div>
+        </div>}
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
@@ -131,20 +173,125 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
                     c.status === 'pending' ? 'bg-yellow-50 text-yellow-600' :
                     'bg-red-50 text-red-400'
                   }`}>{c.status}</span>
+                  {c.status === 'suspended' && c.suspended_reason && (
+                    <div className="text-[10px] font-mono text-muted mt-1">
+                      {c.suspended_reason === 'admin' ? 'disabled individually' : c.suspended_reason === 'account' ? 'with the account' : 'account deleted'}
+                    </div>
+                  )}
                 </td>
                 <td className="px-5 py-3 text-xs font-mono text-muted">
                   {new Date(c.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
                 </td>
-                <td className="px-5 py-3"><AdminCredentialAction credentialId={c.id} status={c.status} /></td>
+                <td className="px-5 py-3">{!deleted && <AdminCredentialAction credentialId={c.id} status={c.status} />}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
 
+
+      {/* Orders */}
       <div className="bg-white border border-border rounded-xl overflow-hidden mt-6">
-        <div className="px-6 py-4 border-b border-border">
+        <div className="px-6 py-4 border-b border-border flex items-center justify-between">
+          <h2 className="font-display font-bold text-base text-ink">Recent orders</h2>
+          <Link href={`/admin/orders?q=${encodeURIComponent(profile.email ?? '')}`} className="text-xs font-mono text-accent hover:underline">All orders →</Link>
+        </div>
+        {(orders ?? []).length === 0 ? (
+          <div className="px-6 py-8 text-center text-sm text-muted">No orders.</div>
+        ) : (
+          <table className="w-full">
+            <tbody>
+              {(orders ?? []).map((o: any, i: number) => (
+                <tr key={o.id} className={i < (orders?.length ?? 0) - 1 ? 'border-b border-border' : ''}>
+                  <td className="px-6 py-3 text-xs font-mono text-muted whitespace-nowrap">{new Date(o.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
+                  <td className="px-6 py-3 font-mono text-sm text-ink">{o.gb_amount} GB</td>
+                  <td className="px-6 py-3 font-mono text-sm text-ink">${Number(o.amount_usd).toFixed(2)}{Number(o.refunded_usd ?? 0) > 0 && <span className="text-red-500 text-xs ml-1">−${Number(o.refunded_usd).toFixed(2)}</span>}</td>
+                  <td className="px-6 py-3 text-xs font-mono text-muted">
+                    {o.payment_status}{o.is_canary ? ' · canary' : ''}{o.dispute_status === 'open' ? ' · ⚠ dispute' : ''}
+                  </td>
+                  <td className="px-6 py-3 text-xs font-mono text-muted">{o.invoice_number ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* Affiliate / Verified Operator */}
+      {(isAffiliate || referralCount > 0) && (
+        <div className="bg-white border border-border rounded-xl p-6 mt-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-display font-bold text-base text-ink">
+              Affiliate
+              {profile.is_verified_operator && <span className="ml-2 text-[10px] font-mono bg-accent2/10 text-accent2 px-2 py-0.5 rounded-full">✓ Verified Operator</span>}
+            </h2>
+            {isAffiliate && <Link href={`/admin/affiliates/${id}`} className="text-xs font-mono text-accent hover:underline">Affiliate details →</Link>}
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+            <div><div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-1">Status</div><div className="font-mono text-ink">{profile.affiliate_status ?? 'not an affiliate'}</div></div>
+            <div><div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-1">Rates (intro / lifetime)</div><div className="font-mono text-ink">{isAffiliate ? `${formatRatePct(profile.affiliate_commission_rate)} / ${formatRatePct(profile.affiliate_commission_rate_lifetime)}` : '—'}</div></div>
+            <div><div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-1">Referrals</div><div className="font-mono text-ink">{referralCount}{flaggedCount > 0 && <span className="text-amber-700"> ({flaggedCount} flagged)</span>}</div></div>
+            <div><div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-1">Verified since</div><div className="font-mono text-ink">{profile.verified_operator_since ? new Date(profile.verified_operator_since).toLocaleDateString('en-GB') : '—'}</div></div>
+          </div>
+          {(payouts ?? []).length > 0 && (
+            <div className="mt-4 border-t border-border pt-3">
+              <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-2">Recent payouts</div>
+              {(payouts ?? []).map((p: any) => (
+                <div key={p.id} className="flex justify-between text-xs font-mono py-0.5">
+                  <span className="text-muted">{p.cycle_start} → {p.cycle_end}</span>
+                  <span className="text-ink">${Number(p.amount_usd).toFixed(2)} · {p.status}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Manual bandwidth adjustments */}
+      {(adjustments ?? []).length > 0 && (
+        <div className="bg-white border border-border rounded-xl overflow-hidden mt-6">
+          <div className="px-6 py-4 border-b border-border"><h2 className="font-display font-bold text-base text-ink">Manual bandwidth adjustments</h2></div>
+          <ul>
+            {(adjustments ?? []).map((a: any, i: number) => (
+              <li key={a.id} className={`px-6 py-3 flex items-start justify-between gap-4 ${i < (adjustments?.length ?? 0) - 1 ? 'border-b border-border' : ''}`}>
+                <div>
+                  <div className={`text-sm font-mono ${Number(a.gb_delta) > 0 ? 'text-accent2' : 'text-red-500'}`}>{Number(a.gb_delta) > 0 ? '+' : ''}{Number(a.gb_delta).toFixed(2)} GB</div>
+                  <div className="text-[11px] text-muted mt-0.5">{a.reason}</div>
+                </div>
+                <div className="text-right shrink-0">
+                  <div className="text-xs font-mono text-muted">{new Date(a.created_at).toLocaleString('en-GB')}</div>
+                  <div className="text-[11px] text-muted">{a.admin?.email ?? 'system'}</div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Security events + API keys */}
+      <div className="bg-white border border-border rounded-xl overflow-hidden mt-6">
+        <div className="px-6 py-4 border-b border-border flex items-center justify-between">
+          <h2 className="font-display font-bold text-base text-ink">Security events</h2>
+          <span className="text-xs font-mono text-muted">{activeKeys ?? 0} active API key{(activeKeys ?? 0) === 1 ? '' : 's'}</span>
+        </div>
+        {(secEvents ?? []).length === 0 ? (
+          <div className="px-6 py-8 text-center text-sm text-muted">Nothing recorded.</div>
+        ) : (
+          <ul>
+            {(secEvents ?? []).map((e: any, i: number) => (
+              <li key={e.id} className={`px-6 py-3 flex items-center justify-between gap-4 ${i < (secEvents?.length ?? 0) - 1 ? 'border-b border-border' : ''}`}>
+                <div className="text-sm font-mono text-ink">{e.event}{e.actor_id && e.actor_id !== id ? <span className="text-muted text-xs"> · by an admin</span> : ''}</div>
+                <div className="text-right text-xs font-mono text-muted">{new Date(e.created_at).toLocaleString('en-GB')}{e.ip ? ` · ${e.ip}` : ''}</div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div className="bg-white border border-border rounded-xl overflow-hidden mt-6">
+        <div className="px-6 py-4 border-b border-border flex items-center justify-between">
           <h2 className="font-display font-bold text-base text-ink">Admin activity on this account</h2>
+          <Link href={`/admin/audit?user=${id}`} className="text-xs font-mono text-accent hover:underline">View all →</Link>
         </div>
         {(audit ?? []).length === 0 ? (
           <div className="px-6 py-8 text-center text-sm text-muted">Nothing recorded yet.</div>

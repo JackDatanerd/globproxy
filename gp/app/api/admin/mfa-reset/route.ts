@@ -1,6 +1,6 @@
 import { appUrl } from '@/lib/appUrl'
-import { createAdminClient } from '@/lib/supabase/server'
-import { adminResetMfa, requireMfaVerified, revokeOtherSessions } from '@/lib/mfa'
+import { adminResetMfa, revokeOtherSessions } from '@/lib/mfa'
+import { authorizeAdmin, readJson, badRequest, isUuid } from '@/lib/adminAuth'
 import { sendEmailSafe, escapeHtml } from '@/lib/email'
 import { logSecurityEvent } from '@/lib/securityEvents'
 import { logAdminAction } from '@/lib/adminAudit'
@@ -17,52 +17,48 @@ import { NextResponse } from 'next/server'
 // recommendation banner (and the email below) point them back to re-enabling
 // it. Every reset is recorded in security_events with the acting admin.
 export async function POST(req: Request) {
-  const token = req.headers.get('authorization')?.replace('Bearer ', '')
-  if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const auth = await authorizeAdmin(req)
+  if (!auth.ok) return auth.response
+  const { supabase, adminId } = auth
 
-  const supabase = await createAdminClient()
-  const { data: { user: caller } } = await supabase.auth.getUser(token)
-  if (!caller) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const body = await readJson<{ user_id?: unknown }>(req)
+  if (!body) return badRequest('Invalid request body')
+  const { user_id } = body
+  if (!isUuid(user_id)) return badRequest('Missing or invalid user_id')
 
-  const { data: cp } = await supabase.from('profiles').select('role').eq('id', caller.id).single()
-  if (cp?.role !== 'admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-
-  const mfaCheck = await requireMfaVerified(req, caller.id)
-  if (mfaCheck) return mfaCheck
-
-  const { user_id } = await req.json().catch(() => ({}))
-  if (!user_id) return NextResponse.json({ error: 'Missing user_id' }, { status: 400 })
-
-  // Neither check existed here before — unlike delete-user (which already
-  // blocks admin targets) and the self-service disable/regenerate paths
-  // (which require the current TOTP or a backup code), this route had no
-  // guard at all. That's a real gap: it means an admin's own *session*
-  // alone — no TOTP, no backup code — was enough to strip their own MFA
-  // through this endpoint, bypassing the entire re-auth model the rest of
-  // this system relies on for account-recovery actions. A hijacked admin
-  // session could permanently lock the real owner out by resetting their
-  // own factor and swapping in an attacker-controlled one. Blocking both
-  // self-targeting and any admin target here, matching delete-user.
-  if (user_id === caller.id) {
+  // An admin's own session alone — no TOTP, no backup code — must never be
+  // enough to strip their own MFA through this endpoint (a hijacked admin
+  // session could otherwise swap in an attacker-controlled factor), and any
+  // admin target is refused too, matching delete-user.
+  if (user_id === adminId) {
     return NextResponse.json({ error: 'Use Settings to manage your own two-factor authentication.' }, { status: 403 })
   }
 
-  const { data: target } = await supabase.from('profiles').select('email, full_name, role').eq('id', user_id).single()
+  const { data: target } = await supabase.from('profiles').select('email, full_name, role, is_deleted').eq('id', user_id).single()
   if (!target) return NextResponse.json({ error: 'User not found' }, { status: 404 })
   if (target.role === 'admin') return NextResponse.json({ error: 'Cannot reset MFA on an admin account this way — admins manage their own MFA from Settings.' }, { status: 403 })
+  if (target.is_deleted) return NextResponse.json({ error: 'This account is deleted — there is nothing to reset.' }, { status: 409 })
 
-  await adminResetMfa(user_id)
+  // adminResetMfa throws when the wipe fails; that used to escape as an
+  // opaque 500 with no JSON body and no audit entry.
+  try {
+    await adminResetMfa(user_id)
+  } catch (e: any) {
+    console.error('[mfa-reset] wipe failed', user_id, e)
+    await logAdminAction(supabase, { adminId, action: 'user.mfa_reset_failed', targetUserId: user_id, details: { error: String(e?.message ?? e) } })
+    return NextResponse.json({ error: 'Could not reset two-factor authentication. Nothing was changed — try again.' }, { status: 500 })
+  }
   // Whoever else is signed in to that account (the reason for a reset may be a
   // takeover) must sign in again.
   await revokeOtherSessions(user_id)
-  await logSecurityEvent({ userId: user_id, actorId: caller.id, event: 'mfa_reset_by_admin', req, admin: supabase })
-  await logAdminAction(supabase, { adminId: caller.id, action: 'user.mfa_reset', targetUserId: user_id })
+  await logSecurityEvent({ userId: user_id, actorId: adminId, event: 'mfa_reset_by_admin', req, admin: supabase })
+  await logAdminAction(supabase, { adminId, action: 'user.mfa_reset', targetUserId: user_id })
 
   // Security-relevant account change — notify the owner the same way
   // suspend/unsuspend does, so a reset the account owner didn't request
   // (support impersonation, a compromised support account) is visible to
   // them immediately, not discovered later.
-  if (target.email) {
+  if (target.email && target.email !== '[deleted]') {
     await sendEmailSafe({
       to: target.email,
       subject: 'Two-factor authentication was reset on your GlobProxy account',

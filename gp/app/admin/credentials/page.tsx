@@ -12,6 +12,10 @@ export default async function AdminCredentialsPage({ searchParams }: { searchPar
   const page = parsePage(sp.page)
   const q = cleanSearch(sp.q)
   const status = typeof sp.status === 'string' && (STATUSES as readonly string[]).includes(sp.status) ? sp.status : ''
+  // Deleted accounts' credentials are tombstones (suspended_reason = 'deleted',
+  // migration 0052). They used to be listed as ordinary suspended credentials
+  // with an Enable button that could only ever fail, and inflated the counts.
+  const showDeleted = sp.deleted === '1'
 
   const supabase = await createAdminClient()
 
@@ -27,17 +31,18 @@ export default async function AdminCredentialsPage({ searchParams }: { searchPar
   }
 
   // Fetch credentials without an FK-hinted join — more resilient after migrations.
-  let query = supabase.from('proxy_credentials').select('*', { count: 'exact' })
+  const visible = <T extends { or: (f: string) => T }>(q: T): T => showDeleted ? q : q.or('suspended_reason.is.null,suspended_reason.neq.deleted')
+  let query = visible(supabase.from('proxy_credentials').select('*', { count: 'exact' }))
   if (status) query = query.eq('status', status)
   if (searchIds) query = searchIds.length ? query.in('user_id', searchIds) : query.in('user_id', ['00000000-0000-0000-0000-000000000000'])
   const from = (page - 1) * PAGE_SIZE
   const { data: creds, count } = await query.order('created_at', { ascending: false }).range(from, from + PAGE_SIZE - 1)
 
   const [{ count: totalCount }, { count: active }, { count: pending }, { count: suspended }] = await Promise.all([
-    supabase.from('proxy_credentials').select('*', { count: 'exact', head: true }),
-    supabase.from('proxy_credentials').select('*', { count: 'exact', head: true }).eq('status', 'active'),
-    supabase.from('proxy_credentials').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
-    supabase.from('proxy_credentials').select('*', { count: 'exact', head: true }).eq('status', 'suspended'),
+    visible(supabase.from('proxy_credentials').select('*', { count: 'exact', head: true })),
+    visible(supabase.from('proxy_credentials').select('*', { count: 'exact', head: true }).eq('status', 'active')),
+    visible(supabase.from('proxy_credentials').select('*', { count: 'exact', head: true }).eq('status', 'pending')),
+    visible(supabase.from('proxy_credentials').select('*', { count: 'exact', head: true }).eq('status', 'suspended')),
   ])
 
   const userIds = Array.from(new Set((creds ?? []).map(c => c.user_id).filter(Boolean)))
@@ -52,6 +57,7 @@ export default async function AdminCredentialsPage({ searchParams }: { searchPar
     const p = new URLSearchParams()
     if (q) p.set('q', q)
     if (s) p.set('status', s)
+    if (showDeleted) p.set('deleted', '1')
     const qs = p.toString()
     return qs ? `/admin/credentials?${qs}` : '/admin/credentials'
   }
@@ -68,8 +74,11 @@ export default async function AdminCredentialsPage({ searchParams }: { searchPar
         <Link href={hrefFor('active')} className={chip(status === 'active', 'bg-accent2-light text-accent2')}>{active ?? 0} active</Link>
         <Link href={hrefFor('pending')} className={chip(status === 'pending', 'bg-yellow-50 text-yellow-600')}>{pending ?? 0} pending</Link>
         <Link href={hrefFor('suspended')} className={chip(status === 'suspended', 'bg-red-50 text-red-400')}>{suspended ?? 0} suspended</Link>
+        <Link href={(() => { const p = new URLSearchParams(); if (q) p.set('q', q); if (status) p.set('status', status); if (!showDeleted) p.set('deleted', '1'); const qs = p.toString(); return qs ? `/admin/credentials?${qs}` : '/admin/credentials' })()}
+          className="text-xs font-mono text-muted hover:text-ink underline">{showDeleted ? 'Hide' : 'Show'} deleted-account credentials</Link>
         <form method="get" className="ml-auto flex gap-2">
           {status && <input type="hidden" name="status" value={status} />}
+          {showDeleted && <input type="hidden" name="deleted" value="1" />}
           <input name="q" defaultValue={q} placeholder="Search owner email or name…"
             className="w-64 bg-white border border-border px-3 py-1.5 rounded-lg text-sm focus:outline-none focus:border-accent" />
           <button className="text-xs font-mono px-3 py-1.5 rounded-lg border border-border text-ink2 hover:border-ink2">Search</button>
@@ -103,17 +112,22 @@ export default async function AdminCredentialsPage({ searchParams }: { searchPar
                     c.status === 'pending' ? 'bg-yellow-50 text-yellow-600' :
                     'bg-red-50 text-red-400'
                   }`}>{c.status}</span>
+                  {c.status === 'suspended' && c.suspended_reason && (
+                    <div className="text-[10px] font-mono text-muted mt-1">
+                      {c.suspended_reason === 'admin' ? 'disabled individually' : c.suspended_reason === 'account' ? 'with the account' : 'account deleted'}
+                    </div>
+                  )}
                 </td>
                 <td className="px-5 py-3 text-xs font-mono text-muted">
                   {new Date(c.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}
                 </td>
-                <td className="px-5 py-3"><AdminCredentialAction credentialId={c.id} status={c.status} /></td>
+                <td className="px-5 py-3">{c.suspended_reason !== 'deleted' && <AdminCredentialAction credentialId={c.id} status={c.status} />}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-      <AdminPager basePath="/admin/credentials" page={page} pageSize={PAGE_SIZE} total={count ?? 0} params={{ q, status }} />
+      <AdminPager basePath="/admin/credentials" page={page} pageSize={PAGE_SIZE} total={count ?? 0} params={{ q, status, deleted: showDeleted ? '1' : '' }} />
     </div>
   )
 }

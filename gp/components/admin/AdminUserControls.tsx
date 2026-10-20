@@ -24,7 +24,7 @@ export default function AdminUserControls({ user }: { user: AdminUserControlsUse
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
 
-  async function run(path: string, body: Record<string, unknown>, success: string, confirmMsg?: string) {
+  async function run(path: string, body: Record<string, unknown>, success: string, confirmMsg?: string, redirectTo?: string) {
     if (confirmMsg && !confirm(confirmMsg)) return
     setLoading(true)
     const { ok, data } = await adminPost(path, { user_id: user.id, ...body })
@@ -35,10 +35,34 @@ export default function AdminUserControls({ user }: { user: AdminUserControlsUse
       return
     }
     toast.success(success)
+    // Side effects worth reading before the page reloads.
+    const d = data as any
+    let notes = 0
     // Suspending also shuts the user's live proxies; surface partial failures.
-    const failures = (data as any).proxy_failures?.length ?? 0
-    if (failures) toast.error(`${failures} proxy credential${failures === 1 ? '' : 's'} could not be shut off on Geonode — check /admin/credentials`, { duration: 8000 })
-    window.location.reload()
+    const failures = d.proxy_failures?.length ?? 0
+    if (failures) { notes++; toast.error(`${failures} proxy credential${failures === 1 ? '' : 's'} could not be shut off or restored upstream — check /admin/credentials`, { duration: 8000 }) }
+    // A reinstate does not revive credentials that were disabled one by one.
+    if (d.credentials_kept_disabled) { notes++; toast(`${d.credentials_kept_disabled} credential${d.credentials_kept_disabled === 1 ? ' was' : 's were'} disabled individually and stay off — re-enable them from the credentials list if wanted.`, { duration: 8000 }) }
+    if (d.payouts_voided) { notes++; toast(`${d.payouts_voided} pending affiliate payout${d.payouts_voided === 1 ? '' : 's'} voided (the account's payout details were erased).`, { duration: 8000 }) }
+    if (d.warnings?.length) { notes++; toast.error(`Deleted, but some cleanup steps failed: ${d.warnings.join('; ')}`, { duration: 12000 }) }
+    // Let the notes be read before the page changes.
+    setTimeout(() => { if (redirectTo) window.location.href = redirectTo; else window.location.reload() }, notes ? 3500 : 600)
+  }
+
+  async function adjustBandwidth() {
+    const raw = window.prompt(`Adjust bandwidth for ${user.email}.\nEnter GB — positive to CREDIT (e.g. 5), negative to DEBIT (e.g. -2):`)
+    if (raw === null) return
+    const gb = Number(raw.trim())
+    if (!Number.isFinite(gb) || gb === 0) { toast.error('Enter a non-zero number of GB'); return }
+    const reason = window.prompt(`Reason for ${gb > 0 ? 'crediting' : 'debiting'} ${Math.abs(gb)} GB (required, kept in the audit log):`)
+    if (reason === null) return
+    if (reason.trim().length < 3) { toast.error('A reason is required'); return }
+    if (!confirm(`${gb > 0 ? 'Credit' : 'Debit'} ${Math.abs(gb)} GB ${gb > 0 ? 'to' : 'from'} ${user.email}? The customer is emailed.`)) return
+    setLoading(true)
+    const { ok, data } = await adminPost('/api/admin/adjust-bandwidth', { userId: user.id, gb, reason })
+    if (!ok) { toast.error(data.error ?? 'Adjustment failed'); setLoading(false); setOpen(false); return }
+    toast.success(`Balance adjusted — ${Number((data as any).available_gb ?? 0).toFixed(2)} GB now available`)
+    setTimeout(() => window.location.reload(), 900)
   }
 
   function suspend() {
@@ -54,7 +78,7 @@ export default function AdminUserControls({ user }: { user: AdminUserControlsUse
     const typed = window.prompt(`Type the account email to confirm deletion:\n${user.email}`)
     if (typed === null) return
     if (typed.trim().toLowerCase() !== user.email.toLowerCase()) { toast.error('Email did not match — nothing was deleted'); return }
-    run('/api/admin/delete-user', {}, 'Account deleted')
+    run('/api/admin/delete-user', {}, 'Account deleted', undefined, '/admin/users')
   }
 
   if (user.role === 'admin') return <span className="text-xs text-muted font-mono">Protected</span>
@@ -76,6 +100,10 @@ export default function AdminUserControls({ user }: { user: AdminUserControlsUse
               ? <button onClick={() => run('/api/admin/suspend-user', { action: 'unsuspend' }, 'User reinstated')}
                   className={`${item} text-accent2 hover:bg-accent2-light`}>✓ Reinstate user</button>
               : <button onClick={suspend} className={`${item} text-yellow-600 hover:bg-yellow-50`}>⊘ Suspend user</button>}
+
+            <div className="h-px bg-border mx-3 my-1" />
+
+            <button onClick={() => { setOpen(false); adjustBandwidth() }} className={`${item} text-ink2 hover:bg-surface`}>± Adjust bandwidth</button>
 
             <div className="h-px bg-border mx-3 my-1" />
 

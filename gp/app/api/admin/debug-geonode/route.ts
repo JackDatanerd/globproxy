@@ -1,6 +1,6 @@
-import { createAdminClient } from '@/lib/supabase/server'
+import { authorizeAdmin } from '@/lib/adminAuth'
+import { logAdminAction } from '@/lib/adminAudit'
 import { debugCreateSubUser, getAccountBalance } from '@/lib/geonode'
-import { requireMfaVerified } from '@/lib/mfa'
 import { NextResponse } from 'next/server'
 
 // Admin-only diagnostic endpoint — OFF by default. Even though it's
@@ -26,32 +26,12 @@ function debugEndpointsEnabled() {
   return process.env.ENABLE_DEBUG_ENDPOINTS === 'true'
 }
 
-async function verifyAdmin(req: Request) {
-  const token = req.headers.get('authorization')?.replace('Bearer ', '')
-  if (!token) return null
-
-  const supabase = await createAdminClient()
-  const { data: { user } } = await supabase.auth.getUser(token)
-  if (!user) return null
-
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('role')
-    .eq('id', user.id)
-    .single()
-
-  return profile?.role === 'admin' ? user : null
-}
-
 // GET — balance check (safe, read-only)
 export async function GET(req: Request) {
   if (!debugEndpointsEnabled()) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-  const user = await verifyAdmin(req)
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
-  const mfaCheck = await requireMfaVerified(req, user.id)
-  if (mfaCheck) return mfaCheck
+  const auth = await authorizeAdmin(req)
+  if (!auth.ok) return auth.response
 
   const apiKey = process.env.GEONODE_API_KEY
   const resellerId = process.env.GEONODE_RESELLER_ID
@@ -74,14 +54,16 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   if (!debugEndpointsEnabled()) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-  const user = await verifyAdmin(req)
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
-  const mfaCheck = await requireMfaVerified(req, user.id)
-  if (mfaCheck) return mfaCheck
+  const auth = await authorizeAdmin(req)
+  if (!auth.ok) return auth.response
 
   try {
     const result = await debugCreateSubUser()
+    await logAdminAction(auth.supabase, {
+      adminId: auth.adminId,
+      action: 'debug.geonode_create_subuser',
+      details: { ok: !result.error, cleanup_deleted: !!result.cleanup_deleted },
+    })
     return NextResponse.json({
       ...result,
       status: result.error ? 'failed' : 'ok',

@@ -7,8 +7,14 @@ export default function AdminApiAccessActions({ userId, action }: { userId: stri
   const [loading, setLoading] = useState(false)
 
   async function handle() {
+    let reason: string | null = null
+    if (action === 'reject') {
+      // Cancel aborts; blank = no note. The note goes in the email and audit log.
+      reason = window.prompt('Optional note to include in the rejection email (leave blank for none):', '')
+      if (reason === null) return
+    }
     setLoading(true)
-    const { ok, data } = await adminPost(`/api/admin/${action === 'approve' ? 'approve-api-access' : 'reject-api-access'}`, { userId })
+    const { ok, data } = await adminPost(`/api/admin/${action === 'approve' ? 'approve-api-access' : 'reject-api-access'}`, action === 'reject' ? { userId, reason } : { userId })
     if (!ok) { toast.error(data.error ?? 'Action failed'); setLoading(false); return }
     toast.success(action === 'approve' ? 'API access granted' : 'Request rejected')
     window.location.reload()

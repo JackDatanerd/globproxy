@@ -44,51 +44,82 @@ export function rollbackProfilePatch(before: Record<string, any>): Record<string
   return restore
 }
 
-// Deletes every listed Geonode sub-user and returns the ones that FAILED. A
-// 404 means it's already gone (a retry after a partial run) and counts as
-// success. Callers must abort before touching local rows if anything fails —
-// swallowing the error leaves a real, billable, still-working sub-user
-// behind an account that reads as deleted.
-export async function cleanupGeonodeSubUsers(
+// Releases every listed Geonode sub-user. A 404 means it is already gone (a
+// retry after a partial run) and counts as released. Each released credential
+// is tombstoned locally AT ONCE (stored password and Geonode ids dropped,
+// status 'suspended', reason 'deleted'), so if a later sub-user fails and the
+// deletion is abandoned, the database never claims a dead sub-user is still
+// live. Callers must stop before the account is finalised if anything failed —
+// swallowing the error leaves a real, billable, still-working sub-user behind
+// an account that reads as deleted.
+export async function releaseGeonodeSubUsers(
+  supabase: AdminSupabase,
   creds: { id: string; upstream_sub_user_id: string | null }[]
-): Promise<{ id: string; error: string }[]> {
+): Promise<{ released: string[]; failed: { id: string; error: string }[] }> {
+  const released: string[] = []
   const failed: { id: string; error: string }[] = []
   for (const cred of creds) {
     if (!cred.upstream_sub_user_id) continue
     try {
       await deleteSubUser(cred.upstream_sub_user_id)
     } catch (e: any) {
-      if (e instanceof GeonodeApiError && e.status === 404) continue
-      console.error('Failed to clean up Geonode sub-user during account deletion', cred.id, e)
-      failed.push({ id: cred.id, error: String(e?.message ?? e) })
+      if (!(e instanceof GeonodeApiError && e.status === 404)) {
+        console.error('Failed to clean up Geonode sub-user during account deletion', cred.id, e)
+        failed.push({ id: cred.id, error: String(e?.message ?? e) })
+        continue
+      }
     }
+    released.push(cred.id)
+    const { error } = await supabase.from('proxy_credentials')
+      .update({
+        status: 'suspended', suspended_reason: 'deleted',
+        upstream_password: null, upstream_username: null, upstream_sub_user_id: null,
+      })
+      .eq('id', cred.id)
+    if (error) console.error('[accountDeletion] could not tombstone released credential', cred.id, error)
   }
-  return failed
+  return { released, failed }
+}
+
+export type PurgeResult = {
+  // Steps that errored — the account is deleted either way, but something
+  // sensitive may still be on disk and an admin should look.
+  warnings: string[]
+  // What the affiliate scrub did (pending payouts removed, earnings forfeited).
+  scrub: { voided_payouts?: any[]; forfeited_usd?: number } | null
 }
 
 // Everything after the profile is anonymised and the auth account banned:
-// credentials read as inactive and lose their stored password / Geonode ids,
+// credentials read as inactive and lose their stored password / Geonode ids
+// (ALL of the account's credentials, not only ones that had a sub-user id),
 // secrets with no accounting value are deleted, API keys are revoked.
-// Orders, invoices and ledgers are kept for accounting.
-export async function purgeAccountSecrets(supabase: AdminSupabase, userId: string, hadCredentials: boolean): Promise<void> {
-  if (hadCredentials) {
-    await supabase.from('proxy_credentials')
-      .update({ status: 'suspended', upstream_password: null, upstream_username: null, upstream_sub_user_id: null })
-      .eq('user_id', userId)
+// Orders, invoices and ledgers are kept for accounting. Every step is checked
+// and reported instead of silently ignored.
+export async function purgeAccountSecrets(supabase: AdminSupabase, userId: string, _hadCredentials?: boolean): Promise<PurgeResult> {
+  const warnings: string[] = []
+  const check = (step: string, error: { message: string } | null) => {
+    if (error) { warnings.push(`${step}: ${error.message}`); console.error('[accountDeletion]', step, userId, error) }
   }
-  await supabase.from('webhook_endpoints').delete().eq('user_id', userId)
-  await supabase.from('mfa_totp_factors').delete().eq('user_id', userId)
-  await supabase.from('mfa_backup_codes').delete().eq('user_id', userId)
-  await supabase.from('mfa_verified_sessions').delete().eq('user_id', userId)
-  await supabase.from('support_reports').update({ email: '[deleted]' }).eq('user_id', userId)
-  await supabase.from('api_keys')
+
+  check('credentials', (await supabase.from('proxy_credentials')
+    .update({ status: 'suspended', suspended_reason: 'deleted', upstream_password: null, upstream_username: null, upstream_sub_user_id: null })
+    .eq('user_id', userId)).error)
+  check('webhook_endpoints', (await supabase.from('webhook_endpoints').delete().eq('user_id', userId)).error)
+  check('mfa_totp_factors', (await supabase.from('mfa_totp_factors').delete().eq('user_id', userId)).error)
+  check('mfa_backup_codes', (await supabase.from('mfa_backup_codes').delete().eq('user_id', userId)).error)
+  check('mfa_verified_sessions', (await supabase.from('mfa_verified_sessions').delete().eq('user_id', userId)).error)
+  check('support_reports', (await supabase.from('support_reports').update({ email: '[deleted]' }).eq('user_id', userId)).error)
+  check('api_keys', (await supabase.from('api_keys')
     .update({ revoked_at: new Date().toISOString() })
     .eq('user_id', userId)
-    .is('revoked_at', null)
+    .is('revoked_at', null)).error)
 
-  // Affiliate side (migration 0044): suspend the affiliate status so nothing new
-  // accrues to a deleted account, and forfeit UNBATCHED earnings. Already-batched
-  // / paid payout rows are kept — they're financial records. Idempotent.
-  const { error: scrubErr } = await supabase.rpc('scrub_affiliate_data', { p_user_id: userId })
-  if (scrubErr) console.error('[accountDeletion] scrub_affiliate_data failed', userId, scrubErr)
+  // Affiliate side (migrations 0044 / 0051 / 0052): suspend the affiliate status so
+  // nothing new accrues to a deleted account, void its still-pending payouts
+  // (their destination was just erased) and forfeit UNBATCHED earnings. Paid
+  // payout rows are kept — they're financial records. Idempotent.
+  const { data: scrub, error: scrubErr } = await supabase.rpc('scrub_affiliate_data', { p_user_id: userId })
+  check('scrub_affiliate_data', scrubErr)
+
+  return { warnings, scrub: (scrub as any) ?? null }
 }

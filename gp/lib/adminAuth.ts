@@ -20,8 +20,14 @@ export async function authorizeAdmin(req: Request): Promise<AdminAuthResult> {
   const { data: { user } } = await supabase.auth.getUser(token)
   if (!user) return { ok: false, response: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) }
 
-  const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single()
+  const { data: profile } = await supabase
+    .from('profiles').select('role, is_deleted, is_suspended').eq('id', user.id).single()
   if (profile?.role !== 'admin') return { ok: false, response: NextResponse.json({ error: 'Forbidden' }, { status: 403 }) }
+  // The page middleware already refuses a suspended / deleted admin; the API
+  // used to accept their still-valid JWT until it expired.
+  if (profile.is_deleted || profile.is_suspended) {
+    return { ok: false, response: NextResponse.json({ error: 'Forbidden' }, { status: 403 }) }
+  }
 
   const mfaCheck = await requireMfaVerified(req, user.id)
   if (mfaCheck) return { ok: false, response: mfaCheck }

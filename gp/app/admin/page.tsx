@@ -30,6 +30,8 @@ export default async function AdminPage() {
     { count: pendingApi },
     { count: unpaidPayouts },
     { count: flaggedReferrals },
+    { count: openReports },
+    { count: openDisputes },
   ] = await Promise.all([
     supabase.from('profiles').select('*',{count:'exact',head:true}).eq('role','user').eq('is_deleted',false),
     supabase.from('profiles').select('*',{count:'exact',head:true}).eq('role','reseller').eq('is_deleted',false),
@@ -40,7 +42,10 @@ export default async function AdminPage() {
     supabase.from('profiles').select('*',{count:'exact',head:true}).eq('affiliate_status','pending').eq('is_deleted',false),
     supabase.from('profiles').select('*',{count:'exact',head:true}).eq('api_access_status','pending').eq('is_deleted',false),
     supabase.from('affiliate_payouts').select('*',{count:'exact',head:true}).eq('status','pending'),
-    supabase.from('referrals').select('*',{count:'exact',head:true}).eq('flagged',true),
+    // Confirmed-fraud referrals are decided; only unreviewed ones need a look.
+    supabase.from('referrals').select('*',{count:'exact',head:true}).eq('flagged',true).is('flag_confirmed_at',null),
+    supabase.from('support_reports').select('*',{count:'exact',head:true}).eq('status','open'),
+    supabase.from('orders').select('*',{count:'exact',head:true}).eq('dispute_status','open'),
   ])
 
   const statsOk = !allTime.error && !month.error
@@ -53,6 +58,8 @@ export default async function AdminPage() {
     { label: 'Affiliate applications', n: pendingAffiliates ?? 0, href: '/admin/affiliates' },
     { label: 'Payouts to send', n: unpaidPayouts ?? 0, href: '/admin/affiliates' },
     { label: 'Flagged referrals', n: flaggedReferrals ?? 0, href: '/admin/referrals' },
+    { label: 'Open support reports', n: openReports ?? 0, href: '/admin/support' },
+    { label: 'Open payment disputes', n: openDisputes ?? 0, href: '/admin/orders?status=disputed' },
   ]
 
   return (
@@ -64,7 +71,7 @@ export default async function AdminPage() {
 
       {!statsOk && (
         <div className="bg-red-50 border border-red-200 text-red-600 text-xs font-mono rounded-xl px-4 py-3 mb-6">
-          Revenue stats unavailable — has migration 0043_admin_hardening.sql been run?
+          Revenue stats unavailable — have migrations 0043 and 0052 been run?
         </div>
       )}
 
@@ -116,6 +123,8 @@ export default async function AdminPage() {
             {[
               {label:'Manage users',href:'/admin/users'},
               {label:'View all orders',href:'/admin/orders'},
+              {label:'Support reports',href:'/admin/support'},
+              {label:'Banned emails',href:'/admin/bans'},
               {label:'Admin audit log',href:'/admin/audit'},
               {label:'Reseller approvals',href:'/admin/resellers'},
               {label:'All credentials',href:'/admin/credentials'},

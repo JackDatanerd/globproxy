@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { createAdminClient } from '@/lib/supabase/server'
+import { fetchAllRows } from '@/lib/dbPaging'
 import {
   currentAccruingCycle,
   lastCompletedCycle,
@@ -31,17 +32,6 @@ function methodLabel(key: PayoutMethodKey): string {
   if (key === 'mpesa') return 'M-Pesa'
   if (key === 'bank') return 'Bank transfer'
   return 'No method set'
-}
-
-async function fetchAll<T>(page: (from: number, to: number) => PromiseLike<{ data: T[] | null }>): Promise<T[]> {
-  const out: T[] = []
-  for (let from = 0; from < 50000; from += 1000) {
-    const { data } = await page(from, from + 999)
-    if (!data || data.length === 0) break
-    out.push(...data)
-    if (data.length < 1000) break
-  }
-  return out
 }
 
 const money = (n: number) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -83,12 +73,12 @@ export default async function AdminCyclesPage({
     supabase.rpc('admin_order_stats', { p_start: start, p_end: end }),
     supabase
       .from('affiliate_payouts')
-      .select('amount_usd, payout_method')
+      .select('amount_usd, payout_method, status')
       .eq('cycle_start', cycle.cycleStart)
       .eq('cycle_end', cycle.cycleEnd),
     // Every non-void commission earned on this window's sales, paged in
     // 1000-row chunks so a busy cycle isn't silently truncated.
-    fetchAll<{ referrer_id: string; commission_amount_usd: number; status: string; payout_id: string | null }>((from, to) =>
+    fetchAllRows<{ referrer_id: string; commission_amount_usd: number; status: string; payout_id: string | null }>((from, to) =>
       supabase
         .from('affiliate_commissions')
         .select('referrer_id, commission_amount_usd, status, payout_id')
@@ -96,10 +86,13 @@ export default async function AdminCyclesPage({
         .lt('created_at', end)
         .neq('status', 'void')
         .order('created_at', { ascending: true })
+        .order('id', { ascending: true })
         .range(from, to)
     ),
   ])
 
+  // A failed read used to look like "no commissions" — profit silently too high.
+  const dataError = statsRes.error?.message ?? commissions.error ?? null
   const stats = (statsRes.data?.[0] ?? null) as { revenue_usd: number; gb_sold: number; order_count: number } | null
   const totalSales = Number(stats?.revenue_usd ?? 0)
   const totalGbSold = Number(stats?.gb_sold ?? 0)
@@ -110,9 +103,9 @@ export default async function AdminCyclesPage({
   // sales. It used to be only the payouts batched for the cycle once any
   // existed — so balances held back (no payout method, security hold, below
   // minimum) vanished from the liability and profit looked too high.
-  const totalCommissionCost = commissions.reduce((sum, c) => sum + Number(c.commission_amount_usd), 0)
-  const batchedCost = commissions.filter(c => c.payout_id).reduce((sum, c) => sum + Number(c.commission_amount_usd), 0)
-  const unbatchedPending = commissions.filter(c => !c.payout_id && c.status === 'pending')
+  const totalCommissionCost = commissions.rows.reduce((sum, c) => sum + Number(c.commission_amount_usd), 0)
+  const batchedCost = commissions.rows.filter(c => c.payout_id).reduce((sum, c) => sum + Number(c.commission_amount_usd), 0)
+  const unbatchedPending = commissions.rows.filter(c => !c.payout_id && c.status === 'pending')
   const unbatchedCost = unbatchedPending.reduce((sum, c) => sum + Number(c.commission_amount_usd), 0)
   const cycleHasBeenRun = (existingPayouts?.length ?? 0) > 0
 
@@ -120,7 +113,11 @@ export default async function AdminCyclesPage({
   // (method snapshotted at run time — migration 0034) PLUS a projection of
   // the not-yet-batched remainder against each affiliate's CURRENT method.
   const byMethod: Record<PayoutMethodKey, number> = { usdt: 0, mpesa: 0, bank: 0, unset: 0 }
+  // Only payouts STILL TO SEND count as "needed"; ones already marked paid are
+  // reported separately (they used to be mixed into this total).
+  let alreadySent = 0
   for (const p of existingPayouts ?? []) {
+    if (p.status === 'paid') { alreadySent += Number(p.amount_usd); continue }
     const key = (p.payout_method as PayoutMethodKey) ?? 'unset'
     byMethod[key] = (byMethod[key] ?? 0) + Number(p.amount_usd)
   }
@@ -148,6 +145,11 @@ export default async function AdminCyclesPage({
         <p className="text-muted text-sm mt-1">
           Revenue, affiliate cost, and profit per biweekly cycle — same boundaries as affiliate payouts.
         </p>
+        {dataError && (
+          <div className="mt-4 bg-red-50 border border-red-200 text-red-600 text-xs font-mono rounded-xl px-4 py-3">
+            Some data for this cycle could not be loaded ({dataError}) — the totals below may be incomplete. Reload to retry.
+          </div>
+        )}
       </div>
 
       <div className="flex items-center justify-between mb-6 bg-white border border-border rounded-xl px-6 py-4">
@@ -195,7 +197,7 @@ export default async function AdminCyclesPage({
           <h2 className="font-display font-bold text-base text-ink">Affiliate payout needed by method</h2>
           <p className="text-xs text-muted mt-1">
             {cycleHasBeenRun
-              ? "Payouts batched for this cycle, plus a preview of anything not yet batched (against each affiliate's current method). Earlier balances carried over into this cycle's run are included in the payout amounts."
+              ? `Payouts still to send for this cycle, plus a preview of anything not yet batched (against each affiliate's current method). Earlier balances carried over into this cycle's run are included in the payout amounts.${alreadySent > 0 ? ` Already marked paid for this cycle: ${money(alreadySent)} (not counted below).` : ''}`
               : "Preview based on each affiliate's current payout method — can still change before the cycle is run."}
           </p>
         </div>

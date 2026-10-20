@@ -1,4 +1,5 @@
 import { authorizeAdmin, readJson, badRequest, isUuid } from '@/lib/adminAuth'
+import { DEFAULT_AFFILIATE_INTRO_RATE, DEFAULT_AFFILIATE_LIFETIME_RATE } from '@/lib/rates'
 import { resolvePendingApplication } from '@/lib/adminApplications'
 import { appUrl } from '@/lib/adminEmail'
 import { NextResponse } from 'next/server'
@@ -14,8 +15,8 @@ export async function POST(req: Request) {
 
   // Same 0-1 range record_affiliate_commission() enforces server-side —
   // validated here too so bad admin input fails with a clear message.
-  const rate1 = body.introRate ?? 0.30
-  const rate2 = body.lifetimeRate ?? 0.15
+  const rate1 = body.introRate ?? DEFAULT_AFFILIATE_INTRO_RATE
+  const rate2 = body.lifetimeRate ?? DEFAULT_AFFILIATE_LIFETIME_RATE
   if (typeof rate1 !== 'number' || !Number.isFinite(rate1) || rate1 < 0 || rate1 > 1 ||
       typeof rate2 !== 'number' || !Number.isFinite(rate2) || rate2 < 0 || rate2 > 1) {
     return badRequest('Commission rates must be between 0 and 1')

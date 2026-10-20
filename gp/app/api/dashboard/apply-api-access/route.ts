@@ -31,7 +31,7 @@ export async function POST(req: Request) {
     const adminSupabase = await createAdminClient()
     const { data: profile } = await adminSupabase
       .from('profiles')
-      .select('role, api_access, api_access_status, full_name, email')
+      .select('role, api_access, api_access_status, api_access_rejected_at, api_access_application, full_name, email')
       .eq('id', user.id)
       .single()
 
@@ -48,9 +48,26 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'You already have a pending API access request.' }, { status: 409 })
     }
 
-    const { use_case, website_url } = await req.json()
+    // A rejected request may be re-submitted, but not immediately — every
+    // submit emails an admin, so without a cooldown one account could flood
+    // the inbox. Same 7 days apply-affiliate / apply-reseller use, measured
+    // from the REJECTION (api_access_rejected_at, migration 0052).
+    if (profile.api_access_status === 'rejected') {
+      const app = (profile.api_access_application ?? {}) as { applied_at?: string }
+      const since = Date.parse(profile.api_access_rejected_at ?? app.applied_at ?? '')
+      if (Number.isFinite(since) && Date.now() - since < 7 * 24 * 60 * 60 * 1000) {
+        return NextResponse.json({ error: 'You can re-apply 7 days after your request was reviewed.' }, { status: 429 })
+      }
+    }
+
+    const body = await req.json().catch(() => ({}))
+    const { use_case, website_url } = body as { use_case?: unknown; website_url?: unknown }
     if (!use_case || typeof use_case !== 'string' || use_case.trim().length < 10) {
       return NextResponse.json({ error: 'Tell us a little about what you plan to automate (at least a sentence).' }, { status: 400 })
+    }
+    // This lands in a jsonb column and an email to the admin — bound it.
+    if (use_case.trim().length > 1200) {
+      return NextResponse.json({ error: 'Please keep your description under 1200 characters.' }, { status: 400 })
     }
     // Optional — some integrations don't have a public-facing site (e.g.
     // an internal tool), so this isn't required the way use_case is. Light
@@ -58,7 +75,7 @@ export async function POST(req: Request) {
     // URL-format gate that rejects a bare domain someone typed without a
     // scheme.
     let cleanedUrl: string | null = null
-    if (website_url && typeof website_url === 'string' && website_url.trim()) {
+    if (typeof website_url === 'string' && website_url.trim()) {
       const trimmed = website_url.trim()
       if (trimmed.length > 300) {
         return NextResponse.json({ error: 'Website URL is too long.' }, { status: 400 })
@@ -75,17 +92,27 @@ export async function POST(req: Request) {
       applied_at: new Date().toISOString(),
     }
 
-    const { error: updateError } = await adminSupabase
+    // The eligibility conditions are part of the UPDATE itself, so a
+    // double-submit (or a request approved a moment ago) can't race the
+    // checks above and knock an account back to 'pending'.
+    const { data: updated, error: updateError } = await adminSupabase
       .from('profiles')
       .update({
         api_access_status: 'pending',
         api_access_application: application,
       })
       .eq('id', user.id)
+      .eq('role', 'reseller')
+      .or('api_access.is.null,api_access.eq.false')
+      .or('api_access_status.is.null,api_access_status.eq.rejected')
+      .select('id')
 
     if (updateError) {
-      console.error('[dashboard/apply-api-access] update failed:', updateError)
-      return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
+      console.error('[dashboard/apply-api-access] update failed', updateError.message)
+      return NextResponse.json({ error: 'Could not submit your request. Please try again.' }, { status: 500 })
+    }
+    if (!updated?.length) {
+      return NextResponse.json({ error: 'You already have an API access request or access on file.' }, { status: 409 })
     }
 
     const adminEmail = process.env.ADMIN_EMAIL

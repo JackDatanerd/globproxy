@@ -159,3 +159,29 @@ export function generateReference(): string {
   const crypto = require('crypto')
   return `gp_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`
 }
+// Starts a refund on a settled transaction. The money movement and the
+// bandwidth claw-back are NOT done here: Paystack answers "pending", and the
+// refund.processed webhook (app/api/webhooks/paystack) is what credits the
+// customer's refund, takes the GB back and issues the credit note — exactly
+// the path a refund made from the Paystack dashboard takes, so there is a
+// single place that decides what a refund does. Omit `amount_major` for the
+// full remaining amount. `amount_major` is in the transaction's OWN currency
+// (USD for card orders, KES for M-Pesa orders), in major units.
+export async function createRefund(params: { reference: string; amount_major?: number; currency?: string; merchant_note?: string }) {
+  const body: Record<string, unknown> = { transaction: params.reference }
+  if (params.amount_major != null) {
+    body.amount = Math.round(params.amount_major * 100) // minor units
+    body.currency = (params.currency ?? 'USD').toUpperCase()
+  }
+  if (params.merchant_note) body.merchant_note = params.merchant_note.slice(0, 200)
+
+  const res = await fetch(`${BASE}/refund`, {
+    signal: AbortSignal.timeout(20000),
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${SECRET}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!data?.status) throw new Error(data?.message ?? 'Paystack refund request failed')
+  return data.data as { status?: string; amount?: number; transaction?: { reference?: string } }
+}

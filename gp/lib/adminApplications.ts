@@ -20,17 +20,22 @@ export async function resolvePendingApplication(opts: {
   updates: Record<string, any>
   requireRole?: 'user' | 'reseller'
   audit: { action: string; details?: Record<string, unknown> }
+  // Optional note written by the admin: shown to the applicant in the email
+  // and kept in the audit log.
+  reason?: string | null
   email: { subject: string; heading: string; body: (firstName: string) => string; cta: { href: string; label: string } }
 }): Promise<{ ok: true } | { ok: false; response: NextResponse }> {
-  const { supabase, adminId, userId, statusColumn, requireRole, audit, email } = opts
+  const { supabase, adminId, userId, statusColumn, requireRole, audit, email, reason } = opts
 
   // Stamp WHEN a rejection happened: the 7-day re-apply cooldown (apply-reseller /
   // apply-affiliate) counts from the review, not from the original submission.
-  // (API-access applications have no cooldown, so no column.) Migration 0051.
+  // API-access requests have the same cooldown (api_access_rejected_at, 0052) —
+  // each submit emails an admin, so without it one reseller could flood the inbox.
   const updates: Record<string, any> = { ...opts.updates }
   if (updates[statusColumn] === 'rejected') {
     if (statusColumn === 'reseller_status') updates.reseller_rejected_at = new Date().toISOString()
     if (statusColumn === 'affiliate_status') updates.affiliate_rejected_at = new Date().toISOString()
+    if (statusColumn === 'api_access_status') updates.api_access_rejected_at = new Date().toISOString()
   }
 
   let q = supabase
@@ -51,16 +56,26 @@ export async function resolvePendingApplication(opts: {
     }
   }
 
-  await logAdminAction(supabase, { adminId, action: audit.action, targetUserId: userId, details: audit.details })
+  await logAdminAction(supabase, { adminId, action: audit.action, targetUserId: userId, details: { ...(audit.details ?? {}), ...(reason ? { reason } : {}) } })
 
   if (applicant.email && applicant.email !== '[deleted]') {
     const firstName = escapeHtml(applicant.full_name?.split(' ')[0]) || 'there'
     await sendEmailSafe({
       to: applicant.email,
       subject: email.subject,
-      html: adminNoticeHtml({ heading: email.heading, bodyHtml: email.body(firstName), cta: email.cta }),
+      html: adminNoticeHtml({ heading: email.heading, bodyHtml: email.body(firstName) + (reason ? `<br/><br/><strong>Note from our team:</strong> ${escapeHtml(reason)}` : ''), cta: email.cta }),
     })
   }
 
   return { ok: true }
+}
+
+// Optional free-text rejection note from the admin UI: trimmed, capped, and
+// null when absent. Returns undefined for a value of the wrong type so the
+// caller can answer 400.
+export function cleanReason(v: unknown): string | null | undefined {
+  if (v == null || v === '') return null
+  if (typeof v !== 'string') return undefined
+  const t = v.trim().replace(/\s+/g, ' ')
+  return t ? t.slice(0, 500) : null
 }

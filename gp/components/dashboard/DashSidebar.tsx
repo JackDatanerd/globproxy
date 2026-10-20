@@ -35,6 +35,8 @@ const adminNav = [
   { label: 'Orders',      href: '/admin/orders' },
   { label: 'Resellers',   href: '/admin/resellers' },
   { label: 'Credentials', href: '/admin/credentials' },
+  { label: 'Support',     href: '/admin/support' },
+  { label: 'Banned Emails', href: '/admin/bans' },
   { label: 'Affiliates',  href: '/admin/affiliates' },
   { label: 'Sales Cycles', href: '/admin/cycles' },
   { label: 'Audit Log',   href: '/admin/audit' },

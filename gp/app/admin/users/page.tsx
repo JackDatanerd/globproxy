@@ -7,12 +7,20 @@ import { formatGb } from '@/lib/format'
 
 const PAGE_SIZE = 50
 const ROLES = ['user', 'reseller', 'admin']
+// Quick filters for the accounts that need a decision.
+const STATUSES: Record<string, string> = {
+  suspended: 'Suspended',
+  pending: 'Has a pending request',
+  no2fa: 'Admin / reseller without 2FA',
+}
 
 export default async function AdminUsersPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const sp = await searchParams
   const page = parsePage(sp.page)
   const q = cleanSearch(sp.q)
   const role = typeof sp.role === 'string' && ROLES.includes(sp.role) ? sp.role : ''
+  const status = typeof sp.status === 'string' && sp.status in STATUSES ? sp.status : ''
+  const sort = sp.sort === 'oldest' ? 'oldest' : 'newest'
 
   const supabase = await createAdminClient()
 
@@ -25,9 +33,12 @@ export default async function AdminUsersPage({ searchParams }: { searchParams: P
     .select('id, email, full_name, role, is_suspended, api_access, mfa_enabled, created_at', { count: 'exact' })
     .eq('is_deleted', false)
   if (role) query = query.eq('role', role)
+  if (status === 'suspended') query = query.eq('is_suspended', true)
+  else if (status === 'pending') query = query.or('reseller_status.eq.pending,affiliate_status.eq.pending,api_access_status.eq.pending')
+  else if (status === 'no2fa') query = query.in('role', ['admin', 'reseller']).eq('mfa_enabled', false)
   if (q) query = query.or(`email.ilike.%${q}%,full_name.ilike.%${q}%`)
   const from = (page - 1) * PAGE_SIZE
-  const { data: users, count } = await query.order('created_at', { ascending: false }).range(from, from + PAGE_SIZE - 1)
+  const { data: users, count } = await query.order('created_at', { ascending: sort === 'oldest' }).range(from, from + PAGE_SIZE - 1)
 
   const userIds = users?.map(u => u.id) ?? []
   const { data: bwAccounts } = userIds.length > 0
@@ -40,7 +51,7 @@ export default async function AdminUsersPage({ searchParams }: { searchParams: P
       <div className="mb-6 flex items-start justify-between">
         <div>
           <h1 className="font-display font-bold text-2xl text-ink">All Users</h1>
-          <p className="text-muted text-sm mt-1">{(count ?? 0).toLocaleString()} {q || role ? 'matching' : 'registered'} accounts</p>
+          <p className="text-muted text-sm mt-1">{(count ?? 0).toLocaleString()} {q || role || status ? 'matching' : 'registered'} accounts</p>
         </div>
         <AdminSyncUsageButton label="Sync all usage now" />
       </div>
@@ -52,8 +63,16 @@ export default async function AdminUsersPage({ searchParams }: { searchParams: P
           <option value="">All roles</option>
           {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
         </select>
+        <select name="status" defaultValue={status} className="bg-white border border-border px-3 py-2 rounded-lg text-sm">
+          <option value="">Any status</option>
+          {Object.entries(STATUSES).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+        </select>
+        <select name="sort" defaultValue={sort} className="bg-white border border-border px-3 py-2 rounded-lg text-sm">
+          <option value="newest">Newest first</option>
+          <option value="oldest">Oldest first</option>
+        </select>
         <button className="text-xs font-mono px-4 py-2 rounded-lg border border-border text-ink2 hover:border-ink2">Filter</button>
-        {(q || role) && <Link href="/admin/users" className="text-xs font-mono px-4 py-2 text-muted hover:text-ink">Clear</Link>}
+        {(q || role || status || sort === 'oldest') && <Link href="/admin/users" className="text-xs font-mono px-4 py-2 text-muted hover:text-ink">Clear</Link>}
       </form>
 
       <div className="bg-white border border-border rounded-xl overflow-hidden">
@@ -112,7 +131,7 @@ export default async function AdminUsersPage({ searchParams }: { searchParams: P
           </tbody>
         </table>
       </div>
-      <AdminPager basePath="/admin/users" page={page} pageSize={PAGE_SIZE} total={count ?? 0} params={{ q, role }} />
+      <AdminPager basePath="/admin/users" page={page} pageSize={PAGE_SIZE} total={count ?? 0} params={{ q, role, status, sort: sort === 'oldest' ? 'oldest' : '' }} />
     </div>
   )
 }

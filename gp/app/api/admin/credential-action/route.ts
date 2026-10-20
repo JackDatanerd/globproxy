@@ -33,7 +33,17 @@ export async function POST(req: Request) {
       // Fold in usage since the last cron tick before the credential stops
       // being 'active' (the usage sync only walks active credentials).
       await syncUserUsage(cred.user_id).catch((e) => console.error('[credential-action] pre-disable usage sync failed', e))
-      await disableCredential(supabase, cred)
+      // The sync can change the credential (e.g. flip it to exhausted); act on
+      // the row as it is NOW, not the one read before the sync.
+      const { data: fresh } = await supabase
+        .from('proxy_credentials')
+        .select('id, upstream_sub_user_id, gb_allocated, status')
+        .eq('id', cred.id)
+        .single()
+      if (!fresh || fresh.status !== 'active') {
+        return NextResponse.json({ error: `This credential changed while its usage was being synced (status: ${fresh?.status ?? 'gone'}). Refresh and check it.` }, { status: 409 })
+      }
+      await disableCredential(supabase, fresh, 'admin')
     } else {
       if (cred.status !== 'suspended') return NextResponse.json({ error: `Only a suspended credential can be re-enabled (status: ${cred.status})` }, { status: 409 })
       if (owner?.is_suspended) return NextResponse.json({ error: 'The owner account is suspended — reinstate the account instead.' }, { status: 409 })

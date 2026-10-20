@@ -64,8 +64,22 @@ export async function POST(req: Request) {
       return badRequest('Unknown action')
   }
 
-  const { error } = await supabase.from('profiles').update(updates).eq('id', user_id)
+  // The state the checks above read is part of the UPDATE itself: two admins
+  // (or two tabs) can no longer both pass the check and have the second write
+  // silently win over a role/access state they never saw.
+  let guarded = supabase
+    .from('profiles')
+    .update(updates)
+    .eq('id', user_id)
+    .eq('role', target.role)
+    .or('is_deleted.is.null,is_deleted.eq.false')
+  // api_access is nullable: `= false` would never match a NULL row.
+  guarded = target.api_access == null ? guarded.is('api_access', null) : guarded.eq('api_access', target.api_access)
+  const { data: changed, error } = await guarded.select('id')
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  if (!changed?.length) {
+    return NextResponse.json({ error: 'This account was changed by someone else a moment ago — refresh and try again.' }, { status: 409 })
+  }
 
   await logAdminAction(supabase, {
     adminId,
@@ -75,7 +89,7 @@ export async function POST(req: Request) {
   })
 
   // Best-effort notification — the access change already succeeded.
-  if (target.email) {
+  if (target.email && target.email !== '[deleted]') {
     const firstName = escapeHtml(target.full_name?.split(' ')[0]) || 'there'
     let subject = ''
     let heading = ''

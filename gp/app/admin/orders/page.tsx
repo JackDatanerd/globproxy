@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { createAdminClient } from '@/lib/supabase/server'
 import AdminPager, { parsePage, cleanSearch } from '@/components/admin/AdminPager'
 import { formatGb } from '@/lib/format'
+import AdminRefundButton from '@/components/admin/AdminRefundButton'
 
 const PAGE_SIZE = 50
 // 'refund' = any order with money refunded (partial refunds keep status 'paid').
@@ -67,7 +68,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
 
       {statsRes.error && (
         <div className="bg-red-50 border border-red-200 text-red-600 text-xs font-mono rounded-xl px-4 py-3 mb-6">
-          Revenue stats unavailable — has migration 0043_admin_hardening.sql been run?
+          Revenue stats unavailable — have migrations 0043 and 0052 been run?
         </div>
       )}
 
@@ -101,14 +102,14 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
         <table className="w-full">
           <thead>
             <tr className="border-b border-border bg-surface">
-              {['Date', 'User', 'GB', 'Amount', 'Refunded', 'Invoice', 'Status'].map(h => (
+              {['Date', 'User', 'GB', 'Amount', 'Refunded', 'Invoice', 'Status', ''].map(h => (
                 <th key={h} className="text-left px-6 py-3 text-[10px] font-mono text-muted uppercase tracking-widest">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {(orders ?? []).length === 0 && (
-              <tr><td colSpan={7} className="px-6 py-12 text-center text-sm text-muted">No orders match.</td></tr>
+              <tr><td colSpan={8} className="px-6 py-12 text-center text-sm text-muted">No orders match.</td></tr>
             )}
             {orders?.map((o) => {
               const profile = o.user_id ? profileMap[o.user_id] : null
@@ -117,12 +118,16 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
                 <tr key={o.id} className="border-b border-border hover:bg-surface">
                   <td className="px-6 py-4 text-xs font-mono text-muted">{new Date(o.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
                   <td className="px-6 py-4">
-                    <div className="text-sm text-ink">{profile?.full_name || 'Deleted user'}</div>
+                    <div className="text-sm text-ink">
+                      {o.user_id
+                        ? <Link href={`/admin/users/${o.user_id}`} className="hover:text-accent">{profile?.full_name || 'Deleted user'}</Link>
+                        : (profile?.full_name || 'Deleted user')}
+                    </div>
                     <div className="text-xs font-mono text-muted">{profile?.email || '-'}</div>
                   </td>
                   <td className="px-6 py-4 font-mono text-sm font-medium text-ink">{o.gb_amount} GB</td>
                   <td className="px-6 py-4 font-mono text-sm text-ink">
-                    ${o.amount_usd}
+                    ${Number(o.amount_usd).toFixed(2)}
                     {o.pay_currency && o.pay_currency !== 'USD' && o.pay_amount != null && (
                       <div className="text-[10px] text-muted">{o.pay_currency} {Number(o.pay_amount).toLocaleString('en-KE')} · M-Pesa</div>
                     )}
@@ -140,6 +145,22 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
                         : o.payment_status}
                     </span>
                     {o.is_canary && <div className="text-[10px] font-mono text-muted mt-1">canary test</div>}
+                    {/* Paystack chargebacks (migration 0047): previously only a filter —
+                        the dispute itself was never shown on the order. */}
+                    {o.dispute_status === 'open' && (
+                      <div className="text-[10px] font-mono text-red-600 mt-1">
+                        ⚠ dispute open{o.dispute_opened_at ? ` since ${new Date(o.dispute_opened_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}` : ''}
+                      </div>
+                    )}
+                    {o.dispute_status === 'resolved' && (
+                      <div className="text-[10px] font-mono text-muted mt-1">dispute resolved{o.dispute_resolution ? ` — ${o.dispute_resolution}` : ''}</div>
+                    )}
+                    {o.paystack_reference && <div className="text-[10px] font-mono text-muted mt-1 break-all">{o.paystack_reference}</div>}
+                  </td>
+                  <td className="px-6 py-4 text-right">
+                    {o.payment_status === 'paid' && !o.is_canary && o.paystack_reference && Number(o.amount_usd) - refunded > 0.005 && (
+                      <AdminRefundButton orderId={o.id} remainingUsd={Math.round((Number(o.amount_usd) - refunded) * 100) / 100} email={profile?.email || 'this customer'} />
+                    )}
                   </td>
                 </tr>
               )

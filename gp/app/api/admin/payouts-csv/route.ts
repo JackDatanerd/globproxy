@@ -3,6 +3,7 @@ import { authorizeAdmin } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
 import { toCsv, csvResponse } from '@/lib/csv'
 import { formatCycleLabel } from '@/lib/payoutCycle'
+import { fetchAllRows } from '@/lib/dbPaging'
 
 // Bulk-pay sheet. ?status=pending (default) | paid | all, optional ?method=usdt|mpesa|bank.
 // Contains the SNAPSHOTTED destination from payout time — exactly what should
@@ -18,16 +19,22 @@ export async function GET(req: Request) {
     if (!['pending', 'paid', 'all'].includes(status)) return NextResponse.json({ error: 'Invalid status' }, { status: 400 })
     if (method && !['usdt', 'mpesa', 'bank'].includes(method)) return NextResponse.json({ error: 'Invalid method' }, { status: 400 })
 
-    let q = auth.supabase
-      .from('affiliate_payouts')
-      .select('id, cycle_start, cycle_end, amount_usd, status, payout_method, payout_wallet_address, payout_bank_details, payout_mpesa_phone, payment_reference, paid_at, created_at, referrer:referrer_id(email, full_name, is_deleted, affiliate_status)')
-      .order('created_at', { ascending: true })
-      .limit(5000)
-    if (status !== 'all') q = q.eq('status', status)
-    if (method) q = q.eq('payout_method', method)
-    const { data, error } = await q
+    // Every matching row, paged (PostgREST silently caps a plain select at
+    // 1000 rows, and the old explicit limit(5000) cut off the NEWEST payouts
+    // of a long history with no warning).
+    const { rows: data, error } = await fetchAllRows<any>((from, to) => {
+      let q = auth.supabase
+        .from('affiliate_payouts')
+        .select('id, cycle_start, cycle_end, amount_usd, status, payout_method, payout_wallet_address, payout_bank_details, payout_mpesa_phone, payment_reference, paid_at, created_at, referrer:referrer_id(email, full_name, is_deleted, affiliate_status)')
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true })
+        .range(from, to)
+      if (status !== 'all') q = q.eq('status', status)
+      if (method) q = q.eq('payout_method', method)
+      return q
+    })
     if (error) return NextResponse.json({ error: 'Export failed' }, { status: 500 })
-    const rows = (data ?? []) as any[]
+    const rows = data as any[]
 
     await logAdminAction(auth.supabase, { adminId: auth.adminId, action: 'payouts_exported', details: { status, method, rows: rows.length } })
 

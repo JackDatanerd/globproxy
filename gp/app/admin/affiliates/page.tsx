@@ -3,7 +3,9 @@ import { createAdminClient } from '@/lib/supabase/server'
 import AdminAffiliateActions from '@/components/admin/AdminAffiliateActions'
 import RunPayoutCycleButton from '@/components/admin/RunPayoutCycleButton'
 import ExportPayoutsButton from '@/components/admin/ExportPayoutsButton'
+import AdminPendingPayouts, { type PendingPayoutRow } from '@/components/admin/AdminPendingPayouts'
 import { formatCycleLabel } from '@/lib/payoutCycle'
+import { formatRatePct, DEFAULT_AFFILIATE_INTRO_RATE, DEFAULT_AFFILIATE_LIFETIME_RATE } from '@/lib/rates'
 
 export default async function AdminAffiliatesPage() {
   const supabase = await createAdminClient()
@@ -25,7 +27,22 @@ export default async function AdminAffiliatesPage() {
   for (const e of (earningsRes.data ?? []) as { referrer_id: string; accruing_usd: number; awaiting_usd: number; paid_usd: number }[]) {
     earningsByAffiliate[e.referrer_id] = { accruing: Number(e.accruing_usd), awaiting: Number(e.awaiting_usd), paid: Number(e.paid_usd) }
   }
-  const rate = (v: unknown, def: number) => Math.round(Number(v ?? def) * 100)
+  // formatRatePct keeps fractional rates exact (12.5% used to print as 13%).
+  const rate = (v: unknown, def: number) => formatRatePct(Number(v ?? def))
+  const payoutRows: PendingPayoutRow[] = (pendingPayouts ?? []).map((p: any) => ({
+    id: p.id,
+    referrerId: p.referrer_id,
+    name: p.referrer?.full_name ?? '',
+    email: p.referrer?.email ?? '',
+    deleted: !!p.referrer?.is_deleted,
+    suspended: !!(p.referrer?.is_suspended || p.referrer?.affiliate_status === 'suspended'),
+    cycle: formatCycleLabel(p),
+    amountUsd: Number(p.amount_usd),
+    destination: p.referrer?.is_deleted ? null
+      : p.payout_method === 'usdt' ? { title: 'USDT (TRC20)', detail: p.payout_wallet_address ?? '' }
+      : p.payout_method === 'mpesa' ? { title: 'M-Pesa', detail: p.payout_mpesa_phone ?? '' }
+      : { title: p.payout_bank_details?.bankName ?? 'Bank transfer', detail: `${p.payout_bank_details?.accountName ?? ''} · ${p.payout_bank_details?.accountNumber ?? ''}` },
+  }))
 
   return (
     <div className="max-w-5xl">
@@ -111,55 +128,11 @@ export default async function AdminAffiliatesPage() {
             <RunPayoutCycleButton />
           </div>
         </div>
-        {pendingPayouts && pendingPayouts.length > 0 ? (
-          <div className="bg-white border border-border rounded-xl overflow-hidden">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-border bg-surface">
-                  {['Affiliate', 'Cycle', 'Amount', 'Send to', 'Actions'].map(h => (
-                    <th key={h} className="text-left px-6 py-3 text-[10px] font-mono text-muted uppercase tracking-widest">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {pendingPayouts.map((p: any, i: number) => (
-                  <tr key={p.id} className={i < pendingPayouts.length - 1 ? 'border-b border-border' : ''}>
-                    <td className="px-6 py-4">
-                      <div className="text-sm font-medium text-ink">
-                        {p.referrer?.full_name || '—'}
-                        {p.referrer?.is_deleted && <span className="ml-2 text-[10px] font-mono bg-red-50 text-red-500 px-2 py-0.5 rounded-full">Deleted — do not pay</span>}
-                        {!p.referrer?.is_deleted && (p.referrer?.is_suspended || p.referrer?.affiliate_status === 'suspended') && <span className="ml-2 text-[10px] font-mono bg-amber-50 text-amber-700 px-2 py-0.5 rounded-full">Suspended — check before paying</span>}
-                      </div>
-                      <div className="text-xs font-mono text-muted">{p.referrer?.email}</div>
-                      <Link href={`/admin/affiliates/${p.referrer_id}`} className="text-[10px] font-mono text-accent hover:underline">Details →</Link>
-                    </td>
-                    <td className="px-6 py-4 text-xs font-mono text-muted">{formatCycleLabel(p)}</td>
-                    <td className="px-6 py-4 font-mono text-sm text-accent">${Number(p.amount_usd).toFixed(2)}</td>
-                    <td className="px-6 py-4 text-xs font-mono text-ink">
-                      {p.referrer?.is_deleted ? (
-                        <span className="text-muted">Account deleted — destination removed</span>
-                      ) : p.payout_method === 'usdt' ? (
-                        <>USDT (TRC20)<br /><span className="text-muted">{p.payout_wallet_address}</span></>
-                      ) : p.payout_method === 'mpesa' ? (
-                        <>M-Pesa<br /><span className="text-muted">{p.payout_mpesa_phone}</span></>
-                      ) : (
-                        <>{p.payout_bank_details?.bankName}<br /><span className="text-muted">{p.payout_bank_details?.accountName} · {p.payout_bank_details?.accountNumber}</span></>
-                      )}
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="flex gap-2">
-                        <AdminAffiliateActions payoutId={p.id} action="markPaid" amountUsd={Number(p.amount_usd)} />
-                        <AdminAffiliateActions payoutId={p.id} action="voidPayout" amountUsd={Number(p.amount_usd)} />
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        {payoutRows.length > 0 ? (
+          <AdminPendingPayouts rows={payoutRows} />
         ) : (
           <div className="bg-white border border-border rounded-xl p-10 text-center text-muted text-sm font-light">
-            No pending payouts — run a cycle above to batch this period's commissions.
+            No pending payouts — run a cycle above to batch this period&apos;s commissions.
           </div>
         )}
       </div>
@@ -187,13 +160,15 @@ export default async function AdminAffiliatesPage() {
                       <div className="flex items-center gap-2">
                         <Link href={`/admin/affiliates/${a.id}`} className="text-sm font-medium text-ink hover:text-accent hover:underline">{a.full_name || '—'}</Link>
                         {a.is_verified_operator && (
-                          <span className="text-[10px] font-mono bg-accent2/10 text-accent2 px-2 py-0.5 rounded-full">✓ Verified Operator</span>
+                          <span className="text-[10px] font-mono bg-accent2/10 text-accent2 px-2 py-0.5 rounded-full">
+                            ✓ Verified Operator{a.verified_operator_since ? ` · since ${new Date(a.verified_operator_since).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}` : ''}
+                          </span>
                         )}
                       </div>
                       <div className="text-xs font-mono text-muted">{a.email}</div>
                     </td>
                     <td className="px-6 py-4 font-mono text-sm text-ink">
-                      {rate(a.affiliate_commission_rate, 0.3)}% / {rate(a.affiliate_commission_rate_lifetime, 0.15)}%
+                      {rate(a.affiliate_commission_rate, DEFAULT_AFFILIATE_INTRO_RATE)} / {rate(a.affiliate_commission_rate_lifetime, DEFAULT_AFFILIATE_LIFETIME_RATE)}
                     </td>
                     <td className="px-6 py-4 font-mono text-sm text-ink">${earnings.accruing.toFixed(2)}</td>
                     <td className="px-6 py-4 font-mono text-sm text-ink">${earnings.awaiting.toFixed(2)}</td>
@@ -206,7 +181,7 @@ export default async function AdminAffiliatesPage() {
                         <AdminAffiliateActions userId={a.id} action={a.is_verified_operator ? 'revokeVerifiedOperator' : 'grantVerifiedOperator'} />
                         {!a.is_verified_operator && (
                           <AdminAffiliateActions userId={a.id} action="editRates"
-                            currentIntro={Number(a.affiliate_commission_rate ?? 0.3)} currentLifetime={Number(a.affiliate_commission_rate_lifetime ?? 0.15)} />
+                            currentIntro={Number(a.affiliate_commission_rate ?? DEFAULT_AFFILIATE_INTRO_RATE)} currentLifetime={Number(a.affiliate_commission_rate_lifetime ?? DEFAULT_AFFILIATE_LIFETIME_RATE)} />
                         )}
                         <AdminAffiliateActions userId={a.id} action="suspendAffiliate" />
                       </div>
@@ -235,11 +210,20 @@ export default async function AdminAffiliatesPage() {
                 return (
                   <tr key={a.id} className={i < suspendedAffiliates.length - 1 ? 'border-b border-border' : ''}>
                     <td className="px-6 py-4">
-                      <Link href={`/admin/affiliates/${a.id}`} className="text-sm font-medium text-ink hover:text-accent hover:underline">{a.full_name || '—'}</Link>
+                      <div className="flex items-center gap-2">
+                        <Link href={`/admin/affiliates/${a.id}`} className="text-sm font-medium text-ink hover:text-accent hover:underline">{a.full_name || '—'}</Link>
+                        {a.is_verified_operator && <span className="text-[10px] font-mono bg-accent2/10 text-accent2 px-2 py-0.5 rounded-full">✓ Verified Operator</span>}
+                      </div>
                       <div className="text-xs font-mono text-muted">{a.email}</div>
                     </td>
                     <td className="px-6 py-4 font-mono text-xs text-muted">${earnings.accruing.toFixed(2)} on hold</td>
-                    <td className="px-6 py-4 text-right"><AdminAffiliateActions userId={a.id} action="reinstateAffiliate" /></td>
+                    <td className="px-6 py-4 text-right">
+                      <div className="flex gap-2 justify-end">
+                        {/* A suspended Verified Operator could not be revoked from the UI before. */}
+                        {a.is_verified_operator && <AdminAffiliateActions userId={a.id} action="revokeVerifiedOperator" />}
+                        <AdminAffiliateActions userId={a.id} action="reinstateAffiliate" />
+                      </div>
+                    </td>
                   </tr>
                 )
               })}

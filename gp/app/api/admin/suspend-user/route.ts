@@ -2,7 +2,7 @@ import { sendEmail, escapeHtml } from '@/lib/email'
 import { authorizeAdmin, readJson, badRequest, isUuid } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
 import { adminNoticeHtml, appUrl } from '@/lib/adminEmail'
-import { disableUserCredentials, enableUserCredentials } from '@/lib/adminProxy'
+import { disableUserCredentials, enableUserCredentials, type ProxyToggleResult } from '@/lib/adminProxy'
 import { NextResponse } from 'next/server'
 
 const BAN_FOREVER = '876000h' // ~100 years — effectively permanent, reversible below
@@ -40,7 +40,7 @@ export async function POST(req: Request) {
     )
   }
 
-  let proxy: { changed: number; failed: { id: string; error: string }[] } = { changed: 0, failed: [] }
+  let proxy: ProxyToggleResult = { changed: 0, failed: [] }
 
   if (isSuspending) {
     const { error } = await supabase.from('profiles').update({
@@ -89,7 +89,7 @@ export async function POST(req: Request) {
     adminId,
     action: isSuspending ? 'user.suspend' : 'user.unsuspend',
     targetUserId: user_id,
-    details: { reason: isSuspending ? (reason || 'Suspended by admin') : undefined, credentials_changed: proxy.changed, credential_failures: proxy.failed.length },
+    details: { reason: isSuspending ? (reason || 'Suspended by admin') : undefined, credentials_changed: proxy.changed, credential_failures: proxy.failed.length, credentials_kept_disabled: proxy.kept_disabled ?? 0 },
   })
 
   if (tp.email && tp.email !== '[deleted]') {
@@ -115,5 +115,7 @@ export async function POST(req: Request) {
     success: true,
     proxies_changed: proxy.changed,
     proxy_failures: proxy.failed,
+    // Credentials an admin disabled one by one stay off after a reinstate.
+    credentials_kept_disabled: proxy.kept_disabled ?? 0,
   })
 }

@@ -1,4 +1,5 @@
 import { authorizeAdmin, readJson, badRequest } from '@/lib/adminAuth'
+import { logAdminAction } from '@/lib/adminAudit'
 import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
@@ -31,5 +32,11 @@ export async function POST(req: Request) {
     notes: notes ?? null,
   })
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  // These rows feed the public status page, so a hand-entered one is audited.
+  await logAdminAction(auth.supabase, {
+    adminId: auth.adminId,
+    action: 'benchmark.record_manual',
+    details: { target_label: targetLabel.trim(), success_rate: successRate, avg_latency_ms: avgLatencyMs ?? null, sample_size: sampleSize ?? 0 },
+  })
   return NextResponse.json({ success: true })
 }

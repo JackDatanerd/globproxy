@@ -3,19 +3,18 @@ import { logAdminAction } from '@/lib/adminAudit'
 import { adminNoticeHtml, appUrl } from '@/lib/adminEmail'
 import { sendEmailSafe, escapeHtml } from '@/lib/email'
 import { NextResponse } from 'next/server'
-import { formatRatePct } from '@/lib/referrals'
+import {
+  formatRatePct, VERIFIED_OPERATOR_INTRO_RATE, VERIFIED_OPERATOR_LIFETIME_RATE,
+  DEFAULT_AFFILIATE_INTRO_RATE as DEFAULT_INTRO_RATE, DEFAULT_AFFILIATE_LIFETIME_RATE as DEFAULT_LIFETIME_RATE,
+} from '@/lib/rates'
 
 // Verified Operator is a status on top of an already-approved affiliate,
 // not a replacement for the application flow. Rates are fixed (not
 // admin-supplied) — they're the ceiling this product's margins were
 // designed around, and a free-form rate here would reopen exactly what this
 // route exists to prevent. For a custom rate on a normal affiliate use
-// /api/admin/set-affiliate-rates instead.
-const VERIFIED_OPERATOR_INTRO_RATE = 0.40
-const VERIFIED_OPERATOR_LIFETIME_RATE = 0.20
-const DEFAULT_INTRO_RATE = 0.30
-const DEFAULT_LIFETIME_RATE = 0.15
-
+// /api/admin/set-affiliate-rates instead. The rates live in lib/rates.ts so the
+// admin UI quotes the same numbers this route applies.
 export async function POST(req: Request) {
   const auth = await authorizeAdmin(req)
   if (!auth.ok) return auth.response
@@ -55,7 +54,7 @@ export async function POST(req: Request) {
       })
       .eq('id', userId)
       .eq('is_verified_operator', true) // atomic — a concurrent revoke can't double-apply
-      .select('email, full_name')
+      .select('email, full_name, affiliate_status')
       .maybeSingle()
     if (revokeErr) return NextResponse.json({ error: revokeErr.message }, { status: 500 })
     if (!revoked) return NextResponse.json({ error: 'This affiliate is not a Verified Operator.' }, { status: 409 })
@@ -68,7 +67,9 @@ export async function POST(req: Request) {
         subject: 'Your GlobProxy Verified Operator status has ended',
         html: adminNoticeHtml({
           heading: 'Verified Operator status ended',
-          bodyHtml: `Hi ${escapeHtml(revoked.full_name?.split(' ')[0]) || 'there'}, your Verified Operator status has ended. Your affiliate account stays active at ${Math.round(restoreIntro * 100)}% for your referrals' first 90 days, then ${Math.round(restoreLifetime * 100)}%. Commissions already earned are unaffected.`,
+          bodyHtml: `Hi ${escapeHtml(revoked.full_name?.split(' ')[0]) || 'there'}, your Verified Operator status has ended. ${revoked.affiliate_status === 'approved'
+            ? `Your affiliate account stays active at ${formatRatePct(restoreIntro)} for your referrals' first 90 days, then ${formatRatePct(restoreLifetime)}.`
+            : `Your affiliate rates are now ${formatRatePct(restoreIntro)} for your referrals' first 90 days, then ${formatRatePct(restoreLifetime)}, for whenever your affiliate account is active.`} Commissions already earned are unaffected.`,
           cta: { href: 'mailto:support@globproxy.com', label: 'Contact support →' },
         }),
       })

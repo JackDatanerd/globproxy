@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import toast from 'react-hot-toast'
 import { adminPost } from '@/lib/adminFetch'
+import { formatRatePct, ratePctValue, VERIFIED_OPERATOR_INTRO_RATE, VERIFIED_OPERATOR_LIFETIME_RATE, DEFAULT_AFFILIATE_INTRO_RATE, DEFAULT_AFFILIATE_LIFETIME_RATE } from '@/lib/rates'
 
 // One component, one discriminated prop shape, for every affiliate-side
 // admin button. 'markPaid' takes a payoutId — a whole cycle's payout to one
@@ -12,8 +13,10 @@ type Props =
   | { payoutId: string; action: 'markPaid' | 'voidPayout'; amountUsd?: number; userId?: never }
 
 // Prompts take whole percentages ("30"), the API takes fractions (0.30).
-function askPercent(label: string, def: number): number | null {
-  const raw = window.prompt(label, String(def))
+// `def` is pre-filled EXACTLY (ratePctValue) — it used to be Math.round()ed, so
+// accepting the default on a 12.5% rate silently rewrote it to 13%.
+function askPercent(label: string, def: string): number | null {
+  const raw = window.prompt(label, def)
   if (raw === null) return null
   const n = Number(raw.replace('%', '').trim())
   if (!Number.isFinite(n) || n < 0 || n > 100) { toast.error('Enter a percentage between 0 and 100'); return null }
@@ -30,16 +33,21 @@ export default function AdminAffiliateActions(props: Props) {
 
     switch (props.action) {
       case 'approve': {
-        const intro = askPercent('Commission % for the first 90 days of each referral (default 30):', 30)
+        const intro = askPercent(`Commission % for the first 90 days of each referral (default ${formatRatePct(DEFAULT_AFFILIATE_INTRO_RATE)}):`, ratePctValue(DEFAULT_AFFILIATE_INTRO_RATE))
         if (intro === null) return
-        const lifetime = askPercent('Commission % after the first 90 days (default 15):', 15)
+        const lifetime = askPercent(`Commission % after the first 90 days (default ${formatRatePct(DEFAULT_AFFILIATE_LIFETIME_RATE)}):`, ratePctValue(DEFAULT_AFFILIATE_LIFETIME_RATE))
         if (lifetime === null) return
         path = '/api/admin/approve-affiliate'; body = { userId: props.userId, introRate: intro, lifetimeRate: lifetime }; success = 'Affiliate approved'
         break
       }
-      case 'reject':
-        path = '/api/admin/reject-affiliate'; body = { userId: props.userId }; success = 'Application rejected'
+      case 'reject': {
+        // Cancel aborts; a blank note just means no note. The note goes in the
+        // applicant's email and the audit log.
+        const reason = window.prompt('Optional note to include in the rejection email (leave blank for none):', '')
+        if (reason === null) return
+        path = '/api/admin/reject-affiliate'; body = { userId: props.userId, reason }; success = 'Application rejected'
         break
+      }
       case 'markPaid': {
         const amount = props.amountUsd != null ? ` of $${props.amountUsd.toFixed(2)}` : ''
         const ref = window.prompt(`Mark this payout${amount} as PAID.\n\nOnly continue once the money has actually been sent. Payment reference (txn hash / M-Pesa code — optional, shown to the affiliate):`, '')
@@ -56,7 +64,7 @@ export default function AdminAffiliateActions(props: Props) {
         break
       }
       case 'grantVerifiedOperator':
-        if (!confirm('Make this affiliate a Verified Operator? Their rates rise to 40% / 20% (a higher existing rate is kept).')) return
+        if (!confirm(`Make this affiliate a Verified Operator? Their rates rise to ${formatRatePct(VERIFIED_OPERATOR_INTRO_RATE)} / ${formatRatePct(VERIFIED_OPERATOR_LIFETIME_RATE)} (a higher existing rate is kept).`)) return
         path = '/api/admin/grant-verified-operator'; body = { userId: props.userId }; success = 'Granted Verified Operator'
         break
       case 'revokeVerifiedOperator':
@@ -74,9 +82,9 @@ export default function AdminAffiliateActions(props: Props) {
         path = '/api/admin/suspend-affiliate'; body = { userId: props.userId, action: 'reinstate' }; success = 'Affiliate reinstated'
         break
       case 'editRates': {
-        const intro = askPercent('New commission % for the first 90 days:', Math.round(props.currentIntro * 100))
+        const intro = askPercent('New commission % for the first 90 days:', ratePctValue(props.currentIntro))
         if (intro === null) return
-        const lifetime = askPercent('New commission % after the first 90 days:', Math.round(props.currentLifetime * 100))
+        const lifetime = askPercent('New commission % after the first 90 days:', ratePctValue(props.currentLifetime))
         if (lifetime === null) return
         path = '/api/admin/set-affiliate-rates'; body = { userId: props.userId, introRate: intro, lifetimeRate: lifetime }; success = 'Rates updated'
         break

@@ -15,14 +15,21 @@ import { syncUserUsage } from '@/lib/usageSync'
 
 type CredRow = { id: string; upstream_sub_user_id: string | null; gb_allocated: number | string | null; status: string }
 
-export type ProxyToggleResult = { changed: number; failed: { id: string; error: string }[] }
+export type ProxyToggleResult = { changed: number; failed: { id: string; error: string }[]; kept_disabled?: number }
 
-export async function disableCredential(supabase: AdminSupabase, cred: CredRow): Promise<void> {
+// Why a credential is 'suspended' (proxy_credentials.suspended_reason, 0052).
+// Re-enabling an ACCOUNT only restores credentials that the account suspension
+// itself disabled: one an admin killed individually ('admin') stays off, and a
+// deleted account's ('deleted') never comes back. NULL = suspended before the
+// column existed, treated as account-level (the old behaviour).
+export type SuspendReason = 'account' | 'admin'
+
+export async function disableCredential(supabase: AdminSupabase, cred: CredRow, reason: SuspendReason = 'admin'): Promise<void> {
   if (cred.upstream_sub_user_id) {
     const usedGb = await getSubUserUsage(cred.upstream_sub_user_id)
     await updateSubUserTrafficLimit(cred.upstream_sub_user_id, Math.max(1, Math.ceil(usedGb * 1024)))
   }
-  const { error } = await supabase.from('proxy_credentials').update({ status: 'suspended' }).eq('id', cred.id)
+  const { error } = await supabase.from('proxy_credentials').update({ status: 'suspended', suspended_reason: reason }).eq('id', cred.id)
   if (error) throw new Error(error.message)
 }
 
@@ -30,7 +37,7 @@ export async function enableCredential(supabase: AdminSupabase, cred: CredRow): 
   if (cred.upstream_sub_user_id) {
     await updateSubUserTrafficLimit(cred.upstream_sub_user_id, Math.round(Number(cred.gb_allocated ?? 0) * 1024))
   }
-  const { error } = await supabase.from('proxy_credentials').update({ status: 'active' }).eq('id', cred.id)
+  const { error } = await supabase.from('proxy_credentials').update({ status: 'active', suspended_reason: null }).eq('id', cred.id)
   if (error) throw new Error(error.message)
 }
 
@@ -49,7 +56,7 @@ export async function disableUserCredentials(supabase: AdminSupabase, userId: st
   const result: ProxyToggleResult = { changed: 0, failed: [] }
   for (const cred of creds ?? []) {
     try {
-      await disableCredential(supabase, cred)
+      await disableCredential(supabase, cred, 'account')
       result.changed++
     } catch (e: any) {
       console.error('[admin-proxy] failed to disable credential', cred.id, e)
@@ -65,8 +72,18 @@ export async function enableUserCredentials(supabase: AdminSupabase, userId: str
     .select('id, upstream_sub_user_id, gb_allocated, status')
     .eq('user_id', userId)
     .eq('status', 'suspended')
+    .or('suspended_reason.is.null,suspended_reason.eq.account')
 
-  const result: ProxyToggleResult = { changed: 0, failed: [] }
+  // Credentials an admin disabled one by one stay disabled — reported so the
+  // admin knows they have to be re-enabled deliberately.
+  const { count: keptDisabled } = await supabase
+    .from('proxy_credentials')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .eq('status', 'suspended')
+    .eq('suspended_reason', 'admin')
+
+  const result: ProxyToggleResult = { changed: 0, failed: [], kept_disabled: keptDisabled ?? 0 }
   for (const cred of creds ?? []) {
     try {
       await enableCredential(supabase, cred)

@@ -22,7 +22,11 @@ export default function AdminDeleteUserButton({ userId, email }: { userId: strin
     const { ok, data } = await adminPost('/api/admin/delete-user', { user_id: userId })
     if (!ok) { toast.error(data.error ?? 'Delete failed'); setLoading(false); return }
     toast.success('Account deleted')
-    router.push('/admin/users')
+    const d = data as any
+    let notes = 0
+    if (d.payouts_voided) { notes++; toast(`${d.payouts_voided} pending affiliate payout${d.payouts_voided === 1 ? '' : 's'} voided (the account's payout details were erased).`, { duration: 8000 }) }
+    if (d.warnings?.length) { notes++; toast.error(`Deleted, but some cleanup steps failed: ${d.warnings.join('; ')}`, { duration: 12000 }) }
+    setTimeout(() => router.push('/admin/users'), notes ? 3500 : 400)
   }
 
   return (

@@ -2,7 +2,7 @@ import { sendEmail, escapeHtml } from '@/lib/email'
 import { authorizeAdmin, readJson, badRequest, isUuid } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
 import { adminNoticeHtml } from '@/lib/adminEmail'
-import { anonymisedProfilePatch, rollbackProfilePatch, cleanupGeonodeSubUsers, purgeAccountSecrets } from '@/lib/accountDeletion'
+import { anonymisedProfilePatch, rollbackProfilePatch, releaseGeonodeSubUsers, purgeAccountSecrets } from '@/lib/accountDeletion'
 import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
@@ -20,34 +20,47 @@ export async function POST(req: Request) {
 
   if (!tp) return NextResponse.json({ error: 'User not found' }, { status: 404 })
   if (tp.role === 'admin') return NextResponse.json({ error: 'Cannot delete an admin account' }, { status: 403 })
-  if (tp.is_deleted) return NextResponse.json({ error: 'User is already deleted' }, { status: 400 })
+  if (tp.is_deleted) return NextResponse.json({ error: 'User is already deleted' }, { status: 409 })
 
-  // Step 1: Release live Geonode sub-users BEFORE touching any local rows.
-  // profiles.id -> auth.users cascades into proxy_credentials, so once the
-  // local rows are gone there is no record of which sub-users existed.
-  // A failure here now ABORTS the deletion (nothing local has changed, so
-  // the admin can simply retry) instead of being logged and ignored.
+  // Step 1: CLAIM the deletion. The anonymise update is conditional on
+  // is_deleted = false, so two admins (or a double click) can't both run the
+  // irreversible steps below: the loser gets a 409 here. The pre-deletion row
+  // captured above is what any rollback restores.
+  const { data: claimed, error: claimError } = await supabase
+    .from('profiles')
+    .update(anonymisedProfilePatch())
+    .eq('id', user_id)
+    .or('is_deleted.is.null,is_deleted.eq.false') // nullable column
+    .select('id')
+  if (claimError) return NextResponse.json({ error: claimError.message }, { status: 500 })
+  if (!claimed?.length) return NextResponse.json({ error: 'User is already deleted' }, { status: 409 })
+
+  // Step 2: Release live Geonode sub-users. profiles.id -> auth.users cascades
+  // into proxy_credentials, so once local rows are gone nothing would record
+  // which sub-users existed. Each one released is tombstoned locally the
+  // moment it is gone. If any fails, the claim is rolled back and the admin is
+  // told exactly what happened: some proxies may already be dead.
   const { data: creds } = await supabase
     .from('proxy_credentials')
     .select('id, upstream_sub_user_id, status')
     .eq('user_id', user_id)
     .not('upstream_sub_user_id', 'is', null)
 
-  const failed = await cleanupGeonodeSubUsers(creds ?? [])
+  const { released, failed } = await releaseGeonodeSubUsers(supabase, creds ?? [])
   if (failed.length) {
+    await supabase.from('profiles').update(rollbackProfilePatch(tp)).eq('id', user_id)
+    await logAdminAction(supabase, {
+      adminId, action: 'user.delete_aborted', targetUserId: user_id,
+      details: { released: released.length, failed: failed.length },
+    })
+    const partial = released.length
+      ? ` ${released.length} of ${(creds ?? []).length} proxy sessions were already released and are now shut down — the account itself was left intact.`
+      : ' Nothing was changed.'
     return NextResponse.json(
-      {
-        error: `Could not release ${failed.length} Geonode sub-user${failed.length === 1 ? '' : 's'}. Nothing was deleted — try again in a moment.`,
-        failed,
-      },
+      { error: `Could not release ${failed.length} proxy session${failed.length === 1 ? '' : 's'} upstream.${partial} Try again in a moment.`, failed, released: released.length },
       { status: 502 }
     )
   }
-
-  // Step 2: Anonymise the profile (name, email, company, applications,
-  // payout details, 2FA flag). Suspension state is kept.
-  const { error: profileError } = await supabase.from('profiles').update(anonymisedProfilePatch()).eq('id', user_id)
-  if (profileError) return NextResponse.json({ error: profileError.message }, { status: 500 })
 
   // Step 3: Ban the auth account instead of deleting it (deleting would
   // cascade-delete the anonymised tombstone and fail on reseller_transfers
@@ -61,15 +74,20 @@ export async function POST(req: Request) {
 
   // Step 4: Credentials read as inactive and lose their stored password and
   // Geonode ids; webhook URLs/secrets, 2FA seeds / backup codes / trusted
-  // browsers and support-report emails are removed; API keys are revoked.
-  // Same end state as the self-service route.
-  await purgeAccountSecrets(supabase, user_id, (creds ?? []).length > 0)
+  // browsers and support-report emails are removed; API keys are revoked;
+  // pending payouts are voided. Same end state as the self-service route.
+  const purge = await purgeAccountSecrets(supabase, user_id)
 
   await logAdminAction(supabase, {
     adminId,
     action: 'user.delete',
     targetUserId: user_id,
-    details: { email: tp.email, role: tp.role, geonode_sub_users_released: (creds ?? []).length },
+    details: {
+      email: tp.email, role: tp.role, geonode_sub_users_released: released.length,
+      payouts_voided: purge.scrub?.voided_payouts ?? [],
+      earnings_forfeited_usd: purge.scrub?.forfeited_usd ?? 0,
+      ...(purge.warnings.length ? { cleanup_warnings: purge.warnings } : {}),
+    },
   })
 
   // Step 5: Email — best-effort, non-fatal
@@ -85,5 +103,9 @@ export async function POST(req: Request) {
     }).catch((e) => console.error('[delete-user] notification email failed:', e))
   }
 
-  return NextResponse.json({ success: true })
+  return NextResponse.json({
+    success: true,
+    payouts_voided: purge.scrub?.voided_payouts?.length ?? 0,
+    ...(purge.warnings.length ? { warnings: purge.warnings } : {}),
+  })
 }

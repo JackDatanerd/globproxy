@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { deleteSubUser, GeonodeApiError } from '@/lib/geonode'
+import { releaseGeonodeSubUsers } from '@/lib/accountDeletion'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { requireStepUp } from '@/lib/reauth'
 import { logSecurityEvent } from '@/lib/securityEvents'
@@ -45,22 +45,18 @@ export async function DELETE(req: Request) {
       .eq('user_id', user.id)
       .not('upstream_sub_user_id', 'is', null)
 
-    // Every sub-user must really be gone before anything local changes: this
+    // Every sub-user must really be gone before the account is finalised: this
     // used to swallow failures, so an outage left live, usable proxies behind
     // an account marked deleted. 404 = already gone (a retry after a partial
-    // run), which is fine — so this route is safe to call again.
-    for (const cred of creds ?? []) {
-      if (!cred.upstream_sub_user_id) continue
-      try {
-        await deleteSubUser(cred.upstream_sub_user_id)
-      } catch (e) {
-        if (e instanceof GeonodeApiError && e.status === 404) continue
-        console.error('Failed to clean up Geonode sub-user during account deletion — aborting', cred.id, e)
-        return NextResponse.json(
-          { error: 'We could not remove your proxy sessions right now, so your account was not deleted. Please try again in a few minutes.' },
-          { status: 502 }
-        )
-      }
+    // run), which is fine — so this route is safe to call again. Sub-users that
+    // WERE released are tombstoned locally straight away, so an abort halfway
+    // through never leaves the database claiming a dead proxy is still live.
+    const { failed: releaseFailed } = await releaseGeonodeSubUsers(adminSupabase, creds ?? [])
+    if (releaseFailed.length) {
+      return NextResponse.json(
+        { error: 'We could not remove your proxy sessions right now, so your account was not deleted. Please try again in a few minutes.' },
+        { status: 502 }
+      )
     }
 
     // Step 4: Anonymise. Wipes everything personal on the profile — name,
@@ -154,11 +150,9 @@ export async function DELETE(req: Request) {
     // suspended (no 'deleted' status value exists) and drop the stored
     // proxy password + Geonode ids. The unique index on
     // upstream_sub_user_id (migration 0040) also stops a stale id lingering.
-    if ((creds ?? []).length) {
-      await adminSupabase.from('proxy_credentials')
-        .update({ status: 'suspended', upstream_password: null, upstream_username: null, upstream_sub_user_id: null })
-        .eq('user_id', user.id)
-    }
+    await adminSupabase.from('proxy_credentials')
+      .update({ status: 'suspended', suspended_reason: 'deleted', upstream_password: null, upstream_username: null, upstream_sub_user_id: null })
+      .eq('user_id', user.id)
 
     // Step 6a: Remove personal / secret data that has no accounting value:
     // webhook URLs + signing secrets, 2FA seeds / backup codes / trusted

@@ -23,11 +23,8 @@ export const AFFILIATE_INTRO_WINDOW_DAYS = 90
 export const AFFILIATE_MIN_PAYOUT_USD = 20
 export const AFFILIATE_HOLD_HOURS = 48
 
-// 30% → "30%", 12.5% → "12.5%" (Math.round(rate*100) used to print 13%).
-export function formatRatePct(rate: number | null | undefined): string {
-  const pct = Number(rate ?? 0) * 100
-  return `${Number.isInteger(pct) ? pct : Number(pct.toFixed(1))}%`
-}
+import { formatRatePct } from '@/lib/rates'
+export { formatRatePct }
 
 export type ReferralSignupResult =
   | 'recorded'

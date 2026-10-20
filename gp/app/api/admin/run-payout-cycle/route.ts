@@ -82,7 +82,29 @@ export async function POST(req: Request) {
   // parallel batches (was strictly sequential, which risks a Worker
   // timeout on a big cycle).
   const cycleLabel = formatCycleLabel({ cycle_start: cycleStart, cycle_end: cycleEnd })
-  const notify = rows.filter(r => r.out_status === 'held_recent_method' || r.out_status === 'no_payout_method')
+  const allNotify = rows.filter(r => r.out_status === 'held_recent_method' || r.out_status === 'no_payout_method')
+  // One notice per affiliate, cycle and reason: re-running a cycle used to
+  // re-send this to everyone still waiting. The primary key on
+  // affiliate_rollover_notices decides — only rows that were NEWLY inserted
+  // get an email (ignoreDuplicates drops the rest from the result).
+  let notify = allNotify
+  if (allNotify.length) {
+    const { data: fresh, error: noticeErr } = await supabase
+      .from('affiliate_rollover_notices')
+      .upsert(
+        allNotify.map(r => ({ referrer_id: r.out_referrer_id, cycle_end: cycleEnd as string, kind: r.out_status })),
+        { onConflict: 'referrer_id,cycle_end,kind', ignoreDuplicates: true }
+      )
+      .select('referrer_id, kind')
+    if (noticeErr) {
+      // Can't tell who was already told — skipping is safer than spamming.
+      console.error('[run-payout-cycle] rollover notice de-dupe failed; skipping emails', noticeErr)
+      notify = []
+    } else {
+      const freshKeys = new Set((fresh ?? []).map(f => `${f.referrer_id}:${f.kind}`))
+      notify = allNotify.filter(r => freshKeys.has(`${r.out_referrer_id}:${r.out_status}`))
+    }
+  }
   if (notify.length) {
     const { data: profiles } = await supabase
       .from('profiles')
