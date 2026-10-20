@@ -6,6 +6,7 @@ import { sendEmail, escapeHtml } from '@/lib/email'
 import { dispatchWebhook } from '@/lib/webhooks'
 import { cleanText, cleanNumber } from '@/lib/validation'
 import { formatGb } from '@/lib/format'
+import { appUrl as getAppUrl } from '@/lib/appUrl'
 import { NextResponse } from 'next/server'
 
 const MIN_ALLOCATION_GB = 0.1
@@ -114,7 +115,7 @@ export async function POST(req: Request) {
     const gbLabel = escapeHtml(formatGb(gbAmount))
     const senderName = escapeHtml(profile?.full_name?.split(' ')[0]) || 'there'
     const safeRecipient = escapeHtml(recipientEmail)
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL
+    const appUrl = getAppUrl()
 
     await Promise.allSettled([
       profile?.email

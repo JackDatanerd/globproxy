@@ -69,10 +69,12 @@ export async function POST(req: Request) {
     // application's own timestamps; the atomic UPDATE below still decides.
     {
       const { data: prior } = await adminSupabase
-        .from('profiles').select('reseller_status, reseller_application').eq('id', user.id).maybeSingle()
+        .from('profiles').select('reseller_status, reseller_application, reseller_rejected_at').eq('id', user.id).maybeSingle()
       if (prior?.reseller_status === 'rejected') {
-        const app = (prior.reseller_application ?? {}) as { rejected_at?: string; applied_at?: string }
-        const since = Date.parse(app.rejected_at ?? app.applied_at ?? '')
+        // reseller_rejected_at is stamped by resolvePendingApplication (migration 0051);
+        // rejections from before it existed fall back to the submission time.
+        const app = (prior.reseller_application ?? {}) as { applied_at?: string }
+        const since = Date.parse(prior.reseller_rejected_at ?? app.applied_at ?? '')
         if (Number.isFinite(since) && Date.now() - since < 7 * 24 * 60 * 60 * 1000) {
           return NextResponse.json({ error: 'You can re-apply 7 days after your application was reviewed.' }, { status: 429 })
         }

@@ -8,6 +8,7 @@ export type SecurityEventType =
   | 'login'
   | 'password_changed'
   | 'password_reset_requested'
+  | 'payout_method_changed'
   | 'email_change_requested'
   | 'mfa_enabled'
   | 'mfa_disabled'

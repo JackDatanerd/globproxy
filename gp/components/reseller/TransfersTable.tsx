@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import toast from 'react-hot-toast'
 import { formatGb } from '@/lib/format'
+import { RECLAIM_WINDOW_DAYS } from '@/lib/reseller'
 
 type Transfer = {
   id: string
@@ -22,7 +23,7 @@ export default function TransfersTable({ transfers }: { transfers: Transfer[] })
     const remaining = t.gb_amount - t.reclaimed_gb
     if (!window.confirm(
       `Reclaim the UNUSED part of this ${formatGb(remaining)} GB transfer from ${t.email ?? 'this client'}?\n\n` +
-      'Only bandwidth they have not used or assigned to a proxy can come back. They will be emailed.'
+      `Only bandwidth they have not used, assigned to a proxy, or topped up past can come back (within ${RECLAIM_WINDOW_DAYS} days of the transfer). They will be emailed.`
     )) return
     setBusy(t.id)
     try {
@@ -72,7 +73,7 @@ export default function TransfersTable({ transfers }: { transfers: Transfer[] })
                 <span className={`text-[10px] font-mono px-2.5 py-1 rounded-full ${badge(t.status)}`}>{t.status}</span>
               </td>
               <td className="px-5 py-3.5 text-right">
-                {t.status === 'active' && remaining > 0 && !t.deleted && (
+                {t.status === 'active' && remaining > 0 && !t.deleted && Date.now() - new Date(t.created_at).getTime() < RECLAIM_WINDOW_DAYS * 86_400_000 && (
                   <button onClick={() => reclaim(t)} disabled={busy === t.id}
                     className="text-xs font-mono text-accent hover:underline disabled:opacity-50">
                     {busy === t.id ? 'Reclaiming…' : 'Reclaim unused'}

@@ -12,7 +12,7 @@ export default async function AdminReferralsPage() {
   const supabase = await createAdminClient()
   const { data: flagged, error } = await supabase
     .from('referrals')
-    .select('id, created_at, flag_reason, sub_id, referrer:referrer_id(email, full_name, affiliate_status, is_deleted), referred:referred_user_id(email, is_deleted)')
+    .select('id, referrer_id, created_at, flag_reason, sub_id, referrer:referrer_id(email, full_name, affiliate_status, is_deleted), referred:referred_user_id(email, is_deleted)')
     .eq('flagged', true)
     .order('created_at', { ascending: false })
     .limit(200)
@@ -23,7 +23,7 @@ export default async function AdminReferralsPage() {
         <div>
           <h1 className="font-display font-bold text-2xl text-ink">Flagged referrals</h1>
           <p className="text-muted text-sm mt-1">
-            Held back automatically — they earn nothing until you clear them. Look for the same person signing up
+            Held back automatically — they earn nothing until you clear them. Clearing back-fills what the referred user's orders would have earned. Look for the same person signing up
             repeatedly through one affiliate&apos;s code to collect commission on their own purchases.
           </p>
         </div>
@@ -50,7 +50,7 @@ export default async function AdminReferralsPage() {
               {(flagged as any[]).map((r, i) => (
                 <tr key={r.id} className={i < flagged!.length - 1 ? 'border-b border-border' : ''}>
                   <td className="px-6 py-4">
-                    <div className="text-sm font-medium text-ink">{r.referrer?.full_name || '—'}</div>
+                    <Link href={`/admin/affiliates/${r.referrer_id}`} className="text-sm font-medium text-ink hover:text-accent hover:underline">{r.referrer?.full_name || '—'}</Link>
                     <div className="text-xs font-mono text-muted">{r.referrer?.email}</div>
                   </td>
                   <td className="px-6 py-4 text-xs font-mono text-ink">{r.referred?.is_deleted ? 'deleted account' : r.referred?.email}</td>

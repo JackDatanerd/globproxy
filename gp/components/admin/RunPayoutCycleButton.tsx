@@ -1,6 +1,6 @@
 'use client'
 import { useState } from 'react'
-import { lastCompletedCycle, formatCycleLabel } from '@/lib/payoutCycle'
+import { lastCompletedCycle, formatCycleLabel, currentAccruingCycle, cycleIsPayable } from '@/lib/payoutCycle'
 import toast from 'react-hot-toast'
 import { adminPost } from '@/lib/adminFetch'
 
@@ -12,9 +12,15 @@ export default function RunPayoutCycleButton() {
   const [open, setOpen] = useState(false)
 
   async function handle() {
-    if (!confirm(`Run the payout cycle for ${cycleStart} → ${cycleEnd}? This creates payout records for every eligible affiliate (including earlier balances that were held back).`)) return
+    // Same rule the server enforces: the cycle containing "To" is payable from the 20th / the 5th.
+    const payableFrom = /^\d{4}-\d{2}-\d{2}$/.test(cycleEnd) ? currentAccruingCycle(new Date(`${cycleEnd}T00:00:00Z`)).payableFrom : null
+    const early = payableFrom ? !cycleIsPayable({ payableFrom }) : false
+    const msg = early
+      ? `This cycle is not payable until ${payableFrom} (UTC). Running it now pays affiliates EARLY, before late refunds can land. Run it anyway?`
+      : `Run the payout cycle for ${cycleStart} → ${cycleEnd}? This creates payout records for every eligible affiliate (including earlier balances that were held back).`
+    if (!confirm(msg)) return
     setLoading(true)
-    const { ok, data } = await adminPost('/api/admin/run-payout-cycle', { cycleStart, cycleEnd })
+    const { ok, data } = await adminPost('/api/admin/run-payout-cycle', { cycleStart, cycleEnd, payEarly: early })
     setLoading(false)
     if (!ok) { toast.error(data.error ?? 'Failed to run payout cycle'); return }
     const s = data.summary

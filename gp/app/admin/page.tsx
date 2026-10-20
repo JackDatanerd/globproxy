@@ -29,6 +29,7 @@ export default async function AdminPage() {
     { count: pendingAffiliates },
     { count: pendingApi },
     { count: unpaidPayouts },
+    { count: flaggedReferrals },
   ] = await Promise.all([
     supabase.from('profiles').select('*',{count:'exact',head:true}).eq('role','user').eq('is_deleted',false),
     supabase.from('profiles').select('*',{count:'exact',head:true}).eq('role','reseller').eq('is_deleted',false),
@@ -39,6 +40,7 @@ export default async function AdminPage() {
     supabase.from('profiles').select('*',{count:'exact',head:true}).eq('affiliate_status','pending').eq('is_deleted',false),
     supabase.from('profiles').select('*',{count:'exact',head:true}).eq('api_access_status','pending').eq('is_deleted',false),
     supabase.from('affiliate_payouts').select('*',{count:'exact',head:true}).eq('status','pending'),
+    supabase.from('referrals').select('*',{count:'exact',head:true}).eq('flagged',true),
   ])
 
   const statsOk = !allTime.error && !month.error
@@ -50,6 +52,7 @@ export default async function AdminPage() {
     { label: 'API access requests', n: pendingApi ?? 0, href: '/admin/resellers' },
     { label: 'Affiliate applications', n: pendingAffiliates ?? 0, href: '/admin/affiliates' },
     { label: 'Payouts to send', n: unpaidPayouts ?? 0, href: '/admin/affiliates' },
+    { label: 'Flagged referrals', n: flaggedReferrals ?? 0, href: '/admin/referrals' },
   ]
 
   return (

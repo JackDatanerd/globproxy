@@ -2,7 +2,7 @@ import { authorizeAdmin, readJson, badRequest, isIsoDate } from '@/lib/adminAuth
 import { logAdminAction } from '@/lib/adminAudit'
 import { adminNoticeHtml, appUrl } from '@/lib/adminEmail'
 import { sendEmailSafe, escapeHtml } from '@/lib/email'
-import { lastCompletedCycle, formatCycleLabel } from '@/lib/payoutCycle'
+import { lastCompletedCycle, formatCycleLabel, currentAccruingCycle, cycleIsPayable } from '@/lib/payoutCycle'
 import { NextResponse } from 'next/server'
 
 const DEFAULT_MIN_PAYOUT_USD = 20
@@ -15,7 +15,7 @@ export async function POST(req: Request) {
   if (!auth.ok) return auth.response
   const { supabase, adminId } = auth
 
-  const body = (await readJson<{ cycleStart?: unknown; cycleEnd?: unknown; minPayoutUsd?: unknown; holdHours?: unknown }>(req)) ?? {}
+  const body = (await readJson<{ cycleStart?: unknown; cycleEnd?: unknown; minPayoutUsd?: unknown; holdHours?: unknown; payEarly?: unknown }>(req)) ?? {}
   const fallback = lastCompletedCycle()
   const cycleStart = body.cycleStart ?? fallback.cycleStart
   const cycleEnd = body.cycleEnd ?? fallback.cycleEnd
@@ -27,6 +27,15 @@ export async function POST(req: Request) {
   if (cycleStart > cycleEnd) return badRequest('cycleStart must not be after cycleEnd')
   const today = new Date().toISOString().slice(0, 10)
   if (cycleEnd >= today) return badRequest('That cycle has not finished yet — pick a cycle that ended before today (UTC).')
+
+  // The published schedule is "payable from the 20th / the 5th". Running before
+  // that pays affiliates ahead of the date they were promised (and before late
+  // refunds can land), so it needs an explicit, audited override.
+  const payableFrom = currentAccruingCycle(new Date(`${cycleEnd}T00:00:00Z`)).payableFrom
+  const early = !cycleIsPayable({ payableFrom })
+  if (early && body.payEarly !== true) {
+    return badRequest(`This cycle is not payable until ${payableFrom} (UTC). Confirm "pay early" to run it before then.`)
+  }
 
   const minPayoutUsd = body.minPayoutUsd === undefined ? DEFAULT_MIN_PAYOUT_USD : body.minPayoutUsd
   const holdHours = body.holdHours === undefined ? DEFAULT_HOLD_HOURS : body.holdHours
@@ -48,7 +57,10 @@ export async function POST(req: Request) {
     p_min_payout_usd: minPayoutUsd,
     p_hold_hours: holdHours,
   })
-  if (rpcErr) return NextResponse.json({ error: rpcErr.message }, { status: 500 })
+  if (rpcErr) {
+    console.error('[admin/run-payout-cycle] rpc failed', rpcErr)
+    return NextResponse.json({ error: 'Payout cycle failed — nothing was changed. Check the logs and retry.' }, { status: 500 })
+  }
   const rows = (results ?? []) as Row[]
 
   const summary = {
@@ -62,7 +74,7 @@ export async function POST(req: Request) {
 
   await logAdminAction(supabase, {
     adminId, action: 'payout.run_cycle', targetRef: `${cycleStart}..${cycleEnd}`,
-    details: { minPayoutUsd, holdHours, ...summary, total_usd: rows.filter(r => r.out_status === 'created').reduce((s, r) => s + Number(r.out_amount_usd), 0) },
+    details: { minPayoutUsd, holdHours, paid_early: early, payable_from: payableFrom, ...summary, total_usd: rows.filter(r => r.out_status === 'created').reduce((s, r) => s + Number(r.out_amount_usd), 0) },
   })
 
   // Best-effort notifications — the cycle has already committed. One profile

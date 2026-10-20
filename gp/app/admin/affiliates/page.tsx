@@ -131,11 +131,14 @@ export default async function AdminAffiliatesPage() {
                         {!p.referrer?.is_deleted && (p.referrer?.is_suspended || p.referrer?.affiliate_status === 'suspended') && <span className="ml-2 text-[10px] font-mono bg-amber-50 text-amber-700 px-2 py-0.5 rounded-full">Suspended — check before paying</span>}
                       </div>
                       <div className="text-xs font-mono text-muted">{p.referrer?.email}</div>
+                      <Link href={`/admin/affiliates/${p.referrer_id}`} className="text-[10px] font-mono text-accent hover:underline">Details →</Link>
                     </td>
                     <td className="px-6 py-4 text-xs font-mono text-muted">{formatCycleLabel(p)}</td>
                     <td className="px-6 py-4 font-mono text-sm text-accent">${Number(p.amount_usd).toFixed(2)}</td>
                     <td className="px-6 py-4 text-xs font-mono text-ink">
-                      {p.payout_method === 'usdt' ? (
+                      {p.referrer?.is_deleted ? (
+                        <span className="text-muted">Account deleted — destination removed</span>
+                      ) : p.payout_method === 'usdt' ? (
                         <>USDT (TRC20)<br /><span className="text-muted">{p.payout_wallet_address}</span></>
                       ) : p.payout_method === 'mpesa' ? (
                         <>M-Pesa<br /><span className="text-muted">{p.payout_mpesa_phone}</span></>
@@ -182,7 +185,7 @@ export default async function AdminAffiliatesPage() {
                   <tr key={a.id} className={i < (affiliates?.length ?? 0) - 1 ? 'border-b border-border' : ''}>
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-2">
-                        <div className="text-sm font-medium text-ink">{a.full_name || '—'}</div>
+                        <Link href={`/admin/affiliates/${a.id}`} className="text-sm font-medium text-ink hover:text-accent hover:underline">{a.full_name || '—'}</Link>
                         {a.is_verified_operator && (
                           <span className="text-[10px] font-mono bg-accent2/10 text-accent2 px-2 py-0.5 rounded-full">✓ Verified Operator</span>
                         )}
@@ -232,7 +235,7 @@ export default async function AdminAffiliatesPage() {
                 return (
                   <tr key={a.id} className={i < suspendedAffiliates.length - 1 ? 'border-b border-border' : ''}>
                     <td className="px-6 py-4">
-                      <div className="text-sm font-medium text-ink">{a.full_name || '—'}</div>
+                      <Link href={`/admin/affiliates/${a.id}`} className="text-sm font-medium text-ink hover:text-accent hover:underline">{a.full_name || '—'}</Link>
                       <div className="text-xs font-mono text-muted">{a.email}</div>
                     </td>
                     <td className="px-6 py-4 font-mono text-xs text-muted">${earnings.accruing.toFixed(2)} on hold</td>

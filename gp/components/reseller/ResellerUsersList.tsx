@@ -129,7 +129,7 @@ export default function ResellerUsersList({
           className="w-full flex items-center justify-between p-5 text-left transition-colors hover:bg-zinc-50 rounded-xl">
           <div>
             <div className="font-medium text-ink text-sm">Send bandwidth to a client</div>
-            <div className="text-xs text-muted mt-0.5">Activates immediately. You can reclaim any part they haven&apos;t used from Transfers.</div>
+            <div className="text-xs text-muted mt-0.5">Activates immediately. You can reclaim any part they haven&apos;t used from Transfers (within 30 days).</div>
           </div>
           <span className={`text-xl text-muted font-light transition-transform ${open ? 'rotate-45' : ''}`}>+</span>
         </button>
@@ -215,8 +215,8 @@ export default function ResellerUsersList({
                   </div>
                   {!c.is_deleted && c.client_total_gb !== null && (
                     <div className="text-[11px] text-muted mt-0.5">
-                      Used <strong className="text-ink font-mono">{formatGb(c.client_used_gb)}</strong> of{' '}
-                      <strong className="text-ink font-mono">{formatGb(c.client_total_gb)} GB</strong> on their account · {formatGb(c.client_available_gb)} GB unassigned
+                      Of the <strong className="text-ink font-mono">{formatGb(c.client_total_gb)} GB</strong> you sent: used{' '}
+                      <strong className="text-ink font-mono">{formatGb(c.client_used_gb)}</strong> · {formatGb(c.client_available_gb)} GB unassigned
                     </div>
                   )}
                   {c.last_note && <div className="text-[11px] text-muted mt-0.5 italic truncate">Last note: {c.last_note}</div>}

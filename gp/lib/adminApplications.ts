@@ -22,7 +22,16 @@ export async function resolvePendingApplication(opts: {
   audit: { action: string; details?: Record<string, unknown> }
   email: { subject: string; heading: string; body: (firstName: string) => string; cta: { href: string; label: string } }
 }): Promise<{ ok: true } | { ok: false; response: NextResponse }> {
-  const { supabase, adminId, userId, statusColumn, updates, requireRole, audit, email } = opts
+  const { supabase, adminId, userId, statusColumn, requireRole, audit, email } = opts
+
+  // Stamp WHEN a rejection happened: the 7-day re-apply cooldown (apply-reseller /
+  // apply-affiliate) counts from the review, not from the original submission.
+  // (API-access applications have no cooldown, so no column.) Migration 0051.
+  const updates: Record<string, any> = { ...opts.updates }
+  if (updates[statusColumn] === 'rejected') {
+    if (statusColumn === 'reseller_status') updates.reseller_rejected_at = new Date().toISOString()
+    if (statusColumn === 'affiliate_status') updates.affiliate_rejected_at = new Date().toISOString()
+  }
 
   let q = supabase
     .from('profiles')

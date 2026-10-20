@@ -7,11 +7,12 @@ export default function AdminClearFlagButton({ referralId }: { referralId: strin
   const [loading, setLoading] = useState(false)
 
   async function clear() {
-    if (!confirm('Clear this flag? Future orders from this referral will earn the referrer their bonus / commission normally.')) return
+    if (!confirm('Clear this flag? Anything this referral\'s orders would have earned while flagged is back-filled to the referrer now, and future orders earn normally.')) return
     setLoading(true)
     const { ok, data } = await adminPost('/api/admin/clear-referral-flag', { referralId })
     if (!ok) { toast.error(data.error ?? 'Could not clear the flag'); setLoading(false); return }
-    toast.success('Flag cleared')
+    const b = data.backfill
+    toast.success(b?.commissions_backfilled ? `Flag cleared · ${b.commissions_backfilled} commission${b.commissions_backfilled === 1 ? '' : 's'} back-filled ($${Number(b.commission_usd).toFixed(2)})` : b?.bonus_credited ? 'Flag cleared · GB bonus credited' : 'Flag cleared')
     window.location.reload()
   }
 

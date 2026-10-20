@@ -292,7 +292,7 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
                     <td className="py-2 pr-3 text-muted whitespace-nowrap">{r.first_purchase_at ? shortDate(r.first_purchase_at) : '—'}</td>
                     <td className="py-2 pr-3 text-right font-mono">{Number(r.orders_count)}</td>
                     <td className="py-2 text-right font-mono text-ink">
-                      {isAffiliate ? usd(Number(r.earned_usd)) : (r.bonus_credited ? `${REFERRAL_GB_BONUS} GB` : '—')}
+                      {isAffiliate ? usd(Number(r.earned_usd)) : (r.bonus_credited ? `${REFERRAL_GB_BONUS} GB` : r.bonus_reversed ? 'reversed (refund)' : '—')}
                     </td>
                   </tr>
                 ))}

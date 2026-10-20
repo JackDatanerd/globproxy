@@ -9,8 +9,10 @@ import { formatGb } from '@/lib/format'
 import { NextResponse } from 'next/server'
 
 // Take back the UNUSED part of a transfer (typo'd email, cancelled order…).
-// Only bandwidth the client has not used or committed to a credential can
-// move back — reclaim_reseller_allocation() enforces that under row locks.
+// Only bandwidth the client has not used or committed to a credential, and
+// has not since topped up past, can move back — and only within
+// RECLAIM_WINDOW_DAYS of the transfer. reclaim_reseller_allocation() enforces
+// all of that under row locks.
 export async function POST(req: Request) {
   try {
     const supabase = await createClient()
@@ -72,7 +74,7 @@ export async function POST(req: Request) {
             <p style="color:#444;text-align:center;">
               Hi ${escapeHtml(recipient.full_name?.split(' ')[0]) || 'there'}, <strong>${escapeHtml(formatGb(reclaimed))}</strong> of
               unused bandwidth that ${escapeHtml(profile?.full_name) || 'your reseller'} had transferred to you was returned to them.
-              Bandwidth you've already used or assigned to a proxy is never touched. Questions? Reply to this email or contact support@globproxy.com.
+              Bandwidth you've already used, assigned to a proxy, or bought yourself is never touched. Questions? Reply to this email or contact support@globproxy.com.
             </p>
           </div>`,
       }).catch(e => console.error('[reseller/reclaim] notify failed', e))

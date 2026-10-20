@@ -8,6 +8,8 @@ import { requireActiveUser } from '@/lib/apiAuth'
 import { rateLimited } from '@/lib/rateLimit'
 import { cleanText } from '@/lib/validation'
 import { AFFILIATE_HOLD_HOURS } from '@/lib/referrals'
+import { rejectCrossSite } from '@/lib/apiAuth'
+import { logSecurityEvent } from '@/lib/securityEvents'
 
 type BankDetails = { bankName: string; accountName: string; accountNumber: string; country: string; swift: string | null }
 
@@ -30,6 +32,9 @@ function maskDestination(method: string, d: { wallet?: string; phone?: string; b
 }
 
 export async function POST(req: Request) {
+  const cross = rejectCrossSite(req)
+  if (cross) return cross
+
   try {
     // Authenticate with the regular session client — this route lets a
     // user set their OWN payout details, never someone else's.
@@ -141,8 +146,17 @@ export async function POST(req: Request) {
       .single()
 
     if (updateError) {
-      return NextResponse.json({ error: updateError.message }, { status: 500 })
+      console.error('[payout-method] update failed', user.id, updateError.message)
+      return NextResponse.json({ error: 'Could not save your payout method. Please try again.' }, { status: 500 })
     }
+
+    // Shows up in the account's security history (the destination itself is
+    // never logged — only which method it moved from/to). The 48h hold is set
+    // above; this event type is deliberately not one that re-bumps it.
+    await logSecurityEvent({
+      userId: user.id, event: 'payout_method_changed', req,
+      meta: { from: me?.payout_method ?? null, to: method },
+    })
 
     // Security notification — the other half of the hold. Failure to build or
     // send it is logged loudly but never turns the (already committed) change

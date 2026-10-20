@@ -1,5 +1,8 @@
 import type { createAdminClient } from '@/lib/supabase/server'
 import { cleanReferralCode, cleanSubId } from '@/lib/referralAttribution'
+import { sendEmail, escapeHtml } from '@/lib/email'
+import { appUrl } from '@/lib/appUrl'
+import { formatUsd } from '@/lib/format'
 
 type AdminClient = Awaited<ReturnType<typeof createAdminClient>>
 
@@ -69,9 +72,9 @@ export async function recordReferralSignup(
 // Called from activateBandwidth() *after* the buyer's own GB credit has
 // already landed via claim_and_credit_order — a pure add-on; every error is
 // caught and logged. A broken referral RPC must never turn a successful
-// payment into a failed response. Anything it misses is picked up by the
-// 'referrals' cron task (reconcile_referral_rewards), which re-runs the same
-// idempotent RPCs for recent credited orders.
+// payment into a failed response. A false return is retried through the
+// post-credit retry mechanism (lib/bandwidth.ts, migration 0041), which re-runs
+// these same idempotent RPCs.
 export async function processReferralForOrder(
   admin: AdminClient,
   p: { user_id: string; order_id: string; amount_usd: number }
@@ -109,12 +112,19 @@ export async function processReferralForOrder(
       // Approved affiliate: every qualifying order earns a commission.
       // record_affiliate_commission checks suspension/deletion and the
       // fraud flag itself and is idempotent per order_id.
-      const { error } = await admin.rpc('record_affiliate_commission', {
+      const { data: rec, error } = await admin.rpc('record_affiliate_commission', {
         p_referral_id: referral.id,
         p_order_id: p.order_id,
         p_gross_amount: p.amount_usd,
       })
       if (error) { console.error('[referrals] record_affiliate_commission failed', p.order_id, error); return false }
+      // First commission on this referral = the referral just converted. Tell
+      // the affiliate once (the RPC only reports a row it newly inserted, so a
+      // retry never double-sends).
+      const r = rec as { commission_usd?: number; rate?: number; first?: boolean } | null
+      if (r?.first) {
+        await notifyReferrerConverted(admin, referral.referrer_id, { kind: 'commission', usd: Number(r.commission_usd ?? 0), rate: Number(r.rate ?? 0) })
+      }
     } else if (status === 'suspended') {
       // A suspended affiliate earns nothing — and must not silently fall
       // back to the standard GB bonus either.
@@ -124,13 +134,17 @@ export async function processReferralForOrder(
       // every order — credit_referral_bonus's own row lock + null check makes
       // it a no-op after the first, and it enforces the minimum order amount,
       // the fraud flag and referrer suspension/deletion server-side.
-      const { error } = await admin.rpc('credit_referral_bonus', {
+      const { data: credited, error } = await admin.rpc('credit_referral_bonus', {
         p_referral_id: referral.id,
         p_gb: REFERRAL_GB_BONUS,
         p_order_amount_usd: p.amount_usd,
         p_min_order_usd: REFERRAL_MIN_ORDER_USD,
+        p_order_id: p.order_id,
       })
       if (error) { console.error('[referrals] credit_referral_bonus failed', p.order_id, error); return false }
+      if (credited === true) {
+        await notifyReferrerConverted(admin, referral.referrer_id, { kind: 'bonus', gb: REFERRAL_GB_BONUS })
+      }
     }
     return true
   } catch (e) {
@@ -139,21 +153,41 @@ export async function processReferralForOrder(
   }
 }
 
-// Reverse (or claw back) the commission on a refunded order. Idempotent and
-// self-healing — it derives the amount from the order's CURRENT refunded_usd.
-export async function reverseCommissionForRefund(
+// Refunds are handled entirely in the database: the triggers on orders
+// (reduce_commission_on_refund, reverse_referral_bonus_on_refund) shrink or void
+// the commission / claw back the standard GB bonus whenever refunded_usd rises.
+
+// One short "your referral converted" email to the referrer. Best-effort: the
+// reward is already recorded, so a mail failure must never fail or retry the
+// order. Never names the referred user.
+async function notifyReferrerConverted(
   admin: AdminClient,
-  orderId: string
-): Promise<{ reversed: number } | null> {
+  referrerId: string,
+  what: { kind: 'commission'; usd: number; rate: number } | { kind: 'bonus'; gb: number }
+): Promise<void> {
   try {
-    const { data, error } = await admin.rpc('reverse_affiliate_commission_for_refund', { p_order_id: orderId })
-    if (error) {
-      console.error('[referrals] reverse_affiliate_commission_for_refund failed', orderId, error)
-      return null
-    }
-    return { reversed: Number((data as any)?.reversed ?? 0) }
+    const { data: ref } = await admin.from('profiles')
+      .select('email, full_name, is_deleted, is_suspended').eq('id', referrerId).single()
+    if (!ref?.email || ref.is_deleted || ref.is_suspended || String(ref.email).startsWith('[')) return
+    const name = escapeHtml(String(ref.full_name ?? '').split(' ')[0]) || 'there'
+    const headline = what.kind === 'commission'
+      ? `You earned ${escapeHtml(formatUsd(what.usd))} (${escapeHtml(formatRatePct(what.rate))}) from a referral's first order.`
+      : `You and your referral each received ${what.gb} GB of bandwidth.`
+    const tail = what.kind === 'commission'
+      ? 'Commissions are grouped into biweekly payout cycles — you can follow them on your referrals page.'
+      : 'The bonus is already in your balance.'
+    await sendEmail({
+      to: ref.email,
+      subject: what.kind === 'commission' ? 'Your referral just made a purchase' : 'Your referral bonus has landed',
+      html: `
+        <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
+          <h2 style="text-align:center;color:#111;">A referral converted 🎉</h2>
+          <p style="color:#444;text-align:center;">Hi ${name}, ${headline}</p>
+          <p style="color:#444;text-align:center;">${tail}</p>
+          <p style="text-align:center;"><a href="${appUrl()}/dashboard/referrals" style="color:#0a7;">Open your referrals →</a></p>
+        </div>`,
+    })
   } catch (e) {
-    console.error('[referrals] reverseCommissionForRefund threw', orderId, e)
-    return null
+    console.error('[referrals] converted-notify failed — non-fatal', referrerId, e)
   }
 }
