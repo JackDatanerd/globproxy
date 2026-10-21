@@ -12,7 +12,7 @@ import { activateBandwidth, retryPostCredit } from '@/lib/bandwidth'
 import { alertAdminPayment } from '@/lib/paymentAlerts'
 import { flushSecurityNotices } from '@/lib/securityEvents'
 import { REFERRAL_GB_BONUS } from '@/lib/referrals'
-import { findReportedError, recordCronRun, checkCronFreshness } from '@/lib/cronHealth'
+import { findReportedError, recordCronRun, checkCronFreshness, claimCronLock, releaseCronLock } from '@/lib/cronHealth'
 import { NextResponse } from 'next/server'
 
 // Secured with the CRON_SECRET Worker secret (pushed by .github/workflows/deploy.yml).
@@ -632,6 +632,17 @@ export async function POST(req: Request, context: { params: Promise<{ task: stri
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
   const { task } = await context.params
+  const KNOWN = ['stock', 'usage', 'alerts', 'summary', 'cleanup', 'canary', 'reconcile', 'security', 'provision', 'webhooks', 'benchmark']
+  if (!KNOWN.includes(task)) return NextResponse.json({ error: `Unknown task: ${task}` }, { status: 400 })
+
+  // One copy of a task at a time (migration 0056). A skipped run reports ok
+  // and is not recorded as a heartbeat: the run that holds the lease records
+  // its own outcome when it finishes.
+  const lock = await claimCronLock(task)
+  if (lock === null) {
+    console.warn(`[cron] task "${task}" skipped — a previous run is still in progress`)
+    return NextResponse.json({ task, result: { skipped: 'already_running' }, timestamp: new Date().toISOString() })
+  }
   try {
     let result
     switch (task) {
@@ -656,6 +667,8 @@ export async function POST(req: Request, context: { params: Promise<{ task: stri
     console.error(`Cron task ${task} failed:`, err)
     await recordCronRun(task, String(err?.message ?? err))
     return NextResponse.json({ error: err.message }, { status: 500 })
+  } finally {
+    await releaseCronLock(task, lock)
   }
 }
 

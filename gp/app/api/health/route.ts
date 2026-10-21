@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { timingSafeEqual } from 'crypto'
 import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { createAdminClient } from '@/lib/supabase/server'
-import { rateLimited } from '@/lib/rateLimit'
+import { rateLimited, missingRateLimiters } from '@/lib/rateLimit'
 
 // Health / readiness probe. Used by the deploy workflow right after a deploy
 // (it rolls the Worker back if this reports the new version as broken) and
@@ -32,6 +32,14 @@ const REQUIRED_ENV: [string, string][] = [
   ['APP_URL', 'NEXT_PUBLIC_APP_URL'],
   ['ADMIN_EMAIL', 'ADMIN_EMAIL'],
   ['FROM_EMAIL', 'FROM_EMAIL'],
+]
+
+// Settings the app runs without, but should not. Reported (to a caller holding
+// the cron secret) as warnings; they never turn the probe red. Neutral labels,
+// because the deploy log of a public repository is itself public.
+const RECOMMENDED_ENV: [string, string][] = [
+  ['DATA_ENCRYPTION_KEY', 'MFA_ENCRYPTION_KEY'],
+  ['BOT_CHECK_SECRET', 'TURNSTILE_SECRET_KEY'],
 ]
 
 function deployedVersion(): string {
@@ -75,14 +83,27 @@ export async function GET(req: Request) {
 
   const missing = REQUIRED_ENV.filter(([, name]) => !process.env[name]?.trim()).map(([label]) => label)
   const database = await databaseReachable()
-  const ok = database && missing.length === 0
+  // A missing rate-limit binding silently disables that limiter, so on a real
+  // deploy it counts as broken. null = not on Workers (local dev): not checked.
+  const noLimiters = missingRateLimiters()
+  const limitersOk = noLimiters === null || noLimiters.length === 0
+  const ok = database && missing.length === 0 && limitersOk
 
   const body: Record<string, unknown> = {
     status: ok ? 'ok' : 'degraded',
     version: deployedVersion(),
-    checks: { database: database ? 'ok' : 'fail', config: missing.length === 0 ? 'ok' : 'fail' },
+    checks: {
+      database: database ? 'ok' : 'fail',
+      config: missing.length === 0 ? 'ok' : 'fail',
+      rate_limiters: limitersOk ? 'ok' : 'fail',
+    },
   }
-  if (missing.length && hasSecret(req)) body.missing = missing
+  if (hasSecret(req)) {
+    if (missing.length) body.missing = missing
+    if (noLimiters?.length) body.missing_limiters = noLimiters
+    const warnings = RECOMMENDED_ENV.filter(([, name]) => !process.env[name]?.trim()).map(([label]) => label)
+    if (warnings.length) body.warnings = warnings
+  }
 
   return NextResponse.json(body, { status: ok ? 200 : 503, headers: { 'Cache-Control': 'no-store' } })
 }

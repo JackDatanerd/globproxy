@@ -63,6 +63,15 @@ export type RateLimiterBinding =
 
 type Limiter = { limit: (opts: { key: string }) => Promise<{ success: boolean }> }
 
+// Every binding wrangler.jsonc must declare. /api/health reports any that are
+// absent: a renamed or dropped binding makes its limiter fail open, and nothing
+// else would ever say so.
+export const RATE_LIMITER_BINDINGS: RateLimiterBinding[] = [
+  'AUTH_RATE_LIMITER', 'AUTH_TARGET_RATE_LIMITER', 'RESELLER_RATE_LIMITER', 'PAYMENT_RATE_LIMITER',
+  'API_RATE_LIMITER', 'API_WRITE_RATE_LIMITER', 'API_HISTORY_RATE_LIMITER', 'API_IP_RATE_LIMITER',
+  'USER_ACTION_RATE_LIMITER', 'USER_EMAIL_RATE_LIMITER',
+]
+
 // Every binding uses a 60-second period (wrangler.jsonc). The binding does
 // not report when a blocked caller may retry, so Retry-After is the full
 // window: telling a client to come back sooner than that just earns it
@@ -74,7 +83,28 @@ function getLimiter(binding: RateLimiterBinding): Limiter | null {
   const { env } = getCloudflareContext({ async: false }) as unknown as {
     env: Record<string, Limiter | undefined>
   }
-  return env?.[binding] ?? null
+  const found = env?.[binding] ?? null
+  if (!found && env) warnMissingBinding(binding)
+  return found
+}
+
+const warnedBindings = new Set<string>()
+function warnMissingBinding(binding: string) {
+  if (warnedBindings.has(binding)) return
+  warnedBindings.add(binding)
+  console.error(`[rateLimit] binding ${binding} is not present on the Worker — that limit is NOT being enforced (check wrangler.jsonc unsafe.bindings)`)
+}
+
+// Names of declared bindings the running Worker does not have. Returns null
+// when not running under Workers (local dev), where none exist by design.
+export function missingRateLimiters(): string[] | null {
+  try {
+    const { env } = getCloudflareContext({ async: false }) as unknown as { env: Record<string, unknown> | undefined }
+    if (!env) return null
+    return RATE_LIMITER_BINDINGS.filter((b) => !env[b])
+  } catch {
+    return null
+  }
 }
 
 function tooMany(message = 'Too many requests. Please try again in a minute.'): NextResponse {

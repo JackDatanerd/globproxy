@@ -86,3 +86,39 @@ export async function checkCronFreshness(): Promise<{ stale: string[] } | { erro
     return { error: String((e as Error)?.message ?? e) }
   }
 }
+
+// ── Run lock ────────────────────────────────────────────────────────────
+// A task takes a lease before it runs (migration 0056). The */5 chain can
+// outlast its own tick; without this the next tick started the same task a
+// second time on top of the first. The lease expires by itself, so a Worker
+// that dies mid-run cannot block the task for longer than CRON_LOCK_LEASE_SECONDS.
+export const CRON_LOCK_LEASE_SECONDS = 10 * 60
+
+// Returns a release token, 'unlocked' when locking itself is unavailable (the
+// task then runs as it always did — a lock problem must never become a cron
+// outage), or null when another run holds the lease.
+export async function claimCronLock(task: string): Promise<string | null> {
+  try {
+    const admin = await createAdminClient()
+    const token = crypto.randomUUID()
+    const { data, error } = await admin.rpc('claim_cron_task_lock', {
+      p_task: task, p_lease_seconds: CRON_LOCK_LEASE_SECONDS, p_token: token,
+    })
+    if (error) { console.error('[cronHealth] lock claim failed — running unlocked', task, error.message); return 'unlocked' }
+    return typeof data === 'string' && data === token ? token : null
+  } catch (e) {
+    console.error('[cronHealth] lock claim threw — running unlocked', task, e)
+    return 'unlocked'
+  }
+}
+
+export async function releaseCronLock(task: string, token: string): Promise<void> {
+  if (token === 'unlocked') return
+  try {
+    const admin = await createAdminClient()
+    const { error } = await admin.rpc('release_cron_task_lock', { p_task: task, p_token: token })
+    if (error) console.error('[cronHealth] lock release failed', task, error.message)
+  } catch (e) {
+    console.error('[cronHealth] lock release threw', task, e)
+  }
+}

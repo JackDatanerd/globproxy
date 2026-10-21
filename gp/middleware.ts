@@ -19,6 +19,19 @@ const MFA_COOKIE_NAME = 'gp_mfa'
 // a ceiling, a slow Supabase stalls every page view until the Worker itself
 // gives up; with one, the failure is quick and handled (see the catch in
 // middleware()).
+// Same attributes lib/mfa's cookie is set with (app/api/auth/mfa/_cookie.ts), so
+// the browser actually replaces it.
+function clearMfaCookie(res: NextResponse): NextResponse {
+  res.cookies.set(MFA_COOKIE_NAME, '', {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+    maxAge: 0,
+  })
+  return res
+}
+
 const UPSTREAM_TIMEOUT_MS = 4000
 
 class UpstreamTimeout extends Error {}
@@ -80,6 +93,25 @@ async function hasValidMfaSession(token: string, userId: string): Promise<boolea
   return new Date(data.expires_at).getTime() > Date.now()
 }
 
+// A forced sign-out (suspended / deleted) must also end the account's 2FA
+// proofs. Supabase's signOut() knows nothing about the separate gp_mfa
+// session, so without this the browser stays "verified" and an account that is
+// later reinstated skips its 2FA prompt. Best effort: it must never stop the
+// sign-out itself.
+async function revokeAllMfaSessions(userId: string): Promise<void> {
+  try {
+    const admin = createSupabaseJsClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      { auth: { autoRefreshToken: false, persistSession: false } }
+    )
+    const { error } = await withTimeout(admin.from('mfa_verified_sessions').delete().eq('user_id', userId), 'mfa session revoke')
+    if (error) console.error('[middleware] could not revoke mfa sessions', userId, error.message)
+  } catch (e) {
+    console.error('[middleware] mfa session revoke threw', userId, e)
+  }
+}
+
 const UNAVAILABLE_HTML =
   '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Temporarily unavailable</title>' +
   '<body style="font-family:sans-serif;max-width:420px;margin:15vh auto;padding:0 24px;text-align:center;color:#111">' +
@@ -122,13 +154,18 @@ export async function middleware(request: NextRequest) {
 
   // Plain 503, deliberately not a redirect to /auth/login: the login page
   // bounces signed-in users back to /dashboard, which would loop.
-  const unavailable = () =>
-    withSessionCookies(
-      new NextResponse(UNAVAILABLE_HTML, {
-        status: 503,
-        headers: { 'Content-Type': 'text/html; charset=utf-8', 'Retry-After': '5', 'Cache-Control': 'no-store' },
-      })
-    )
+  //
+  // `keepBrowserCookies` is for an auth-backend outage: when the refresh call
+  // fails server-side, supabase-js can queue DELETIONS of the session cookies,
+  // and copying those onto the 503 would sign the user out because of OUR
+  // outage. In that case the response carries no cookie changes at all.
+  const unavailable = (keepBrowserCookies = false) => {
+    const res = new NextResponse(UNAVAILABLE_HTML, {
+      status: 503,
+      headers: { 'Content-Type': 'text/html; charset=utf-8', 'Retry-After': '5', 'Cache-Control': 'no-store' },
+    })
+    return keepBrowserCookies ? res : withSessionCookies(res)
+  }
 
   try {
     const supabase = createServerClient(
@@ -159,9 +196,14 @@ export async function middleware(request: NextRequest) {
       !!authError &&
       (authError.name === 'AuthRetryableFetchError' ||
         (typeof (authError as { status?: number }).status === 'number' && (authError as { status: number }).status >= 500))
-    if (authOutage && needsAuth) {
-      console.error('[middleware] auth backend unreachable — returning 503 instead of treating the visitor as logged out', authError?.message)
-      return unavailable()
+    if (authOutage) {
+      if (needsAuth) {
+        console.error('[middleware] auth backend unreachable — returning 503 instead of treating the visitor as logged out', authError?.message)
+        return unavailable(true)
+      }
+      // Public page during the outage: serve it, but never let the browser's
+      // session cookies be cleared on the back of a failed refresh.
+      return NextResponse.next()
     }
 
     // Where to come back to after signing in. Path + query, same-site only —
@@ -232,13 +274,15 @@ export async function middleware(request: NextRequest) {
       // first, for every protected path at once.
       if (profile?.is_deleted && !path.startsWith('/auth')) {
         await withTimeout(supabase.auth.signOut(), 'auth.signOut')
-        return redirectTo(new URL('/auth/login?deleted=1', request.url))
+        await revokeAllMfaSessions(user.id)
+        return clearMfaCookie(redirectTo(new URL('/auth/login?deleted=1', request.url)))
       }
 
       // Suspended — sign out and redirect
       if (profile?.is_suspended && !path.startsWith('/auth')) {
         await withTimeout(supabase.auth.signOut(), 'auth.signOut')
-        return redirectTo(new URL('/auth/login?suspended=1', request.url))
+        await revokeAllMfaSessions(user.id)
+        return clearMfaCookie(redirectTo(new URL('/auth/login?suspended=1', request.url)))
       }
 
       // Non-admin hitting /admin — send to dashboard

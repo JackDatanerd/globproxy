@@ -1,12 +1,16 @@
 import type { NextConfig } from 'next'
 
-// Content-Security-Policy, REPORT-ONLY. The browser evaluates every rule below
-// and posts violations to /api/csp-report (which logs them and counts them per
-// directive / blocked URL / page — see Admin → Settings) but blocks nothing, so a missing allow-list entry cannot break
-// checkout, Turnstile or Supabase the way an enforced policy would.
+// Content-Security-Policy. REPORT-ONLY by default: the browser evaluates every
+// rule below and posts violations to /api/csp-report (which logs them and counts
+// them per directive / blocked URL / page — see Admin → Settings) but blocks
+// nothing, so a missing allow-list entry cannot break checkout, Turnstile or
+// Supabase the way an enforced policy would.
 //
-// Promote it by renaming the header to `Content-Security-Policy` once a
-// week or two of real traffic produces no unexpected reports.
+// Promote it WITHOUT a code change: once a week or two of real traffic produces
+// no unexpected reports, set the build variable CSP_MODE=enforce (GitHub →
+// Settings → Variables → Actions → CSP_MODE; deploy.yml passes it to the build)
+// and redeploy. Unset it (or any other value) to go back to report-only. The
+// header is fixed at build time, so a redeploy is what applies the change.
 //
 // Known looseness, deliberately left for the enforcement step rather than
 // guessed at now: script-src carries 'unsafe-inline' because Next's own
@@ -26,7 +30,10 @@ function supabaseOrigins(): string[] {
   return [...new Set(out)]
 }
 
-const CSP_REPORT_ONLY = [
+const CSP_ENFORCE = process.env.CSP_MODE === 'enforce'
+const CSP_HEADER_NAME = CSP_ENFORCE ? 'Content-Security-Policy' : 'Content-Security-Policy-Report-Only'
+
+const CSP_POLICY = [
   `default-src 'self'`,
   `script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com https://js.paystack.co https://checkout.paystack.com`,
   `style-src 'self' 'unsafe-inline' https://fonts.googleapis.com`,
@@ -62,7 +69,7 @@ const nextConfig: NextConfig = {
           // allow-popups, not same-origin: payment and verification widgets may
           // open windows that must keep a reference back to this page.
           { key: 'Cross-Origin-Opener-Policy', value: 'same-origin-allow-popups' },
-          { key: 'Content-Security-Policy-Report-Only', value: CSP_REPORT_ONLY },
+          { key: CSP_HEADER_NAME, value: CSP_POLICY },
         ],
       },
       // The Worker is also reachable at its *.workers.dev address (see the

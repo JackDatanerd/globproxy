@@ -1,6 +1,6 @@
 import { appUrl } from '@/lib/appUrl'
 import { createAdminClient } from '@/lib/supabase/server'
-import { validateWebhookUrl, checkHostnameResolution } from '@/lib/ssrfGuard'
+import { validateWebhookUrl, validateWebhookPort, checkHostnameResolution } from '@/lib/ssrfGuard'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import type { WebhookEvent } from '@/lib/webhookEvents'
 
@@ -144,7 +144,12 @@ async function attemptDelivery(
   try {
     // Re-validated at every delivery, not just at save time: the URL may
     // have been edited via a direct DB path, and DNS can change.
-    const guardErr = validateWebhookUrl(ep.url) ?? (await checkHostnameResolution(new URL(ep.url).hostname))
+    // The port rule is enforced here too: an endpoint saved before it existed
+    // would otherwise keep making our server connect to arbitrary ports.
+    const guardErr =
+      validateWebhookUrl(ep.url) ??
+      validateWebhookPort(new URL(ep.url)) ??
+      (await checkHostnameResolution(new URL(ep.url).hostname))
     if (guardErr) {
       error = guardErr
       permanent = true

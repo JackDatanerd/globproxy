@@ -167,8 +167,9 @@ export function isOwnHost(hostname: string): boolean {
 // Standard HTTPS plus the one common alternative. Anything else (22, 25,
 // 6379, 9200 …) would turn "webhook delivery" into a port scanner pointed at
 // third-party hosts from our egress addresses. Enforced when an endpoint is
-// created or edited (validateWebhookUrlFull), not on every delivery, so an
-// endpoint saved before this rule existed keeps working until it is edited.
+// created or edited (validateWebhookUrlFull) AND at every delivery
+// (lib/webhooks.ts), so an endpoint saved before this rule existed is disabled
+// on its next delivery instead of being scanned from.
 const ALLOWED_WEBHOOK_PORTS = new Set(['', '443', '8443'])
 
 export function validateWebhookPort(u: URL): string | null {

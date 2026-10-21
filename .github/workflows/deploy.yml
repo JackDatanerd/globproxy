@@ -91,6 +91,38 @@ jobs:
           # block meant the widget could never render, whatever was set on the
           # Worker. Optional: empty/unset simply leaves Turnstile off.
           NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ secrets.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
+          # 'enforce' turns the Content-Security-Policy-Report-Only header into an
+          # enforcing Content-Security-Policy (next.config.ts). Unset = report-only.
+          CSP_MODE: ${{ vars.CSP_MODE }}
+
+      # The version that is live BEFORE this run changes anything. The smoke
+      # test below rolls back to exactly this id. A bare `wrangler rollback`
+      # goes back one version, and every `wrangler secret put` in the optional
+      # secrets step creates a new version of the NEW code - so "one version
+      # back" was the same broken build, minus a secret, and the rollback did
+      # nothing.
+      - name: Record the currently live version
+        working-directory: gp
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          prev=$(npx wrangler deployments list --json 2>/dev/null | node -e '
+            let t = ""; process.stdin.on("data", d => t += d).on("end", () => {
+              try {
+                const list = JSON.parse(t).filter(d => d && Array.isArray(d.versions) && d.versions.length)
+                list.sort((a, b) => String(a.created_on).localeCompare(String(b.created_on)))
+                const last = list[list.length - 1]
+                const v = last && [...last.versions].sort((a, b) => (b.percentage || 0) - (a.percentage || 0))[0]
+                process.stdout.write(v && v.version_id ? v.version_id : "")
+              } catch { process.stdout.write("") }
+            })') || prev=""
+          if [ -n "$prev" ]; then
+            echo "PREVIOUS_VERSION_ID=$prev" >> "$GITHUB_ENV"
+            echo "Live version before this deploy: $prev"
+          else
+            echo "::warning::Could not read the live version before deploying (first deploy, or the API call failed) - an automatic rollback will have no target and must be done by hand."
+          fi
 
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
@@ -192,12 +224,15 @@ jobs:
           fi
 
       # Post-deploy smoke test. The deploy above is live to everyone the moment
-      # wrangler finishes, so a build that cannot reach the database or lacks a
-      # required setting used to stay live until someone noticed. This calls
-      # /api/health and, if the NEW version reports itself broken, rolls the Worker
-      # back to the previous version and fails the run.
+      # wrangler finishes, so a build that cannot reach the database, lacks a
+      # required setting or binding, or cannot render a page used to stay live
+      # until someone noticed. This calls /api/health AND two real pages (the
+      # middleware does not run on /api, so health alone cannot see a broken
+      # middleware or page render) and, if the NEW version reports itself
+      # broken, rolls the Worker back to the version recorded before the deploy
+      # and fails the run.
       #
-      # It rolls back only on evidence the app itself is broken — an HTTP 5xx (our
+      # It rolls back only on evidence the app itself is broken - an HTTP 5xx (our
       # own 503 "degraded", or a Worker error). Anything else that is not a 200
       # (a Cloudflare challenge page, a 403/429, a network blip, a 404) is reported
       # as a warning and left alone: rolling back because a bot-protection rule
@@ -210,22 +245,55 @@ jobs:
           APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          code=000
-          for i in 1 2 3 4 5 6; do
-            code=$(curl -s -o /tmp/health.json -w '%{http_code}' --max-time 20 -H "x-cron-secret: $CRON_SECRET" "${APP_URL%/}/api/health" || true)
-            [ "$code" = "200" ] && break
-            echo "attempt $i: HTTP $code"; cat /tmp/health.json 2>/dev/null; echo
-            sleep 10
+          base="${APP_URL%/}"
+          worst=200
+          check() { # $1 = path, $2 = output file, $3 = send secret header (1/0)
+            local code=000 i
+            for i in 1 2 3 4 5 6; do
+              if [ "$3" = "1" ]; then
+                code=$(curl -s -o "$2" -w '%{http_code}' --max-time 20 -H "x-cron-secret: $CRON_SECRET" "$base$1" || true)
+              else
+                code=$(curl -s -o "$2" -w '%{http_code}' --max-time 20 "$base$1" || true)
+              fi
+              [ "$code" = "200" ] && break
+              echo "$1 attempt $i: HTTP $code" >&2
+              [ "$3" = "1" ] && { cat "$2" 2>/dev/null >&2; echo >&2; }
+              sleep 10
+            done
+            echo "$code"
+          }
+          health=$(check /api/health /tmp/health.json 1)
+          home=$(check / /tmp/home.html 0)
+          login=$(check /auth/login /tmp/login.html 0)
+          echo "health=$health home=$home login=$login"
+          [ "$health" = "200" ] && { echo "Health check passed:"; cat /tmp/health.json; echo; }
+
+          # Surface recommended-but-unset settings without failing the deploy.
+          if [ -s /tmp/health.json ]; then
+            node -e '
+              try {
+                const b = JSON.parse(require("fs").readFileSync("/tmp/health.json", "utf8"))
+                if (Array.isArray(b.warnings) && b.warnings.length) console.log("::warning::Recommended settings are not set: " + b.warnings.join(", "))
+                if (Array.isArray(b.missing_limiters) && b.missing_limiters.length) console.log("::error::Rate limiters missing from the Worker: " + b.missing_limiters.join(", "))
+              } catch {}
+            '
+          fi
+
+          broken=""
+          for c in "$health" "$home" "$login"; do
+            [[ "$c" =~ ^5 ]] && broken="$c"
           done
-          if [ "$code" = "200" ]; then
-            echo "Health check passed:"; cat /tmp/health.json; echo
-          elif [[ "$code" =~ ^5 ]]; then
-            echo "::error::The new version is unhealthy (HTTP $code) — rolling back to the previous version"
-            npx wrangler rollback --message "auto-rollback: post-deploy health check failed (HTTP $code)" -y \
-              || echo "::error::Rollback itself failed — roll back manually in the Cloudflare dashboard"
+          if [ -n "$broken" ]; then
+            echo "::error::The new version is unhealthy (HTTP $broken) - rolling back"
+            if [ -n "$PREVIOUS_VERSION_ID" ]; then
+              npx wrangler rollback "$PREVIOUS_VERSION_ID" --message "auto-rollback: post-deploy smoke test failed (HTTP $broken)" -y \
+                || echo "::error::Rollback itself failed - roll back manually in the Cloudflare dashboard"
+            else
+              echo "::error::No previous version was recorded, so there is nothing safe to roll back to automatically - roll back manually in the Cloudflare dashboard"
+            fi
             exit 1
-          else
-            echo "::warning::Health check did not return 200 (last status: HTTP $code) and not a server error — NOT rolling back. Check ${APP_URL%/}/api/health by hand."
+          elif [ "$health" != "200" ] || [ "$home" != "200" ] || [ "$login" != "200" ]; then
+            echo "::warning::Smoke test did not get 200 everywhere (health=$health home=$home login=$login) and none was a server error - NOT rolling back. Check $base by hand."
           fi
 
       - name: Notify IndexNow (Bing/Yandex) of current sitemap
