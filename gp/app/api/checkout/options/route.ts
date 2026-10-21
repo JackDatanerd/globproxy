@@ -8,7 +8,7 @@ import { NextResponse } from 'next/server'
 // customer), but a miss can trigger a live FX fetch, so it shares the payment
 // rate limit.
 export async function GET(req: Request) {
-  const limited = await rateLimited(req, 'PAYMENT_RATE_LIMITER')
+  const limited = await rateLimited(req, 'PAYMENT_RATE_LIMITER', 'options')
   if (limited) return limited
   try {
     const quote = await getKesQuote(await createAdminClient())

@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { validateEmail } from '@/lib/email-validation'
 import Turnstile, { turnstileConfigured } from '@/components/auth/Turnstile'
 import toast from 'react-hot-toast'
+import { PLANS } from '@/lib/plans'
 
 function SignupForm() {
   const [name, setName] = useState('')
@@ -18,6 +19,11 @@ function SignupForm() {
   const params = useSearchParams()
   const isReseller = params.get('role') === 'reseller'
   const urlRef = params.get('ref')
+  // A plan picked on the pricing page (?plan=growth): after the email is
+  // confirmed the visitor lands on the buy page with that plan selected instead
+  // of a bare dashboard. Only a known slug is carried.
+  const planParam = params.get('plan')
+  const chosenPlan = !isReseller && planParam && PLANS.some(pl => pl.slug === planParam && !pl.custom) ? planParam : null
   const [referralCode, setReferralCode] = useState(urlRef ?? '')
   const [refInfo, setRefInfo] = useState<{ valid: boolean; bonus?: boolean; bonusGb?: number; minOrderUsd?: number } | null>(null)
 
@@ -63,7 +69,9 @@ function SignupForm() {
         password,
         full_name: name,
         intended_role: isReseller ? 'reseller' : 'user',
-        emailRedirectTo: `${location.origin}/auth/callback`,
+        emailRedirectTo: chosenPlan
+          ? `${location.origin}/auth/callback?next=${encodeURIComponent(`/dashboard/buy?plan=${chosenPlan}`)}`
+          : `${location.origin}/auth/callback`,
         referral_code: referralCode.trim() || undefined,
         sub_id: params.get('sub') || undefined,
         turnstileToken: captcha,

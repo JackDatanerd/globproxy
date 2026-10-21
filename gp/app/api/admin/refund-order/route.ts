@@ -40,17 +40,22 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: `Refund must be between $0.01 and $${remaining.toFixed(2)} (what's left on this order).` }, { status: 400 })
   }
 
-  // A refund takes minutes to settle, during which the order still looks
-  // refundable. Without this, a double click sends two refunds to Paystack.
-  const since = new Date(Date.now() - 10 * 60 * 1000).toISOString()
-  const { count: recent } = await supabase
-    .from('admin_audit_log')
-    .select('id', { count: 'exact', head: true })
-    .eq('action', 'order.refund_requested')
-    .eq('target_ref', order.id)
-    .gte('created_at', since)
-  if ((recent ?? 0) > 0) {
-    return NextResponse.json({ error: 'A refund for this order was requested in the last 10 minutes and is still settling. Wait for it before sending another.' }, { status: 409 })
+  // A refund takes minutes (sometimes days) to settle, during which the order
+  // still looks refundable. claim_refund_request() takes a row lock and records
+  // that a request is in flight, atomically — so a double click or two admins
+  // cannot both send one. The mark is cleared when Paystack reports the refund
+  // processed or failed (webhook) and expires on its own after 24h.
+  const { data: claimed, error: claimErr } = await supabase.rpc('claim_refund_request', { p_order_id: order.id })
+  if (claimErr) {
+    console.error('[refund-order] claim_refund_request failed', claimErr)
+    return NextResponse.json({ error: 'Could not start the refund. Please try again.' }, { status: 500 })
+  }
+  if (!claimed) {
+    return NextResponse.json({ error: 'A refund for this order is already in flight. It clears when Paystack reports it processed or failed (or after 24 hours).' }, { status: 409 })
+  }
+  const releaseClaim = async () => {
+    const { error: relErr } = await supabase.from('orders').update({ refund_requested_at: null }).eq('id', order.id)
+    if (relErr) console.error('[refund-order] could not release the refund lock', order.id, relErr)
   }
 
   try {
@@ -77,6 +82,8 @@ export async function POST(req: Request) {
     })
     return NextResponse.json({ success: true, amount_usd: amount, status: result?.status ?? 'pending' })
   } catch (err: any) {
+    // Paystack refused the request: nothing is in flight, so allow a retry.
+    await releaseClaim()
     await logAdminAction(supabase, {
       adminId, action: 'order.refund_failed', targetUserId: order.user_id, targetRef: order.id,
       details: { amount_usd: amount, reason, error: String(err?.message ?? err) },

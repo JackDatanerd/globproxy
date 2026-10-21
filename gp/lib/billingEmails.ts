@@ -34,25 +34,43 @@ async function customerEmail(supabase: Admin, userId: string): Promise<{ email: 
 
 const money = (n: number) => `$${Number(n).toFixed(2)}`
 
-export async function sendPaymentFailedEmail(supabase: Admin, userId: string, p: { amountUsd: number; gb: number; reason: string | null }) {
+// `mpesa` is set for M-Pesa orders: the customer paid (or tried to pay) in
+// shillings, so the copy names KES and M-Pesa rather than a card and a card
+// issuer.
+export async function sendPaymentFailedEmail(supabase: Admin, userId: string, p: {
+  amountUsd: number; gb: number; reason: string | null; mpesa?: { currency: string; amount: number } | null
+}) {
   const c = await customerEmail(supabase, userId)
   if (!c) return
-  const reason = p.reason ? `<p style="color:#444;text-align:center;">Reason given by your card issuer: <strong>${escapeHtml(p.reason)}</strong></p>` : ''
+  const amountText = p.mpesa
+    ? `<strong>${escapeHtml(p.mpesa.currency)} ${escapeHtml(Number(p.mpesa.amount).toLocaleString('en-KE'))}</strong> (${money(p.amountUsd)})`
+    : `<strong>${money(p.amountUsd)}</strong>`
+  const what = p.mpesa ? 'M-Pesa payment' : 'payment'
+  const verb = p.mpesa ? 'was not completed' : 'was declined'
+  const reason = p.reason
+    ? `<p style="color:#444;text-align:center;">${p.mpesa ? 'Reason given' : 'Reason given by your card issuer'}: <strong>${escapeHtml(p.reason)}</strong></p>`
+    : ''
+  const retryNote = p.mpesa
+    ? 'If you completed the M-Pesa prompt after this message, you can ignore this email — your bandwidth is credited automatically.'
+    : 'If you retried with another card and it succeeded, you can ignore this email — your bandwidth is credited automatically.'
   await sendEmailSafe({
     to: c.email,
     subject: 'Your GlobProxy payment didn’t go through',
     html: shell('Payment unsuccessful', `
-      <p style="color:#444;text-align:center;">Hi ${escapeHtml(c.first)}, your payment of <strong>${money(p.amountUsd)}</strong> for ${escapeHtml(p.gb)} GB of bandwidth was declined, and you have not been charged.</p>
+      <p style="color:#444;text-align:center;">Hi ${escapeHtml(c.first)}, your ${what} of ${amountText} for ${escapeHtml(p.gb)} GB of bandwidth ${verb}, and you have not been charged.</p>
       ${reason}
       <div style="text-align:center;margin:28px 0;">
         <a href="${appUrl()}/dashboard/buy" style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">Try again →</a>
       </div>
-      <p style="color:#666;text-align:center;font-size:13px;">If you retried with another card and it succeeded, you can ignore this email — your bandwidth is credited automatically.</p>`),
+      <p style="color:#666;text-align:center;font-size:13px;">${retryNote}</p>`),
   })
 }
 
+// `local` is the refund in the currency the customer actually paid in (M-Pesa
+// orders): they see the shillings that come back, not just the USD invoice value.
 export async function sendRefundEmail(supabase: Admin, userId: string, p: {
   refundUsd: number; creditNote: string | null; gbClawed: number; credited: boolean; fullyRefunded: boolean
+  local?: { currency: string; amount: number } | null
 }) {
   const c = await customerEmail(supabase, userId)
   if (!c) return
@@ -62,11 +80,16 @@ export async function sendRefundEmail(supabase: Admin, userId: string, p: {
   const noteLine = p.creditNote
     ? `<p style="color:#444;text-align:center;">Credit note: <strong>${escapeHtml(p.creditNote)}</strong> — it also appears on your invoice.</p>`
     : ''
+  const refundText = p.local
+    ? `<strong>${escapeHtml(p.local.currency)} ${escapeHtml(Number(p.local.amount).toLocaleString('en-KE'))}</strong> (${money(p.refundUsd)} of your invoice)`
+    : `<strong>${money(p.refundUsd)}</strong>`
   await sendEmailSafe({
     to: c.email,
-    subject: `Your GlobProxy refund of ${money(p.refundUsd)} was processed`,
+    subject: p.local
+      ? `Your GlobProxy refund of ${p.local.currency} ${Number(p.local.amount).toLocaleString('en-KE')} was processed`
+      : `Your GlobProxy refund of ${money(p.refundUsd)} was processed`,
     html: shell('Refund processed', `
-      <p style="color:#444;text-align:center;">Hi ${escapeHtml(c.first)}, we've refunded <strong>${money(p.refundUsd)}</strong> to your original payment method${p.fullyRefunded ? ' (this order is now fully refunded)' : ''}. Depending on your bank it can take a few business days to show up.</p>
+      <p style="color:#444;text-align:center;">Hi ${escapeHtml(c.first)}, we've refunded ${refundText} to ${p.local ? 'your M-Pesa' : 'your original payment method'}${p.fullyRefunded ? ' (this order is now fully refunded)' : ''}. ${p.local ? 'It normally reaches your M-Pesa within a short time, though it can take longer.' : 'Depending on your bank it can take a few business days to show up.'}</p>
       ${gbLine}
       ${noteLine}
       <div style="text-align:center;margin:28px 0;">

@@ -112,6 +112,7 @@ export async function POST(req: Request) {
       user_id: user.id,
       gb_amount: planData.gb,
       amount_usd: planData.total,
+      plan_slug: planData.slug, // which plan (or 'custom') — printed on the invoice
       payment_method: method === 'mpesa' ? 'mpesa' : 'paystack',
       payment_status: 'pending',
       paystack_reference: reference,

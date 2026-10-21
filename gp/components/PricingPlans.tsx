@@ -27,7 +27,7 @@ export default function PricingPlans({ buyHref = '/auth/signup' }: { buyHref?: s
             ))}
           </ul>
           <Link
-            href={p.custom ? 'mailto:sales@globproxy.com' : buyHref}
+            href={p.custom ? 'mailto:sales@globproxy.com' : `${buyHref}${buyHref.includes('?') ? '&' : '?'}plan=${p.slug}`}
             className={`block w-full text-center py-3 rounded-xl text-sm font-medium transition-all ${p.featured ? 'bg-accent text-white hover:opacity-90' : 'border border-border text-ink2 hover:border-accent hover:text-accent'}`}>
             {p.custom ? 'Contact us →' : 'Get started →'}
           </Link>

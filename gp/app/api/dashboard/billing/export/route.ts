@@ -39,7 +39,7 @@ export async function GET(req: Request) {
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await supabase
       .from('orders')
-      .select('created_at, paid_at, invoice_number, gb_amount, amount_usd, refunded_usd, payment_status, paystack_reference, failure_reason, payment_method, pay_currency, pay_amount')
+      .select('id, created_at, paid_at, invoice_number, gb_amount, amount_usd, refunded_usd, payment_status, paystack_reference, failure_reason, payment_method, pay_currency, pay_amount')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false })
       .order('id', { ascending: false })
@@ -49,6 +49,28 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: 'Could not export billing history. Please try again.' }, { status: 500 })
     }
     orders.push(...(data ?? []))
+    if ((data?.length ?? 0) < PAGE) break
+  }
+
+  // Credit notes (one per refund) ride along on their order's row. RLS limits
+  // order_refunds to the caller's own orders; paged like orders above.
+  const notesByOrder = new Map<string, string[]>()
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase
+      .from('order_refunds')
+      .select('order_id, credit_note_number, amount_usd')
+      .order('created_at', { ascending: true })
+      .order('refund_reference', { ascending: true })
+      .range(from, from + PAGE - 1)
+    if (error) {
+      console.error('[billing-export] credit-note query failed', error)
+      return NextResponse.json({ error: 'Could not export billing history. Please try again.' }, { status: 500 })
+    }
+    for (const r of data ?? []) {
+      const list = notesByOrder.get(r.order_id) ?? []
+      list.push(`${r.credit_note_number} (${Number(r.amount_usd).toFixed(2)})`)
+      notesByOrder.set(r.order_id, list)
+    }
     if ((data?.length ?? 0) < PAGE) break
   }
 
@@ -62,6 +84,7 @@ export async function GET(req: Request) {
     { header: 'amount_usd', value: o => Number(o.amount_usd).toFixed(2) },
     { header: 'refunded_usd', value: o => Number(o.refunded_usd ?? 0).toFixed(2) },
     { header: 'net_usd', value: o => Math.max(Number(o.amount_usd) - Number(o.refunded_usd ?? 0), 0).toFixed(2) },
+    { header: 'credit_notes', value: o => (notesByOrder.get(o.id) ?? []).join('; ') },
     { header: 'status', value: o => o.payment_status },
     { header: 'payment_method', value: o => o.payment_method ?? '' },
     { header: 'charged_currency', value: o => o.pay_currency ?? 'USD' },

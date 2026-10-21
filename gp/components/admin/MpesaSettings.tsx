@@ -21,7 +21,9 @@ export default function MpesaSettings({
     setSaving(true)
     const { ok, data } = await adminPost('/api/admin/mpesa-settings', {
       enabled: on,
-      markupPct: Number(markup),
+      // A cleared field leaves the stored markup alone (Number('') is 0, which would
+      // silently remove the markup).
+      ...(markup.trim() === '' ? {} : { markupPct: Number(markup) }),
       manualRate: manual.trim() === '' ? null : Number(manual),
       ...extra,
     })

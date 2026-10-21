@@ -5,8 +5,9 @@ import { activateBandwidth } from '@/lib/bandwidth'
 import { createAdminClient } from '@/lib/supabase/server'
 import { escapeHtml, sendEmail } from '@/lib/email'
 import { alertAdminPayment } from '@/lib/paymentAlerts'
-import { sendPaymentFailedEmail, sendRefundEmail } from '@/lib/billingEmails'
+import { sendRefundEmail } from '@/lib/billingEmails'
 import { dispatchWebhook } from '@/lib/webhooks'
+import { failPendingOrder } from '@/lib/orderFailure'
 
 type Admin = Awaited<ReturnType<typeof createAdminClient>>
 
@@ -47,6 +48,12 @@ export async function POST(req: Request) {
       case 'refund.processed':
         await handleRefundProcessed(supabase, event.data)
         break
+      case 'refund.failed':
+      case 'refund.needs-attention':
+        await handleRefundProblem(supabase, event.event, event.data)
+        break
+      // refund.pending / refund.processing: nothing to do — the money has not
+      // moved yet and the order only changes on refund.processed.
       case 'charge.dispute.create':
       case 'charge.dispute.resolve':
         await handleDispute(supabase, event.event, event.data)
@@ -149,6 +156,10 @@ async function handleChargeSuccess(supabase: Admin, data: any) {
   return NextResponse.json({ received: true })
 }
 
+// NOTE: Paystack documents no `charge.failed` event, so this handler may never
+// fire; declines are also discovered by /api/verify-payment and the reconcile
+// cron through the same failPendingOrder() helper. It is kept (harmless) in case
+// an integration or a future Paystack release does send it.
 async function handleChargeFailed(supabase: Admin, data: any) {
   const reference = data?.reference ?? ''
   const gateway_response = data?.gateway_response
@@ -159,7 +170,7 @@ async function handleChargeFailed(supabase: Admin, data: any) {
   const metaOrderId = data?.metadata?.order_id
   const order_id: string = typeof metaOrderId === 'string' && UUID_RE.test(metaOrderId) ? metaOrderId : ''
 
-  let orderQuery = supabase.from('orders').select('id, payment_status, amount_usd, gb_amount, user_id, is_canary')
+  let orderQuery = supabase.from('orders').select('id, payment_status, amount_usd, gb_amount, user_id, is_canary, pay_currency, pay_amount, paystack_reference')
   const lookup = order_id ? orderQuery.eq('id', order_id) : (reference ? orderQuery.eq('paystack_reference', reference) : null)
   const { data: order, error } = lookup ? await lookup.maybeSingle() : { data: null, error: null }
   if (error) throw error
@@ -167,26 +178,15 @@ async function handleChargeFailed(supabase: Admin, data: any) {
   // A decline on one attempt is not final: the customer can retry another
   // card on the same Paystack session, and a later charge.success is still
   // credited (see handleChargeSuccess). Marking it 'failed' here is purely
-  // informational.
+  // informational. The customer is told once, on the pending → failed
+  // transition (Paystack can deliver the same decline more than once).
   let transitioned = false
   if (order && order.payment_status === 'pending') {
-    const { data: flipped, error: flipErr } = await supabase.from('orders').update({
-      payment_status: 'failed',
-      failure_reason: gateway_response ?? 'Declined',
-      failed_at: new Date().toISOString(),
-    }).eq('id', order.id).eq('payment_status', 'pending').select('id')
-    if (flipErr) throw flipErr
-    transitioned = (flipped?.length ?? 0) > 0
+    transitioned = await failPendingOrder(supabase, order, gateway_response ?? null, { source: 'webhook charge.failed' })
   }
 
-  // Tell the customer — once, on the pending → failed transition (Paystack can
-  // deliver the same decline more than once). The synthetic canary charge is
-  // never a customer event.
-  if (order && transitioned && !order.is_canary) {
-    await sendPaymentFailedEmail(supabase, order.user_id, {
-      amountUsd: Number(order.amount_usd), gb: Number(order.gb_amount), reason: gateway_response ?? null,
-    })
-  }
+  // The helper already alerts the admin about a failed canary.
+  if (order?.is_canary && transitioned) return
 
   const customerEmail = escapeHtml(data?.customer?.email ?? 'unknown')
   const safeReason = escapeHtml(gateway_response ?? 'not provided')
@@ -221,7 +221,7 @@ async function handleRefundProcessed(supabase: Admin, data: any) {
   }
 
   const { data: order, error } = await supabase
-    .from('orders').select('id, user_id, amount_usd, gb_amount, is_canary, pay_currency, pay_amount').eq('paystack_reference', txRef).maybeSingle()
+    .from('orders').select('id, user_id, amount_usd, gb_amount, is_canary, pay_currency, pay_amount, refunded_usd').eq('paystack_reference', txRef).maybeSingle()
   if (error) throw error
   if (!order) {
     await alertAdminPayment('Refund processed for an unknown order', { transaction_reference: txRef, refund_reference: refundRef })
@@ -248,9 +248,22 @@ async function handleRefundProcessed(supabase: Admin, data: any) {
       return
     }
     const refundMajor = refundCents / 100
-    refundUsd = refundMajor >= paidMajor - 0.005
-      ? Number(order.amount_usd)
-      : Math.round((refundMajor / paidMajor) * Number(order.amount_usd) * 100) / 100
+    // What is still refundable, in the customer's currency, going by what has
+    // already been refunded in USD. Each partial refund is converted and rounded
+    // to cents on its own, so converting every one proportionally could leave a
+    // cent or two "un-refunded" on an order whose shillings have all come back
+    // (and so never reach 'refunded'). A refund that clears everything left —
+    // within rounding — takes exactly the remaining USD instead.
+    const amountUsd = Number(order.amount_usd)
+    const alreadyUsd = Number(order.refunded_usd ?? 0)
+    const remainingUsd = Math.max(Math.round((amountUsd - alreadyUsd) * 100) / 100, 0)
+    const remainingMajor = amountUsd > 0 ? paidMajor * (remainingUsd / amountUsd) : 0
+    // Tolerance: one whole shilling plus two cents' worth of KES — each earlier
+    // partial was rounded to a cent, so the leftover can drift by a cent or two.
+    const tolMajor = 1 + (amountUsd > 0 ? (paidMajor / amountUsd) * 0.02 : 0)
+    refundUsd = refundMajor >= remainingMajor - tolMajor
+      ? remainingUsd
+      : Math.round((refundMajor / paidMajor) * amountUsd * 100) / 100
   }
 
   const { data: result, error: rpcErr } = await supabase.rpc('apply_order_refund', {
@@ -272,6 +285,7 @@ async function handleRefundProcessed(supabase: Admin, data: any) {
       await sendRefundEmail(supabase, order.user_id, {
         refundUsd: Number(result.refund_usd), creditNote: result.credit_note ?? null,
         gbClawed: Number(result.gb_clawed ?? 0), credited: result.credited !== false, fullyRefunded: !!result.fully_refunded,
+        local: paidCur !== 'USD' ? { currency: paidCur, amount: refundCents / 100 } : null,
       })
       // Customers with a webhook endpoint (resellers' billing automations) are
       // told too — a clawback used to be visible only by polling the balance.
@@ -287,6 +301,45 @@ async function handleRefundProcessed(supabase: Admin, data: any) {
       order_id: order.id, refund_reference: refundRef, reason: result?.reason ?? 'unknown',
     })
   }
+}
+
+// refund.failed: Paystack could not return the money — the customer has NOT been
+// refunded and nothing changed locally (the order only moves on
+// refund.processed). refund.needs-attention: the processor needs the customer's
+// details to complete it (typical for M-Pesa / mobile money); Paystack's
+// "retry with customer details" step has to be done by a human. Both need a
+// person, so both alert the admin. A failed refund also releases the admin
+// refund lock so it can be sent again.
+async function handleRefundProblem(supabase: Admin, kind: string, data: any) {
+  const txRef: string = data?.transaction_reference ?? data?.transaction?.reference ?? ''
+  const refundRef: string = String(data?.refund_reference ?? data?.id ?? '')
+  const failed = kind === 'refund.failed'
+
+  let orderId = ''
+  if (txRef) {
+    const { data: order, error } = await supabase
+      .from('orders').select('id').eq('paystack_reference', txRef).maybeSingle()
+    if (error) throw error // transient — let Paystack redeliver
+    orderId = order?.id ?? ''
+    if (failed && orderId) {
+      const { error: relErr } = await supabase.from('orders').update({ refund_requested_at: null }).eq('id', orderId)
+      if (relErr) throw relErr
+    }
+  }
+
+  await alertAdminPayment(
+    failed ? 'REFUND FAILED — the customer has not been refunded' : 'Refund needs attention — complete it in Paystack',
+    {
+      order_id: orderId || '(no matching order)',
+      transaction_reference: txRef || '(missing)',
+      refund_reference: refundRef || '(missing)',
+      amount: data?.amount ?? '', currency: data?.currency ?? '',
+      status: data?.status ?? '',
+      note: failed
+        ? 'Nothing was changed on the order. Check the refund in Paystack; the refund can be requested again from Admin → Orders.'
+        : 'Open the refund in the Paystack dashboard and retry it with the customer’s details (mobile-money refunds often need this). The order updates automatically once Paystack reports it processed.',
+    },
+  )
 }
 
 // Disputes can be won, so no bandwidth is clawed back automatically. What IS

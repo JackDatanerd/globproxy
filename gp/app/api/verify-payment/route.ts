@@ -4,13 +4,17 @@ import { activateBandwidth } from '@/lib/bandwidth'
 import { createAdminClient } from '@/lib/supabase/server'
 import { alertAdminPayment } from '@/lib/paymentAlerts'
 import { rateLimited } from '@/lib/rateLimit'
+import { failPendingOrder } from '@/lib/orderFailure'
 
 export async function POST(req: Request) {
   try {
     // Unauthenticated by design (see below), so cap it per IP: each call that
     // reaches a real reference spends Paystack API quota shared with the
     // reconcile cron and every genuine customer.
-    const limited = await rateLimited(req, 'PAYMENT_RATE_LIMITER')
+    // Its own bucket per address ('verify'): it must not share a budget with
+    // /api/checkout/options, and a shared mobile-carrier address polling for
+    // several M-Pesa customers at once needs room of its own.
+    const limited = await rateLimited(req, 'PAYMENT_RATE_LIMITER', 'verify')
     if (limited) return limited
 
     let reference: unknown
@@ -33,8 +37,7 @@ export async function POST(req: Request) {
     // currency, reference — nothing is trusted from the client), the credit
     // always goes to the order's own user, and activateBandwidth()'s atomic
     // claim makes a repeated or racing call a no-op rather than a
-    // double-credit. The Cloudflare rate-limit binding (lib/rateLimit.ts) now
-    // exists; if abuse ever shows up here it can be applied, but a valid
+    // double-credit. It is rate-limited per address (above); a valid
     // reference can only replay the same idempotent credit.
     const { data: order, error } = await supabase
       .from('orders')
@@ -75,6 +78,16 @@ export async function POST(req: Request) {
       }
       if (txn.status === 'abandoned') {
         return NextResponse.json({ error: 'The payment was not completed. You have not been charged.' }, { status: 400 })
+      }
+      // A real decline. Paystack documents no charge.failed webhook, so this is
+      // one of the places the failed state is recorded (and the customer told).
+      // Best-effort: the answer below must not depend on it.
+      if (txn.status === 'failed' && order.payment_status === 'pending') {
+        try {
+          await failPendingOrder(supabase, order, txn.gateway_response ?? null, { source: 'verify-payment', alertAdmin: true })
+        } catch (e) {
+          console.error('[verify-payment] could not record the failed payment', order.id, e)
+        }
       }
       return NextResponse.json({ error: txn.gateway_response ? `Payment not successful: ${txn.gateway_response}` : 'Payment not successful' }, { status: 400 })
     }

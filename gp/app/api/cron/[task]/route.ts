@@ -10,6 +10,7 @@ import { runConfiguredBenchmark } from '@/lib/networkProbe'
 import { chargeAuthorization, generateReference, verifyTransaction, paymentMismatchReason } from '@/lib/paystack'
 import { activateBandwidth, retryPostCredit } from '@/lib/bandwidth'
 import { alertAdminPayment } from '@/lib/paymentAlerts'
+import { failPendingOrder } from '@/lib/orderFailure'
 import { flushSecurityNotices } from '@/lib/securityEvents'
 import { REFERRAL_GB_BONUS } from '@/lib/referrals'
 import { findReportedError, recordCronRun, checkCronFreshness, claimCronLock, releaseCronLock } from '@/lib/cronHealth'
@@ -322,7 +323,7 @@ async function runReconcile() {
     const recheck = new Date(now - 60 * 60 * 1000).toISOString()
 
     const { data: candidates, error } = await supabase.from('orders')
-      .select('id, user_id, payment_status, amount_usd, gb_amount, paystack_reference, is_canary, pay_currency, pay_amount')
+      .select('id, user_id, payment_status, amount_usd, gb_amount, paystack_reference, is_canary, pay_currency, pay_amount, created_at')
       .eq('bandwidth_credited', false)
       .in('payment_status', ['pending', 'cancelled', 'failed'])
       .not('paystack_reference', 'is', null)
@@ -333,7 +334,7 @@ async function runReconcile() {
       .limit(10)
     if (error) return { error: error.message }
 
-    let recovered = 0, mismatched = 0, errors = 0
+    let recovered = 0, mismatched = 0, errors = 0, failed = 0
     for (const o of candidates ?? []) {
       let settled = true // whether to push the next look out by an hour
       try {
@@ -362,6 +363,19 @@ async function runReconcile() {
               settled = false // retry on the next run
             }
           }
+        } else if (txn.status === 'failed' && o.payment_status === 'pending') {
+          // Paystack documents no charge.failed webhook, so this is how a
+          // decline normally becomes visible: record it, tell the customer and
+          // the admin once. Only after 15 minutes, so a customer who is simply
+          // retrying another card isn't emailed mid-checkout. A later success
+          // on the same checkout is still credited (the claim accepts 'failed').
+          const ageMs = Date.now() - Date.parse(o.created_at)
+          if (ageMs >= 15 * 60 * 1000) {
+            await failPendingOrder(supabase, o, txn.gateway_response ?? null, { source: 'reconcile', alertAdmin: true })
+            failed++
+          } else {
+            settled = false // look again next run rather than waiting an hour
+          }
         }
       } catch (e: any) {
         // A reference Paystack has never seen is a normal, permanent answer
@@ -373,7 +387,7 @@ async function runReconcile() {
         await supabase.from('orders').update({ reconcile_checked_at: new Date().toISOString() }).eq('id', o.id)
       }
     }
-    return { checked: candidates?.length ?? 0, recovered, mismatched, errors }
+    return { checked: candidates?.length ?? 0, recovered, mismatched, errors, failed }
   } catch (e: any) {
     console.error('[reconcile] failed', e)
     return { error: e?.message ?? 'reconcile failed' }
@@ -428,11 +442,14 @@ async function runCleanup() {
     .select('id').eq('payment_status', 'pending').lt('created_at', cutoff)
 
   for (const o of stale ?? []) {
+    // Conditional on the order STILL being pending and uncredited: this loop
+    // runs for a while after the select above, and an order paid in that gap
+    // (webhook / verify-payment) must never be overwritten with 'failed'.
     await supabase.from('orders').update({
       payment_status: 'failed',
       failure_reason: 'Abandoned — not paid within 24h',
       failed_at: new Date().toISOString(),
-    }).eq('id', o.id)
+    }).eq('id', o.id).eq('payment_status', 'pending').eq('bandwidth_credited', false)
   }
 
   // Expired MFA "verified this browser" tokens (migration 0020). Already
@@ -546,9 +563,19 @@ async function runCanary() {
       authorization_code: cfg.canary_authorization_code,
       metadata: { order_id: order.id, user_id: cfg.canary_user_id, gb_amount: String(CANARY_GB) },
     })
-    // The webhook (charge.success/charge.failed) does the actual crediting
-    // or failure-marking + alert once Paystack's async event lands — this
-    // is just the immediate call result for the cron log.
+    // charge.success (webhook) does the crediting once Paystack's async event
+    // lands. A decline is answered right here, synchronously, and Paystack sends
+    // no event for it — so record it and alert now, instead of leaving a silent
+    // 'pending' order for the cleanup to flip 24h later. If the webhook is what
+    // is broken, reconcile credits the order within minutes and says so.
+    if (result.status === 'failed') {
+      await failPendingOrder(
+        supabase,
+        { id: order.id, user_id: cfg.canary_user_id, amount_usd: CANARY_AMOUNT_USD, gb_amount: CANARY_GB, is_canary: true, paystack_reference: reference },
+        result.gateway_response ?? 'Declined',
+        { source: 'canary' },
+      )
+    }
     return { initiated: true, reference, gateway_status: result.status }
   } catch (err: any) {
     // This is the one canary failure mode the webhook can never catch —

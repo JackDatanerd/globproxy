@@ -2,6 +2,7 @@ import { createClient } from '@/lib/supabase/server'
 import { redirect, notFound } from 'next/navigation'
 import Link from 'next/link'
 import InvoiceActions from '@/components/InvoiceActions'
+import { getPlan } from '@/lib/plans'
 
 // Private financial documents — never indexed, never cached across users.
 export const metadata = { title: 'Invoice — GlobProxy', robots: { index: false, follow: false } }
@@ -108,10 +109,13 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
   const refundedTotal = Number(order.refunded_usd ?? 0)
   const isPartlyRefunded = !isRefunded && refundedTotal > 0
   const billedName = buyer.name || buyer.email || 'Customer'
+  // Named plans read "Growth plan — 100 GB …"; custom quantities just the GB.
+  const planName = order.plan_slug && order.plan_slug !== 'custom' ? getPlan(order.plan_slug)?.name : undefined
+  const revised = Number(order.billing_details_revision ?? 0) > 0 && order.billing_details_updated_at
 
   return (
     <div className="min-h-screen bg-surface py-10 px-6 print:bg-white print:py-0 print:px-0">
-      <InvoiceActions />
+      <InvoiceActions orderId={order.id} />
 
       <div className="max-w-2xl mx-auto bg-white border border-border rounded-2xl print:border-0 print:rounded-none p-10 print:p-0 relative">
         {isRefunded && (
@@ -181,7 +185,7 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
           <tbody>
             <tr className="border-b border-border">
               <td className="py-4 text-sm text-ink">
-                {order.gb_amount} GB residential proxy bandwidth
+                {planName ? `${planName} plan — ` : ''}{order.gb_amount} GB residential proxy bandwidth
                 <div className="text-xs text-muted mt-0.5">Non-expiring — no subscription</div>
               </td>
               <td className="py-4 text-sm text-ink text-right font-mono">${Number(order.amount_usd).toFixed(2)}</td>
@@ -197,7 +201,9 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
                 {refunds!.map(r => (
                   <tr key={r.credit_note_number}>
                     <td className="pt-2 text-sm text-red-500 text-right">
-                      Refund · credit note {r.credit_note_number} ({formatDate(r.created_at)})
+                      Refund · credit note{' '}
+                      <Link href={`/invoice/${order.id}/credit/${r.credit_note_number}`} className="underline print:no-underline">{r.credit_note_number}</Link>
+                      {' '}({formatDate(r.created_at)})
                     </td>
                     <td className="pt-2 text-sm text-red-500 text-right font-mono">−${Number(r.amount_usd).toFixed(2)}</td>
                   </tr>
@@ -220,6 +226,12 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
             Paid in {order.pay_currency}: {order.pay_currency} {Number(order.pay_amount).toLocaleString('en-KE')} was charged
             {order.fx_rate ? ` at 1 USD = ${Number(order.fx_rate).toFixed(2)} ${order.pay_currency}` : ''} (rate fixed when the order was placed).
             The invoice total above is in USD.
+          </p>
+        )}
+
+        {revised && (
+          <p className="text-[11px] text-muted mb-3">
+            Billing details updated on {formatDate(order.billing_details_updated_at)} at the customer&apos;s request (revision {Number(order.billing_details_revision)}). Amounts, dates and numbers are unchanged.
           </p>
         )}
 
