@@ -2,7 +2,7 @@ import { createAdminClient } from '@/lib/supabase/server'
 
 // Per-ACCOUNT throttles. The Cloudflare rate limiter is per IP only, so a
 // botnet could guess one account's password at 10 req/min from every address.
-// These counters live in Postgres (auth_throttle, migration 0043) keyed by a
+// These counters live in Postgres (auth_throttle, migration 0045) keyed by a
 // hash of the identifier, so the limit follows the account, not the IP.
 async function sha256Hex(input: string): Promise<string> {
   const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input))

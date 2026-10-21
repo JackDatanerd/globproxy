@@ -7,7 +7,7 @@ import { requireMfaVerified } from '@/lib/mfa'
 import { NextResponse } from 'next/server'
 
 // Signed-in devices. GoTrue keeps one row per login in auth.sessions; two
-// SECURITY DEFINER helpers (migration 0043, service_role only) list and revoke
+// SECURITY DEFINER helpers (migration 0045, service_role only) list and revoke
 // them. The raw rows hold more than the browser should see, so only a fixed
 // set of fields is forwarded.
 export async function GET(req: Request) {

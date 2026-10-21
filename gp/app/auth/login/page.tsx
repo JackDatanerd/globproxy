@@ -70,7 +70,8 @@ function LoginForm() {
       {deleted && <div className="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded-xl mb-5">This account has been deleted.</div>}
       {justConfirmed && (
         <div className="bg-green-50 border border-green-200 text-green-800 text-sm px-4 py-3 rounded-xl mb-5">
-          Thanks — if that was your confirmation link, your email is confirmed. Sign in below.
+          Thanks — if that was your confirmation link, your email is confirmed. Sign in below. If your password isn’t accepted,{' '}
+          <Link href="/auth/reset" className="underline">set a new one with “Forgot password”</Link> — for your protection, a password chosen before confirming is only kept when the link is opened in the same browser you signed up in.
         </div>
       )}
       {linkExpired && (
@@ -78,6 +79,7 @@ function LoginForm() {
           <div className="bg-amber-50 border border-amber-200 text-amber-800 text-sm px-4 py-3 rounded-xl mb-5">
             That link couldn’t finish signing you in on this browser — but opening it usually already confirmed your email.
             Try signing in below. If it says your email isn’t confirmed, <Link href="/auth/verify" className="underline">resend the confirmation email</Link>.
+            If your password isn’t accepted, <Link href="/auth/reset" className="underline">set a new one with “Forgot password”</Link> — a password chosen before confirming is only kept when the link is opened in the same browser you signed up in.
           </div>
         ) : (
           <div className="bg-amber-50 border border-amber-200 text-amber-800 text-sm px-4 py-3 rounded-xl mb-5">

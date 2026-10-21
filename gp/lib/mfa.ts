@@ -125,7 +125,7 @@ function currentPeriodCounter(): number {
 // read-then-write check let two concurrent submissions of the same code
 // both succeed.
 async function matchTotpCounter(factor: FactorRow, email: string, code: string): Promise<number | null> {
-  const secret = await decryptSecret(factor.secret)
+  const secret = await decryptSecret(factor.secret, factor.user_id)
   const delta = buildTotp(email, secret).validate({ token: code, window: 1 })
   if (delta === null) return null
   return currentPeriodCounter() + delta
@@ -142,7 +142,10 @@ async function matchTotpCounter(factor: FactorRow, email: string, code: string):
 // unless that very attempt succeeds. A success resets the budget.
 type AttemptGate = 'ok' | 'ok_last'
 
-const LOCKED_MSG = 'Too many incorrect attempts. Try again in a few minutes.'
+// The lock is per account, so someone who only knows the password could keep
+// the owner locked out. A password reset by email (which proves mailbox
+// control AND replaces the password they hold) lifts it — say so.
+const LOCKED_MSG = 'Too many incorrect attempts. Try again in 15 minutes, or reset your password by email to unlock sooner.'
 
 async function beginAttempt(supabase: AdminClient, userId: string): Promise<AttemptGate> {
   const { data, error } = await supabase.rpc('mfa_begin_attempt', {
@@ -214,15 +217,15 @@ async function checkCode(
         // twice (login, then a step-up) knows to wait for the next one.
         replayed = !ok
       }
-      if (ok && (await secretNeedsRewrite(factor.secret))) {
+      if (ok && (await secretNeedsRewrite(factor.secret, userId))) {
         // Lazy upgrade: legacy plaintext, or encrypted under the previous
         // key, is rewritten under the current key.
         // Best-effort: the code is ALREADY consumed at this point, so a failure
         // here must not surface as an error (it would refund the attempt and
         // tell the user to retry a code that can no longer be replayed).
         try {
-          const plain = await decryptSecret(factor.secret)
-          const { error: rwErr } = await supabase.from('mfa_totp_factors').update({ secret: await encryptSecret(plain) }).eq('user_id', userId)
+          const plain = await decryptSecret(factor.secret, userId)
+          const { error: rwErr } = await supabase.from('mfa_totp_factors').update({ secret: await encryptSecret(plain, userId) }).eq('user_id', userId)
           if (rwErr) console.error('[mfa] secret rewrite failed', userId, rwErr.message)
         } catch (rwEx) {
           console.error('[mfa] secret rewrite threw', userId, rwEx)
@@ -293,7 +296,7 @@ export async function startEnrollment(userId: string, email: string): Promise<En
 
   if (existing && existing.created_at && Date.now() - new Date(existing.created_at).getTime() < ENROLL_REUSE_MS) {
     try {
-      const secret = await decryptSecret(existing.secret)
+      const secret = await decryptSecret(existing.secret, userId)
       const uri = buildTotp(email, secret).toString()
       return { secret, otpauth_uri: uri, qr_svg: renderQrSvg(uri, { width: 220, margin: 1 }) }
     } catch (e) {
@@ -307,7 +310,7 @@ export async function startEnrollment(userId: string, email: string): Promise<En
 
   const { data: started, error } = await supabase.rpc('mfa_start_enrollment', {
     p_user_id: userId,
-    p_secret: await encryptSecret(secret.base32),
+    p_secret: await encryptSecret(secret.base32, userId),
   })
   if (error) throw new Error('Could not start MFA setup. Please try again.')
   if (started !== true) throw new Error(ALREADY_ENABLED_MSG)
@@ -347,7 +350,7 @@ export async function confirmEnrollment(userId: string, email: string, code: str
     throw new Error('Incorrect code. Check your authenticator app and try again.')
   }
 
-  // ONE transaction (migration 0043): the factor flips to confirmed,
+  // ONE transaction (migrations 0045 / 0053): the factor flips to confirmed,
   // profiles.mfa_enabled flips, and the first backup-code set is stored —
   // together or not at all. Previously the codes were written afterwards, so
   // a failure in between left an enrolled account that never saw its codes.
@@ -401,15 +404,17 @@ export async function verifyFactor(
     backup: 'That backup code is invalid or has already been used.',
   }, { req: opts.req })
 
-  // "Trust this browser" is never offered to admin accounts.
+  // "Trust this browser" is never offered to admin accounts. Fails CLOSED: if
+  // the role can't be read, the short session is used, never the 30-day one.
   let ttl = MFA_SESSION_TTL_MS
   if (opts.remember) {
-    const { data: profile } = await supabase.from('profiles').select('role').eq('id', userId).maybeSingle()
-    if (profile?.role !== 'admin') ttl = MFA_REMEMBER_TTL_MS
+    const { data: profile, error: roleErr } = await supabase.from('profiles').select('role').eq('id', userId).maybeSingle()
+    if (roleErr) console.error('[mfa] role lookup failed; not granting a remembered session', userId, roleErr.message)
+    else if (profile && profile.role !== 'admin') ttl = MFA_REMEMBER_TTL_MS
   }
 
   const remembered = ttl === MFA_REMEMBER_TTL_MS
-  const { token, ttlS } = await createVerifiedSession(supabase, userId, ttl, { req: opts.req, remembered })
+  const { token, ttlS } = await createVerifiedSessionAfterConsume(supabase, userId, ttl, { req: opts.req, remembered })
   if (remembered) await logSecurityEvent({ userId, event: 'mfa_browser_trusted', req: opts.req, admin: supabase })
 
   await logSecurityEvent({ userId, event: 'mfa_verified', req: opts.req, admin: supabase, meta: { kind, remembered } })
@@ -431,6 +436,47 @@ export async function verifyFactor(
     }
   }
   return result
+}
+
+// The code is already CONSUMED when this runs (a TOTP step can't be replayed, a
+// backup code is spent), so a transient failure here must not simply surface as
+// "error, retry": the user's retry with the same code would be refused. Retry
+// the write a few times first; if it still fails, say what happened.
+async function createVerifiedSessionAfterConsume(
+  supabase: AdminClient,
+  userId: string,
+  ttlMs: number,
+  opts: { req?: Request; remembered?: boolean },
+) {
+  let lastErr: unknown
+  for (let i = 0; i < 3; i++) {
+    try {
+      return await createVerifiedSession(supabase, userId, ttlMs, opts)
+    } catch (e) {
+      lastErr = e
+      if (i < 2) await new Promise(r => setTimeout(r, 250 * (i + 1)))
+    }
+  }
+  console.error('[mfa] code accepted but verified session could not be created', userId, lastErr)
+  throw new Error('Your code was accepted but we could not finish signing you in. Wait for the next code in your authenticator (or use a backup code) and try again.')
+}
+
+/**
+ * A FRESH proof of the authenticator for a sensitive action (POST
+ * /api/auth/reauth with { code }). Same attempt budget and one-time-use rules
+ * as every other code check; it does not create or extend a verified-browser
+ * session. The caller sets the short-lived step-up cookie (lib/reauth.ts).
+ */
+export async function verifyFreshCode(userId: string, email: string, code: string, req?: Request): Promise<'totp' | 'backup'> {
+  const supabase = await createAdminClient()
+  const factor = await getFactor(supabase, userId)
+  if (!factor?.confirmed) throw new Error('Two-factor authentication is not set up on this account.')
+  const kind = await checkCode(supabase, userId, email, factor, code, {
+    totp: 'Incorrect code. Try again.',
+    backup: 'That backup code is invalid or has already been used.',
+  }, { req })
+  await logSecurityEvent({ userId, event: 'mfa_verified', req, admin: supabase, meta: { kind, purpose: 'step_up' }, notify: false })
+  return kind
 }
 
 /**
@@ -727,7 +773,7 @@ export async function revokeOtherSessions(userId: string, keepSessionId?: string
   }
 }
 
-// One Postgres transaction via wipe_mfa() (migration 0024).
+// One Postgres transaction via wipe_mfa() (migrations 0024 / 0053).
 async function wipeMfa(supabase: AdminClient, userId: string): Promise<void> {
   const { error } = await supabase.rpc('wipe_mfa', { p_user_id: userId })
   if (error) throw new Error('Could not reset MFA. Please try again.')

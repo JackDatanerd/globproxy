@@ -1,6 +1,11 @@
 // At-rest protection for MFA material.
 //
-//  - TOTP secrets are encrypted with AES-256-GCM ("enc:v1:<iv>.<ciphertext>").
+//  - TOTP secrets are encrypted with AES-256-GCM ("enc:v2:<iv>.<ciphertext>").
+//    v2 binds the ciphertext to its owner (the user id is the GCM additional
+//    data), so a ciphertext copied onto another account's row — by anyone with
+//    write access to the table — does not decrypt there. Existing "enc:v1:"
+//    rows (no binding) stay readable and are upgraded on the next successful
+//    verification, like legacy plaintext.
 //    A database-only leak (backup, replica, SQL injection, a support
 //    export) no longer hands over every user's authenticator seed.
 //  - Backup codes are HMAC-SHA256'd with a key derived from the same
@@ -24,7 +29,8 @@
 // users have regenerated (or used up) their old codes. NEVER remove a key
 // while rows still depend on it — those accounts could no longer verify.
 
-const PREFIX = 'enc:v1:'
+const PREFIX = 'enc:v2:'
+const PREFIX_V1 = 'enc:v1:'
 let warned = false
 
 function currentKey(): string | null {
@@ -77,7 +83,14 @@ async function hmacKey(secret: string): Promise<CryptoKey> {
 }
 
 export function isEncryptedSecret(stored: string): boolean {
-  return stored.startsWith(PREFIX)
+  return stored.startsWith(PREFIX) || stored.startsWith(PREFIX_V1)
+}
+
+function aadFor(stored: string, userId: string): { additionalData: Uint8Array<ArrayBuffer> } | Record<string, never> {
+  return stored.startsWith(PREFIX) ? { additionalData: new Uint8Array(enc.encode(userId)) } : {}
+}
+function bodyOf(stored: string): string {
+  return stored.slice(stored.startsWith(PREFIX) ? PREFIX.length : PREFIX_V1.length)
 }
 
 /** True when a key is configured, i.e. new writes will be encrypted. */
@@ -85,17 +98,17 @@ export function encryptionEnabled(): boolean {
   return currentKey() !== null
 }
 
-export async function encryptSecret(plain: string): Promise<string> {
+export async function encryptSecret(plain: string, userId: string): Promise<string> {
   const key = currentKey()
   if (!key) { warnOnce(); return plain }
   const iv = crypto.getRandomValues(new Uint8Array(new ArrayBuffer(12)))
-  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await aesKey(key), enc.encode(plain))
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, ...aadFor(PREFIX, userId) }, await aesKey(key), enc.encode(plain))
   return `${PREFIX}${toB64(iv)}.${toB64(new Uint8Array(ct))}`
 }
 
-export async function decryptSecret(stored: string): Promise<string> {
+export async function decryptSecret(stored: string, userId: string): Promise<string> {
   if (!isEncryptedSecret(stored)) return stored // legacy plaintext row
-  const body = stored.slice(PREFIX.length)
+  const body = bodyOf(stored)
   const dot = body.indexOf('.')
   if (dot === -1) throw new MfaConfigError('Malformed encrypted MFA secret')
   const iv = fromB64(body.slice(0, dot))
@@ -106,7 +119,7 @@ export async function decryptSecret(stored: string): Promise<string> {
   }
   for (const k of keys) {
     try {
-      const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, await aesKey(k), ct)
+      const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv, ...aadFor(stored, userId) }, await aesKey(k), ct)
       return dec.decode(pt)
     } catch { /* try the next key */ }
   }
@@ -122,16 +135,17 @@ export class MfaConfigError extends Error {}
  * with the current one). Without the second case a rotation could never
  * complete and the previous key could never be retired.
  */
-export async function secretNeedsRewrite(stored: string): Promise<boolean> {
+export async function secretNeedsRewrite(stored: string, userId: string): Promise<boolean> {
   if (!encryptionEnabled()) return false
   if (!isEncryptedSecret(stored)) return true
-  const body = stored.slice(PREFIX.length)
+  if (stored.startsWith(PREFIX_V1)) return true // upgrade to the owner-bound format
+  const body = bodyOf(stored)
   const dot = body.indexOf('.')
   if (dot === -1) return false
   try {
     const iv = fromB64(body.slice(0, dot))
     const ct = fromB64(body.slice(dot + 1))
-    await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, await aesKey(currentKey()!), ct)
+    await crypto.subtle.decrypt({ name: 'AES-GCM', iv, ...aadFor(stored, userId) }, await aesKey(currentKey()!), ct)
     return false
   } catch {
     return true

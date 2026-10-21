@@ -114,6 +114,18 @@ export async function purgeAccountSecrets(supabase: AdminSupabase, userId: strin
   // The API request log holds source IPs; the profile row is kept (scrubbed), so
   // the FK cascade never fires — clear it explicitly (migration 0054).
   check('api_request_log', (await supabase.from('api_request_log').delete().eq('user_id', userId)).error)
+  // Real IP / user-agent per sign-in, the audit trail (its meta and IP columns)
+  // and any quarantined signup password: nothing here has accounting value once
+  // the account is closed, and the profile row survives, so the FK cascades
+  // never fire (migration 0060).
+  check('login_sessions', (await supabase.from('login_sessions').delete().eq('user_id', userId)).error)
+  // Everything but the 'account_deleted' tombstone goes; the tombstone itself
+  // is stripped of IP / user-agent / metadata.
+  check('security_events', (await supabase.from('security_events').delete().eq('user_id', userId).neq('event', 'account_deleted')).error)
+  check('security_events_scrub', (await supabase.from('security_events')
+    .update({ ip: null, user_agent: null, meta: {} }).eq('user_id', userId).eq('event', 'account_deleted')).error)
+  check('mfa_recovery_requests', (await supabase.from('mfa_recovery_requests').delete().eq('user_id', userId)).error)
+  check('auth_pending_password', (await supabase.from('auth_pending_password').delete().eq('user_id', userId)).error)
   check('mfa_totp_factors', (await supabase.from('mfa_totp_factors').delete().eq('user_id', userId)).error)
   check('mfa_backup_codes', (await supabase.from('mfa_backup_codes').delete().eq('user_id', userId)).error)
   check('mfa_verified_sessions', (await supabase.from('mfa_verified_sessions').delete().eq('user_id', userId)).error)

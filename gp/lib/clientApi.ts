@@ -36,7 +36,7 @@ export async function apiFetch<T = any>(url: string, init?: RequestInit): Promis
       throw new ApiError('Two-factor verification required — redirecting…', 403, 'mfa_required')
     }
     if (res.status === 403 && data?.code === 'reauth_required') {
-      throw new ApiError('Password confirmation is required for this action.', 403, 'reauth_required')
+      throw new ApiError('Confirmation is required for this action.', 403, 'reauth_required')
     }
     throw new ApiError(data?.error || `Request failed (${res.status})`, res.status, data?.code)
   }

@@ -101,6 +101,15 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: msg }, { status: updErr.status && updErr.status < 500 ? 400 : 503 })
   }
 
+  // A password reset by e-mail proves mailbox control AND replaces the password
+  // an attacker may have been using to hammer the 2FA prompt — so it also lifts
+  // any lockout on the authenticator (otherwise the owner could be kept out of
+  // their own account by someone who only knows the old password).
+  if (isRecovery && enrolled) {
+    const { error: unlockErr } = await admin.rpc('mfa_clear_failures', { p_user_id: user.id })
+    if (unlockErr) console.error('[auth/password] could not lift mfa lock', user.id, unlockErr.message)
+  }
+
   // Revoke every other login session for this account.
   const { error: outErr } = await supabase.auth.signOut({ scope: 'others' })
   if (outErr) console.error('[auth/password] signOut(others) failed', user.id, outErr.message)

@@ -82,7 +82,7 @@ export async function POST(req: Request) {
 
     // 1. Banned (plus-address aware: bad+1@x.com matches a ban on bad@x.com).
     // The same rule is enforced by a BEFORE INSERT trigger on auth.users
-    // (migration 0043), so a signup that skips this route is refused too.
+    // (migration 0045), so a signup that skips this route is refused too.
     const normalized = email.trim().toLowerCase()
     const { data: banned } = await supabase.rpc('is_email_banned', { check_email: normalized })
     if (banned) {

@@ -10,8 +10,15 @@ import { mfaGate } from '@/lib/mfa'
 // password (POST /api/auth/reauth) sets a short-lived signed cookie; the
 // gated routes accept it for SUDO_TTL_S.
 //
-// Accounts that HAVE 2FA are unchanged: the TOTP step-up (requireMfaVerified)
-// already covers them and they are never asked for a password here.
+// Accounts that HAVE 2FA need BOTH a verified-browser cookie (they signed in
+// with their authenticator) AND a FRESH proof for these actions: an
+// authenticator or backup code entered in the last SUDO_TTL_S seconds
+// (POST /api/auth/reauth with { code }). The verified-browser cookie lasts 12 h
+// (30 days when the browser is trusted), so on its own it would let a hijacked
+// browser redirect a payout or mint API keys with no further proof — weaker
+// than what a password-only account gets. The cookie is tagged with HOW it was
+// earned ('pw' or 'totp'), so a password-era cookie can't satisfy an account
+// that has since enrolled.
 //
 // Value: `<userId>.<expiresAtMs>.<hmac>`, HMAC-SHA256 keyed from the
 // service-role key (same approach as lib/recoveryCookie.ts).
@@ -19,6 +26,8 @@ export const SUDO_COOKIE_NAME = 'gp_sudo'
 export const SUDO_TTL_S = 10 * 60
 
 const enc = new TextEncoder()
+
+export type SudoKind = 'pw' | 'totp'
 
 async function sign(payload: string): Promise<string> {
   const secret = process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -36,12 +45,12 @@ function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0
 }
 
-export async function makeSudoCookieValue(userId: string): Promise<string> {
+export async function makeSudoCookieValue(userId: string, kind: SudoKind = 'pw'): Promise<string> {
   const payload = `${userId}.${Date.now() + SUDO_TTL_S * 1000}`
-  return `${payload}.${await sign(payload)}`
+  return `${payload}.${await sign(`${payload}.${kind}`)}`
 }
 
-export async function verifySudoCookieValue(value: string | undefined, userId: string): Promise<boolean> {
+export async function verifySudoCookieValue(value: string | undefined, userId: string, kind: SudoKind = 'pw'): Promise<boolean> {
   if (!value) return false
   const parts = value.split('.')
   if (parts.length !== 3) return false
@@ -50,7 +59,7 @@ export async function verifySudoCookieValue(value: string | undefined, userId: s
   const exp = Number(expStr)
   if (!Number.isFinite(exp) || exp < Date.now()) return false
   try {
-    return timingSafeEqual(mac, await sign(`${uid}.${expStr}`))
+    return timingSafeEqual(mac, await sign(`${uid}.${expStr}.${kind}`))
   } catch {
     return false
   }
@@ -86,16 +95,26 @@ export function readCookie(req: Request, name: string): string | undefined {
  * Gate for sensitive actions. Returns a NextResponse to send back, or null to
  * continue.
  *   - enrolled in 2FA  -> must hold a verified-browser cookie (403 mfa_required)
+ *                         AND have entered a fresh authenticator/backup code in
+ *                         the last SUDO_TTL_S seconds (403 reauth_required,
+ *                         method 'totp')
  *   - not enrolled     -> must have re-entered the password in the last
- *                         SUDO_TTL_S seconds (403 reauth_required)
+ *                         SUDO_TTL_S seconds (403 reauth_required, method 'password')
  */
 export async function requireStepUp(req: Request, userId: string): Promise<NextResponse | null> {
   const { response, enrolled } = await mfaGate(req, userId)
   if (response) return response
-  if (enrolled) return null
-  if (await verifySudoCookieValue(readCookie(req, SUDO_COOKIE_NAME), userId)) return null
+  const sudo = readCookie(req, SUDO_COOKIE_NAME)
+  if (enrolled) {
+    if (await verifySudoCookieValue(sudo, userId, 'totp')) return null
+    return NextResponse.json(
+      { error: 'Enter a fresh code from your authenticator app to continue.', code: 'reauth_required', method: 'totp' },
+      { status: 403 }
+    )
+  }
+  if (await verifySudoCookieValue(sudo, userId, 'pw')) return null
   return NextResponse.json(
-    { error: 'Please confirm your password to continue.', code: 'reauth_required' },
+    { error: 'Please confirm your password to continue.', code: 'reauth_required', method: 'password' },
     { status: 403 }
   )
 }

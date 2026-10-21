@@ -1,4 +1,4 @@
-import { createClient } from '@/lib/supabase/server'
+import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { safeNextPath } from '@/lib/safeNext'
 import { RECOVERY_COOKIE_NAME, RECOVERY_TTL_S, makeRecoveryCookieValue } from '@/lib/recoveryCookie'
@@ -65,6 +65,23 @@ export async function GET(request: Request) {
         console.error('[auth/callback] refused recovery proof: no recent recovery e-mail on this account')
         await s.auth.signOut({ scope: 'local' }).catch(() => {})
         return NextResponse.redirect(`${origin}/auth/reset?error=link_expired`)
+      }
+    }
+
+    // Signup confirmation completed in the SAME browser that requested it (the
+    // code exchange needs this browser's PKCE verifier AND the e-mailed code):
+    // the password chosen at signup is trustworthy, so hand it back. A link
+    // opened anywhere else never reaches here, and that account keeps the
+    // placeholder password until its owner uses "Forgot password" — see
+    // migration 0060. Never for a recovery link (the password is about to be
+    // replaced). Best effort: failing leaves the safe state.
+    if (data.user && type !== 'recovery') {
+      try {
+        const admin = await createAdminClient()
+        const { error: restoreErr } = await admin.rpc('auth_restore_pending_password', { p_user_id: data.user.id })
+        if (restoreErr) console.error('[auth/callback] pending password restore failed', restoreErr.message)
+      } catch (e) {
+        console.error('[auth/callback] pending password restore threw', e)
       }
     }
 

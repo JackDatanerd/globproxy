@@ -6,6 +6,8 @@ import MpesaSettings from '@/components/admin/MpesaSettings'
 import { loadMpesaConfig, getKesQuote } from '@/lib/fx'
 import CronHealthPanel, { type CronRunRow } from '@/components/admin/CronHealthPanel'
 import CspReportsPanel, { type CspRow } from '@/components/admin/CspReportsPanel'
+import SecurityConfigPanel from '@/components/admin/SecurityConfigPanel'
+import { loadSecurityChecks } from '@/lib/securityConfig'
 
 export default async function AdminSettingsPage() {
   const session = await createClient()
@@ -23,6 +25,11 @@ export default async function AdminSettingsPage() {
           .order('created_at', { ascending: false })
       : Promise.resolve({ data: [] }),
   ])
+
+  const securityChecks = await loadSecurityChecks().catch((e) => {
+    console.error('[admin/settings] security checks failed', e)
+    return []
+  })
 
   // M-Pesa panel data. A settings/FX failure must not take the whole page down.
   let mpesa: Awaited<ReturnType<typeof loadMpesaConfig>> | null = null
@@ -88,6 +95,7 @@ export default async function AdminSettingsPage() {
         candidates={candidates ?? []}
       />
 
+      <SecurityConfigPanel checks={securityChecks} />
       <CronHealthPanel rows={cronRows} />
       <CspReportsPanel rows={cspRows} />
 

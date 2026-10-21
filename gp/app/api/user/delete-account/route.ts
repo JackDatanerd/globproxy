@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { releaseGeonodeSubUsers } from '@/lib/accountDeletion'
+import { releaseGeonodeSubUsers, purgeAccountSecrets } from '@/lib/accountDeletion'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { requireStepUp } from '@/lib/reauth'
 import { logSecurityEvent } from '@/lib/securityEvents'
@@ -139,52 +139,20 @@ export async function DELETE(req: Request) {
       return NextResponse.json({ error: 'Could not delete the account. Please try again.' }, { status: 500 })
     }
 
-    // Audit trail (the profile row survives deletion, anonymised, so the
-    // event keeps its foreign key). Written once the deletion has actually
-    // committed (anonymised + banned): when it was written first, a refused
-    // or failed attempt — upstream cleanup down (502), already-deleted
-    // retries — still left an "account deleted" entry behind each time.
-    await logSecurityEvent({ userId: user.id, event: 'account_deleted', req, admin: adminSupabase })
+    // Steps 6-6b: credentials tombstoned, webhooks / 2FA seeds / sign-in history /
+    // request logs removed, API keys revoked, affiliate side stopped. ONE shared
+    // implementation with the admin delete route (lib/accountDeletion.ts) — this
+    // route used to carry its own copy, which had already drifted (it never
+    // cleared the API request log or sign-in history). Runs after the ban, so
+    // the rollback path above never has to restore any of it.
+    const purge = await purgeAccountSecrets(adminSupabase, user.id)
+    if (purge.warnings.length) console.error('[delete-account] cleanup warnings', user.id, purge.warnings)
 
-    // Step 6: Credentials: sub-users are gone upstream, so mark them
-    // suspended (no 'deleted' status value exists) and drop the stored
-    // proxy password + Geonode ids. The unique index on
-    // upstream_sub_user_id (migration 0040) also stops a stale id lingering.
-    await adminSupabase.from('proxy_credentials')
-      .update({ status: 'suspended', suspended_reason: 'deleted', upstream_password: null, upstream_username: null, upstream_sub_user_id: null })
-      .eq('user_id', user.id)
-
-    // Step 6a: Remove personal / secret data that has no accounting value:
-    // webhook URLs + signing secrets, 2FA seeds / backup codes / trusted
-    // browsers, and the email attached to support reports.
-    await adminSupabase.from('webhook_endpoints').delete().eq('user_id', user.id)
-    await adminSupabase.from('mfa_totp_factors').delete().eq('user_id', user.id)
-    await adminSupabase.from('mfa_backup_codes').delete().eq('user_id', user.id)
-    await adminSupabase.from('mfa_verified_sessions').delete().eq('user_id', user.id)
-    await adminSupabase.from('support_reports').update({ email: '[deleted]' }).eq('user_id', user.id)
-
-    // Step 6c: Stop the affiliate side of the account (migration 0043). The PII
-    // wipe above already removed payout details; this additionally suspends the
-    // affiliate status (no new commissions accrue to a deleted account) and
-    // forfeits UNBATCHED earnings. Already-batched / paid payout rows are kept —
-    // they're financial records. Idempotent; runs after the ban so the rollback
-    // path above never has to restore it.
-    {
-      const { error: scrubErr } = await adminSupabase.rpc('scrub_affiliate_data', { p_user_id: user.id })
-      if (scrubErr) console.error('[delete-account] scrub_affiliate_data failed', user.id, scrubErr)
-    }
-
-    // Step 6b: Revoke any outstanding API keys and disable webhooks —
-    // neither was ever touched by deletion before this. A live key kept
-    // authenticating every v1 route indefinitely with no separate
-    // expiry/edge-case needed (see lib/apiAuth.ts / migration 0030); a
-    // still-enabled webhook is lower-risk (nothing left to trigger it
-    // once credentials above are suspended) but shouldn't be left
-    // looking active on a deleted account either.
-    await adminSupabase.from('api_keys')
-      .update({ revoked_at: new Date().toISOString() })
-      .eq('user_id', user.id)
-      .is('revoked_at', null)
+    // Audit trail: a bare tombstone (no IP / user-agent — it is written after
+    // the purge precisely so it is the only record left). Written once the
+    // deletion has actually committed (anonymised + banned): when it was
+    // written first, a refused or failed attempt still left an entry behind.
+    await logSecurityEvent({ userId: user.id, event: 'account_deleted', admin: adminSupabase })
 
     // Step 7: Email — best-effort, non-fatal
     if (profile?.email && profile.email !== '[deleted]') {

@@ -9,19 +9,24 @@
 
 let pending: Promise<boolean> | null = null
 
-export function promptForPassword(): Promise<boolean> {
+// 'password' for accounts without 2FA; 'totp' for accounts with it, which must
+// enter a FRESH authenticator (or backup) code instead — see lib/reauth.ts.
+export type ReauthMethod = 'password' | 'totp'
+
+export function promptForPassword(method: ReauthMethod = 'password'): Promise<boolean> {
   if (pending) return pending
+  const totp = method === 'totp'
   pending = new Promise<boolean>(resolve => {
     const overlay = document.createElement('div')
     overlay.setAttribute('role', 'dialog')
     overlay.setAttribute('aria-modal', 'true')
-    overlay.setAttribute('aria-label', 'Confirm your password')
+    overlay.setAttribute('aria-label', totp ? 'Confirm with your authenticator' : 'Confirm your password')
     overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483000;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:16px;font-family:system-ui,sans-serif;'
     overlay.innerHTML = `
       <form style="background:#111827;color:#f9fafb;border:1px solid #374151;border-radius:12px;padding:24px;width:100%;max-width:380px;box-shadow:0 20px 50px rgba(0,0,0,.5);">
-        <h2 style="margin:0 0 6px;font-size:18px;font-weight:700;">Confirm your password</h2>
-        <p style="margin:0 0 16px;font-size:13px;color:#9ca3af;">This action is sensitive. Enter your account password to continue.</p>
-        <input type="password" autocomplete="current-password" required placeholder="Password"
+        <h2 style="margin:0 0 6px;font-size:18px;font-weight:700;">${totp ? 'Enter a fresh code' : 'Confirm your password'}</h2>
+        <p style="margin:0 0 16px;font-size:13px;color:#9ca3af;">${totp ? 'This action is sensitive. Enter the current 6-digit code from your authenticator app (or a backup code).' : 'This action is sensitive. Enter your account password to continue.'}</p>
+        <input type="${totp ? 'text' : 'password'}" ${totp ? 'inputmode="text" autocomplete="one-time-code"' : 'autocomplete="current-password"'} required placeholder="${totp ? 'Code' : 'Password'}"
           style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;border:1px solid #4b5563;background:#1f2937;color:#f9fafb;font-size:14px;outline:none;" />
         <p data-err style="margin:8px 0 0;font-size:12px;color:#f87171;min-height:16px;"></p>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
@@ -53,7 +58,7 @@ export function promptForPassword(): Promise<boolean> {
         const res = await fetch('/api/auth/reauth', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password: input.value }),
+          body: JSON.stringify(totp ? { code: input.value.trim() } : { password: input.value }),
         })
         const data = await res.json().catch(() => ({}))
         if (res.ok) return finish(true)
@@ -78,6 +83,6 @@ export async function fetchWithReauth(url: string, init?: RequestInit): Promise<
   if (res.status !== 403) return res
   const data: any = await res.clone().json().catch(() => ({}))
   if (data?.code !== 'reauth_required') return res
-  if (!(await promptForPassword())) return res
+  if (!(await promptForPassword(data?.method === 'totp' ? 'totp' : 'password'))) return res
   return fetch(url, init)
 }
