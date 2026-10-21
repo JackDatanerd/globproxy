@@ -1,8 +1,8 @@
 import type { NextConfig } from 'next'
 
 // Content-Security-Policy, REPORT-ONLY. The browser evaluates every rule below
-// and posts violations to /api/csp-report (which writes them to the Worker
-// log) but blocks nothing, so a missing allow-list entry cannot break
+// and posts violations to /api/csp-report (which logs them and counts them per
+// directive / blocked URL / page — see Admin → Settings) but blocks nothing, so a missing allow-list entry cannot break
 // checkout, Turnstile or Supabase the way an enforced policy would.
 //
 // Promote it by renaming the header to `Content-Security-Policy` once a
@@ -58,7 +58,7 @@ const nextConfig: NextConfig = {
           { key: 'X-Content-Type-Options', value: 'nosniff' },
           { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
           { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
-          { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), payment=(self)' },
+          { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), payment=(self "https://checkout.paystack.com")' },
           // allow-popups, not same-origin: payment and verification widgets may
           // open windows that must keep a reference back to this page.
           { key: 'Cross-Origin-Opener-Policy', value: 'same-origin-allow-popups' },

@@ -3,7 +3,7 @@
 -- Run this entire file in Supabase SQL Editor (fresh project)
 -- ============================================================
 --
--- INCLUDES MIGRATIONS THROUGH: 0054_api_integrations_closeout.sql
+-- INCLUDES MIGRATIONS THROUGH: 0055_edge_pipeline_closeout.sql
 --
 -- This line is the source of truth `scripts/check-schema-sync.mjs` reads
 -- to compare against supabase/migrations/ — it's what CI checks on every
@@ -4920,101 +4920,152 @@ on conflict do nothing;
 
 -- ============================================================
 -- 0054_api_integrations_closeout.sql
--- ============================================================
--- ============================================================
--- 0054 — Public API & integrations close-out (audit section 6, pass 1)
--- ============================================================
--- Idempotent. Apply AFTER 0053. Old code keeps working between this
--- migration and the deploy (everything here is additive, except dropping the
--- browser-readable webhook-secret policy, which no app code used).
+-- =====================================================on conflict do nothing;
 
--- ── 1. api_keys: 'allocate' scope, expiry-warning marker, limit counts live keys only ──
--- 'allocate' is deliberately separate from 'write': it moves bandwidth between
--- accounts (money-equivalent), so a key that can create sub-users cannot
--- implicitly move stock. Enforced in lib/apiAuth.ts.
-alter table public.api_keys drop constraint if exists api_keys_valid_scopes;
-alter table public.api_keys
-  add constraint api_keys_valid_scopes
-  check (scopes <@ array['read','write','allocate']::text[] and cardinality(scopes) > 0);
+-- ============================================================
+-- 0055 — Edge & request pipeline close-out (section 1, audit pass 2)
+-- ============================================================
+-- Idempotent: safe to re-run. Apply AFTER 0054_api_integrations_closeout.sql.
+--
+--  * G2  cron_task_runs + record_cron_task_run() + claim_stale_cron_tasks():
+--        every scheduled task now leaves a heartbeat (last run / last success /
+--        last error / consecutive failures). A task that fails three runs in a
+--        row, or stops running altogether, alerts the admin once per incident
+--        instead of only writing to a log that rotates away. Before this only
+--        the 'usage' task had a staleness watchdog.
+--  * G4  csp_violations + record_csp_violation() + prune_csp_violations():
+--        Content-Security-Policy-Report-Only reports are aggregated (one row
+--        per directive / blocked URL / page, with a hit counter) so the policy
+--        can actually be reviewed and promoted to enforcing. The table is
+--        capped at 500 distinct rows so the public report endpoint cannot be
+--        used to grow it.
+--
+-- Both tables have RLS on and NO policies: only the service role touches them.
 
-alter table public.api_keys add column if not exists expiry_warned_at timestamptz;
+-- ── G2: cron heartbeat ──────────────────────────────────────────────
+create table if not exists public.cron_task_runs (
+  task                 text primary key,
+  last_run_at          timestamptz not null default now(),
+  last_ok_at           timestamptz,
+  last_error           text,
+  last_error_at        timestamptz,
+  consecutive_failures integer not null default 0,
+  alerted_at           timestamptz,
+  stale_alerted_at     timestamptz
+);
 
--- The cap used to count expired-but-unrevoked keys, which the UI (and the
--- authenticator) already treat as dead: a user with 25 lapsed keys could not
--- create a new one.
-create or replace function public.enforce_api_key_limit()
-returns trigger language plpgsql security definer set search_path = public, pg_temp
-as $$
+alter table public.cron_task_runs enable row level security;
+revoke all on table public.cron_task_runs from anon, authenticated;
+
+-- Records one run. Returns TRUE when the admin should be alerted about a
+-- failing task right now: three consecutive failures, at most once per 24h per
+-- incident (the claim is a single UPDATE, so two concurrent failures cannot
+-- both alert). A success resets the streak and re-arms both alerts.
+create or replace function public.record_cron_task_run(p_task text, p_ok boolean, p_error text default null)
+returns boolean
+language plpgsql security definer set search_path = public, pg_temp as $$
 begin
-  perform pg_advisory_xact_lock(hashtext('api_keys:' || new.user_id::text));
-  if (select count(*) from public.api_keys
-      where user_id = new.user_id
-        and revoked_at is null
-        and (expires_at is null or expires_at > now())) >= 25 then
-    raise exception 'Maximum of 25 active API keys per account' using errcode = '23514';
+  insert into public.cron_task_runs (task) values (p_task) on conflict (task) do nothing;
+
+  if p_ok then
+    update public.cron_task_runs
+       set last_run_at = now(), last_ok_at = now(), consecutive_failures = 0,
+           alerted_at = null, stale_alerted_at = null
+     where task = p_task;
+    return false;
   end if;
-  return new;
+
+  update public.cron_task_runs
+     set last_run_at = now(), last_error = left(coalesce(p_error, 'unknown error'), 500),
+         last_error_at = now(), consecutive_failures = consecutive_failures + 1,
+         stale_alerted_at = null
+   where task = p_task;
+
+  update public.cron_task_runs
+     set alerted_at = now()
+   where task = p_task
+     and consecutive_failures >= 3
+     and (alerted_at is null or alerted_at < now() - interval '24 hours');
+  return found;
 end;
 $$;
 
--- ── 2. Mutating-request log (what did this key do?) ──────────────────
-create table if not exists public.api_request_log (
-  id          bigserial primary key,
-  user_id     uuid not null references public.profiles(id) on delete cascade,
-  key_id      uuid references public.api_keys(id) on delete set null,
-  method      text not null,
-  path        text not null,
-  status      integer,
-  ip          text,
-  request_id  text,
-  created_at  timestamptz not null default now()
+-- Tasks whose last run is older than their allowed age (seconds, keyed by task
+-- name) and that have not been reported yet. Claims them atomically so the
+-- hourly check emails each stale task once per incident.
+create or replace function public.claim_stale_cron_tasks(p_max_age_seconds jsonb)
+returns table (task text, last_run_at timestamptz)
+language sql security definer set search_path = public, pg_temp as $$
+  update public.cron_task_runs r
+     set stale_alerted_at = now()
+   where r.stale_alerted_at is null
+     and (p_max_age_seconds ->> r.task) is not null
+     and r.last_run_at < now() - make_interval(secs => (p_max_age_seconds ->> r.task)::double precision)
+  returning r.task, r.last_run_at;
+$$;
+
+-- ── G4: CSP report aggregation ──────────────────────────────────────
+create table if not exists public.csp_violations (
+  fingerprint   text primary key,
+  directive     text not null,
+  blocked       text not null,
+  document      text not null,
+  hits          integer not null default 1,
+  first_seen_at timestamptz not null default now(),
+  last_seen_at  timestamptz not null default now()
 );
-create index if not exists api_request_log_user_idx on public.api_request_log (user_id, created_at desc);
-create index if not exists api_request_log_key_idx  on public.api_request_log (key_id, created_at desc);
-alter table public.api_request_log enable row level security;
--- No policies: service role only (read through /api/v1/account/activity and the dashboard route).
 
--- ── 3. Webhooks ──────────────────────────────────────────────────────
--- 3a. The signing secret must be "returned once". The 0018 select policy let
--- ANY logged-in browser session read every column — including `secret` — of
--- its own rows straight from PostgREST. Every app read goes through the
--- service role, so dropping the policy changes nothing for the app.
-drop policy if exists "Users can view own webhook endpoints" on public.webhook_endpoints;
+create index if not exists csp_violations_last_seen_idx on public.csp_violations (last_seen_at desc);
 
--- 3b. Rotation with a grace window: the previous secret keeps signing a second
--- header until it lapses.
-alter table public.webhook_endpoints add column if not exists previous_secret            text;
-alter table public.webhook_endpoints add column if not exists previous_secret_expires_at timestamptz;
+alter table public.csp_violations enable row level security;
+revoke all on table public.csp_violations from anon, authenticated;
 
--- 3c. Receiver response snippet for the delivery log.
-alter table public.webhook_deliveries add column if not exists response_body text;
+create or replace function public.record_csp_violation(p_directive text, p_blocked text, p_document text)
+returns void
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_directive text := left(coalesce(p_directive, ''), 200);
+  v_blocked   text := left(coalesce(p_blocked, ''), 200);
+  v_document  text := left(coalesce(p_document, ''), 200);
+  v_fp        text := md5(v_directive || '|' || v_blocked || '|' || v_document);
+begin
+  -- Known row: just count it.
+  update public.csp_violations set hits = hits + 1, last_seen_at = now() where fingerprint = v_fp;
+  if found then return; end if;
+  -- New row: only while the table is small, so a flood of made-up reports
+  -- cannot grow it without bound.
+  if (select count(*) from public.csp_violations) >= 500 then return; end if;
+  insert into public.csp_violations (fingerprint, directive, blocked, document)
+  values (v_fp, v_directive, v_blocked, v_document)
+  on conflict (fingerprint) do update set hits = public.csp_violations.hits + 1, last_seen_at = now();
+end;
+$$;
 
--- 3d. New events.
-alter table public.webhook_endpoints drop constraint if exists webhook_endpoints_valid_events;
-alter table public.webhook_endpoints
-  add constraint webhook_endpoints_valid_events
-  check (event_types <@ array[
-    'session_created', 'session_activated', 'session_deleted', 'session_topped_up',
-    'session_exhausted', 'session_suspended', 'session_resumed',
-    'auto_topup_triggered', 'auto_topup_failed',
-    'bandwidth_threshold_crossed', 'bandwidth_exhausted', 'bandwidth_credited',
-    'bandwidth_allocated', 'bandwidth_reclaimed', 'bandwidth_refunded',
-    'api_key_created', 'api_key_revoked', 'api_key_expiring'
-  ]::text[]);
+create or replace function public.prune_csp_violations()
+returns integer
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_deleted integer;
+begin
+  delete from public.csp_violations where last_seen_at < now() - interval '30 days';
+  get diagnostics v_deleted = row_count;
+  return v_deleted;
+end;
+$$;
 
--- ── 4. Idempotent credential creation (no duplicate sub-users, ever) ─────
--- The idempotency table alone could not stop a stale-claim takeover from
--- creating a second credential when the first attempt had actually succeeded
--- but died before recording its response. A unique (user, key) on the
--- credential itself makes the create race-free: the loser rolls back its
--- reservation and upstream sub-user and returns the winner's row.
-alter table public.proxy_credentials add column if not exists idempotency_key text;
-create unique index if not exists proxy_credentials_idem_uidx
-  on public.proxy_credentials (user_id, idempotency_key) where idempotency_key is not null;
-
--- ── 5. Grants for new objects (same posture as 0042) ───────────────────
-revoke all on function public.enforce_api_key_limit() from public, anon, authenticated;
+do $$
+declare f text;
+begin
+  foreach f in array array[
+    'record_cron_task_run(text, boolean, text)',
+    'claim_stale_cron_tasks(jsonb)',
+    'record_csp_violation(text, text, text)',
+    'prune_csp_violations()'
+  ] loop
+    execute format('revoke all on function public.%s from public, anon, authenticated', f);
+    execute format('grant execute on function public.%s to service_role', f);
+  end loop;
+end $$;
 
 insert into public.schema_migrations (filename) values
-  ('0054_api_integrations_closeout.sql')
+  ('0055_edge_pipeline_closeout.sql')
 on conflict do nothing;

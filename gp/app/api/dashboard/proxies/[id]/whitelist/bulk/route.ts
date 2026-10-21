@@ -4,6 +4,7 @@ import { requireActiveUser } from '@/lib/apiAuth'
 import { bulkAddWhitelistedIps, bulkRemoveWhitelistedIps } from '@/lib/geonode'
 import { isValidIp, validateDescription, whitelistErrorResponse, MAX_BULK_ITEMS } from '@/lib/ipWhitelist'
 import { NextResponse } from 'next/server'
+import { rateLimitedUser } from '@/lib/rateLimit'
 
 async function loadOwnedCredential(supabase: Awaited<ReturnType<typeof createClient>>, id: string, userId: string) {
   const { data: cred } = await supabase
@@ -28,6 +29,8 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
   if (mfaBlock) return mfaBlock
   const suspended = await requireActiveUser(user.id)
   if (suspended) return suspended
+  const throttled = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'whitelist')
+  if (throttled) return throttled
 
   const { id } = await context.params
   const body = await req.json().catch(() => ({}))
@@ -79,6 +82,8 @@ export async function DELETE(req: Request, context: { params: Promise<{ id: stri
   if (mfaBlock) return mfaBlock
   const suspended = await requireActiveUser(user.id)
   if (suspended) return suspended
+  const throttled = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'whitelist')
+  if (throttled) return throttled
 
   const { id } = await context.params
   const body = await req.json().catch(() => ({}))

@@ -146,6 +146,15 @@ jobs:
       #                               hashes. Without it they are stored in
       #                               plaintext / unkeyed (lib/mfaCrypto.ts).
       #   MFA_ENCRYPTION_KEY_PREVIOUS only during a key rotation.
+      #   INVOICE_SELLER_NAME / _ADDRESS / _TAX_ID  printed on every invoice. Unset,
+      #                               invoices fall back to a default seller name and
+      #                               omit the address and tax id.
+      #   SUPABASE_CAPTCHA_ENABLED    set to `true` only together with the Supabase
+      #                               dashboard's CAPTCHA toggle (lib/turnstile.ts):
+      #                               one without the other breaks sign-in.
+      #   REFERRAL_IP_SALT            salt for the hashed IPs kept for referral
+      #                               fraud checks (falls back to CRON_SECRET).
+      #   PASSWORD_BREACH_CHECK       `off` disables the breached-password lookup.
       #
       # CAUTION: setting MFA_ENCRYPTION_KEY here to a value DIFFERENT from the
       # one already live makes existing encrypted TOTP secrets undecryptable
@@ -160,8 +169,14 @@ jobs:
           MFA_ENCRYPTION_KEY: ${{ secrets.MFA_ENCRYPTION_KEY }}
           MFA_ENCRYPTION_KEY_PREVIOUS: ${{ secrets.MFA_ENCRYPTION_KEY_PREVIOUS }}
           NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ secrets.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
+          INVOICE_SELLER_NAME: ${{ secrets.INVOICE_SELLER_NAME }}
+          INVOICE_SELLER_ADDRESS: ${{ secrets.INVOICE_SELLER_ADDRESS }}
+          INVOICE_SELLER_TAX_ID: ${{ secrets.INVOICE_SELLER_TAX_ID }}
+          SUPABASE_CAPTCHA_ENABLED: ${{ secrets.SUPABASE_CAPTCHA_ENABLED }}
+          REFERRAL_IP_SALT: ${{ secrets.REFERRAL_IP_SALT }}
+          PASSWORD_BREACH_CHECK: ${{ secrets.PASSWORD_BREACH_CHECK }}
         run: |
-          for name in TURNSTILE_SECRET_KEY MFA_ENCRYPTION_KEY MFA_ENCRYPTION_KEY_PREVIOUS; do
+          for name in TURNSTILE_SECRET_KEY MFA_ENCRYPTION_KEY MFA_ENCRYPTION_KEY_PREVIOUS INVOICE_SELLER_NAME INVOICE_SELLER_ADDRESS INVOICE_SELLER_TAX_ID SUPABASE_CAPTCHA_ENABLED REFERRAL_IP_SALT PASSWORD_BREACH_CHECK; do
             value="${!name}"
             if [ -n "$value" ]; then
               printf '%s' "$value" | npx wrangler secret put "$name"
@@ -174,6 +189,43 @@ jobs:
           fi
           if [ -n "$TURNSTILE_SECRET_KEY" ] && [ -z "$NEXT_PUBLIC_TURNSTILE_SITE_KEY" ]; then
             echo "::warning::TURNSTILE_SECRET_KEY is set but NEXT_PUBLIC_TURNSTILE_SITE_KEY is not — the widget cannot render, so the server will ignore Turnstile until both are set."
+          fi
+
+      # Post-deploy smoke test. The deploy above is live to everyone the moment
+      # wrangler finishes, so a build that cannot reach the database or lacks a
+      # required setting used to stay live until someone noticed. This calls
+      # /api/health and, if the NEW version reports itself broken, rolls the Worker
+      # back to the previous version and fails the run.
+      #
+      # It rolls back only on evidence the app itself is broken — an HTTP 5xx (our
+      # own 503 "degraded", or a Worker error). Anything else that is not a 200
+      # (a Cloudflare challenge page, a 403/429, a network blip, a 404) is reported
+      # as a warning and left alone: rolling back because a bot-protection rule
+      # blocked the CI runner would undo every deploy.
+      - name: Smoke test (roll back on a broken deploy)
+        working-directory: gp
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          code=000
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /tmp/health.json -w '%{http_code}' --max-time 20 -H "x-cron-secret: $CRON_SECRET" "${APP_URL%/}/api/health" || true)
+            [ "$code" = "200" ] && break
+            echo "attempt $i: HTTP $code"; cat /tmp/health.json 2>/dev/null; echo
+            sleep 10
+          done
+          if [ "$code" = "200" ]; then
+            echo "Health check passed:"; cat /tmp/health.json; echo
+          elif [[ "$code" =~ ^5 ]]; then
+            echo "::error::The new version is unhealthy (HTTP $code) — rolling back to the previous version"
+            npx wrangler rollback --message "auto-rollback: post-deploy health check failed (HTTP $code)" -y \
+              || echo "::error::Rollback itself failed — roll back manually in the Cloudflare dashboard"
+            exit 1
+          else
+            echo "::warning::Health check did not return 200 (last status: HTTP $code) and not a server error — NOT rolling back. Check ${APP_URL%/}/api/health by hand."
           fi
 
       - name: Notify IndexNow (Bing/Yandex) of current sitemap

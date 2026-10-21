@@ -5,7 +5,7 @@ import { initializeTransaction, generateReference } from '@/lib/paystack'
 import { resolveOrder } from '@/lib/plans'
 import { getKesQuote, kesFor } from '@/lib/fx'
 import { appUrl, isCrossSiteRequest } from '@/lib/appUrl'
-import { rateLimited } from '@/lib/rateLimit'
+import { rateLimited, rateLimitedUser } from '@/lib/rateLimit'
 import { NextResponse } from 'next/server'
 
 // Who is calling? The dashboard's buy page authenticates with the browser's
@@ -35,6 +35,10 @@ export async function POST(req: Request) {
 
     const limited = await rateLimited(req, 'PAYMENT_RATE_LIMITER', caller.id)
     if (limited) return limited
+    // Per account as well: the line above is per address+user, which a caller
+    // changing address gets around.
+    const perUser = await rateLimitedUser('PAYMENT_RATE_LIMITER', caller.id, 'checkout')
+    if (perUser) return perUser
 
     const user = { id: caller.id, email: caller.email }
     const supabase = await createAdminClient()

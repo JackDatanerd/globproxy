@@ -239,8 +239,14 @@ export async function checkHostnameResolution(
   try {
     const [a, aaaa] = await Promise.all([dohQuery(fetchImpl, h, 'A'), dohQuery(fetchImpl, h, 'AAAA')])
     const answers = [...(a.Answer ?? []), ...(aaaa.Answer ?? [])].filter((x) => x.type === 1 || x.type === 28)
+    // CNAME records are filtered out of `answers` (they carry names, not
+    // addresses), but a hostname aliased to our own domain would otherwise get
+    // past the name-based isOwnHost() check in validateWebhookUrl().
+    const cnames = [...(a.Answer ?? []), ...(aaaa.Answer ?? [])].filter((x) => x.type === 5)
     if (answers.some((x) => isBlockedHostLiteral(x.data))) {
       result = 'Webhook hostname resolves to a private, loopback, or link-local address'
+    } else if (cnames.some((x) => isOwnHost(x.data))) {
+      result = 'Webhook hostname points at GlobProxy itself'
     } else if (opts.requireResolvable && answers.length === 0 && a.Status === 3 && aaaa.Status === 3) {
       result = 'That hostname does not resolve'
     }

@@ -4,6 +4,8 @@ import AdminAccountSecurity from '@/components/admin/AdminAccountSecurity'
 import BenchmarkSettings from '@/components/admin/BenchmarkSettings'
 import MpesaSettings from '@/components/admin/MpesaSettings'
 import { loadMpesaConfig, getKesQuote } from '@/lib/fx'
+import CronHealthPanel, { type CronRunRow } from '@/components/admin/CronHealthPanel'
+import CspReportsPanel, { type CspRow } from '@/components/admin/CspReportsPanel'
 
 export default async function AdminSettingsPage() {
   const session = await createClient()
@@ -30,6 +32,22 @@ export default async function AdminSettingsPage() {
     mpesaLive = await getKesQuote(admin)
   } catch (e) {
     console.error('[admin/settings] M-Pesa config load failed', e)
+  }
+
+  // Scheduled-task heartbeat and aggregated CSP reports (migration 0055). Either
+  // table may not exist yet on a database that has not run it — the page must
+  // still load.
+  let cronRows: CronRunRow[] = []
+  let cspRows: CspRow[] = []
+  try {
+    const [cron, csp] = await Promise.all([
+      admin.from('cron_task_runs').select('task, last_run_at, last_ok_at, last_error, last_error_at, consecutive_failures'),
+      admin.from('csp_violations').select('directive, blocked, document, hits, last_seen_at').order('hits', { ascending: false }).limit(25),
+    ])
+    cronRows = (cron.data ?? []) as CronRunRow[]
+    cspRows = (csp.data ?? []) as CspRow[]
+  } catch (e) {
+    console.error('[admin/settings] cron/CSP panels failed to load', e)
   }
 
   const currentCredentialId = setting?.value || null
@@ -69,6 +87,9 @@ export default async function AdminSettingsPage() {
         currentCredentialLabel={currentCredentialLabel}
         candidates={candidates ?? []}
       />
+
+      <CronHealthPanel rows={cronRows} />
+      <CspReportsPanel rows={cspRows} />
 
       {/* Account & security — password + MFA management for the admin's
           own account. Previously missing entirely from this page, the only

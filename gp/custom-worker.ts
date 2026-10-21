@@ -45,6 +45,7 @@
 
 // @ts-ignore `.open-next/worker.js` is generated at build time
 import { default as handler } from './.open-next/worker.js'
+import { guardApiRequest, guardResponse, withBodyLimit } from './lib/edgeGuard'
 
 // Keep this in sync with wrangler.jsonc's triggers.crons array — every
 // pattern here needs a matching entry there, and vice versa. Cloudflare
@@ -102,6 +103,12 @@ const CRON_TASKS: Record<string, string[]> = {
 // visitor. This serves repeat anonymous GETs of a fixed allow-list of pages
 // from Cloudflare's per-colo cache for a few minutes instead.
 //
+// The cache key includes the deployed version id (wrangler.jsonc's
+// version_metadata binding). Cloudflare's per-colo cache is NOT purged by a
+// deploy, and a deploy replaces the hashed /_next/static files, so without the
+// version in the key every cached page would point at JS that no longer exists
+// for up to EDGE_CACHE_TTL_SECONDS after each release.
+//
 // What keeps it safe:
 //  - only these exact public paths, only GET, only requests with NO cookie
 //    and NO Authorization header (so anything personalised, or any signed-in
@@ -133,6 +140,16 @@ function isEdgeCacheable(request: Request, url: URL): boolean {
   return true
 }
 
+function appOriginOf(env: any): string | undefined {
+  try {
+    return env?.NEXT_PUBLIC_APP_URL ? new URL(env.NEXT_PUBLIC_APP_URL).origin : undefined
+  } catch {
+    return undefined
+  }
+}
+
+let warnedNoVersion = false
+
 async function fetchWithEdgeCache(request: Request, env: any, ctx: any): Promise<Response> {
   let url: URL
   try {
@@ -140,11 +157,24 @@ async function fetchWithEdgeCache(request: Request, env: any, ctx: any): Promise
   } catch {
     return handler.fetch(request, env, ctx)
   }
+
+  // Request guard for /api/*: body-size cap and same-origin enforcement for
+  // state-changing calls (see lib/edgeGuard.ts for what is exempt and why).
+  const verdict = guardApiRequest(request, url, appOriginOf(env))
+  if (verdict) return guardResponse(verdict)
+  if (url.pathname.startsWith('/api/')) request = withBodyLimit(request)
+
   if (!isEdgeCacheable(request, url)) return handler.fetch(request, env, ctx)
 
-  // One synthetic key per path: the real request's headers must not split
-  // (or poison) the cache.
-  const key = new Request(`${url.origin}${url.pathname}`, { method: 'GET' })
+  // One synthetic key per path AND deployed version: the real request's
+  // headers must not split (or poison) the cache, and a new deploy must start
+  // from an empty cache.
+  const version: string | undefined = env?.CF_VERSION_METADATA?.id
+  if (!version && !warnedNoVersion) {
+    warnedNoVersion = true
+    console.error('[edge-cache] env.CF_VERSION_METADATA is missing (wrangler.jsonc version_metadata) — cached pages will outlive a deploy')
+  }
+  const key = new Request(`${url.origin}${url.pathname}?v=${encodeURIComponent(version ?? 'unknown')}`, { method: 'GET' })
   let cache: Cache | undefined
   try {
     cache = (caches as unknown as { default: Cache }).default

@@ -2,6 +2,7 @@ import { requireMfaVerified } from '@/lib/mfa'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { listDeliveries } from '@/lib/webhookEndpoints'
 import { NextResponse } from 'next/server'
+import { requireActiveUser } from '@/lib/apiAuth'
 
 // Delivery log for one endpoint (last 14 days).
 export async function GET(req: Request, context: { params: Promise<{ id: string }> }) {
@@ -11,6 +12,8 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
 
   const mfaBlock = await requireMfaVerified(req, user.id)
   if (mfaBlock) return mfaBlock
+  const suspended = await requireActiveUser(user.id)
+  if (suspended) return suspended
   const { id } = await context.params
   const url = new URL(req.url)
   const limit = Math.min(Math.max(Math.trunc(Number(url.searchParams.get('limit'))) || 50, 1), 100)

@@ -23,10 +23,10 @@ import { parseIpv6 } from '@/lib/ssrfGuard'
 //                             (app/api/reseller/*); sized so a legitimate bulk
 //                             allocation isn't throttled but the endpoint can't
 //                             be used as an email cannon.
-//   PAYMENT_RATE_LIMITER      /api/checkout (per user) and the public
-//                             /api/verify-payment (per address) — every call
-//                             that reaches a real reference spends Paystack API
-//                             quota shared with the reconcile cron.
+//   PAYMENT_RATE_LIMITER      /api/checkout (per user AND per address+user) and
+//                             the public /api/verify-payment (per address) —
+//                             every call that reaches a real reference spends
+//                             Paystack API quota shared with the reconcile cron.
 //   USER_ACTION_RATE_LIMITER  per signed-in user — session-authenticated
 //                             routes that spend money, create upstream
 //                             resources or make our server call out.
@@ -42,8 +42,13 @@ import { parseIpv6 } from '@/lib/ssrfGuard'
 // wrangler, or the binding name changes) the helpers allow the request
 // rather than 500ing every request in that environment.
 //
-// verify-payment is intentionally unthrottled: it is idempotent and
-// re-verifies everything server-side (see app/api/verify-payment/route.ts).
+// KEYS — read this before adding a limit. rateLimited() keys on the caller's
+// ADDRESS plus an optional discriminator. Putting a user id in the discriminator
+// ('allocate:<uid>') does NOT make it a per-user limit: a caller who changes
+// address gets a fresh bucket every time, which is trivial for customers of a
+// proxy service. Anything that must be bounded per ACCOUNT (money, upstream
+// calls, emails) must also call rateLimitedUser(). Calling both is normal: the
+// address limit bounds one source, the user limit bounds the account.
 export type RateLimiterBinding =
   | 'AUTH_RATE_LIMITER'
   | 'AUTH_TARGET_RATE_LIMITER'
@@ -134,13 +139,31 @@ export async function rateLimited(
   }
 }
 
+// One mailbox, one key. `victim+1@gmail.com`, `victim+2@gmail.com` and
+// `v.ictim@gmail.com` all deliver to the same inbox, so keying the per-target
+// limit on the literal string let an attacker flood a victim with a fresh
+// budget per variant. Strips a `+tag` (honoured by essentially every provider
+// that matters), and for Gmail also ignores dots and folds googlemail.com.
+export function canonicalEmail(raw: string): string {
+  const e = raw.trim().toLowerCase()
+  const at = e.lastIndexOf('@')
+  if (at < 1) return e
+  let local = e.slice(0, at)
+  let domain = e.slice(at + 1)
+  const plus = local.indexOf('+')
+  if (plus > 0) local = local.slice(0, plus)
+  if (domain === 'googlemail.com') domain = 'gmail.com'
+  if (domain === 'gmail.com') local = local.replace(/\./g, '')
+  return `${local}@${domain}`
+}
+
 // Per target email, across all callers. Call it once the email is known
 // (after the body is parsed). The response is identical whether or not an
 // account exists for that address, so it cannot be used to probe for one.
 export async function rateLimitedTarget(scope: string, email: unknown): Promise<NextResponse | null> {
   try {
     if (typeof email !== 'string') return null
-    const target = email.trim().toLowerCase()
+    const target = canonicalEmail(email)
     if (!target) return null
     const limiter = getLimiter('AUTH_TARGET_RATE_LIMITER')
     if (!limiter) return null
@@ -156,7 +179,7 @@ export async function rateLimitedTarget(scope: string, email: unknown): Promise<
 // addresses is still one user). `scope` names the route so unrelated routes
 // do not drain each other's budget.
 export async function rateLimitedUser(
-  binding: 'USER_ACTION_RATE_LIMITER' | 'USER_EMAIL_RATE_LIMITER',
+  binding: 'USER_ACTION_RATE_LIMITER' | 'USER_EMAIL_RATE_LIMITER' | 'RESELLER_RATE_LIMITER' | 'PAYMENT_RATE_LIMITER',
   userId: string,
   scope: string
 ): Promise<NextResponse | null> {

@@ -31,7 +31,7 @@ function mbToGb(mb: number): number {
 // has a bandwidth reservation committed by then (a kill between the reserve
 // and the insert leaks it permanently).
 const REQUEST_TIMEOUT_MS = 12_000
-async function gfetch(url: string, init: RequestInit = {}, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Response> {
+async function gfetchOnce(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
   try {
@@ -39,6 +39,20 @@ async function gfetch(url: string, init: RequestInit = {}, timeoutMs = REQUEST_T
   } finally {
     clearTimeout(timer)
   }
+}
+
+// Every customer's calls share ONE reseller key, so the provider's rate limit is
+// shared too. A 429 means "not processed", which makes a single short retry safe
+// for every method (and the bodies sent here are strings, so they can be re-sent).
+// Capped at 2s so a throttled provider cannot hold a Worker request open.
+async function gfetch(url: string, init: RequestInit = {}, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Response> {
+  const res = await gfetchOnce(url, init, timeoutMs)
+  if (res.status !== 429) return res
+  const retryAfter = Number(res.headers.get('retry-after'))
+  const waitMs = Math.min(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 1000, 2000) + Math.floor(Math.random() * 250)
+  console.warn('[upstream] rate limited (429) — retrying once after', waitMs, 'ms')
+  await new Promise((r) => setTimeout(r, waitMs))
+  return gfetchOnce(url, init, timeoutMs)
 }
 
 // Spec requires password to be uuid-formatted, not an arbitrary string —

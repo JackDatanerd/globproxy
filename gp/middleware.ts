@@ -312,6 +312,9 @@ export const config = {
   // that merely STARTS with those letters ("/apiary", "/api-docs") is not
   // silently skipped. Static file types that never need a session (scripts,
   // styles, fonts, source maps, media) are excluded so they don't each pay
-  // for an auth round trip.
-  matcher: ['/((?!api/|api$|_next/static|_next/image|favicon\\.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|avif|ico|webmanifest|xml|txt|js|css|map|woff|woff2|ttf|otf|json|pdf|mp4|webm|html)$).*)'],
+  // for an auth round trip — EXCEPT under the protected prefixes: a dynamic
+  // segment can end in any extension (`/invoice/<id>.png`), and the extension
+  // rule used to switch the auth and MFA gate off for such a URL. Nothing under
+  // /dashboard, /reseller, /admin or /invoice is ever a static file.
+  matcher: ['/((?!api/|api$|_next/static|_next/image|favicon\\.ico|(?!(?:dashboard|reseller|admin|invoice)(?:/|$)).*\\.(?:svg|png|jpg|jpeg|gif|webp|avif|ico|webmanifest|xml|txt|js|css|map|woff|woff2|ttf|otf|json|pdf|mp4|webm|html)$).*)'],
 }

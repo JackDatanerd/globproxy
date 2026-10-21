@@ -13,12 +13,14 @@ function formatDate(d: string | null) {
 
 export default async function InvoicePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
+  // orders.id is a uuid. Anything else — including `<uuid>.png`, a shape the
+  // middleware matcher used to skip — is a 404 before any query runs.
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) notFound()
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   // Belt-and-suspenders: middleware.ts already gates this path (it's in
-  // isProtected) for the not-logged-in and MFA-step-up (for accounts that
-  // enabled 2FA) cases, the same way dashboard/layout.tsx re-checks
-  // suspension/MFA despite middleware already handling it.
+  // isProtected), and app/invoice/layout.tsx repeats the suspended / deleted /
+  // MFA-step-up checks the way dashboard/layout.tsx does.
   if (!user) redirect(`/auth/login?next=/invoice/${id}`)
 
   // createClient() is the cookie/JWT client, not the admin client — RLS's

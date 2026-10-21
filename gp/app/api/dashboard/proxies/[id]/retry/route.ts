@@ -2,7 +2,7 @@ import { requireMfaVerified } from '@/lib/mfa'
 import { createClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { provisionPendingCredentials } from '@/lib/credentials'
-import { rateLimited } from '@/lib/rateLimit'
+import { rateLimited, rateLimitedUser } from '@/lib/rateLimit'
 import { NextResponse } from 'next/server'
 
 // "Retry now" for a credential stuck in 'pending' (the proxy network was
@@ -26,6 +26,8 @@ export async function POST(
 
   const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', `proxy-retry:${user.id}`)
   if (limited) return limited
+  const perUser = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'proxy-retry')
+  if (perUser) return perUser
 
   const { id } = await context.params
 

@@ -3,6 +3,7 @@ import { requireActiveUser } from '@/lib/apiAuth'
 import { updateEndpoint, deleteEndpoint } from '@/lib/webhookEndpoints'
 import { NextResponse } from 'next/server'
 import { requireStepUp } from '@/lib/reauth'
+import { rateLimitedUser } from '@/lib/rateLimit'
 
 // Ownership is enforced inside lib/webhookEndpoints.ts by scoping every
 // write to user_id (RLS can't run the SSRF guard — see migration 0018).
@@ -19,6 +20,8 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
 
   const suspended = await requireActiveUser(user.id)
   if (suspended) return suspended
+  const throttled = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'webhook-update')
+  if (throttled) return throttled
 
   const { id } = await context.params
   const body = await req.json().catch(() => ({}))

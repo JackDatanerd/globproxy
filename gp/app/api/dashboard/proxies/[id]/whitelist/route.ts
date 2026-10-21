@@ -4,6 +4,7 @@ import { requireActiveUser } from '@/lib/apiAuth'
 import { listWhitelistedIps, addWhitelistedIp, removeWhitelistedIp } from '@/lib/geonode'
 import { isValidIp, validateDescription, whitelistErrorResponse } from '@/lib/ipWhitelist'
 import { NextResponse } from 'next/server'
+import { rateLimitedUser } from '@/lib/rateLimit'
 
 // Shared ownership + provisioning lookup for every handler below. Not
 // gated on `created_by` the way delete/topup are — unlike releasing
@@ -28,6 +29,10 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
 
   const mfaBlock = await requireMfaVerified(req, user.id)
   if (mfaBlock) return mfaBlock
+  const suspended = await requireActiveUser(user.id)
+  if (suspended) return suspended
+  const throttled = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'whitelist')
+  if (throttled) return throttled
   const { id } = await context.params
   const cred = await loadOwnedCredential(supabase, id, user.id)
   if (!cred) return NextResponse.json({ error: 'Credential not found' }, { status: 404 })
@@ -57,6 +62,8 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
   if (mfaBlock) return mfaBlock
   const suspended = await requireActiveUser(user.id)
   if (suspended) return suspended
+  const throttled = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'whitelist')
+  if (throttled) return throttled
 
   const { id } = await context.params
   const body = await req.json().catch(() => ({}))
@@ -92,6 +99,8 @@ export async function DELETE(req: Request, context: { params: Promise<{ id: stri
   if (mfaBlock) return mfaBlock
   const suspended = await requireActiveUser(user.id)
   if (suspended) return suspended
+  const throttled = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'whitelist')
+  if (throttled) return throttled
 
   const { id } = await context.params
   const url = new URL(req.url)

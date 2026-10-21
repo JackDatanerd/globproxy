@@ -8,6 +8,7 @@ import {
   KEY_VIEW_COLS, cleanLabel, parseScopes, parseExpiryDays, loadKeyOwner, canUseApi, canAllocate,
   createApiKey, planKeyUpdate, applyKeyUpdate, revokeApiKeys, notifyKeyEvent,
 } from '@/lib/apiKeys'
+import { requireActiveUser } from '@/lib/apiAuth'
 
 const err = (message: string, status: number, code?: string) => NextResponse.json({ error: message, ...(code ? { code } : {}) }, { status })
 
@@ -16,6 +17,9 @@ export async function GET() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return err('Unauthorized', 401)
+
+  const suspended = await requireActiveUser(user.id)
+  if (suspended) return suspended
 
   const { data, error } = await supabase
     .from('api_keys')

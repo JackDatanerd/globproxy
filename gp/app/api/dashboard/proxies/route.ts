@@ -2,7 +2,7 @@ import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { parseCreateCredential, parseFiniteNumber } from '@/lib/apiValidation'
 import { createCredential } from '@/lib/credentials'
-import { rateLimited } from '@/lib/rateLimit'
+import { rateLimited, rateLimitedUser } from '@/lib/rateLimit'
 import { NextResponse } from 'next/server'
 import { requireMfaVerified } from '@/lib/mfa'
 
@@ -25,6 +25,8 @@ export async function POST(req: Request) {
   // no limit at all. Same shared limiter binding as usage/history.
   const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', `proxy-create:${user.id}`)
   if (limited) return limited
+  const perUser = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'proxy-create')
+  if (perUser) return perUser
 
   const body = await req.json().catch(() => null)
 

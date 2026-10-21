@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { isValidIp } from '@/lib/ipWhitelist'
 import { NextResponse } from 'next/server'
+import { requireActiveUser } from '@/lib/apiAuth'
 
 // Returns the caller's public IP as this app sees it, so the whitelist tab
 // can offer "use my current IP" instead of sending people to a what's-my-ip
@@ -11,6 +12,9 @@ export async function GET(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const suspended = await requireActiveUser(user.id)
+  if (suspended) return suspended
 
   const raw =
     req.headers.get('cf-connecting-ip') ||

@@ -1,7 +1,7 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { requireMfaVerified } from '@/lib/mfa'
-import { rateLimited } from '@/lib/rateLimit'
+import { rateLimited, rateLimitedUser } from '@/lib/rateLimit'
 import { parseAllocationBody, allocateBandwidth } from '@/lib/resellerAllocation'
 import { NextResponse } from 'next/server'
 
@@ -32,6 +32,8 @@ export async function POST(req: Request) {
     // an unmetered email cannon, or probe which emails are registered.
     const limited = await rateLimited(req, 'RESELLER_RATE_LIMITER', `allocate:${user.id}`)
     if (limited) return limited
+    const perUser = await rateLimitedUser('RESELLER_RATE_LIMITER', user.id, 'allocate')
+    if (perUser) return perUser
 
     let body: any
     try { body = await req.json() } catch { body = null }

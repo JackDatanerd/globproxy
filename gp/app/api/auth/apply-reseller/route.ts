@@ -5,7 +5,7 @@ import { NextResponse } from 'next/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { sendEmail, escapeHtml } from '@/lib/email'
-import { rateLimited } from '@/lib/rateLimit'
+import { rateLimited, rateLimitedUser } from '@/lib/rateLimit'
 
 function cleanStr(v: unknown, max: number): string {
   return typeof v === 'string' ? v.trim().slice(0, max) : ''
@@ -31,6 +31,8 @@ export async function POST(req: Request) {
 
     const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', `apply:${user.id}`)
     if (limited) return limited
+    const perUser = await rateLimitedUser('USER_EMAIL_RATE_LIMITER', user.id, 'apply-reseller')
+    if (perUser) return perUser
 
     const body = await req.json().catch(() => ({}))
     const full_name = cleanStr(body.full_name, 100)

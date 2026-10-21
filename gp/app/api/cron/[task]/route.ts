@@ -12,10 +12,12 @@ import { activateBandwidth, retryPostCredit } from '@/lib/bandwidth'
 import { alertAdminPayment } from '@/lib/paymentAlerts'
 import { flushSecurityNotices } from '@/lib/securityEvents'
 import { REFERRAL_GB_BONUS } from '@/lib/referrals'
+import { findReportedError, recordCronRun, checkCronFreshness } from '@/lib/cronHealth'
 import { NextResponse } from 'next/server'
 
-// Secured with CRON_SECRET env var
-// Set this in Cloudflare Workers env vars and wrangler.jsonc
+// Secured with the CRON_SECRET Worker secret (pushed by .github/workflows/deploy.yml).
+// Invoked by custom-worker.ts's scheduled() handler; every run is recorded in
+// cron_task_runs (lib/cronHealth.ts) so failures and silence are visible.
 function validateCron(req: Request): boolean {
   const secret = req.headers.get('x-cron-secret') ?? ''
   const expected = process.env.CRON_SECRET ?? ''
@@ -441,6 +443,10 @@ async function runCleanup() {
   const { error: mfaErr } = await supabase.rpc('cleanup_expired_mfa_sessions')
   if (mfaErr) console.error('cleanup_expired_mfa_sessions failed:', mfaErr)
 
+  // Aggregated CSP reports older than 30 days (migration 0055).
+  const { error: cspErr } = await supabase.rpc('prune_csp_violations')
+  if (cspErr) console.error('prune_csp_violations failed:', cspErr)
+
   // Webhook delivery log (14 days), API idempotency keys (24h), API request log (30 days).
   const pruned = await pruneIntegrationData().catch((e) => {
     console.error('pruneIntegrationData failed:', e)
@@ -453,7 +459,7 @@ async function runCleanup() {
     return { warned: 0 }
   })
 
-  return { cleaned: stale?.length ?? 0, mfa_sessions_swept: !mfaErr, ...pruned, api_keys_expiry_warned: keyExpiry.warned }
+  return { cleaned: stale?.length ?? 0, mfa_sessions_swept: !mfaErr, csp_pruned: !cspErr, ...pruned, api_keys_expiry_warned: keyExpiry.warned }
 }
 
 // ── Security notices + audit-log retention (migration 0039) ──────────
@@ -629,7 +635,7 @@ export async function POST(req: Request, context: { params: Promise<{ task: stri
   try {
     let result
     switch (task) {
-      case 'stock':     result = await runStockCheck();       break
+      case 'stock':     result = { ...(await runStockCheck()), cron_health: await checkCronFreshness() }; break
       case 'usage':     result = await runUsageSync();        break
       case 'alerts':    result = await runBandwidthAlerts();  break
       case 'summary':   result = await runDailySummary();     break
@@ -642,9 +648,13 @@ export async function POST(req: Request, context: { params: Promise<{ task: stri
       case 'benchmark': result = await runBenchmark();        break
       default: return NextResponse.json({ error: `Unknown task: ${task}` }, { status: 400 })
     }
+    // A task that catches its own failure reports `{ error }` inside a 200; the
+    // heartbeat records that as a failed run too.
+    await recordCronRun(task, findReportedError(result))
     return NextResponse.json({ task, result, timestamp: new Date().toISOString() })
   } catch (err: any) {
     console.error(`Cron task ${task} failed:`, err)
+    await recordCronRun(task, String(err?.message ?? err))
     return NextResponse.json({ error: err.message }, { status: 500 })
   }
 }

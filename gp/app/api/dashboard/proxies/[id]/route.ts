@@ -3,6 +3,7 @@ import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { deleteCredential, updateCredentialSettings } from '@/lib/credentials'
 import { NextResponse } from 'next/server'
+import { rateLimitedUser } from '@/lib/rateLimit'
 
 export async function DELETE(
   req: Request,
@@ -16,6 +17,8 @@ export async function DELETE(
   if (mfaBlock) return mfaBlock
   const suspended = await requireActiveUser(user.id)
   if (suspended) return suspended
+  const throttled = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'proxy-delete')
+  if (throttled) return throttled
 
   const { id } = await context.params
 

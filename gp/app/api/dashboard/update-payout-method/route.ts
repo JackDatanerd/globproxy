@@ -5,7 +5,7 @@ import { normalizeMpesaPhone } from '@/lib/mpesa'
 import { isValidTronAddress } from '@/lib/tron'
 import { requireStepUp } from '@/lib/reauth'
 import { requireActiveUser } from '@/lib/apiAuth'
-import { rateLimited } from '@/lib/rateLimit'
+import { rateLimited, rateLimitedUser } from '@/lib/rateLimit'
 import { cleanText } from '@/lib/validation'
 import { AFFILIATE_HOLD_HOURS } from '@/lib/referrals'
 import { rejectCrossSite } from '@/lib/apiAuth'
@@ -46,6 +46,8 @@ export async function POST(req: Request) {
 
     const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', 'payout-method')
     if (limited) return limited
+    const perUser = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'payout-method')
+    if (perUser) return perUser
     const inactive = await requireActiveUser(user.id)
     if (inactive) return inactive
 

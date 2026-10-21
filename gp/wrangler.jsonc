@@ -10,6 +10,15 @@
   // Persist Worker logs. Without this, every console.error in the payment,
   // webhook and cron paths is gone the moment the request ends.
   "observability": { "enabled": true },
+  // Exposes the id of the deployed version to the Worker as env.CF_VERSION_METADATA.id.
+  // custom-worker.ts puts it in the anonymous edge-cache key, so a deploy can never
+  // be followed by cached HTML that points at JS files the new build no longer has;
+  // /api/health reports it too.
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
+  // `wrangler deploy` replaces the Worker's plain-text dashboard variables with
+  // whatever this file declares (nothing), silently wiping any that were added by
+  // hand. Keep them. (Secrets were never affected; deploy.yml pushes those.)
+  "keep_vars": true,
   "main": "custom-worker.ts",
   "assets": { "directory": ".open-next/assets", "binding": "ASSETS" },
   // Left at Cloudflare's defaults on purpose: this file does not know whether
@@ -73,8 +82,8 @@
         "namespace_id": "1004",
         "simple": { "limit": 10, "period": 60 }
       },
-      // Reseller allocate / reclaim, keyed per reseller (see
-      // app/api/reseller/allocate/route.ts). Higher than AUTH so a legitimate
+      // Reseller allocate / reclaim, applied per address+reseller AND per
+      // reseller via rateLimitedUser (see app/api/reseller/allocate/route.ts). Higher than AUTH so a legitimate
       // bulk allocation isn't throttled, but low enough to stop the allocate
       // endpoint being used as an email cannon or a registered-email oracle.
       {
@@ -83,7 +92,7 @@
         "namespace_id": "1005",
         "simple": { "limit": 30, "period": 60 }
       },
-      // Payments: /api/checkout (keyed per user) and the unauthenticated
+      // Payments: /api/checkout (per user and per address+user) and the unauthenticated
       // /api/verify-payment (keyed per IP). Every verify call that reaches a
       // real reference spends one request against Paystack's own API quota,
       // which the reconcile cron and genuine customers share — so the public

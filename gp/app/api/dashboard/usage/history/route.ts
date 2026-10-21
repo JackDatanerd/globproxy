@@ -1,7 +1,7 @@
 import { requireMfaVerified } from '@/lib/mfa'
 import { createClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
-import { rateLimited } from '@/lib/rateLimit'
+import { rateLimited, rateLimitedUser } from '@/lib/rateLimit'
 import { getPeriodStats, getHostCountryStatsWithMeta, GeonodeApiError, type PeriodStat, type HostCountryStat } from '@/lib/geonode'
 import { toCsv, csvResponse } from '@/lib/csv'
 import { NextResponse } from 'next/server'
@@ -147,6 +147,8 @@ export async function GET(req: Request) {
   // every customer. 10/min per user+IP is far above what the UI needs.
   const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', `usage:${user.id}`)
   if (limited) return limited
+  const perUser = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'usage-history')
+  if (perUser) return perUser
 
   const url = new URL(req.url)
   const range = parseRange(url.searchParams.get('range'))
