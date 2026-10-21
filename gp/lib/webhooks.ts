@@ -21,13 +21,18 @@ const MAX_ATTEMPTS = 6
 const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 30 * 60_000, 2 * 3_600_000, 6 * 3_600_000] // after attempt 1..5
 const DISABLE_THRESHOLD = 50
 const REQUEST_TIMEOUT_MS = 8000
-const RETRIES_PER_RUN = 10 // Workers caps subrequests per invocation — keep each cron tick small
+// Workers caps subrequests per invocation, so a tick is bounded — but the bound
+// is generous enough that the deferred first attempts (usage sync, auto top-up)
+// plus retries clear within a tick or two. ~6 subrequests per delivery.
+const RETRIES_PER_RUN = 24
+const PER_ENDPOINT_PER_RUN = 3   // one dead endpoint must not use the whole tick
+const ENDPOINT_PARALLELISM = 6   // endpoints worked at once; one endpoint's deliveries stay sequential
 const CLAIM_LEASE_MS = 5 * 60_000
 const TEST_COOLDOWN_MS = 10_000
 
 type SupabaseAdmin = Awaited<ReturnType<typeof createAdminClient>>
 type Endpoint = {
-  id: string; user_id: string; url: string; secret: string
+  id: string; user_id: string; url: string; secret: string; event_types?: string[]
   // Set for a limited time after a secret rotation (see rotateSecret).
   previous_secret?: string | null; previous_secret_expires_at?: string | null
 }
@@ -37,7 +42,7 @@ type Delivery = {
 }
 type AttemptResult = { ok: boolean; error?: string; status?: number; deliveryId?: string }
 
-const EP_COLS = 'id, user_id, url, secret, previous_secret, previous_secret_expires_at'
+const EP_COLS = 'id, user_id, url, secret, event_types, previous_secret, previous_secret_expires_at'
 const DELIVERY_COLS = 'id, endpoint_id, user_id, event_id, event_type, payload, attempts, status'
 const RESPONSE_SNIPPET_CHARS = 500
 
@@ -252,7 +257,7 @@ export async function dispatchWebhook(
   userId: string,
   event: WebhookEvent,
   data: Record<string, unknown>,
-  opts: { defer?: boolean } = {}
+  opts: { defer?: boolean; skipIfSubscribedTo?: WebhookEvent } = {}
 ): Promise<void> {
   try {
     const supabase = await createAdminClient()
@@ -267,13 +272,18 @@ export async function dispatchWebhook(
       console.error('[webhooks] failed to load endpoints for', userId, event, error)
       return
     }
-    if (!endpoints?.length) return
+    // skipIfSubscribedTo: an endpoint that already receives that OTHER event
+    // for the same moment is not sent this one too (see runBandwidthThresholdWebhooks).
+    const targets = ((endpoints ?? []) as Endpoint[]).filter(
+      (ep) => !(opts.skipIfSubscribedTo && ep.event_types?.includes(opts.skipIfSubscribedTo))
+    )
+    if (!targets.length) return
 
     const eventId = crypto.randomUUID()
     const payload = JSON.stringify({ id: eventId, event, created_at: new Date().toISOString(), data })
 
     await Promise.all(
-      (endpoints as Endpoint[]).map(async (ep) => {
+      targets.map(async (ep) => {
         // Inserted as 'retrying' due in 2 minutes: if this Worker dies
         // between insert and first attempt, the retry task still picks it up.
         const { data: row, error: insErr } = await supabase
@@ -356,45 +366,65 @@ export async function redeliverWebhook(userId: string, deliveryId: string, endpo
 }
 
 // Cron: retry due deliveries. Each is claimed with a lease first so two
-// overlapping runs can't double-send.
+// overlapping runs can't double-send. Fairness: at most PER_ENDPOINT_PER_RUN
+// deliveries per endpoint per tick (a customer whose endpoint is down cannot
+// starve everyone else), and different endpoints are worked in parallel so one
+// slow receiver does not serialise the whole batch behind its 8 s timeout.
 export async function runWebhookRetries(limit = RETRIES_PER_RUN) {
   const supabase = await createAdminClient()
   const nowIso = new Date().toISOString()
-  const { data: due, error } = await supabase
+  const { data: dueRows, error } = await supabase
     .from('webhook_deliveries')
     .select(DELIVERY_COLS)
     .eq('status', 'retrying')
     .lte('next_attempt_at', nowIso)
     .order('next_attempt_at', { ascending: true })
-    .limit(limit)
+    .limit(limit * 4)
   if (error) {
     console.error('[webhooks] failed to load due deliveries', error)
     return { due: 0, retried: 0, succeeded: 0 }
   }
 
+  const byEndpoint = new Map<string, Delivery[]>()
+  let picked = 0
+  for (const d of (dueRows ?? []) as Delivery[]) {
+    if (picked >= limit) break
+    const list = byEndpoint.get(d.endpoint_id) ?? []
+    if (list.length >= PER_ENDPOINT_PER_RUN) continue
+    list.push(d)
+    byEndpoint.set(d.endpoint_id, list)
+    picked++
+  }
+
   let retried = 0
   let succeeded = 0
-  for (const d of (due ?? []) as Delivery[]) {
-    const { data: claimed } = await supabase
-      .from('webhook_deliveries')
-      .update({ next_attempt_at: new Date(Date.now() + CLAIM_LEASE_MS).toISOString() })
-      .eq('id', d.id).eq('status', 'retrying').lte('next_attempt_at', nowIso)
-      .select('id')
-    if (!claimed?.length) continue
+  const runGroup = async (group: Delivery[]) => {
+    for (const d of group) {
+      const { data: claimed } = await supabase
+        .from('webhook_deliveries')
+        .update({ next_attempt_at: new Date(Date.now() + CLAIM_LEASE_MS).toISOString() })
+        .eq('id', d.id).eq('status', 'retrying').lte('next_attempt_at', nowIso)
+        .select('id')
+      if (!claimed?.length) continue
 
-    const { data: ep } = await supabase
-      .from('webhook_endpoints').select('id, user_id, url, secret, previous_secret, previous_secret_expires_at, enabled').eq('id', d.endpoint_id).single()
-    if (!ep || !ep.enabled) {
-      await supabase.from('webhook_deliveries')
-        .update({ status: 'failed', next_attempt_at: null, last_error: 'Endpoint disabled or deleted before delivery' })
-        .eq('id', d.id)
-      continue
+      const { data: ep } = await supabase
+        .from('webhook_endpoints').select('id, user_id, url, secret, previous_secret, previous_secret_expires_at, enabled').eq('id', d.endpoint_id).single()
+      if (!ep || !ep.enabled) {
+        await supabase.from('webhook_deliveries')
+          .update({ status: 'failed', next_attempt_at: null, last_error: 'Endpoint disabled or deleted before delivery' })
+          .eq('id', d.id)
+        continue
+      }
+      const r = await attemptDelivery(supabase, ep as Endpoint, d, { retry: true })
+      retried++
+      if (r.ok) succeeded++
     }
-    const r = await attemptDelivery(supabase, ep as Endpoint, d, { retry: true })
-    retried++
-    if (r.ok) succeeded++
   }
-  return { due: due?.length ?? 0, retried, succeeded }
+  const groups = [...byEndpoint.values()]
+  for (let i = 0; i < groups.length; i += ENDPOINT_PARALLELISM) {
+    await Promise.all(groups.slice(i, i + ENDPOINT_PARALLELISM).map((g) => runGroup(g).catch((e) => console.error('[webhooks] retry group failed', e))))
+  }
+  return { due: picked, retried, succeeded }
 }
 
 // Cron (every 5 min): bandwidth-threshold webhooks. Previously fired from
@@ -464,12 +494,46 @@ export async function runBandwidthThresholdWebhooks() {
 
     if (level === 100) {
       await dispatchWebhook(acc.user_id, 'bandwidth_exhausted', payloadBase)
+      // An endpoint subscribed to the threshold event but not to the exhausted
+      // one would otherwise hear nothing at 100% (the de-dupe flags are set
+      // either way): give it the final threshold, once.
+      await dispatchWebhook(acc.user_id, 'bandwidth_threshold_crossed', { threshold_pct: 100, ...payloadBase }, { skipIfSubscribedTo: 'bandwidth_exhausted' })
     } else {
       await dispatchWebhook(acc.user_id, 'bandwidth_threshold_crossed', { threshold_pct: level, ...payloadBase })
     }
     fired++
   }
   return { fired }
+}
+
+// Integration housekeeping (prune + API-key expiry warnings), run from the
+// independent 5-minute 'webhooks' task at most once an hour. It used to live in
+// the daily alerts → summary → cleanup chain, which stops at the first failure:
+// one failing e-mail run then meant no pruning and no key-expiry warnings.
+const HOUSEKEEPING_INTERVAL_MS = 3_600_000
+export async function runIntegrationHousekeeping(
+  warnExpiring: () => Promise<{ warned: number }>
+) {
+  const supabase = await createAdminClient()
+  const { data: row } = await supabase.from('platform_settings').select('value').eq('key', 'integration_housekeeping_at').maybeSingle()
+  const last = row?.value ? Date.parse(row.value) : 0
+  if (Number.isFinite(last) && Date.now() - last < HOUSEKEEPING_INTERVAL_MS) return { ran: false as const }
+
+  // Claim the slot first: a duplicate run (overlapping ticks) is harmless — both
+  // steps are idempotent — but a stuck failure must not retry every 5 minutes.
+  const { error: claimErr } = await supabase.from('platform_settings')
+    .upsert({ key: 'integration_housekeeping_at', value: new Date().toISOString() }, { onConflict: 'key' })
+  if (claimErr) { console.error('[webhooks] housekeeping claim failed', claimErr); return { ran: false as const } }
+
+  const pruned = await pruneIntegrationData().catch((e) => {
+    console.error('pruneIntegrationData failed:', e)
+    return { deliveries_pruned: false, idempotency_pruned: false, request_log_pruned: false }
+  })
+  const keyExpiry = await warnExpiring().catch((e) => {
+    console.error('warnExpiringApiKeys failed:', e)
+    return { warned: 0 }
+  })
+  return { ran: true as const, ...pruned, api_keys_expiry_warned: keyExpiry.warned }
 }
 
 // Cron cleanup: delivery log older than 14 days, idempotency keys older than 24h,

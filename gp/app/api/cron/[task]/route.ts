@@ -3,7 +3,7 @@ import { createAdminClient } from '@/lib/supabase/server'
 import { syncAllUsage } from '@/lib/usageSync'
 import { computeStockStatus } from '@/lib/stockStatus'
 import { sendEmail, escapeHtml } from '@/lib/email'
-import { runWebhookRetries, runBandwidthThresholdWebhooks, pruneIntegrationData } from '@/lib/webhooks'
+import { runWebhookRetries, runBandwidthThresholdWebhooks, runIntegrationHousekeeping } from '@/lib/webhooks'
 import { warnExpiringApiKeys } from '@/lib/apiKeyExpiry'
 import { provisionPendingCredentials, reconcileLimitSync, flagStalledPending } from '@/lib/credentials'
 import { runConfiguredBenchmark } from '@/lib/networkProbe'
@@ -504,17 +504,9 @@ async function runCleanup() {
   const { error: cspErr } = await supabase.rpc('prune_csp_violations')
   if (cspErr) console.error('prune_csp_violations failed:', cspErr)
 
-  // Webhook delivery log (14 days), API idempotency keys (24h), API request log (30 days).
-  const pruned = await pruneIntegrationData().catch((e) => {
-    console.error('pruneIntegrationData failed:', e)
-    return { deliveries_pruned: false, idempotency_pruned: false, request_log_pruned: false }
-  })
-
-  // API keys expiring within 7 days: e-mail + api_key_expiring webhook, once each.
-  const keyExpiry = await warnExpiringApiKeys().catch((e) => {
-    console.error('warnExpiringApiKeys failed:', e)
-    return { warned: 0 }
-  })
+  // Webhook-delivery / idempotency / API-request-log pruning and the API-key expiry
+  // warnings moved to the independent 5-minute 'webhooks' task
+  // (runIntegrationHousekeeping): this chain stops at its first failure.
 
   // Terminated ("hidden") sticky sessions are kept for a week, then purged:
   // nothing ever removed them, so they only accumulated (and count toward the
@@ -524,7 +516,7 @@ async function runCleanup() {
     .delete().not('terminated_at', 'is', null).lt('terminated_at', sessionCutoff)
   if (sessErr) console.error('terminated proxy_sessions purge failed:', sessErr)
 
-  return { cleaned: stale?.length ?? 0, mfa_sessions_swept: !mfaErr, csp_pruned: !cspErr, sessions_purged: !sessErr, ...pruned, api_keys_expiry_warned: keyExpiry.warned }
+  return { cleaned: stale?.length ?? 0, mfa_sessions_swept: !mfaErr, csp_pruned: !cspErr, sessions_purged: !sessErr }
 }
 
 // ── Security notices + audit-log retention (migration 0039) ──────────
@@ -702,7 +694,8 @@ async function runWebhooks() {
   try {
     const retries = await runWebhookRetries()
     const thresholds = await runBandwidthThresholdWebhooks()
-    return { retries, thresholds }
+    const housekeeping = await runIntegrationHousekeeping(warnExpiringApiKeys)
+    return { retries, thresholds, housekeeping }
   } catch (e: any) {
     console.error('[cron webhooks] failed:', e)
     return { error: String(e?.message ?? e) }

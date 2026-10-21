@@ -64,14 +64,14 @@ export const WEBHOOK_EVENT_DESCRIPTIONS: Record<WebhookEvent, { description: str
   session_resumed: { description: 'A suspended sub-user was re-enabled.', data: ['credential_id', 'label'] },
   auto_topup_triggered: { description: 'Auto-topup added bandwidth to a sub-user. partial is true when the balance could only cover part of the configured amount.', data: ['credential_id', 'gb_added', 'gb_allocated', 'partial'] },
   auto_topup_failed: { description: 'Auto-topup could not fully run (once until it recovers). reason is insufficient_balance, partial_funding or session_limit.', data: ['credential_id', 'reason', 'gb_allocated', 'gb_used', 'amount_gb', 'gb_added'] },
-  bandwidth_threshold_crossed: { description: 'The share of your account that is committed (allocated into sub-users) crossed 80% or 95%. Checked every 5 minutes.', data: ['threshold_pct', 'allocated_pct', 'used_pct', 'available_gb', 'total_gb', 'used_gb', 'allocated_gb'] },
+  bandwidth_threshold_crossed: { description: 'The share of your account that is committed (allocated into sub-users) crossed 80% or 95%. Checked every 5 minutes. Endpoints that do not also subscribe to bandwidth_exhausted receive it once more at 100% (threshold_pct 100).', data: ['threshold_pct', 'allocated_pct', 'used_pct', 'available_gb', 'total_gb', 'used_gb', 'allocated_gb'] },
   bandwidth_exhausted: { description: 'Available (unallocated) bandwidth reached zero.', data: ['allocated_pct', 'used_pct', 'available_gb', 'total_gb', 'used_gb', 'allocated_gb'] },
   bandwidth_credited: { description: 'Bandwidth was added to your account (purchase or reseller allocation). For purchases data has order_id and amount_usd; for allocations, transfer_id.', data: ['gb_credited', 'source', 'order_id', 'amount_usd', 'transfer_id'] },
   bandwidth_allocated: { description: 'You allocated bandwidth to a client (resellers).', data: ['transfer_id', 'recipient_email', 'gb', 'note'] },
   bandwidth_reclaimed: { description: 'Unused bandwidth was reclaimed from your account by the reseller who allocated it.', data: ['transfer_id', 'gb_reclaimed', 'gb_remaining'] },
   bandwidth_refunded: { description: 'A purchase was refunded and its bandwidth taken back.', data: ['order_id', 'refund_usd', 'gb_clawed_back', 'gb_not_recoverable', 'fully_refunded'] },
-  api_key_created: { description: 'An API key was created on your account.', data: ['key_id', 'label', 'key_prefix', 'scopes', 'expires_at'] },
-  api_key_revoked: { description: 'An API key was revoked.', data: ['key_id', 'label', 'key_prefix'] },
+  api_key_created: { description: 'An API key was created on your account.', data: ['key_id', 'label', 'key_prefix', 'scopes', 'expires_at', 'rotated_from'] },
+  api_key_revoked: { description: 'An API key was revoked (manually, or immediately on rotation).', data: ['key_id', 'label', 'key_prefix', 'reason', 'replaced_by'] },
   api_key_expiring: { description: 'An API key expires within 7 days.', data: ['key_id', 'label', 'key_prefix', 'expires_at'] },
 }
 

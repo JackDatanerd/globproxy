@@ -7,9 +7,9 @@ import { dispatchWebhook } from '@/lib/webhooks'
 // customer's integration down with it and teaching them nothing until their
 // own jobs started failing. This warns 7 days ahead — by e-mail and by an
 // `api_key_expiring` webhook — once per key (expiry_warned_at, reset when the
-// expiry is changed or the key is rotated). Runs in the daily cleanup task.
+// expiry is changed or the key is rotated). Runs hourly from the 'webhooks' cron task (lib/webhooks.ts runIntegrationHousekeeping).
 const WARN_WINDOW_MS = 7 * 86_400_000
-const MAX_PER_RUN = 25 // Workers caps subrequests per invocation
+const MAX_PER_RUN = 10 // Workers caps subrequests per invocation; runs hourly from the 'webhooks' task
 
 export async function warnExpiringApiKeys(): Promise<{ warned: number }> {
   const supabase = await createAdminClient()

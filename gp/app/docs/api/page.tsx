@@ -133,9 +133,9 @@ export default function ApiDocsPage() {
 
           <p className="text-xs font-mono text-muted uppercase tracking-wider mt-5 mb-1.5">Managing keys</p>
           <p className="text-sm text-ink2 leading-relaxed">
-            On the <span className="font-mono text-ink">API Keys</span> page you can <strong>edit</strong> a key's label and IP allowlist in place
+            On the <span className="font-mono text-ink">API Keys</span> page you can <strong>edit</strong> a key's label, IP allowlist, access level and expiry in place
             (narrowing applies instantly; widening a key asks for 2FA or your password), <strong>rotate</strong> it (a replacement with the same settings is issued and the
-            old key keeps working for 24 hours so you can switch over — choose 0 hours to revoke the old one immediately if it leaked),
+            old key keeps working for 24 hours so you can switch over — or choose &ldquo;Revoke the old key now&rdquo; if it leaked; that works even when you already hold 25 active keys),
             <strong> revoke</strong> one or all of them, and see each key's <strong>activity</strong>: every change (POST / PATCH / DELETE) made with it in the last 30 days,
             with the IP, status and request id. The same data is at <span className="font-mono text-ink">GET /api/v1/account/activity</span>.
             A key with an expiry sends you an e-mail and an <span className="font-mono text-ink">api_key_expiring</span> webhook 7 days before it lapses.
@@ -247,6 +247,7 @@ export default function ApiDocsPage() {
           </p>
           <Table rows={[
             ['POST /sub-users', 'optional', 'A retry can never create a second sub-user, even if it races the original.'],
+            ['POST /sub-users/:id/release', 'optional', 'A retry never releases twice; an unknown earlier outcome answers 409 like top-ups.'],
             ['POST /sub-users/:id/topup', 'optional', 'A retry never tops up twice. If an earlier attempt with the key died with an unknown outcome you get 409 — check gb_allocated, then retry with a new key.'],
             ['POST /sub-users/bulk, /sub-users/bulk-topup', 'REQUIRED', 'Item i is processed under "<key>#i", so a partially failed bulk call is safe to retry.'],
             ['POST /reseller/allocations, /allocations/:id/reclaim', 'REQUIRED', 'Same unknown-outcome rule as top-up: a transfer is never applied twice.'],
@@ -588,6 +589,8 @@ export default function ApiDocsPage() {
               <span className="font-mono text-ink">409</span> if it would immediately re-trigger auto-topup (lower the amount or
               turn auto-topup off first), <span className="font-mono text-ink">502</span> if live usage couldn't be confirmed
               (nothing is changed). Reseller-allocated sub-users return <span className="font-mono text-ink">403</span>.
+              Accepts an <span className="font-mono text-ink">Idempotency-Key</span> header, like top-ups: a retry returns the
+              original response instead of releasing twice.
             </p>
           </Endpoint>
 
@@ -823,14 +826,14 @@ export default function ApiDocsPage() {
             ['auto_topup_failed', 'event', 'Auto-topup could not fully run (sent once until it recovers). reason is insufficient_balance, partial_funding or session_limit. data: credential_id, reason, gb_allocated, gb_used, amount_gb (and gb_added for partial_funding).'],
             ['session_suspended', 'event', 'GlobProxy suspended a sub-user (abuse or policy action). data: credential_id, label.'],
             ['session_resumed', 'event', 'A suspended sub-user was re-enabled. data: credential_id, label.'],
-            ['bandwidth_threshold_crossed', 'event', 'The share of your account that is COMMITTED (allocated into sub-users) crossed 80% or 95%. data: threshold_pct, allocated_pct (what triggers it), used_pct (GB actually consumed ÷ total), available_gb, total_gb, used_gb, allocated_gb. Checked every 5 minutes. (used_pct used to carry the allocated figure; it now means what it says.)'],
+            ['bandwidth_threshold_crossed', 'event', 'The share of your account that is COMMITTED (allocated into sub-users) crossed 80% or 95%. data: threshold_pct, allocated_pct (what triggers it), used_pct (GB actually consumed ÷ total), available_gb, total_gb, used_gb, allocated_gb. Checked every 5 minutes. Endpoints that do not also subscribe to bandwidth_exhausted get it once more at 100% (threshold_pct 100). (used_pct used to carry the allocated figure; it now means what it says.)'],
             ['bandwidth_exhausted', 'event', 'Available (unallocated) bandwidth reached zero. data: allocated_pct, used_pct, available_gb, total_gb, used_gb, allocated_gb.'],
             ['bandwidth_credited', 'event', 'Bandwidth was added to the account. data: gb_credited, source ("purchase" or "reseller_allocation"), plus order_id and amount_usd for purchases, transfer_id for allocations.'],
             ['bandwidth_allocated', 'event', 'You allocated bandwidth to a client (resellers). data: transfer_id, recipient_email, gb, note.'],
             ['bandwidth_reclaimed', 'event', 'Unused bandwidth was reclaimed from your account by the reseller who allocated it. data: transfer_id, gb_reclaimed, gb_remaining.'],
             ['bandwidth_refunded', 'event', 'A purchase was refunded and its bandwidth taken back. data: order_id, refund_usd, gb_clawed_back, gb_not_recoverable, fully_refunded.'],
-            ['api_key_created', 'event', 'An API key was created (or rotated). data: key_id, label, key_prefix, scopes, expires_at.'],
-            ['api_key_revoked', 'event', 'An API key was revoked. data: key_id, label, key_prefix.'],
+            ['api_key_created', 'event', 'An API key was created (or rotated). data: key_id, label, key_prefix, scopes, expires_at, plus rotated_from (the replaced key\'s id) when it came from a rotation.'],
+            ['api_key_revoked', 'event', 'An API key was revoked, including an old key revoked immediately by a rotation with no grace window. data: key_id, label, key_prefix, plus reason ("rotated") and replaced_by for rotations.'],
             ['api_key_expiring', 'event', 'An API key expires within 7 days. data: key_id, label, key_prefix, expires_at.'],
           ]} />
           <p className="text-sm text-ink2 leading-relaxed mt-3">The same catalog, with each event's data keys, is machine-readable at <span className="font-mono text-ink">GET /api/v1/webhooks/events</span>.</p>

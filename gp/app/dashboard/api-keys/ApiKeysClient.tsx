@@ -125,6 +125,11 @@ export default function ApiKeysClient({ canAllocate = false }: { canAllocate?: b
   const [editing, setEditing] = useState<string | null>(null) // key id being edited
   const [editLabel, setEditLabel] = useState('')
   const [editIps, setEditIps] = useState('')
+  const [editScope, setEditScope] = useState<'full' | 'read' | 'allocate'>('full')
+  const [editExpiry, setEditExpiry] = useState<string>('keep') // 'keep' | 'none' | days
+  const [rotatingId, setRotatingId] = useState<string | null>(null) // key whose rotate panel is open
+  const [rotateGrace, setRotateGrace] = useState<'24' | '0'>('24')
+  const [rotating, setRotating] = useState(false)
   const [justRotatedNote, setJustRotatedNote] = useState<string | null>(null)
   const [activityFor, setActivityFor] = useState<string | null>(null)
   const [activity, setActivity] = useState<any[] | null>(null)
@@ -183,15 +188,28 @@ export default function ApiKeysClient({ canAllocate = false }: { canAllocate?: b
     }
   }
 
+  const scopeOf = (k: ApiKeyMeta): 'full' | 'read' | 'allocate' =>
+    k.scopes && !k.scopes.includes('write') ? 'read' : k.scopes?.includes('allocate') ? 'allocate' : 'full'
+  const scopesFor = (v: 'full' | 'read' | 'allocate') => (v === 'read' ? ['read'] : v === 'allocate' ? ['read', 'write', 'allocate'] : ['read', 'write'])
+
   function startEdit(k: ApiKeyMeta) {
     setEditing(k.id); setEditLabel(k.label); setEditIps((k.allowed_ips ?? []).join(', '))
+    setEditScope(scopeOf(k)); setEditExpiry('keep'); setRotatingId(null)
   }
 
-  async function saveEdit(id: string) {
+  // Only the fields that actually changed are sent, so a pure narrowing (fewer
+  // IPs, read-only, an earlier expiry) never triggers the 2FA / password step-up.
+  async function saveEdit(k: ApiKeyMeta) {
+    const body: Record<string, unknown> = { id: k.id }
+    const label = editLabel.trim() || 'Default key'
+    if (label !== k.label) body.label = label
+    const ips = editIps.split(/[\s,]+/).filter(Boolean)
+    if (ips.join(',') !== (k.allowed_ips ?? []).join(',')) body.allowed_ips = ips
+    if (editScope !== scopeOf(k)) body.scopes = scopesFor(editScope)
+    if (editExpiry !== 'keep') body.expires_in_days = editExpiry === 'none' ? null : Number(editExpiry)
+    if (Object.keys(body).length === 1) { setEditing(null); return }
     try {
-      await apiJson('PATCH', '/api/dashboard/api-keys', {
-        id, label: editLabel.trim() || 'Default key', allowed_ips: editIps.split(/[\s,]+/).filter(Boolean),
-      })
+      await apiJson('PATCH', '/api/dashboard/api-keys', body)
       toast.success('Key updated')
       setEditing(null)
       loadKeys()
@@ -200,19 +218,27 @@ export default function ApiKeysClient({ canAllocate = false }: { canAllocate?: b
     }
   }
 
-  // New key with the same settings; the old one keeps working for 24 hours so
-  // the new secret can be deployed without an outage.
+  function openRotate(id: string) {
+    if (justCreated) { toast.error('Copy your new key and click \u201cDone\u201d first.'); return }
+    setRotatingId(rotatingId === id ? null : id); setRotateGrace('24'); setEditing(null)
+  }
+
+  // New key with the same settings. Either the old one keeps working for 24 hours
+  // so the new secret can be deployed without an outage, or (grace 0 — the old
+  // secret leaked) it is revoked on the spot.
   async function rotateKey(id: string) {
     if (justCreated) { toast.error('Copy your new key and click \u201cDone\u201d first.'); return }
-    if (!confirm('Rotate this key? You\u2019ll get a replacement now, and the old key keeps working for 24 hours so you can switch over.')) return
+    setRotating(true)
     try {
-      const data = await apiJson('POST', `/api/dashboard/api-keys/${id}/rotate`, { grace_hours: 24 })
+      const data = await apiJson('POST', `/api/dashboard/api-keys/${id}/rotate`, { grace_hours: Number(rotateGrace) })
       setJustCreated(data.key)
       setJustRotatedNote(data.old_key_valid_until ? `The old key keeps working until ${new Date(data.old_key_valid_until).toLocaleString()}.` : 'The old key was revoked.')
+      setRotatingId(null)
       loadKeys()
     } catch (err: any) {
       if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Failed to rotate key')
     }
+    setRotating(false)
   }
 
   async function revokeAll() {
@@ -335,7 +361,7 @@ export default function ApiKeysClient({ canAllocate = false }: { canAllocate?: b
                           className="text-xs font-mono text-muted hover:text-ink border border-border px-2.5 py-1 rounded-lg transition-colors">
                           Edit
                         </button>
-                        <button onClick={() => rotateKey(k.id)}
+                        <button onClick={() => openRotate(k.id)}
                           className="text-xs font-mono text-muted hover:text-ink border border-border px-2.5 py-1 rounded-lg transition-colors">
                           Rotate
                         </button>
@@ -353,10 +379,45 @@ export default function ApiKeysClient({ canAllocate = false }: { canAllocate?: b
                       className="bg-surface border border-border px-3 py-2 rounded-lg text-xs focus:outline-none focus:border-accent" />
                     <input value={editIps} onChange={e => setEditIps(e.target.value)} placeholder="Allowed IPs — empty = any IP"
                       className="bg-surface border border-border px-3 py-2 rounded-lg text-xs font-mono focus:outline-none focus:border-accent" />
-                    <p className="text-[11px] text-muted">Narrowing a key (fewer IPs) applies instantly; widening it asks you to confirm with 2FA / your password.</p>
+                    <div className="flex flex-wrap gap-2">
+                      <select value={editScope} onChange={e => setEditScope(e.target.value as 'full' | 'read' | 'allocate')}
+                        className="bg-surface border border-border px-3 py-2 rounded-lg text-xs focus:outline-none focus:border-accent">
+                        <option value="full">Full access (read + write)</option>
+                        <option value="read">Read-only</option>
+                        {(canAllocate || scopeOf(k) === 'allocate') && <option value="allocate">Full access + allocate (requires allowed IPs)</option>}
+                      </select>
+                      <select value={editExpiry} onChange={e => setEditExpiry(e.target.value)}
+                        className="bg-surface border border-border px-3 py-2 rounded-lg text-xs focus:outline-none focus:border-accent">
+                        <option value="keep">Keep current expiry</option>
+                        <option value="30">Expire in 30 days from now</option>
+                        <option value="90">Expire in 90 days from now</option>
+                        <option value="180">Expire in 180 days from now</option>
+                        <option value="365">Expire in 1 year from now</option>
+                        <option value="none">Never expire</option>
+                      </select>
+                    </div>
+                    <p className="text-[11px] text-muted">Narrowing a key (fewer IPs, read-only, an earlier expiry) applies instantly; widening it asks you to confirm with 2FA / your password.</p>
                     <div className="flex gap-2">
-                      <button onClick={() => saveEdit(k.id)} className="text-xs bg-accent text-white px-3 py-1.5 rounded-lg">Save</button>
+                      <button onClick={() => saveEdit(k)} className="text-xs bg-accent text-white px-3 py-1.5 rounded-lg">Save</button>
                       <button onClick={() => setEditing(null)} className="text-xs text-muted hover:text-ink px-2">Cancel</button>
+                    </div>
+                  </div>
+                )}
+                {rotatingId === k.id && (
+                  <div className="mt-3 pt-3 border-t border-border flex flex-col gap-2">
+                    <label className="flex items-start gap-2 text-xs text-ink cursor-pointer">
+                      <input type="radio" name={`grace-${k.id}`} checked={rotateGrace === '24'} onChange={() => setRotateGrace('24')} className="mt-0.5" />
+                      <span>Keep the old key working for 24 hours <span className="text-muted">— time to deploy the new one without an outage.</span></span>
+                    </label>
+                    <label className="flex items-start gap-2 text-xs text-ink cursor-pointer">
+                      <input type="radio" name={`grace-${k.id}`} checked={rotateGrace === '0'} onChange={() => setRotateGrace('0')} className="mt-0.5" />
+                      <span>Revoke the old key now <span className="text-muted">— choose this if it leaked. Anything still using it stops immediately.</span></span>
+                    </label>
+                    <div className="flex gap-2">
+                      <button onClick={() => rotateKey(k.id)} disabled={rotating} className="text-xs bg-accent text-white px-3 py-1.5 rounded-lg disabled:opacity-60">
+                        {rotating ? 'Rotating…' : 'Rotate key'}
+                      </button>
+                      <button onClick={() => setRotatingId(null)} className="text-xs text-muted hover:text-ink px-2">Cancel</button>
                     </div>
                   </div>
                 )}

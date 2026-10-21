@@ -161,9 +161,24 @@ export async function applyKeyUpdate(admin: Admin, userId: string, id: string, p
 // for `graceHours` (default 24) so the new secret can be rolled out without an
 // outage, then stops. graceHours = 0 revokes the old key immediately (right when
 // the old secret leaked).
+//
+// Every write below is checked. The old-key update used to be fire-and-forget:
+// if it failed, a leaked key stayed live while the response reported it as
+// revoked (old_key_valid_until: null).
+//   - grace 0: the old key is revoked FIRST (which also frees its slot under the
+//     25-active-keys cap, so an account at the cap can still rotate a leaked key),
+//     then the replacement is minted; if minting fails the old key is restored.
+//   - grace > 0: the replacement is minted first (the old key keeps working while
+//     it is created); if the old key's expiry cannot then be set, the replacement
+//     is revoked again and the call fails, so nothing is left half-rotated.
+export type RotatedKey = {
+  plaintext: string; meta: any; old_key_valid_until: string | null
+  old: { id: string; label: string | null; key_prefix: string; revoked: boolean }
+}
+
 export async function rotateApiKey(
   admin: Admin, userId: string, id: string, graceHours: number
-): Promise<KeyResult<{ plaintext: string; meta: any; old_key_valid_until: string | null }>> {
+): Promise<KeyResult<RotatedKey>> {
   if (!Number.isFinite(graceHours) || graceHours < 0 || graceHours > MAX_ROTATION_GRACE_HOURS) {
     return fail(400, `grace_hours must be between 0 and ${MAX_ROTATION_GRACE_HOURS}.`)
   }
@@ -178,24 +193,54 @@ export async function rotateApiKey(
     const span = new Date(old.expires_at).getTime() - new Date(old.created_at).getTime()
     expires_at = new Date(Date.now() + Math.max(span, 30 * 86_400_000)).toISOString()
   }
-  const created = await createApiKey(admin, userId, {
+  const input = {
     label: old.label, scopes: old.scopes as string[], expires_at, allowed_ips: (old.allowed_ips as string[] | null) ?? [],
-  })
-  if (!created.ok) return created
+  }
+  const oldInfo = { id: old.id as string, label: old.label as string | null, key_prefix: old.key_prefix as string }
+
+  if (graceHours === 0) {
+    const revokedAt = new Date().toISOString()
+    const { data: revoked, error: revErr } = await admin
+      .from('api_keys').update({ revoked_at: revokedAt }).eq('id', id).eq('user_id', userId).is('revoked_at', null).select('id')
+    if (revErr) { console.error('[api-keys] rotate: revoke failed', revErr); return fail(500, 'Could not rotate the key. The old key was NOT revoked — please try again.') }
+    if (!revoked?.length) return fail(404, 'Key not found or already revoked')
+
+    const created = await createApiKey(admin, userId, input)
+    if (!created.ok) {
+      // Put the old key back exactly as it was: the caller asked to REPLACE it, not lose it.
+      const { error: restoreErr } = await admin
+        .from('api_keys').update({ revoked_at: null }).eq('id', id).eq('user_id', userId).eq('revoked_at', revokedAt)
+      if (restoreErr) console.error('[api-keys] rotate: could not restore old key after failed create', id, restoreErr)
+      return created
+    }
+    return { ok: true, data: { ...created.data, old_key_valid_until: null, old: { ...oldInfo, revoked: true } } }
+  }
+
+  const created = await createApiKey(admin, userId, input)
+  if (!created.ok) {
+    if (created.status === 400 && /maximum/i.test(created.message)) {
+      return fail(400, 'Maximum of 25 active API keys per account. Revoke an unused key first, or rotate with grace_hours 0 (the old key is revoked, freeing its slot).')
+    }
+    return created
+  }
 
   // Old key: lapse after the grace window, never EXTEND an earlier expiry.
-  let validUntil: string | null = null
-  if (graceHours === 0) {
-    await admin.from('api_keys').update({ revoked_at: new Date().toISOString() }).eq('id', id).eq('user_id', userId).is('revoked_at', null)
-  } else {
-    const graceEnd = Date.now() + graceHours * 3_600_000
-    const oldEnd = old.expires_at ? new Date(old.expires_at).getTime() : Infinity
-    validUntil = new Date(Math.min(graceEnd, oldEnd)).toISOString()
-    // expiry_warned_at: the user just rotated — the daily expiry warning must not
-    // e-mail "your key expires tomorrow" about the key they are replacing.
-    await admin.from('api_keys').update({ expires_at: validUntil, expiry_warned_at: new Date().toISOString() }).eq('id', id).eq('user_id', userId).is('revoked_at', null)
+  const graceEnd = Date.now() + graceHours * 3_600_000
+  const oldEnd = old.expires_at ? new Date(old.expires_at).getTime() : Infinity
+  const validUntil = new Date(Math.min(graceEnd, oldEnd)).toISOString()
+  // expiry_warned_at: the user just rotated — the expiry warning must not
+  // e-mail "your key expires tomorrow" about the key they are replacing.
+  const { data: shortened, error: shortErr } = await admin
+    .from('api_keys').update({ expires_at: validUntil, expiry_warned_at: new Date().toISOString() })
+    .eq('id', id).eq('user_id', userId).is('revoked_at', null).select('id')
+  if (shortErr || !shortened?.length) {
+    console.error('[api-keys] rotate: could not set the old key\'s grace expiry', id, shortErr)
+    // Undo: a replacement without a bounded old key is a half-rotation.
+    await admin.from('api_keys').update({ revoked_at: new Date().toISOString() }).eq('id', created.data.meta.id).eq('user_id', userId)
+      .then(() => {}, (e: unknown) => console.error('[api-keys] rotate: could not undo replacement key', e))
+    return shortErr ? fail(500, 'Could not rotate the key. Nothing was changed — please try again.') : fail(404, 'Key not found or already revoked')
   }
-  return { ok: true, data: { ...created.data, old_key_valid_until: validUntil } }
+  return { ok: true, data: { ...created.data, old_key_valid_until: validUntil, old: { ...oldInfo, revoked: false } } }
 }
 
 // ── Revoke ────────────────────────────────────────────────────────────
@@ -211,10 +256,12 @@ export async function revokeApiKeys(admin: Admin, userId: string, ids: string[] 
 // ── Webhook fan-out for key lifecycle events ─────────────────────────────
 export async function notifyKeyEvent(
   userId: string, event: 'api_key_created' | 'api_key_revoked',
-  k: { id: string; label: string | null; key_prefix: string; scopes?: string[]; expires_at?: string | null }
+  k: { id: string; label: string | null; key_prefix: string; scopes?: string[]; expires_at?: string | null },
+  extra: Record<string, unknown> = {}
 ) {
   await dispatchWebhook(userId, event, {
     key_id: k.id, label: k.label, key_prefix: k.key_prefix,
     ...(event === 'api_key_created' ? { scopes: k.scopes ?? null, expires_at: k.expires_at ?? null } : {}),
+    ...extra,
   })
 }
