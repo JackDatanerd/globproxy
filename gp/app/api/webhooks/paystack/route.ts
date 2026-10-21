@@ -6,6 +6,7 @@ import { createAdminClient } from '@/lib/supabase/server'
 import { escapeHtml, sendEmail } from '@/lib/email'
 import { alertAdminPayment } from '@/lib/paymentAlerts'
 import { sendPaymentFailedEmail, sendRefundEmail } from '@/lib/billingEmails'
+import { dispatchWebhook } from '@/lib/webhooks'
 
 type Admin = Awaited<ReturnType<typeof createAdminClient>>
 
@@ -271,6 +272,14 @@ async function handleRefundProcessed(supabase: Admin, data: any) {
       await sendRefundEmail(supabase, order.user_id, {
         refundUsd: Number(result.refund_usd), creditNote: result.credit_note ?? null,
         gbClawed: Number(result.gb_clawed ?? 0), credited: result.credited !== false, fullyRefunded: !!result.fully_refunded,
+      })
+      // Customers with a webhook endpoint (resellers' billing automations) are
+      // told too — a clawback used to be visible only by polling the balance.
+      // Awaited, never throws; a canary order never reaches customers.
+      await dispatchWebhook(order.user_id, 'bandwidth_refunded', {
+        order_id: order.id, refund_usd: Number(result.refund_usd),
+        gb_clawed_back: Number(result.gb_clawed ?? 0), gb_not_recoverable: Number(result.gb_shortfall ?? 0),
+        fully_refunded: !!result.fully_refunded,
       })
     }
   } else if (result?.reason !== 'duplicate') {

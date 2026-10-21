@@ -1,8 +1,8 @@
-import { withApiAuth, parsePage } from '@/lib/apiHelpers'
+import { withApiAuth, parsePage, parseDateParam } from '@/lib/apiHelpers'
 import { apiError } from '@/lib/apiAuth'
 import { NextResponse } from 'next/server'
 
-// GET /api/v1/orders?limit=50&offset=0&status=paid
+// GET /api/v1/orders?limit=50&offset=0&status=paid&created_after=…&created_before=…
 // Bandwidth purchases (read-only). Payment-processor references are
 // deliberately not exposed.
 export async function GET(req: Request) {
@@ -14,6 +14,10 @@ export async function GET(req: Request) {
       return apiError(400, 'invalid_request', 'status must be one of: pending, paid, failed, refunded, cancelled.')
     }
 
+    const after = parseDateParam(url, 'created_after')
+    const before = parseDateParam(url, 'created_before')
+    if (after === undefined || before === undefined) return apiError(400, 'invalid_request', 'created_after / created_before must be ISO 8601 timestamps.')
+
     let q = supabase
       .from('orders')
       .select('id, gb_amount, amount_usd, payment_status, invoice_number, refunded_usd, refunded_at, created_at, paid_at', { count: 'exact' })
@@ -23,6 +27,8 @@ export async function GET(req: Request) {
       .order('id', { ascending: false })
       .range(offset, offset + limit - 1)
     if (status) q = q.eq('payment_status', status)
+    if (after) q = q.gte('created_at', after)
+    if (before) q = q.lt('created_at', before)
 
     const { data, count, error } = await q
     if (error) {

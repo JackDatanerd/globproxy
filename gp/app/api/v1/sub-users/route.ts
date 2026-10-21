@@ -1,13 +1,13 @@
-import { withApiAuth, readJsonBody, failFrom, parsePage } from '@/lib/apiHelpers'
+import { withApiAuth, readJsonBody, failFrom, parsePage, parseDateParam, likeEscape } from '@/lib/apiHelpers'
 import { apiError } from '@/lib/apiAuth'
 import { parseCreateCredential } from '@/lib/apiValidation'
 import { createCredential, toApiCredential, CRED_COLS } from '@/lib/credentials'
-import {
-  parseIdempotencyKey, claimIdempotencyKey, completeIdempotencyKey, releaseIdempotencyKey,
-} from '@/lib/idempotency'
+import { runIdempotent } from '@/lib/idempotency'
 import { NextResponse } from 'next/server'
 
-// GET /api/v1/sub-users?limit=100&offset=0&status=active
+// GET /api/v1/sub-users?limit=100&offset=0&status=active&label=acme&country=us&created_after=…&created_before=…
+// `label` is a case-insensitive contains-match; `country` is a 2-letter code;
+// the dates are ISO 8601.
 export async function GET(req: Request) {
   return withApiAuth(req, 'GET sub-users', async ({ user, supabase }) => {
     const url = new URL(req.url)
@@ -17,6 +17,13 @@ export async function GET(req: Request) {
       return apiError(400, 'invalid_request', 'status must be one of: pending, active, suspended.')
     }
 
+    const label = url.searchParams.get('label')?.trim().slice(0, 100) || null
+    const country = url.searchParams.get('country')?.trim().toLowerCase() || null
+    if (country && !/^[a-z]{2}$/.test(country)) return apiError(400, 'invalid_request', 'country must be a 2-letter country code.')
+    const after = parseDateParam(url, 'created_after')
+    const before = parseDateParam(url, 'created_before')
+    if (after === undefined || before === undefined) return apiError(400, 'invalid_request', 'created_after / created_before must be ISO 8601 timestamps.')
+
     let q = supabase
       .from('proxy_credentials')
       .select(CRED_COLS, { count: 'exact' })
@@ -25,6 +32,10 @@ export async function GET(req: Request) {
       .order('id', { ascending: false }) // stable tiebreak so pages never repeat/skip rows
       .range(offset, offset + limit - 1)
     if (status) q = q.eq('status', status)
+    if (label) q = q.ilike('label', `%${likeEscape(label)}%`)
+    if (country) q = q.eq('country', country)
+    if (after) q = q.gte('created_at', after)
+    if (before) q = q.lt('created_at', before)
 
     const { data, count, error } = await q
     if (error) {
@@ -43,40 +54,22 @@ export async function GET(req: Request) {
 
 // POST /api/v1/sub-users — supports an `Idempotency-Key` header so a retried
 // request (timeout, dropped connection) returns the original response
-// instead of creating a second credential and reserving bandwidth twice.
+// instead of creating a second credential and reserving bandwidth twice. The
+// key is also stamped on the credential row (unique per account), so even a
+// retry that races the original — or takes over a stale claim — cannot
+// produce a duplicate.
 export async function POST(req: Request) {
   return withApiAuth(req, 'POST sub-users', async ({ user, supabase }) => {
-    const idem = parseIdempotencyKey(req)
-    if (!idem.ok) return apiError(400, 'invalid_request', idem.error)
-
     const json = await readJsonBody(req)
     if (!json.ok) return json.response
     const parsed = parseCreateCredential(json.body)
     if (!parsed.ok) return apiError(400, 'invalid_request', parsed.error)
 
-    if (idem.key) {
-      const claim = await claimIdempotencyKey(supabase, user.id, idem.key, JSON.stringify(parsed.value))
-      if (claim.kind === 'replay') {
-        return NextResponse.json(claim.body, { status: claim.status, headers: { 'Idempotent-Replayed': 'true' } })
-      }
-      if (claim.kind === 'mismatch') {
-        return apiError(422, 'idempotency_conflict', 'This Idempotency-Key was already used with a different request body.')
-      }
-      if (claim.kind === 'in_flight') {
-        return apiError(409, 'conflict', 'A request with this Idempotency-Key is still being processed. Retry shortly.', { 'Retry-After': '2' })
-      }
-    }
-
-    const result = await createCredential(supabase, user.id, parsed.value, { source: 'api' })
-    if (!result.ok) {
-      // Failures are not replayable — free the key so the client can retry
-      // (e.g. after buying bandwidth after a 402).
-      if (idem.key) await releaseIdempotencyKey(supabase, user.id, idem.key)
-      return failFrom(result)
-    }
-
-    const body = { ...toApiCredential(result.data.cred), ...(result.data.warning ? { warning: result.data.warning } : {}) }
-    if (idem.key) await completeIdempotencyKey(supabase, user.id, idem.key, 201, body)
-    return NextResponse.json(body, { status: 201 })
+    return runIdempotent(req, supabase, user.id, 'POST /sub-users', JSON.stringify(parsed.value), async (key) => {
+      const result = await createCredential(supabase, user.id, parsed.value, { source: 'api', idempotencyKey: key })
+      if (!result.ok) return { kind: 'fail', response: failFrom(result) }
+      const body = { ...toApiCredential(result.data.cred), ...(result.data.warning ? { warning: result.data.warning } : {}) }
+      return { kind: 'ok', status: 201, body }
+    })
   })
 }

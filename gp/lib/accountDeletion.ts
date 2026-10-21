@@ -105,6 +105,9 @@ export async function purgeAccountSecrets(supabase: AdminSupabase, userId: strin
     .update({ status: 'suspended', suspended_reason: 'deleted', upstream_password: null, upstream_username: null, upstream_sub_user_id: null })
     .eq('user_id', userId)).error)
   check('webhook_endpoints', (await supabase.from('webhook_endpoints').delete().eq('user_id', userId)).error)
+  // The API request log holds source IPs; the profile row is kept (scrubbed), so
+  // the FK cascade never fires — clear it explicitly (migration 0054).
+  check('api_request_log', (await supabase.from('api_request_log').delete().eq('user_id', userId)).error)
   check('mfa_totp_factors', (await supabase.from('mfa_totp_factors').delete().eq('user_id', userId)).error)
   check('mfa_backup_codes', (await supabase.from('mfa_backup_codes').delete().eq('user_id', userId)).error)
   check('mfa_verified_sessions', (await supabase.from('mfa_verified_sessions').delete().eq('user_id', userId)).error)

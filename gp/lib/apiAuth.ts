@@ -9,9 +9,11 @@ import { isCrossSiteRequest } from '@/lib/appUrl'
 //
 // Bearer tokens are real API keys (api_keys table, migration 0005): the
 // SHA-256 of the presented token is looked up there. Keys carry optional
-// scopes ('read' = GET only, 'write' = everything, migration 0042), an
+// scopes ('read' = GET only, 'write' = create/modify sub-users, webhooks and
+// the like — migration 0042; 'allocate' = move bandwidth between accounts —
+// migration 0054), an
 // optional expiry, and are rate limited per key.
-export type ApiScope = 'read' | 'write'
+export type ApiScope = 'read' | 'write' | 'allocate'
 
 export type ApiKeyInfo = { id: string; scopes: string[] }
 
@@ -40,6 +42,7 @@ export type ApiErrorCode =
   | 'insufficient_bandwidth'
   | 'forbidden'
   | 'upstream_unavailable'
+  | 'service_unavailable'
   | 'idempotency_conflict'
   | 'internal_error'
 
@@ -108,7 +111,21 @@ function requiredScope(method: string): ApiScope {
 
 function hasScope(scopes: string[], needed: ApiScope): boolean {
   // 'write' is a superset of 'read'.
-  return needed === 'read' ? scopes.includes('read') || scopes.includes('write') : scopes.includes('write')
+  // 'allocate' is deliberately NOT implied by 'write' (and implies nothing):
+  // moving stock between accounts is its own grant.
+  if (needed === 'read') return scopes.includes('read') || scopes.includes('write')
+  return scopes.includes(needed)
+}
+
+// The per-key limits (wrangler.jsonc). Exported so the 429 bodies, the
+// X-RateLimit-Limit header and the docs cannot disagree with each other.
+export const API_RATE_LIMIT_PER_MIN = 120
+export const API_WRITE_RATE_LIMIT_PER_MIN = 30
+
+// The limiter works in fixed windows and cannot say how much of the current one
+// is left, so the honest Retry-After is the whole window.
+export function rateLimitHeaders(limit: number): Record<string, string> {
+  return { 'Retry-After': String(RATE_LIMIT_WINDOW_SECONDS), 'X-RateLimit-Limit': String(limit) }
 }
 
 // `opts.scope` overrides the default (GET/HEAD → read, everything else →
@@ -171,30 +188,48 @@ export async function requireApiAccess(req: Request, opts: { scope?: ApiScope } 
     if (!hasScope(scopes, needed)) {
       return {
         ok: false,
-        response: apiError(403, 'insufficient_scope', `This API key is read-only. A key with the "write" scope is required for ${req.method} requests.`),
+        response: apiError(
+          403, 'insufficient_scope',
+          needed === 'allocate'
+            ? 'This endpoint requires an API key with the "allocate" scope.'
+            : `This API key is read-only. A key with the "write" scope is required for ${req.method} requests.`
+        ),
+      }
+    }
+    // Allocation keys can move bandwidth between accounts, and API keys skip
+    // the 2FA step-up the dashboard enforces — so they must be pinned to the
+    // caller's own servers.
+    const keyIps = apiKey.allowed_ips as string[] | null
+    if (needed === 'allocate' && (!keyIps || keyIps.length === 0)) {
+      return {
+        ok: false,
+        response: apiError(403, 'insufficient_scope', 'Keys with the "allocate" scope must be restricted to specific IP addresses (set allowed_ips on the key).'),
       }
     }
 
     // Per-key limits, checked after the key is known-valid (cheap, no profile
     // lookup wasted on a throttled caller) but before any real work.
-    // The limiter works in fixed 60-second windows and cannot say how much of
-    // the current one is left, so the honest Retry-After is the whole window.
-    // (It used to say 15, which sent well-behaved clients straight back into
-    // another 429.)
-    const retryHeaders = { 'Retry-After': String(RATE_LIMIT_WINDOW_SECONDS) }
     if (!(await allowApiRequest('API_RATE_LIMITER', apiKey.id))) {
-      return { ok: false, response: apiError(429, 'rate_limited', 'Rate limit exceeded (120 requests/minute per key). Retry after the Retry-After interval.', { ...retryHeaders, 'X-RateLimit-Limit': '120' }) }
+      return { ok: false, response: apiError(429, 'rate_limited', `Rate limit exceeded (${API_RATE_LIMIT_PER_MIN} requests/minute per key). Retry after the Retry-After interval.`, rateLimitHeaders(API_RATE_LIMIT_PER_MIN)) }
     }
-    if (needed === 'write' && !(await allowApiRequest('API_WRITE_RATE_LIMITER', apiKey.id))) {
-      return { ok: false, response: apiError(429, 'rate_limited', 'Write rate limit exceeded (30 mutating requests/minute per key). Retry after the Retry-After interval.', { ...retryHeaders, 'X-RateLimit-Limit': '30' }) }
+    if (needed !== 'read' && !(await allowApiRequest('API_WRITE_RATE_LIMITER', apiKey.id))) {
+      return { ok: false, response: apiError(429, 'rate_limited', `Write rate limit exceeded (${API_WRITE_RATE_LIMIT_PER_MIN} mutating requests/minute per key). Retry after the Retry-After interval.`, rateLimitHeaders(API_WRITE_RATE_LIMIT_PER_MIN)) }
     }
 
-    const { data: profile } = await supabase
+    const { data: profile, error: profileErr } = await supabase
       .from('profiles')
       .select('id, email, role, api_access, is_suspended, is_deleted')
       .eq('id', apiKey.user_id)
       .single()
 
+    // A transient database error is NOT "this key is bad". It used to fall
+    // through to a 401, which sends well-behaved clients off to delete or
+    // re-issue a perfectly good key. Only a genuinely missing profile row
+    // (PGRST116) means unauthorized.
+    if (profileErr && profileErr.code !== 'PGRST116') {
+      console.error('[requireApiAccess] profile lookup failed', profileErr.code, profileErr.message)
+      return { ok: false, response: apiError(503, 'service_unavailable', 'Could not verify your account right now. Please retry shortly.', { 'Retry-After': '5' }) }
+    }
     if (!profile) {
       return { ok: false, response: unauthorized() }
     }

@@ -4,6 +4,7 @@ import { syncAllUsage } from '@/lib/usageSync'
 import { computeStockStatus } from '@/lib/stockStatus'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { runWebhookRetries, runBandwidthThresholdWebhooks, pruneIntegrationData } from '@/lib/webhooks'
+import { warnExpiringApiKeys } from '@/lib/apiKeyExpiry'
 import { provisionPendingCredentials, reconcileLimitSync } from '@/lib/credentials'
 import { runConfiguredBenchmark } from '@/lib/networkProbe'
 import { chargeAuthorization, generateReference, verifyTransaction, paymentMismatchReason } from '@/lib/paystack'
@@ -440,13 +441,19 @@ async function runCleanup() {
   const { error: mfaErr } = await supabase.rpc('cleanup_expired_mfa_sessions')
   if (mfaErr) console.error('cleanup_expired_mfa_sessions failed:', mfaErr)
 
-  // Webhook delivery log (14 days) and API idempotency keys (24h).
+  // Webhook delivery log (14 days), API idempotency keys (24h), API request log (30 days).
   const pruned = await pruneIntegrationData().catch((e) => {
     console.error('pruneIntegrationData failed:', e)
-    return { deliveries_pruned: false, idempotency_pruned: false }
+    return { deliveries_pruned: false, idempotency_pruned: false, request_log_pruned: false }
   })
 
-  return { cleaned: stale?.length ?? 0, mfa_sessions_swept: !mfaErr, ...pruned }
+  // API keys expiring within 7 days: e-mail + api_key_expiring webhook, once each.
+  const keyExpiry = await warnExpiringApiKeys().catch((e) => {
+    console.error('warnExpiringApiKeys failed:', e)
+    return { warned: 0 }
+  })
+
+  return { cleaned: stale?.length ?? 0, mfa_sessions_swept: !mfaErr, ...pruned, api_keys_expiry_warned: keyExpiry.warned }
 }
 
 // ── Security notices + audit-log retention (migration 0039) ──────────

@@ -50,5 +50,5 @@ export default async function ApiKeysPage() {
     return <ApiAccessRequestForm status={profile.api_access_status ?? null} />
   }
 
-  return <ApiKeysClient />
+  return <ApiKeysClient canAllocate={profile?.role === 'reseller' || profile?.role === 'admin'} />
 }

@@ -2,6 +2,7 @@ import { authorizeAdmin, readJson, badRequest, isUuid } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
 import { disableCredential, enableCredential } from '@/lib/adminProxy'
 import { syncUserUsage } from '@/lib/usageSync'
+import { dispatchWebhook } from '@/lib/webhooks'
 import { NextResponse } from 'next/server'
 
 // Per-credential kill switch. Until now the only way to stop one abusive
@@ -20,7 +21,7 @@ export async function POST(req: Request) {
 
   const { data: cred } = await supabase
     .from('proxy_credentials')
-    .select('id, user_id, upstream_sub_user_id, gb_allocated, status, owner:user_id(is_suspended, is_deleted)')
+    .select('id, user_id, label, upstream_sub_user_id, gb_allocated, status, owner:user_id(is_suspended, is_deleted)')
     .eq('id', body.credentialId)
     .single()
   if (!cred) return NextResponse.json({ error: 'Credential not found' }, { status: 404 })
@@ -54,5 +55,10 @@ export async function POST(req: Request) {
   }
 
   await logAdminAction(supabase, { adminId, action: body.action === 'disable' ? 'credential.disable' : 'credential.enable', targetUserId: cred.user_id, targetRef: cred.id })
+  // The owner's integrations hear about it (a suspended sub-user otherwise just
+  // starts failing to connect with no explanation). Awaited, never throws.
+  await dispatchWebhook(cred.user_id, body.action === 'disable' ? 'session_suspended' : 'session_resumed', {
+    credential_id: cred.id, label: (cred as any).label ?? null,
+  })
   return NextResponse.json({ success: true })
 }

@@ -1,98 +1,78 @@
-import { requireApiAccess, apiError } from '@/lib/apiAuth'
+import { withApiAuth, readJsonBody } from '@/lib/apiHelpers'
+import { apiError } from '@/lib/apiAuth'
 import { listWhitelistedIps, addWhitelistedIp, removeWhitelistedIp } from '@/lib/geonode'
 import { isValidIp, validateDescription, whitelistErrorResponse } from '@/lib/ipWhitelist'
+import { getOwnedCredential } from '@/lib/credentials'
 import { NextResponse } from 'next/server'
-import type { ApiAuthResult } from '@/lib/apiAuth'
 
 // Mirrors app/api/dashboard/proxies/[id]/whitelist/route.ts. Any owner
 // (self-created or reseller-allocated) can manage their own credential's
-// whitelist via the API too, same as the dashboard — locking a
-// credential to specific source IPs doesn't reverse anything a reseller
-// paid for, unlike delete/topup above.
-async function loadOwnedCredential(supabase: Extract<ApiAuthResult, { ok: true }>['supabase'], id: string, userId: string) {
-  const { data: cred } = await supabase
-    .from('proxy_credentials')
-    .select('id, user_id, upstream_sub_user_id')
-    .eq('id', id)
-    .eq('user_id', userId)
-    .single()
-  return cred
-}
+// whitelist via the API too, same as the dashboard — locking a credential to
+// specific source IPs doesn't reverse anything a reseller paid for, unlike
+// delete/topup.
+//
+// These routes now go through withApiAuth like every other v1 route: they used
+// to call requireApiAccess directly, so responses carried no X-Request-Id, a
+// malformed JSON body surfaced as '"" is not a valid IPv4 address', and the
+// request-log / rate-limit headers were missing. Upstream failures are still
+// mapped by whitelistErrorResponse (fixed customer-safe messages).
 
+// GET /api/v1/sub-users/:id/whitelist
 export async function GET(req: Request, context: { params: Promise<{ id: string }> }) {
-  const auth = await requireApiAccess(req)
-  if (!auth.ok) return auth.response
-  const { user, supabase } = auth
-
-  try {
-    const { id } = await context.params
-    const cred = await loadOwnedCredential(supabase, id, user.id)
-    if (!cred) return apiError(404, 'not_found', 'Sub-user not found')
-
-    if (!cred.upstream_sub_user_id) {
-      return NextResponse.json({ ips: [], provisioning: true })
+  return withApiAuth(req, 'GET whitelist', async ({ user, supabase }) => {
+    try {
+      const { id } = await context.params
+      const cred = await getOwnedCredential(supabase, user.id, id, 'id, upstream_sub_user_id')
+      if (!cred) return apiError(404, 'not_found', 'Sub-user not found')
+      if (!cred.upstream_sub_user_id) return NextResponse.json({ ips: [], provisioning: true })
+      return NextResponse.json({ ips: await listWhitelistedIps(cred.upstream_sub_user_id) })
+    } catch (e) {
+      return whitelistErrorResponse(e)
     }
-
-    const ips = await listWhitelistedIps(cred.upstream_sub_user_id)
-    return NextResponse.json({ ips })
-  } catch (e) {
-    return whitelistErrorResponse(e)
-  }
+  })
 }
 
+// POST /api/v1/sub-users/:id/whitelist  { "ip": "203.0.113.7", "description": "Office" }
 export async function POST(req: Request, context: { params: Promise<{ id: string }> }) {
-  const auth = await requireApiAccess(req)
-  if (!auth.ok) return auth.response
-  const { user, supabase } = auth
+  return withApiAuth(req, 'POST whitelist', async ({ user, supabase }) => {
+    try {
+      const { id } = await context.params
+      const json = await readJsonBody(req)
+      if (!json.ok) return json.response
+      const body = json.body
+      const ip = typeof body?.ip === 'string' ? body.ip.trim() : ''
+      const description = typeof body?.description === 'string' ? body.description.trim() : ''
 
-  try {
-    const { id } = await context.params
-    const body = await req.json().catch(() => ({}))
-    const ip = typeof body?.ip === 'string' ? body.ip.trim() : ''
-    const description = typeof body?.description === 'string' ? body.description.trim() : ''
+      if (!isValidIp(ip)) return apiError(400, 'invalid_request', `"${ip.slice(0, 60)}" is not a valid IPv4 or IPv6 address.`)
+      const descError = validateDescription(description)
+      if (descError) return apiError(400, 'invalid_request', descError)
 
-    if (!isValidIp(ip)) {
-      return apiError(400, 'invalid_request', `"${ip}" is not a valid IPv4 or IPv6 address.`)
+      const cred = await getOwnedCredential(supabase, user.id, id, 'id, upstream_sub_user_id')
+      if (!cred) return apiError(404, 'not_found', 'Sub-user not found')
+      if (!cred.upstream_sub_user_id) return apiError(409, 'conflict', 'This sub-user is still being provisioned — try again shortly.')
+
+      return NextResponse.json({ ips: await addWhitelistedIp(cred.upstream_sub_user_id, ip, description) }, { status: 201 })
+    } catch (e) {
+      return whitelistErrorResponse(e)
     }
-    const descError = validateDescription(description)
-    if (descError) return apiError(400, 'invalid_request', descError)
-
-    const cred = await loadOwnedCredential(supabase, id, user.id)
-    if (!cred) return apiError(404, 'not_found', 'Sub-user not found')
-    if (!cred.upstream_sub_user_id) {
-      return apiError(409, 'conflict', 'This sub-user is still being provisioned — try again shortly.')
-    }
-
-    const ips = await addWhitelistedIp(cred.upstream_sub_user_id, ip, description)
-    return NextResponse.json({ ips }, { status: 201 })
-  } catch (e) {
-    return whitelistErrorResponse(e)
-  }
+  })
 }
 
+// DELETE /api/v1/sub-users/:id/whitelist?ip=203.0.113.7
 export async function DELETE(req: Request, context: { params: Promise<{ id: string }> }) {
-  const auth = await requireApiAccess(req)
-  if (!auth.ok) return auth.response
-  const { user, supabase } = auth
+  return withApiAuth(req, 'DELETE whitelist', async ({ user, supabase }) => {
+    try {
+      const { id } = await context.params
+      const ip = (new URL(req.url).searchParams.get('ip') || '').trim()
+      if (!isValidIp(ip)) return apiError(400, 'invalid_request', `"${ip.slice(0, 60)}" is not a valid IPv4 or IPv6 address.`)
 
-  try {
-    const { id } = await context.params
-    const url = new URL(req.url)
-    const ip = (url.searchParams.get('ip') || '').trim()
+      const cred = await getOwnedCredential(supabase, user.id, id, 'id, upstream_sub_user_id')
+      if (!cred) return apiError(404, 'not_found', 'Sub-user not found')
+      if (!cred.upstream_sub_user_id) return apiError(409, 'conflict', 'This sub-user is still being provisioned — try again shortly.')
 
-    if (!isValidIp(ip)) {
-      return apiError(400, 'invalid_request', `"${ip}" is not a valid IPv4 or IPv6 address.`)
+      return NextResponse.json({ ips: await removeWhitelistedIp(cred.upstream_sub_user_id, ip) })
+    } catch (e) {
+      return whitelistErrorResponse(e)
     }
-
-    const cred = await loadOwnedCredential(supabase, id, user.id)
-    if (!cred) return apiError(404, 'not_found', 'Sub-user not found')
-    if (!cred.upstream_sub_user_id) {
-      return apiError(409, 'conflict', 'This sub-user is still being provisioned — try again shortly.')
-    }
-
-    const ips = await removeWhitelistedIp(cred.upstream_sub_user_id, ip)
-    return NextResponse.json({ ips })
-  } catch (e) {
-    return whitelistErrorResponse(e)
-  }
+  })
 }

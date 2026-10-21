@@ -64,6 +64,17 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
       console.error('[v1 POST sessions] insert failed', error)
       return apiError(500, 'internal_error', 'Could not create the session.')
     }
+    // The count above and the insert are separate statements, so two parallel
+    // requests at 199 sessions could both pass. Re-count AFTER inserting and
+    // back out if we went over (both may back out — a spurious 400 is fine,
+    // an over-cap sub-user is not).
+    const { count: after } = await supabase
+      .from('proxy_sessions').select('id', { count: 'exact', head: true })
+      .eq('credential_id', id).eq('user_id', user.id).is('terminated_at', null)
+    if ((after ?? 0) > MAX_ACTIVE_SESSIONS) {
+      await supabase.from('proxy_sessions').delete().eq('id', data.id)
+      return apiError(400, 'invalid_request', `A sub-user can have at most ${MAX_ACTIVE_SESSIONS} active sessions.`)
+    }
     return NextResponse.json(view(data, cred), { status: 201 })
   })
 }

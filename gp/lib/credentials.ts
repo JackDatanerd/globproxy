@@ -91,9 +91,19 @@ export async function createCredential(
   admin: Admin,
   userId: string,
   input: CreateCredentialInput,
-  opts: { source: 'api' | 'dashboard'; autoTopup?: { threshold_gb: number; amount_gb: number } | null }
-): Promise<CredResult<{ cred: any; warning?: string }>> {
+  opts: { source: 'api' | 'dashboard'; autoTopup?: { threshold_gb: number; amount_gb: number } | null; idempotencyKey?: string | null }
+): Promise<CredResult<{ cred: any; warning?: string; replayed?: boolean }>> {
   const gb = input.gb_allocated
+  const idemKey = opts.idempotencyKey ?? null
+
+  // An earlier attempt with this key already created the credential (it died
+  // before recording its response, or this is a stale-claim takeover). Return
+  // it as-is — no second reservation, no second upstream sub-user.
+  if (idemKey) {
+    const { data: existing } = await admin
+      .from('proxy_credentials').select(CRED_COLS).eq('user_id', userId).eq('idempotency_key', idemKey).maybeSingle()
+    if (existing) return { ok: true, data: { cred: existing, replayed: true } }
+  }
 
   // Soft pre-check of the per-account cap (the database trigger from
   // migration 0046 is the authoritative, race-free enforcement). Without
@@ -172,6 +182,7 @@ export async function createCredential(
         provisioning_claimed_at: status === 'pending' ? new Date().toISOString() : null,
         provision_attempts: status === 'pending' ? 1 : 0,
         last_provision_error: status === 'pending' ? provisionError : null,
+        idempotency_key: idemKey,
       })
       .select(CRED_COLS)
       .single()
@@ -183,6 +194,14 @@ export async function createCredential(
           console.error('[credentials] FAILED to clean up orphaned Geonode sub-user', gcred?.upstream_sub_user_id, e))
       }
       await release('insert failure')
+      // Lost the race to a concurrent attempt with the SAME Idempotency-Key:
+      // its credential is the one true result. We've already unwound our own
+      // reservation and upstream sub-user above, so just return the winner.
+      if (idemKey && insertErr?.code === '23505') {
+        const { data: winner } = await admin
+          .from('proxy_credentials').select(CRED_COLS).eq('user_id', userId).eq('idempotency_key', idemKey).maybeSingle()
+        if (winner) return { ok: true, data: { cred: winner, replayed: true } }
+      }
       // Lost a race for the last slot against a concurrent create.
       if (insertErr?.code === '23514' && String(insertErr.message).includes('Session limit')) {
         return fail(409, 'conflict', `Session limit reached (${MAX_CREDENTIALS_PER_ACCOUNT}). Delete an unused session first.`)

@@ -1,10 +1,20 @@
+import { NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
+import { apiError } from '@/lib/apiAuth'
 
-// Idempotency-Key support for POST /api/v1/sub-users (table
-// api_idempotency_keys, migration 0042). A client that times out and
-// retries the same create used to get a SECOND credential and a second
-// reservation of bandwidth. With a key, the retry returns the original
-// response instead.
+// Idempotency-Key support for the v1 endpoints that spend or move bandwidth
+// (table api_idempotency_keys, migration 0042): create sub-user, top-up, bulk
+// create/top-up, allocate, reclaim. A client that times out and retries used
+// to get a SECOND credential / top-up / transfer. With a key, the retry
+// returns the original response instead.
+//
+// Stale claims: if the first attempt died without recording a response, a
+// retry after IN_PROGRESS_STALE_MS may "take over" and run again — but ONLY for
+// operations that are safe to repeat (create sub-user: the unique
+// (user_id, idempotency_key) index on proxy_credentials makes a double create
+// impossible). Money-moving operations pass allowStaleTakeover:false and the
+// caller gets a 409 telling them to check state instead: re-running an
+// attempt whose outcome is unknown is how a top-up gets applied twice.
 //
 //   claim():    first caller wins an 'in_progress' row (insert, race-free
 //               via the primary key); replays get the stored response.
@@ -35,9 +45,16 @@ export type Claim =
   | { kind: 'replay'; status: number; body: unknown }
   | { kind: 'mismatch' }
   | { kind: 'in_flight' }
+  | { kind: 'unknown_outcome' }
 
-export async function claimIdempotencyKey(admin: Admin, userId: string, key: string, canonicalBody: string): Promise<Claim> {
-  const requestHash = await sha256Hex(`POST /sub-users\n${canonicalBody}`)
+export async function claimIdempotencyKey(
+  admin: Admin, userId: string, key: string, canonicalBody: string,
+  scope = 'POST /sub-users', opts: { allowStaleTakeover?: boolean } = {}
+): Promise<Claim> {
+  const allowStaleTakeover = opts.allowStaleTakeover ?? true
+  // The scope is part of the hash: the same key reused on a DIFFERENT endpoint
+  // is a client bug (422), not a replay of the first call's response.
+  const requestHash = await sha256Hex(`${scope}\n${canonicalBody}`)
 
   for (let attempt = 0; attempt < 2; attempt++) {
     const { error } = await admin.from('api_idempotency_keys').insert({ user_id: userId, key, request_hash: requestHash })
@@ -53,6 +70,8 @@ export async function claimIdempotencyKey(admin: Admin, userId: string, key: str
     if (row.status === 'completed') return { kind: 'replay', status: row.response_status ?? 200, body: row.response_body }
 
     if (Date.now() - new Date(row.created_at).getTime() > IN_PROGRESS_STALE_MS) {
+      // Unsafe to repeat: the first attempt may have committed before dying.
+      if (!allowStaleTakeover) return { kind: 'unknown_outcome' }
       // The original attempt died without completing — take over its claim.
       await admin.from('api_idempotency_keys').delete().eq('user_id', userId).eq('key', key).eq('status', 'in_progress')
       continue
@@ -78,4 +97,47 @@ export async function releaseIdempotencyKey(admin: Admin, userId: string, key: s
   } catch (e) {
     console.error('[idempotency] failed to release claim', e)
   }
+}
+
+export type IdempotentOutcome =
+  | { kind: 'ok'; status: number; body: unknown }           // replayable success — stored under the key
+  | { kind: 'fail'; response: Response }                    // not replayable — key released, client may retry
+
+// Wraps a mutating handler in the claim → run → store/release dance so every
+// endpoint does it identically. No Idempotency-Key header = just run it.
+// If `exec` THROWS the claim is deliberately left in place (outcome unknown);
+// withApiAuth turns the throw into a 500.
+export async function runIdempotent(
+  req: Request, admin: Admin, userId: string, scope: string, canonicalBody: string,
+  exec: (key: string | null) => Promise<IdempotentOutcome>,
+  opts: { allowStaleTakeover?: boolean; successStatus?: number } = {}
+): Promise<Response> {
+  const idem = parseIdempotencyKey(req)
+  if (!idem.ok) return apiError(400, 'invalid_request', idem.error)
+
+  if (idem.key) {
+    const claim = await claimIdempotencyKey(admin, userId, idem.key, canonicalBody, scope, { allowStaleTakeover: opts.allowStaleTakeover })
+    if (claim.kind === 'replay') {
+      return NextResponse.json(claim.body, { status: claim.status, headers: { 'Idempotent-Replayed': 'true' } })
+    }
+    if (claim.kind === 'mismatch') {
+      return apiError(422, 'idempotency_conflict', 'This Idempotency-Key was already used with a different request.')
+    }
+    if (claim.kind === 'in_flight') {
+      return apiError(409, 'conflict', 'A request with this Idempotency-Key is still being processed. Retry shortly.', { 'Retry-After': '2' })
+    }
+    if (claim.kind === 'unknown_outcome') {
+      return apiError(409, 'conflict', 'An earlier request with this Idempotency-Key did not finish and its outcome is unknown. Check the resource\u2019s current state before retrying with a NEW Idempotency-Key.')
+    }
+  }
+
+  const outcome = await exec(idem.key)
+  if (outcome.kind === 'fail') {
+    // Failures are not replayable — free the key so the client can retry
+    // (e.g. after buying bandwidth following a 402).
+    if (idem.key) await releaseIdempotencyKey(admin, userId, idem.key)
+    return outcome.response
+  }
+  if (idem.key) await completeIdempotencyKey(admin, userId, idem.key, outcome.status, outcome.body)
+  return NextResponse.json(outcome.body, { status: outcome.status })
 }

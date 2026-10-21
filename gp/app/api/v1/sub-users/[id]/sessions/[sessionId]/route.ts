@@ -25,12 +25,18 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
       if (typeof body.collapsed !== 'boolean') return apiError(400, 'invalid_request', 'collapsed must be a boolean.')
       update.collapsed = body.collapsed
     }
-    if (body.terminate === true) update.terminated_at = new Date().toISOString()
+    if ('terminate' in body) {
+      // Termination is one-way (DELETE removes the session outright); a
+      // `terminate: false` used to be silently ignored.
+      if (body.terminate !== true) return apiError(400, 'invalid_request', 'terminate can only be true. A terminated session cannot be reactivated; create a new one.')
+      update.terminated_at = new Date().toISOString()
+    }
     if (Object.keys(update).length === 0) return apiError(400, 'invalid_request', 'No valid fields to update. Supported: label, pinned, collapsed, terminate.')
 
     const { data, error } = await supabase
       .from('proxy_sessions').update(update)
       .eq('id', sessionId).eq('credential_id', id).eq('user_id', user.id)
+      .is('terminated_at', null) // a terminated session is gone: editing it used to return 200
       .select('id, label, pinned, collapsed, terminated_at, created_at').maybeSingle()
     if (error) {
       console.error('[v1 PATCH session] update failed', error)

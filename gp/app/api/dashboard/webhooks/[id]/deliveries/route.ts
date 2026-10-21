@@ -13,10 +13,13 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
   if (mfaBlock) return mfaBlock
   const { id } = await context.params
   const url = new URL(req.url)
+  const limit = Math.min(Math.max(Math.trunc(Number(url.searchParams.get('limit'))) || 50, 1), 100)
   const r = await listDeliveries(await createAdminClient(), user.id, id, {
-    limit: Number(url.searchParams.get('limit')) || undefined,
+    limit,
     status: url.searchParams.get('status'),
+    before: url.searchParams.get('before'),
   })
   if (!r.ok) return NextResponse.json({ error: r.message }, { status: r.status })
-  return NextResponse.json({ deliveries: r.data })
+  const hasMore = r.data.length === limit
+  return NextResponse.json({ deliveries: r.data, has_more: hasMore, next_before: hasMore ? r.data[r.data.length - 1].created_at : null })
 }

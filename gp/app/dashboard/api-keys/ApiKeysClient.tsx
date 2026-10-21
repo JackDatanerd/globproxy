@@ -112,16 +112,22 @@ type ApiKeyMeta = {
   allowed_ips?: string[]
 }
 
-export default function ApiKeysClient() {
+export default function ApiKeysClient({ canAllocate = false }: { canAllocate?: boolean }) {
   const [keys, setKeys] = useState<ApiKeyMeta[]>([])
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
   const [newLabel, setNewLabel] = useState('')
-  const [newScope, setNewScope] = useState<'full' | 'read'>('full')
+  const [newScope, setNewScope] = useState<'full' | 'read' | 'allocate'>('full')
   const [newExpiry, setNewExpiry] = useState<string>('') // '' = never
   const [newIps, setNewIps] = useState('') // comma/space separated; empty = any IP
   const [justCreated, setJustCreated] = useState<string | null>(null) // plaintext, shown once
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [editing, setEditing] = useState<string | null>(null) // key id being edited
+  const [editLabel, setEditLabel] = useState('')
+  const [editIps, setEditIps] = useState('')
+  const [justRotatedNote, setJustRotatedNote] = useState<string | null>(null)
+  const [activityFor, setActivityFor] = useState<string | null>(null)
+  const [activity, setActivity] = useState<any[] | null>(null)
 
   async function loadKeys() {
     setLoading(true)
@@ -149,11 +155,14 @@ export default function ApiKeysClient() {
     try {
       const data = await apiJson('POST', '/api/dashboard/api-keys', {
         label: newLabel.trim() || 'Default key',
-        scopes: newScope === 'read' ? ['read'] : ['read', 'write'],
+        // 'allocate' = full access + moving bandwidth between accounts (resellers;
+        // the server requires an IP allowlist for it).
+        scopes: newScope === 'read' ? ['read'] : newScope === 'allocate' ? ['read', 'write', 'allocate'] : ['read', 'write'],
         expires_in_days: newExpiry ? Number(newExpiry) : null,
         allowed_ips: newIps.split(/[\s,]+/).filter(Boolean),
       })
       setJustCreated(data.key)
+      setJustRotatedNote(null)
       setNewLabel('')
       setNewIps('')
       await loadKeys()
@@ -171,6 +180,61 @@ export default function ApiKeysClient() {
       loadKeys()
     } catch (err: any) {
       toast.error(err.message ?? 'Failed to revoke key')
+    }
+  }
+
+  function startEdit(k: ApiKeyMeta) {
+    setEditing(k.id); setEditLabel(k.label); setEditIps((k.allowed_ips ?? []).join(', '))
+  }
+
+  async function saveEdit(id: string) {
+    try {
+      await apiJson('PATCH', '/api/dashboard/api-keys', {
+        id, label: editLabel.trim() || 'Default key', allowed_ips: editIps.split(/[\s,]+/).filter(Boolean),
+      })
+      toast.success('Key updated')
+      setEditing(null)
+      loadKeys()
+    } catch (err: any) {
+      if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Failed to update key')
+    }
+  }
+
+  // New key with the same settings; the old one keeps working for 24 hours so
+  // the new secret can be deployed without an outage.
+  async function rotateKey(id: string) {
+    if (justCreated) { toast.error('Copy your new key and click \u201cDone\u201d first.'); return }
+    if (!confirm('Rotate this key? You\u2019ll get a replacement now, and the old key keeps working for 24 hours so you can switch over.')) return
+    try {
+      const data = await apiJson('POST', `/api/dashboard/api-keys/${id}/rotate`, { grace_hours: 24 })
+      setJustCreated(data.key)
+      setJustRotatedNote(data.old_key_valid_until ? `The old key keeps working until ${new Date(data.old_key_valid_until).toLocaleString()}.` : 'The old key was revoked.')
+      loadKeys()
+    } catch (err: any) {
+      if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Failed to rotate key')
+    }
+  }
+
+  async function revokeAll() {
+    if (!confirm('Revoke ALL active keys? Every integration using them stops working immediately.')) return
+    try {
+      const d = await apiJson('DELETE', '/api/dashboard/api-keys', { all: true })
+      toast.success(`${d.revoked ?? 0} key(s) revoked`)
+      loadKeys()
+    } catch (err: any) {
+      toast.error(err.message ?? 'Failed to revoke keys')
+    }
+  }
+
+  async function toggleActivity(id: string) {
+    if (activityFor === id) { setActivityFor(null); setActivity(null); return }
+    setActivityFor(id); setActivity(null)
+    try {
+      const d = await apiFetch(`/api/dashboard/api-keys/activity?key_id=${encodeURIComponent(id)}&limit=20`)
+      setActivity(d.activity ?? [])
+    } catch (err: any) {
+      toast.error(err.message ?? 'Could not load activity')
+      setActivityFor(null)
     }
   }
 
@@ -198,6 +262,7 @@ export default function ApiKeysClient() {
           <h2 className="font-display font-bold text-base text-ink mb-2">Your new API key</h2>
           <p className="text-xs text-muted mb-3">
             Copy this now — for security we only show it once and can't display it again after you leave this page.
+            {justRotatedNote ? ` ${justRotatedNote}` : ''}
           </p>
           <div className="bg-white border border-border rounded-lg p-4 flex items-center gap-3">
             <span className="font-mono text-xs text-ink flex-1 truncate select-all">{justCreated}</span>
@@ -217,9 +282,14 @@ export default function ApiKeysClient() {
       <div className="bg-white border border-border rounded-xl p-6 mb-6">
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-display font-bold text-base text-ink">Your keys</h2>
-          <span className="text-[10px] font-mono bg-accent2-light text-accent2 px-2.5 py-1 rounded-full">
-            {activeKeys.length} active
-          </span>
+          <div className="flex items-center gap-2">
+            {activeKeys.length > 0 && (
+              <button onClick={revokeAll} className="text-[10px] font-mono text-muted hover:text-red-500 underline">revoke all</button>
+            )}
+            <span className="text-[10px] font-mono bg-accent2-light text-accent2 px-2.5 py-1 rounded-full">
+              {activeKeys.length} active
+            </span>
+          </div>
         </div>
 
         {loading ? (
@@ -233,28 +303,82 @@ export default function ApiKeysClient() {
         ) : (
           <div className="flex flex-col gap-2 mb-4">
             {keys.map(k => (
-              <div key={k.id} className={`flex items-center justify-between border border-border rounded-lg p-3 ${k.revoked_at ? 'opacity-50' : ''}`}>
-                <div>
-                  <div className="text-sm text-ink font-medium">{k.label}</div>
-                  <div className="text-xs font-mono text-muted">
-                    {k.key_prefix}••••••••
-                    {k.revoked_at ? ' · revoked' : k.last_used_at ? ` · last used ${new Date(k.last_used_at).toLocaleDateString()}${k.last_used_ip ? ` from ${k.last_used_ip}` : ''}` : ' · never used'}
-                  </div>
-                  {!k.revoked_at && (
-                    <div className="text-[11px] font-mono text-muted mt-0.5">
-                      {k.scopes && !k.scopes.includes('write') ? 'read-only' : 'full access'}
-                      {k.expires_at ? (new Date(k.expires_at).getTime() <= Date.now()
-                        ? ' · expired'
-                        : ` · expires ${new Date(k.expires_at).toLocaleDateString()}`) : ' · no expiry'}
-                      {k.allowed_ips && k.allowed_ips.length > 0 ? ` · IPs: ${k.allowed_ips.join(', ')}` : ' · any IP'}
+              <div key={k.id} className={`border border-border rounded-lg p-3 ${k.revoked_at ? 'opacity-50' : ''}`}>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-sm text-ink font-medium">{k.label}</div>
+                    <div className="text-xs font-mono text-muted">
+                      {k.key_prefix}••••••••
+                      {k.revoked_at ? ' · revoked' : k.last_used_at ? ` · last used ${new Date(k.last_used_at).toLocaleDateString()}${k.last_used_ip ? ` from ${k.last_used_ip}` : ''}` : ' · never used'}
                     </div>
-                  )}
+                    {!k.revoked_at && (
+                      <div className="text-[11px] font-mono text-muted mt-0.5">
+                        {k.scopes && !k.scopes.includes('write') ? 'read-only' : k.scopes?.includes('allocate') ? 'full access + allocate' : 'full access'}
+                        {k.expires_at ? (new Date(k.expires_at).getTime() <= Date.now()
+                          ? ' · expired'
+                          : ` · expires ${new Date(k.expires_at).toLocaleDateString()}`) : ' · no expiry'}
+                        {k.allowed_ips && k.allowed_ips.length > 0 ? ` · IPs: ${k.allowed_ips.join(', ')}` : ' · any IP'}
+                        {k.expires_at && new Date(k.expires_at).getTime() > Date.now() && new Date(k.expires_at).getTime() - Date.now() < 7 * 86_400_000 && (
+                          <span className="text-amber-600"> · expiring soon — rotate it</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex gap-1.5 flex-shrink-0">
+                    <button onClick={() => toggleActivity(k.id)}
+                      className="text-xs font-mono text-muted hover:text-ink border border-border px-2.5 py-1 rounded-lg transition-colors">
+                      Activity
+                    </button>
+                    {!k.revoked_at && (
+                      <>
+                        <button onClick={() => (editing === k.id ? setEditing(null) : startEdit(k))}
+                          className="text-xs font-mono text-muted hover:text-ink border border-border px-2.5 py-1 rounded-lg transition-colors">
+                          Edit
+                        </button>
+                        <button onClick={() => rotateKey(k.id)}
+                          className="text-xs font-mono text-muted hover:text-ink border border-border px-2.5 py-1 rounded-lg transition-colors">
+                          Rotate
+                        </button>
+                        <button onClick={() => revokeKey(k.id)}
+                          className="text-xs font-mono text-muted hover:text-red-500 border border-border hover:border-red-200 px-2.5 py-1 rounded-lg transition-colors">
+                          Revoke
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
-                {!k.revoked_at && (
-                  <button onClick={() => revokeKey(k.id)}
-                    className="text-xs font-mono text-muted hover:text-red-500 border border-border hover:border-red-200 px-3 py-1 rounded-lg transition-colors">
-                    Revoke
-                  </button>
+                {editing === k.id && (
+                  <div className="mt-3 pt-3 border-t border-border flex flex-col gap-2">
+                    <input value={editLabel} onChange={e => setEditLabel(e.target.value)} placeholder="Label"
+                      className="bg-surface border border-border px-3 py-2 rounded-lg text-xs focus:outline-none focus:border-accent" />
+                    <input value={editIps} onChange={e => setEditIps(e.target.value)} placeholder="Allowed IPs — empty = any IP"
+                      className="bg-surface border border-border px-3 py-2 rounded-lg text-xs font-mono focus:outline-none focus:border-accent" />
+                    <p className="text-[11px] text-muted">Narrowing a key (fewer IPs) applies instantly; widening it asks you to confirm with 2FA / your password.</p>
+                    <div className="flex gap-2">
+                      <button onClick={() => saveEdit(k.id)} className="text-xs bg-accent text-white px-3 py-1.5 rounded-lg">Save</button>
+                      <button onClick={() => setEditing(null)} className="text-xs text-muted hover:text-ink px-2">Cancel</button>
+                    </div>
+                  </div>
+                )}
+                {activityFor === k.id && (
+                  <div className="mt-3 pt-3 border-t border-border">
+                    {activity === null ? (
+                      <p className="text-xs text-muted">Loading…</p>
+                    ) : activity.length === 0 ? (
+                      <p className="text-xs text-muted">No changes made with this key in the last 30 days. (Read-only requests aren&rsquo;t logged.)</p>
+                    ) : (
+                      <div className="flex flex-col gap-1">
+                        {activity.map((a) => (
+                          <div key={a.id} className="text-[11px] font-mono text-muted flex gap-2 flex-wrap">
+                            <span>{new Date(a.created_at).toLocaleString()}</span>
+                            <span className="text-ink">{a.method} {a.path.replace('/api/v1', '')}</span>
+                            <span className={a.status >= 400 ? 'text-red-500' : ''}>{a.status}</span>
+                            {a.ip && <span>{a.ip}</span>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             ))}
@@ -262,10 +386,11 @@ export default function ApiKeysClient() {
         )}
 
         <div className="flex flex-wrap gap-2 mb-2">
-          <select value={newScope} onChange={e => setNewScope(e.target.value as 'full' | 'read')}
+          <select value={newScope} onChange={e => setNewScope(e.target.value as 'full' | 'read' | 'allocate')}
             className="bg-surface border border-border px-3 py-2 rounded-xl text-xs focus:outline-none focus:border-accent">
             <option value="full">Full access (read + write)</option>
             <option value="read">Read-only</option>
+            {canAllocate && <option value="allocate">Full access + allocate bandwidth (requires allowed IPs)</option>}
           </select>
           <select value={newExpiry} onChange={e => setNewExpiry(e.target.value)}
             className="bg-surface border border-border px-3 py-2 rounded-xl text-xs focus:outline-none focus:border-accent">

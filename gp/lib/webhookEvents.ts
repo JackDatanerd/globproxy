@@ -9,11 +9,19 @@ export const WEBHOOK_EVENTS = [
   'session_deleted',
   'session_topped_up',
   'session_exhausted',
+  'session_suspended',
+  'session_resumed',
   'auto_topup_triggered',
   'auto_topup_failed',
   'bandwidth_threshold_crossed',
   'bandwidth_exhausted',
   'bandwidth_credited',
+  'bandwidth_allocated',
+  'bandwidth_reclaimed',
+  'bandwidth_refunded',
+  'api_key_created',
+  'api_key_revoked',
+  'api_key_expiring',
 ] as const
 
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number]
@@ -24,15 +32,57 @@ export const WEBHOOK_EVENT_LABELS: Record<WebhookEvent, string> = {
   session_deleted: 'Session deleted',
   session_topped_up: 'Session topped up',
   session_exhausted: 'Session ran out of bandwidth',
+  session_suspended: 'Session suspended by GlobProxy',
+  session_resumed: 'Session re-enabled',
   auto_topup_triggered: 'Auto top-up triggered',
   auto_topup_failed: 'Auto top-up failed (insufficient balance)',
   bandwidth_threshold_crossed: 'Bandwidth crossed 80% / 95%',
   bandwidth_exhausted: 'Bandwidth exhausted (100%)',
   bandwidth_credited: 'Bandwidth credited (purchase / allocation)',
+  bandwidth_allocated: 'Bandwidth allocated to a client (reseller)',
+  bandwidth_reclaimed: 'Bandwidth reclaimed by your reseller',
+  bandwidth_refunded: 'Purchase refunded (bandwidth clawed back)',
+  api_key_created: 'API key created',
+  api_key_revoked: 'API key revoked',
+  api_key_expiring: 'API key expiring soon',
+}
+
+// One line per event for the docs and GET /api/v1/webhooks/events.
+export const WEBHOOK_EVENT_DESCRIPTIONS: Record<WebhookEvent, { description: string; data: string[] }> = {
+  session_created: { description: 'A sub-user was created (API or dashboard).', data: ['credential_id', 'label', 'protocol', 'session_type', 'gb_allocated', 'country', 'state', 'city', 'asn', 'status', 'source'] },
+  session_activated: { description: 'A pending sub-user finished provisioning and is now live.', data: ['credential_id', 'label', 'gb_allocated', 'status'] },
+  session_deleted: { description: 'A sub-user was deleted.', data: ['credential_id', 'label', 'gb_allocated', 'gb_used', 'gb_released', 'source'] },
+  session_topped_up: { description: 'GB were added to a sub-user (manual top-up).', data: ['credential_id', 'label', 'gb_added', 'gb_allocated', 'source'] },
+  session_exhausted: { description: 'A single sub-user used its entire allocation and has stopped connecting (once per exhaustion; not sent when auto-topup is on).', data: ['credential_id', 'label', 'gb_allocated', 'gb_used'] },
+  session_suspended: { description: 'GlobProxy suspended a sub-user (abuse or policy action).', data: ['credential_id', 'label'] },
+  session_resumed: { description: 'A suspended sub-user was re-enabled.', data: ['credential_id', 'label'] },
+  auto_topup_triggered: { description: 'Auto-topup added bandwidth to a sub-user.', data: ['credential_id', 'gb_added', 'gb_allocated'] },
+  auto_topup_failed: { description: 'Auto-topup could not run because your balance was too low (once until it recovers).', data: ['credential_id', 'reason', 'gb_allocated', 'gb_used', 'amount_gb'] },
+  bandwidth_threshold_crossed: { description: 'The share of your account that is committed (allocated into sub-users) crossed 80% or 95%. Checked every 5 minutes.', data: ['threshold_pct', 'allocated_pct', 'used_pct', 'available_gb', 'total_gb', 'used_gb', 'allocated_gb'] },
+  bandwidth_exhausted: { description: 'Available (unallocated) bandwidth reached zero.', data: ['allocated_pct', 'used_pct', 'available_gb', 'total_gb', 'used_gb', 'allocated_gb'] },
+  bandwidth_credited: { description: 'Bandwidth was added to your account (purchase or reseller allocation). For purchases data has order_id and amount_usd; for allocations, transfer_id.', data: ['gb_credited', 'source', 'order_id', 'amount_usd', 'transfer_id'] },
+  bandwidth_allocated: { description: 'You allocated bandwidth to a client (resellers).', data: ['transfer_id', 'recipient_email', 'gb', 'note'] },
+  bandwidth_reclaimed: { description: 'Unused bandwidth was reclaimed from your account by the reseller who allocated it.', data: ['transfer_id', 'gb_reclaimed', 'gb_remaining'] },
+  bandwidth_refunded: { description: 'A purchase was refunded and its bandwidth taken back.', data: ['order_id', 'refund_usd', 'gb_clawed_back', 'gb_not_recoverable', 'fully_refunded'] },
+  api_key_created: { description: 'An API key was created on your account.', data: ['key_id', 'label', 'key_prefix', 'scopes', 'expires_at'] },
+  api_key_revoked: { description: 'An API key was revoked.', data: ['key_id', 'label', 'key_prefix'] },
+  api_key_expiring: { description: 'An API key expires within 7 days.', data: ['key_id', 'label', 'key_prefix', 'expires_at'] },
 }
 
 export function isWebhookEvent(v: unknown): v is WebhookEvent {
   return typeof v === 'string' && (WEBHOOK_EVENTS as readonly string[]).includes(v)
+}
+
+// Strict version used by the endpoint routes: an unknown name is an ERROR that
+// names it. (cleanEventTypes below silently dropped unknown names, so a typo
+// like "bandwith_exhausted" created an endpoint subscribed to fewer events and
+// still answered 200.)
+export function parseEventTypes(input: unknown): { ok: true; value: WebhookEvent[] } | { ok: false; error: string } {
+  const hint = `event_types must be a non-empty array of: ${WEBHOOK_EVENTS.join(', ')}`
+  if (!Array.isArray(input) || input.length === 0) return { ok: false, error: hint }
+  const unknown = input.filter((e) => !isWebhookEvent(e))
+  if (unknown.length) return { ok: false, error: `Unknown event type${unknown.length > 1 ? 's' : ''}: ${unknown.map((e) => JSON.stringify(String(e).slice(0, 40))).join(', ')}. ${hint}` }
+  return { ok: true, value: [...new Set(input as WebhookEvent[])] }
 }
 
 // Returns a de-duplicated, validated list, or null if empty/invalid input.

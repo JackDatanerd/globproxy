@@ -148,3 +148,33 @@ export function parseGbAmount(v: unknown, field = 'gb_amount'): Parsed<number> {
   if (n > MAX_GB_PER_CREDENTIAL) return { ok: false, error: `${field} must be at most ${MAX_GB_PER_CREDENTIAL}.` }
   return { ok: true, value: Math.round(n * 10000) / 10000 }
 }
+
+// ── Auto top-up configuration ─────────────────────────────────────────────
+// Shared by PATCH /api/v1/sub-users/:id/auto-topup and the dashboard route.
+// Bounds matter here: auto top-up spends the account balance unattended, so an
+// absurd amount (1e9) or a threshold above any sub-user's possible size used to
+// be accepted and then failed on every cron tick against the per-credential cap.
+export type AutoTopupInput = { enabled: false } | { enabled: true; threshold_gb: number; amount_gb: number }
+
+const hasAtMostDecimals = (n: number, d: number) => Math.abs(n * 10 ** d - Math.round(n * 10 ** d)) < 1e-6
+
+export function parseAutoTopup(body: any): Parsed<AutoTopupInput> {
+  // Strictly boolean: Boolean("false") is true, so a string "false" used to
+  // ENABLE auto top-up (which spends the account's balance automatically).
+  if (typeof body?.enabled !== 'boolean') return { ok: false, error: 'enabled must be a boolean.' }
+  if (!body.enabled) return { ok: true, value: { enabled: false } }
+
+  const threshold = parseFiniteNumber(body.threshold_gb)
+  const amount = parseFiniteNumber(body.amount_gb)
+  if (threshold === null || threshold < 0) return { ok: false, error: 'threshold_gb must be a number ≥ 0' }
+  if (amount === null || amount <= 0) return { ok: false, error: 'amount_gb must be a number greater than 0' }
+  if (threshold > MAX_GB_PER_CREDENTIAL) return { ok: false, error: `threshold_gb cannot exceed ${MAX_GB_PER_CREDENTIAL}.` }
+  if (amount < MIN_GB_PER_CREDENTIAL) return { ok: false, error: `amount_gb must be at least ${MIN_GB_PER_CREDENTIAL}.` }
+  if (amount > MAX_GB_PER_CREDENTIAL) return { ok: false, error: `amount_gb cannot exceed ${MAX_GB_PER_CREDENTIAL}.` }
+  if (!hasAtMostDecimals(threshold, 4) || !hasAtMostDecimals(amount, 4)) return { ok: false, error: 'threshold_gb and amount_gb can have at most 4 decimal places.' }
+  // amount must exceed threshold: otherwise a top-up can leave the session
+  // still at/below its own threshold and the cron re-fires every tick, draining
+  // the balance into a session that never clears the line.
+  if (amount <= threshold) return { ok: false, error: 'amount_gb must be greater than threshold_gb' }
+  return { ok: true, value: { enabled: true, threshold_gb: threshold, amount_gb: amount } }
+}

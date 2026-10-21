@@ -1,6 +1,7 @@
 import { requireMfaVerified } from '@/lib/mfa'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
+import { parseAutoTopup } from '@/lib/apiValidation'
 import { NextResponse } from 'next/server'
 
 // Configures (or disables) auto-allocate on a credential the user owns.
@@ -24,29 +25,16 @@ export async function PATCH(
 
   const { id } = await context.params
   const body = await req.json().catch(() => ({}))
-  // Strictly `=== true`: Boolean("false") is true, so a stringly-typed "false" would otherwise ENABLE auto top-up.
-  const enabled = body?.enabled === true
-
-  // threshold/amount are only required (and only persisted) when turning
-  // this on — set_auto_topup() clears both to null when disabled, so
-  // there's no stale config left half-applied.
-  const thresholdGb = enabled ? Number(body?.threshold_gb) : null
-  const amountGb = enabled ? Number(body?.amount_gb) : null
-
-  if (enabled) {
-    if (!Number.isFinite(thresholdGb) || (thresholdGb as number) < 0) {
-      return NextResponse.json({ error: 'threshold_gb must be a number ≥ 0' }, { status: 400 })
-    }
-    if (!Number.isFinite(amountGb) || (amountGb as number) <= 0) {
-      return NextResponse.json({ error: 'amount_gb must be a number greater than 0' }, { status: 400 })
-    }
-    // amount must exceed threshold: otherwise a top-up can leave the session
-    // still at/below its own threshold, and the cron re-fires every tick,
-    // draining the account balance into a session that never clears the line.
-    if ((amountGb as number) <= (thresholdGb as number)) {
-      return NextResponse.json({ error: 'amount_gb must be greater than threshold_gb' }, { status: 400 })
-    }
-  }
+  // Same rules as PATCH /api/v1/sub-users/:id/auto-topup (strictly-boolean
+  // `enabled`; amount > threshold; sane bounds) — one parser, so the two entry
+  // points can't drift. threshold/amount are only persisted when turning this
+  // on; set_auto_topup() clears both when disabled.
+  const parsed = parseAutoTopup(body)
+  if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 })
+  const cfg = parsed.value
+  const enabled = cfg.enabled
+  const thresholdGb = cfg.enabled ? cfg.threshold_gb : null
+  const amountGb = cfg.enabled ? cfg.amount_gb : null
 
   const admin = await createAdminClient()
   const { error } = await admin.rpc('set_auto_topup', {

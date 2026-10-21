@@ -211,7 +211,7 @@ export default {
     // waitUntil so the scheduled invocation doesn't get torn down before
     // the chain (and everything each step awaits — email sends, Geonode
     // calls, Supabase writes) actually finishes.
-    ctx.waitUntil(runTaskChain(base, env.CRON_SECRET ?? '', tasks, handler, env, ctx))
+    ctx.waitUntil(runTaskChain(base, env.CRON_SECRET ?? '', tasks, handler, env, ctx, INDEPENDENT_CHAINS.has(event.cron)))
   },
 }
 
@@ -236,17 +236,25 @@ async function taskReportedError(res: Response): Promise<string | null> {
   }
 }
 
-// Runs tasks in order, stopping at the first failure — same semantics as
-// cron-daily.yml's `needs:` chain (alerts → summary → cleanup): a failed
-// step means the ones after it don't run this cycle, rather than firing
-// blind on top of a known-bad state.
+// Cron patterns whose tasks are INDEPENDENT of each other. A failing task there
+// is logged and the rest still run: webhook retries and bandwidth-threshold
+// events have nothing to do with the usage sync, and must not go silent for as
+// long as one of the tasks before them is failing (the chain used to stop at
+// the first non-OK response).
+const INDEPENDENT_CHAINS = new Set(['*/5 * * * *'])
+
+// Runs tasks in order. For dependent chains (daily: alerts → summary → cleanup,
+// the same semantics as cron-daily.yml's `needs:`) it stops at the first
+// failure rather than firing blind on top of a known-bad state; for the
+// independent */5 chain it carries on.
 async function runTaskChain(
   base: string,
   cronSecret: string,
   tasks: string[],
   handler: any,
   env: any,
-  ctx: any
+  ctx: any,
+  continueOnFailure = false
 ) {
   for (const task of tasks) {
     const req = new Request(`${base}/api/cron/${task}`, {
@@ -257,7 +265,8 @@ async function runTaskChain(
       const res: Response = await handler.fetch(req, env, ctx)
       if (!res.ok) {
         console.error(`[scheduled] cron task "${task}" returned ${res.status}:`, await res.text().catch(() => ''))
-        return // stop the chain, matching needs:
+        if (!continueOnFailure) return // stop the chain, matching needs:
+        continue
       }
       // Several tasks (reconcile, provision, webhooks, …) catch their own
       // failures so they can never block the chain, and report them as
@@ -269,7 +278,7 @@ async function runTaskChain(
       if (reported) console.error(`[scheduled] cron task "${task}" finished but reported an error:`, reported)
     } catch (e) {
       console.error(`[scheduled] cron task "${task}" threw:`, e)
-      return // stop the chain, matching needs:
+      if (!continueOnFailure) return // stop the chain, matching needs:
     }
   }
 }

@@ -69,6 +69,9 @@ function SettingsPageInner() {
   // Delivery log: one endpoint's log open at a time.
   const [logId, setLogId] = useState<string | null>(null)
   const [logRows, setLogRows] = useState<any[]>([])
+  const [logNext, setLogNext] = useState<string | null>(null) // `before` cursor for older deliveries
+  const [detailId, setDetailId] = useState<string | null>(null)
+  const [detail, setDetail] = useState<any | null>(null)
   const [logLoading, setLogLoading] = useState(false)
 
   // Reseller application form state
@@ -266,20 +269,25 @@ function SettingsPageInner() {
 
   async function rotateWebhookSecret(id: string) {
     if (secretPending()) return
-    if (!confirm('Rotate the signing secret? The current secret stops working immediately — update your receiver with the new one.')) return
+    if (!confirm('Rotate the signing secret? You will get a new secret to put in your receiver.')) return
+    // OK = keep the old secret signing a second header for 24 h so receivers can
+    // be switched over without dropping events; Cancel = old secret dies now
+    // (the right choice if it leaked).
+    const keepOld = confirm('Keep the OLD secret working for 24 hours while you switch over?\n\nOK = yes, 24-hour overlap (events carry an extra X-GlobProxy-Signature-V2-Previous header).\nCancel = no, the old secret stops working immediately (choose this if it leaked).')
     try {
-      const data = await apiJson('POST', `/api/dashboard/webhooks/${id}/rotate-secret`)
+      const data = await apiJson('POST', `/api/dashboard/webhooks/${id}/rotate-secret`, { grace_minutes: keepOld ? 1440 : 0 })
       setRevealedSecret({ url: webhooks.find(w => w.id === id)?.url ?? 'webhook', secret: data.secret })
     } catch (err: any) {
       if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Failed to rotate secret')
     }
   }
 
-  async function loadDeliveries(id: string) {
+  async function loadDeliveries(id: string, before?: string | null) {
     setLogLoading(true)
     try {
-      const data = await apiFetch(`/api/dashboard/webhooks/${id}/deliveries?limit=25`)
-      setLogRows(data.deliveries ?? [])
+      const data = await apiFetch(`/api/dashboard/webhooks/${id}/deliveries?limit=25${before ? `&before=${encodeURIComponent(before)}` : ''}`)
+      setLogRows(prev => before ? [...prev, ...(data.deliveries ?? [])] : (data.deliveries ?? []))
+      setLogNext(data.next_before ?? null)
     } catch (err: any) {
       setLogRows([])
       toast.error(err.message ?? 'Failed to load deliveries')
@@ -289,8 +297,19 @@ function SettingsPageInner() {
 
   async function toggleLog(id: string) {
     if (logId === id) { setLogId(null); return }
-    setLogId(id)
+    setLogId(id); setDetailId(null); setDetail(null); setLogNext(null)
     await loadDeliveries(id)
+  }
+
+  async function toggleDetail(endpointId: string, deliveryId: string) {
+    if (detailId === deliveryId) { setDetailId(null); setDetail(null); return }
+    setDetailId(deliveryId); setDetail(null)
+    try {
+      setDetail(await apiFetch(`/api/dashboard/webhooks/${endpointId}/deliveries/${deliveryId}`))
+    } catch (err: any) {
+      toast.error(err.message ?? 'Failed to load delivery')
+      setDetailId(null)
+    }
   }
 
   async function redeliver(endpointId: string, deliveryId: string) {
@@ -524,7 +543,8 @@ function SettingsPageInner() {
                     ) : (
                       <div className="flex flex-col gap-1.5">
                         {logRows.map(d => (
-                          <div key={d.id} className="flex items-center justify-between gap-3 text-xs font-mono">
+                          <div key={d.id}>
+                          <div className="flex items-center justify-between gap-3 text-xs font-mono">
                             <div className="min-w-0 truncate">
                               <span className={d.status === 'succeeded' ? 'text-green-600' : d.status === 'retrying' ? 'text-amber-600' : 'text-red-500'}>
                                 {d.status}
@@ -535,14 +555,39 @@ function SettingsPageInner() {
                               {d.response_status ? <span className="text-muted"> · HTTP {d.response_status}</span> : null}
                               {d.last_error && d.status !== 'succeeded' ? <span className="text-red-500"> · {d.last_error}</span> : null}
                             </div>
-                            {d.event_type !== 'test' && (
-                              <button onClick={() => redeliver(w.id, d.id)}
-                                className="text-muted hover:text-ink border border-border px-2 py-0.5 rounded-lg flex-shrink-0">
-                                Redeliver
+                            <div className="flex gap-1.5 flex-shrink-0">
+                              <button onClick={() => toggleDetail(w.id, d.id)}
+                                className="text-muted hover:text-ink border border-border px-2 py-0.5 rounded-lg">
+                                Details
                               </button>
-                            )}
+                              {d.event_type !== 'test' && (
+                                <button onClick={() => redeliver(w.id, d.id)}
+                                  className="text-muted hover:text-ink border border-border px-2 py-0.5 rounded-lg">
+                                  Redeliver
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                          {detailId === d.id && (
+                            <div className="mt-1.5 mb-2 bg-surface border border-border rounded-lg p-3 text-[11px] font-mono text-ink2">
+                              {detail === null ? 'Loading…' : (
+                                <>
+                                  <div className="text-muted mb-1">Event body that was sent</div>
+                                  <pre className="whitespace-pre-wrap break-all max-h-48 overflow-auto">{JSON.stringify(detail.payload, null, 2)}</pre>
+                                  <div className="text-muted mt-2 mb-1">Your endpoint&apos;s response{detail.response_status ? ` (HTTP ${detail.response_status})` : ''}</div>
+                                  <pre className="whitespace-pre-wrap break-all max-h-32 overflow-auto">{detail.response_body || '(empty or not captured)'}</pre>
+                                </>
+                              )}
+                            </div>
+                          )}
                           </div>
                         ))}
+                        {logNext && (
+                          <button onClick={() => loadDeliveries(w.id, logNext)}
+                            className="text-xs text-muted hover:text-ink underline self-start mt-1">
+                            Load older deliveries
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>

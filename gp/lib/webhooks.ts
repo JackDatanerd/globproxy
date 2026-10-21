@@ -26,9 +26,20 @@ const CLAIM_LEASE_MS = 5 * 60_000
 const TEST_COOLDOWN_MS = 10_000
 
 type SupabaseAdmin = Awaited<ReturnType<typeof createAdminClient>>
-type Endpoint = { id: string; user_id: string; url: string; secret: string }
-type Delivery = { id: string; endpoint_id: string; user_id: string; event_id: string; event_type: string; payload: string; attempts: number }
+type Endpoint = {
+  id: string; user_id: string; url: string; secret: string
+  // Set for a limited time after a secret rotation (see rotateSecret).
+  previous_secret?: string | null; previous_secret_expires_at?: string | null
+}
+type Delivery = {
+  id: string; endpoint_id: string; user_id: string; event_id: string; event_type: string; payload: string; attempts: number
+  status?: string
+}
 type AttemptResult = { ok: boolean; error?: string; status?: number; deliveryId?: string }
+
+const EP_COLS = 'id, user_id, url, secret, previous_secret, previous_secret_expires_at'
+const DELIVERY_COLS = 'id, endpoint_id, user_id, event_id, event_type, payload, attempts, status'
+const RESPONSE_SNIPPET_CHARS = 500
 
 async function hmacHex(secret: string, payload: string): Promise<string> {
   const enc = new TextEncoder()
@@ -42,12 +53,46 @@ async function hmacHex(secret: string, payload: string): Promise<string> {
 //   X-GlobProxy-Signature     hex HMAC-SHA256(secret, body)             (legacy, unchanged)
 //   X-GlobProxy-Signature-V2  t=<unix seconds>,v1=<hex HMAC-SHA256(secret, `${t}.${body}`)>
 // Reject V2 deliveries whose timestamp is more than ~5 minutes old.
-export async function signatureHeaders(secret: string, body: string): Promise<Record<string, string>> {
+//
+// During a secret-rotation grace window a third header carries the SAME V2
+// signature made with the PREVIOUS secret, so a receiver still holding the old
+// secret can verify while the new one is rolled out:
+//   X-GlobProxy-Signature-V2-Previous  t=<unix seconds>,v1=<hex HMAC with the previous secret>
+export async function signatureHeaders(secret: string, body: string, previousSecret?: string | null): Promise<Record<string, string>> {
   const t = Math.floor(Date.now() / 1000)
-  return {
+  const headers: Record<string, string> = {
     'X-GlobProxy-Signature': await hmacHex(secret, body),
     'X-GlobProxy-Signature-V2': `t=${t},v1=${await hmacHex(secret, `${t}.${body}`)}`,
     'X-GlobProxy-Timestamp': String(t),
+  }
+  if (previousSecret) headers['X-GlobProxy-Signature-V2-Previous'] = `t=${t},v1=${await hmacHex(previousSecret, `${t}.${body}`)}`
+  return headers
+}
+
+// First bytes of the receiver's response, for the delivery log ("why did you
+// 400 me?"). Bounded read — a hostile endpoint streaming gigabytes can't make
+// us buffer it — and the body is always cancelled so the connection is freed.
+async function readSnippet(res: Response): Promise<string | null> {
+  try {
+    if (!res.body) return null
+    const reader = res.body.getReader()
+    const chunks: Uint8Array[] = []
+    let total = 0
+    while (total < RESPONSE_SNIPPET_CHARS * 4) {
+      const { done, value } = await reader.read()
+      if (done || !value) break
+      chunks.push(value)
+      total += value.byteLength
+    }
+    await reader.cancel().catch(() => {})
+    const bytes = new Uint8Array(total)
+    let off = 0
+    for (const c of chunks) { bytes.set(c, off); off += c.byteLength }
+    // eslint-disable-next-line no-control-regex
+    const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '')
+    return text.slice(0, RESPONSE_SNIPPET_CHARS) || null
+  } catch {
+    return null
   }
 }
 
@@ -84,7 +129,7 @@ async function attemptDelivery(
   supabase: SupabaseAdmin,
   ep: Endpoint,
   d: Delivery,
-  opts: { retry: boolean }
+  opts: { retry: boolean; manual?: boolean }
 ): Promise<AttemptResult> {
   const started = Date.now()
   const attempts = d.attempts + 1
@@ -93,6 +138,8 @@ async function attemptDelivery(
   let error: string | undefined
   let permanent = false
   let forceDisable: string | null = null
+  let responseBody: string | null = null
+  const previousActive = !!ep.previous_secret && !!ep.previous_secret_expires_at && new Date(ep.previous_secret_expires_at).getTime() > Date.now()
 
   try {
     // Re-validated at every delivery, not just at save time: the URL may
@@ -114,7 +161,7 @@ async function attemptDelivery(
           'X-GlobProxy-Event': d.event_type,
           'X-GlobProxy-Event-Id': d.event_id,
           'X-GlobProxy-Delivery': d.id,
-          ...(await signatureHeaders(ep.secret, d.payload)),
+          ...(await signatureHeaders(ep.secret, d.payload, previousActive ? ep.previous_secret : null)),
         },
         body: d.payload,
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
@@ -132,9 +179,17 @@ async function attemptDelivery(
       } else {
         error = `HTTP ${res.status}`
       }
+      // Always drain/cancel the body (frees the connection); keep a snippet.
+      responseBody = res.type === 'opaqueredirect' ? null : await readSnippet(res)
     }
   } catch (e: any) {
-    error = String(e?.message ?? e).slice(0, 500)
+    // Deliberately generic: the raw message distinguishes "connection refused"
+    // from "no route" from "TLS failure", which would let an endpoint URL be
+    // used as a port/host probe from our egress IP and read back through the
+    // delivery log.
+    error = e?.name === 'TimeoutError' || e?.name === 'AbortError'
+      ? `Timed out after ${REQUEST_TIMEOUT_MS / 1000}s`
+      : 'Could not connect to the endpoint'
   }
 
   const willRetry = !ok && !permanent && opts.retry && attempts < MAX_ATTEMPTS
@@ -142,10 +197,19 @@ async function attemptDelivery(
     attempts,
     last_attempt_at: new Date().toISOString(),
     response_status: status ?? null,
+    response_body: responseBody,
     last_error: ok ? null : error ?? null,
     duration_ms: Date.now() - started,
     status: ok ? 'succeeded' : willRetry ? 'retrying' : 'failed',
     next_attempt_at: willRetry ? nextAttemptAt(attempts) : null,
+  }
+  // A manual redelivery of a delivery that is still waiting on its automatic
+  // retries must not cancel them when it fails: record what happened, but
+  // leave the retry schedule (status / next_attempt_at / attempt count) alone.
+  if (opts.manual && !ok && d.status === 'retrying') {
+    delete patch.status
+    delete patch.next_attempt_at
+    delete patch.attempts
   }
   try {
     await supabase.from('webhook_deliveries').update(patch).eq('id', d.id)
@@ -182,7 +246,7 @@ export async function dispatchWebhook(
     const supabase = await createAdminClient()
     const { data: endpoints, error } = await supabase
       .from('webhook_endpoints')
-      .select('id, user_id, url, secret')
+      .select(EP_COLS)
       .eq('user_id', userId)
       .eq('enabled', true)
       .contains('event_types', [event])
@@ -206,7 +270,7 @@ export async function dispatchWebhook(
             endpoint_id: ep.id, user_id: userId, event_id: eventId, event_type: event, payload,
             status: 'retrying', attempts: 0, next_attempt_at: new Date(Date.now() + 2 * 60_000).toISOString(),
           })
-          .select('id, endpoint_id, user_id, event_id, event_type, payload, attempts')
+          .select(DELIVERY_COLS)
           .single()
         if (insErr || !row) {
           console.error('[webhooks] failed to persist delivery', ep.id, insErr)
@@ -230,15 +294,9 @@ export async function sendTestWebhook(
 ): Promise<AttemptResult & { cooldown?: boolean }> {
   const supabase = await createAdminClient()
   const { data: ep } = await supabase
-    .from('webhook_endpoints').select('id, user_id, url, secret')
+    .from('webhook_endpoints').select(EP_COLS)
     .eq('id', endpointId).eq('user_id', userId).single()
   if (!ep) return { ok: false, error: 'Webhook not found' }
-
-  const since = new Date(Date.now() - TEST_COOLDOWN_MS).toISOString()
-  const { count } = await supabase
-    .from('webhook_deliveries').select('id', { count: 'exact', head: true })
-    .eq('user_id', userId).eq('event_type', 'test').gte('created_at', since)
-  if ((count ?? 0) > 0) return { ok: false, error: 'Please wait a few seconds before sending another test.', cooldown: true }
 
   const eventId = crypto.randomUUID()
   const payload = JSON.stringify({
@@ -248,10 +306,23 @@ export async function sendTestWebhook(
   const { data: row, error } = await supabase
     .from('webhook_deliveries')
     .insert({ endpoint_id: ep.id, user_id: userId, event_id: eventId, event_type: 'test', payload, status: 'failed', attempts: 0 })
-    .select('id, endpoint_id, user_id, event_id, event_type, payload, attempts').single()
+    .select('id, endpoint_id, user_id, event_id, event_type, payload, attempts, status, created_at').single()
   if (error || !row) return { ok: false, error: 'Could not record the test delivery' }
 
-  return attemptDelivery(supabase, ep as Endpoint, row as Delivery, { retry: false })
+  // Cooldown: insert FIRST, then check we are the earliest test in the window.
+  // (Check-then-insert let two simultaneous clicks both pass.) Of any burst the
+  // earliest row wins; the rest delete themselves and report the cooldown.
+  const since = new Date(Date.now() - TEST_COOLDOWN_MS).toISOString()
+  const { data: recent } = await supabase
+    .from('webhook_deliveries').select('id')
+    .eq('user_id', userId).eq('event_type', 'test').gte('created_at', since)
+    .order('created_at', { ascending: true }).order('id', { ascending: true }).limit(1)
+  if (recent?.[0] && recent[0].id !== row.id) {
+    await supabase.from('webhook_deliveries').delete().eq('id', row.id)
+    return { ok: false, error: 'Please wait a few seconds before sending another test.', cooldown: true }
+  }
+
+  return attemptDelivery(supabase, ep as Endpoint, row as unknown as Delivery, { retry: false })
 }
 
 // Manual re-send of a stored delivery (same event id + body, fresh
@@ -260,14 +331,14 @@ export async function redeliverWebhook(userId: string, deliveryId: string, endpo
   const supabase = await createAdminClient()
   const { data: d } = await supabase
     .from('webhook_deliveries')
-    .select('id, endpoint_id, user_id, event_id, event_type, payload, attempts')
+    .select(DELIVERY_COLS)
     .eq('id', deliveryId).eq('user_id', userId).single()
   if (!d || (endpointId && d.endpoint_id !== endpointId)) return { ok: false, error: 'Delivery not found' }
   const { data: ep } = await supabase
-    .from('webhook_endpoints').select('id, user_id, url, secret')
+    .from('webhook_endpoints').select(EP_COLS)
     .eq('id', d.endpoint_id).eq('user_id', userId).single()
   if (!ep) return { ok: false, error: 'Webhook not found' }
-  return attemptDelivery(supabase, ep as Endpoint, d as Delivery, { retry: false })
+  return attemptDelivery(supabase, ep as Endpoint, d as Delivery, { retry: false, manual: true })
 }
 
 // Cron: retry due deliveries. Each is claimed with a lease first so two
@@ -277,7 +348,7 @@ export async function runWebhookRetries(limit = RETRIES_PER_RUN) {
   const nowIso = new Date().toISOString()
   const { data: due, error } = await supabase
     .from('webhook_deliveries')
-    .select('id, endpoint_id, user_id, event_id, event_type, payload, attempts')
+    .select(DELIVERY_COLS)
     .eq('status', 'retrying')
     .lte('next_attempt_at', nowIso)
     .order('next_attempt_at', { ascending: true })
@@ -298,7 +369,7 @@ export async function runWebhookRetries(limit = RETRIES_PER_RUN) {
     if (!claimed?.length) continue
 
     const { data: ep } = await supabase
-      .from('webhook_endpoints').select('id, user_id, url, secret, enabled').eq('id', d.endpoint_id).single()
+      .from('webhook_endpoints').select('id, user_id, url, secret, previous_secret, previous_secret_expires_at, enabled').eq('id', d.endpoint_id).single()
     if (!ep || !ep.enabled) {
       await supabase.from('webhook_deliveries')
         .update({ status: 'failed', next_attempt_at: null, last_error: 'Endpoint disabled or deleted before delivery' })
@@ -318,6 +389,8 @@ export async function runWebhookRetries(limit = RETRIES_PER_RUN) {
 // email flags; only accounts that actually have a subscribed endpoint are
 // scanned. Highest newly-crossed level fires once; lower levels are marked
 // so they don't fire afterwards. Flags clear when usage drops below 80%.
+const round1 = (n: number) => Math.round(n * 10) / 10
+
 export async function runBandwidthThresholdWebhooks() {
   const supabase = await createAdminClient()
   const { data: eps, error } = await supabase
@@ -330,7 +403,7 @@ export async function runBandwidthThresholdWebhooks() {
 
   const { data: accounts } = await supabase
     .from('bandwidth_accounts')
-    .select('user_id, total_gb, available_gb, wh_alerted_80_at, wh_alerted_95_at, wh_alerted_100_at')
+    .select('user_id, total_gb, available_gb, used_gb, allocated_gb, wh_alerted_80_at, wh_alerted_95_at, wh_alerted_100_at')
     .in('user_id', userIds)
     .gt('total_gb', 0)
 
@@ -339,7 +412,20 @@ export async function runBandwidthThresholdWebhooks() {
   for (const acc of accounts ?? []) {
     const total = Number(acc.total_gb)
     const avail = Number(acc.available_gb)
+    // The TRIGGER is "how much of the account is committed" (allocated into
+    // sessions or reserved): total − available. That is what the e-mail alerts
+    // use and what actually blocks new sessions. It was reported to receivers
+    // as `used_pct`, which it is not — a reseller with 95% allocated and 3%
+    // consumed got used_pct: 95. The payload now carries both, named for what
+    // they are.
     const pct = ((total - avail) / total) * 100
+    const usedGb = Number(acc.used_gb ?? 0)
+    const payloadBase = {
+      allocated_pct: round1(pct),
+      used_pct: round1((usedGb / total) * 100),
+      available_gb: avail, total_gb: total, used_gb: usedGb,
+      allocated_gb: Number(acc.allocated_gb ?? total - avail),
+    }
 
     if (pct < 80) {
       if (acc.wh_alerted_80_at || acc.wh_alerted_95_at || acc.wh_alerted_100_at) {
@@ -363,25 +449,27 @@ export async function runBandwidthThresholdWebhooks() {
     if (flagErr) { console.error('[webhooks] failed to set threshold flag', acc.user_id, flagErr); continue }
 
     if (level === 100) {
-      await dispatchWebhook(acc.user_id, 'bandwidth_exhausted', { used_pct: pct, available_gb: avail, total_gb: total })
+      await dispatchWebhook(acc.user_id, 'bandwidth_exhausted', payloadBase)
     } else {
-      await dispatchWebhook(acc.user_id, 'bandwidth_threshold_crossed', {
-        threshold_pct: level, used_pct: pct, available_gb: avail, total_gb: total,
-      })
+      await dispatchWebhook(acc.user_id, 'bandwidth_threshold_crossed', { threshold_pct: level, ...payloadBase })
     }
     fired++
   }
   return { fired }
 }
 
-// Cron cleanup: delivery log older than 14 days, idempotency keys older than 24h.
+// Cron cleanup: delivery log older than 14 days, idempotency keys older than 24h,
+// API request log older than 30 days.
 export async function pruneIntegrationData() {
   const supabase = await createAdminClient()
   const dayAgo = new Date(Date.now() - 24 * 3_600_000).toISOString()
   const twoWeeksAgo = new Date(Date.now() - 14 * 24 * 3_600_000).toISOString()
   const a = await supabase.from('webhook_deliveries').delete().lt('created_at', twoWeeksAgo).neq('status', 'retrying')
   const b = await supabase.from('api_idempotency_keys').delete().lt('created_at', dayAgo)
+  const monthAgo = new Date(Date.now() - 30 * 24 * 3_600_000).toISOString()
+  const c = await supabase.from('api_request_log').delete().lt('created_at', monthAgo)
   if (a.error) console.error('[webhooks] delivery prune failed', a.error)
   if (b.error) console.error('[webhooks] idempotency prune failed', b.error)
-  return { deliveries_pruned: !a.error, idempotency_pruned: !b.error }
+  if (c.error) console.error('[webhooks] api request log prune failed', c.error)
+  return { deliveries_pruned: !a.error, idempotency_pruned: !b.error, request_log_pruned: !c.error }
 }

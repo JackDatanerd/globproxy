@@ -3,10 +3,13 @@ import { rateLimitedUser } from '@/lib/rateLimit'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { rotateSecret } from '@/lib/webhookEndpoints'
 import { requireStepUp } from '@/lib/reauth'
+import { logSecurityEvent } from '@/lib/securityEvents'
 import { NextResponse } from 'next/server'
 
-// Replaces the signing secret; the old one stops working immediately and
-// the new one is returned once, in this response.
+// Replaces the signing secret; the new one is returned once, in this response.
+// The old one stops working immediately unless the body asks for a grace
+// window: { "grace_minutes": 0–4320 } keeps it signing
+// X-GlobProxy-Signature-V2-Previous until then.
 export async function POST(req: Request, context: { params: Promise<{ id: string }> }) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -25,7 +28,9 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
   if (suspended) return suspended
 
   const { id } = await context.params
-  const r = await rotateSecret(await createAdminClient(), user.id, id)
+  const body = await req.json().catch(() => ({}))
+  const r = await rotateSecret(await createAdminClient(), user.id, id, body?.grace_minutes === undefined ? 0 : Number(body.grace_minutes))
   if (!r.ok) return NextResponse.json({ error: r.message }, { status: r.status })
-  return NextResponse.json({ id: r.data.id, secret: r.data.secret })
+  await logSecurityEvent({ userId: user.id, event: 'webhook_secret_rotated', req })
+  return NextResponse.json(r.data)
 }
