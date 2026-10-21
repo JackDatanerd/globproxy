@@ -1,6 +1,7 @@
 import { rateLimited } from '@/lib/rateLimit'
 import { readTextCapped } from '@/lib/bodyLimit'
 import { createAdminClient } from '@/lib/supabase/server'
+import { appUrl } from '@/lib/appUrl'
 import { NextResponse } from 'next/server'
 
 // Receiver for the Content-Security-Policy-Report-Only header set in
@@ -26,6 +27,21 @@ function strip(v: unknown): string {
   return String(v ?? '').split(/[?#]/)[0].slice(0, 200)
 }
 
+// A report is only worth recording when it is about one of OUR pages. The endpoint is public, so
+// anyone can post reports claiming to come from any page; counting those would let made-up rows
+// crowd out real ones (the table is capped — see migration 0061).
+function isOwnDocument(doc: string | undefined): boolean {
+  if (!doc) return false
+  try {
+    const host = new URL(doc).hostname.toLowerCase()
+    const own = new URL(appUrl()).hostname.toLowerCase()
+    const bare = own.startsWith('www.') ? own.slice(4) : own
+    return host === bare || host === `www.${bare}`
+  } catch {
+    return false
+  }
+}
+
 export async function POST(req: Request) {
   const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', 'csp')
   if (limited) return limited
@@ -47,6 +63,7 @@ export async function POST(req: Request) {
       if (!r || typeof r !== 'object') continue
       const line: Record<string, string> = {}
       for (const f of FIELDS) if (r[f] !== undefined) line[f] = strip(r[f])
+      if (!isOwnDocument(typeof (r['document-uri'] ?? r['documentURL']) === 'string' ? String(r['document-uri'] ?? r['documentURL']) : undefined)) continue
       console.warn('[csp-report]', JSON.stringify(line))
       lines.push(line)
     }

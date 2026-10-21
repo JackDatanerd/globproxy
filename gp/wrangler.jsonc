@@ -10,6 +10,8 @@
   // Persist Worker logs. Without this, every console.error in the payment,
   // webhook and cron paths is gone the moment the request ends.
   "observability": { "enabled": true },
+  // Upload source maps so stack traces in the persisted logs name real files and lines.
+  "upload_source_maps": true,
   // Exposes the id of the deployed version to the Worker as env.CF_VERSION_METADATA.id.
   // custom-worker.ts puts it in the anonymous edge-cache key, so a deploy can never
   // be followed by cached HTML that points at JS files the new build no longer has;

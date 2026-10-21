@@ -729,7 +729,13 @@ export async function POST(req: Request, context: { params: Promise<{ task: stri
   try {
     let result
     switch (task) {
-      case 'stock':     result = { ...(await runStockCheck()), cron_health: await checkCronFreshness() }; break
+      case 'stock': {
+        // The stopped-task watchdog runs FIRST, on its own (it never throws): a failure anywhere
+        // in the stock read or its alerting must not stop it reporting other tasks that went quiet.
+        const cron_health = await checkCronFreshness()
+        result = { ...(await runStockCheck()), cron_health }
+        break
+      }
       case 'usage':     result = await runUsageSync();        break
       case 'alerts':    result = await runBandwidthAlerts();  break
       case 'summary':   result = await runDailySummary();     break
