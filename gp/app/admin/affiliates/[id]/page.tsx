@@ -39,6 +39,16 @@ export default async function AdminAffiliateDetailPage({ params }: { params: Pro
   ])
   if (!p) notFound()
 
+  // Verified Operator grant / revoke history (who, when, which rates) from the
+  // audit log — so a rate on this page can be traced to the decision behind it.
+  const { data: voHistory } = await supabase
+    .from('admin_audit_log')
+    .select('created_at, action, details, admin:admin_id(email)')
+    .eq('target_user_id', id)
+    .like('action', 'verified_operator.%')
+    .order('created_at', { ascending: false })
+    .limit(20)
+
   const e = ((earningsRes.data ?? []) as any[]).find(r => r.referrer_id === id)
   const tiles: [string, string][] = [
     ['Accruing', usd(e?.accruing_usd)],
@@ -98,6 +108,18 @@ export default async function AdminAffiliateDetailPage({ params }: { params: Pro
           <div className="text-[10px] text-muted mt-1">Full details appear on the payout row when you are about to send it.</div>
         </div>
       </div>
+
+      {(voHistory?.length ?? 0) > 0 && (
+        <Section title="Verified Operator history" empty="" rows={voHistory ?? []} heads={['When', 'Action', 'By', 'Rates (intro / lifetime)']}
+          cell={(r: any) => {
+            const d = r.details ?? {}
+            const grant = r.action === 'verified_operator.grant'
+            const a = grant ? d.intro_rate : d.restored_intro_rate
+            const b = grant ? d.lifetime_rate : d.restored_lifetime_rate
+            return [day(r.created_at), grant ? 'Granted' : 'Revoked', (r.admin as any)?.email ?? 'system',
+              a != null && b != null ? `${formatRatePct(a)} / ${formatRatePct(b)}` : '—']
+          }} />
+      )}
 
       <Section title="Payouts" empty="No payouts yet." rows={payouts ?? []} heads={['Cycle', 'Amount', 'Method', 'Status', 'Paid', 'Reference']}
         cell={(r: any) => [formatCycleLabel(r), usd(r.amount_usd), r.payout_method, r.status, day(r.paid_at), r.payment_reference ?? '—']} />

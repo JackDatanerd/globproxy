@@ -10,7 +10,7 @@ import { fetchAllRows } from '@/lib/dbPaging'
 // be paid, even if the affiliate has since changed their method.
 export async function GET(req: Request) {
   try {
-    const auth = await authorizeAdmin(req)
+    const auth = await authorizeAdmin(req, { stepUp: true })
     if (!auth.ok) return auth.response
 
     const url = new URL(req.url)

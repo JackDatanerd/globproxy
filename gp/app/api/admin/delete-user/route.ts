@@ -69,7 +69,15 @@ export async function POST(req: Request) {
   const { error: banError } = await supabase.auth.admin.updateUserById(user_id, { ban_duration: '876000h' })
   if (banError) {
     await supabase.from('profiles').update(rollbackProfilePatch(tp)).eq('id', user_id)
-    return NextResponse.json({ error: banError.message }, { status: 500 })
+    // The proxy sessions were already released at this point, so the admin needs
+    // this on record (and in the message), not a bare 500.
+    await logAdminAction(supabase, {
+      adminId, action: 'user.delete_aborted', targetUserId: user_id,
+      details: { stage: 'auth_ban', released: released.length, error: banError.message },
+    })
+    return NextResponse.json({
+      error: `Could not close the sign-in account (${banError.message}). The profile was restored${released.length ? `, but ${released.length} proxy session${released.length === 1 ? ' was' : 's were'} already shut down` : ''}. Try again.`,
+    }, { status: 500 })
   }
 
   // Step 4: Credentials read as inactive and lose their stored password and
@@ -97,7 +105,7 @@ export async function POST(req: Request) {
       subject: 'Your GlobProxy account has been deleted',
       html: adminNoticeHtml({
         heading: 'Account deleted',
-        bodyHtml: `Hi ${escapeHtml(tp.full_name) || 'there'}, your GlobProxy account has been permanently deleted. Your personal data has been removed. If you believe this was a mistake, please contact us as soon as possible.`,
+        bodyHtml: `Hi ${escapeHtml(tp.full_name) || 'there'}, your GlobProxy account has been closed. Your profile, payout details, proxy credentials and stored secrets have been removed. We keep only the records we are required to retain (such as invoices and payment history), and the email address stays blocked so the account cannot be reopened. If you believe this was a mistake, please contact us as soon as possible.`,
         cta: { href: 'mailto:support@globproxy.com', label: 'Contact support →' },
       }),
     }).catch((e) => console.error('[delete-user] notification email failed:', e))

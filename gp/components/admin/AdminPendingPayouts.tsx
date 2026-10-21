@@ -44,14 +44,33 @@ export default function AdminPendingPayouts({ rows }: { rows: PendingPayoutRow[]
     )
     if (ref === null) return
     setLoading(true)
-    const { ok, data } = await adminPost('/api/admin/bulk-mark-payouts-paid', { payoutIds: Array.from(selected), reference: ref })
-    const d = data as any
-    if (!ok && d.paid == null) { toast.error(d.error ?? 'Bulk action failed'); setLoading(false); return }
-    if (d.failed?.length) {
-      toast.error(`${d.paid} marked paid, ${d.failed.length} failed: ${d.failed.slice(0, 3).map((f: any) => f.error).join('; ')}`, { duration: 12000 })
+    // Sent in chunks: one request for hundreds of payouts (each with an RPC, an
+    // audit row and an email) risks a Worker timeout partway through. Every payout
+    // is claimed atomically and idempotently, so a re-run after an interruption
+    // is safe — already-paid ones simply report "not in a payable state".
+    const ids = Array.from(selected)
+    const CHUNK = 25
+    let paidCount = 0
+    const failed: { payoutId: string; error: string }[] = []
+    let aborted: string | null = null
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const { ok, data } = await adminPost('/api/admin/bulk-mark-payouts-paid', { payoutIds: ids.slice(i, i + CHUNK), reference: ref })
+      const d = data as any
+      if (!ok && d.paid == null) { aborted = d.error ?? 'Bulk action failed'; break }
+      paidCount += d.paid ?? 0
+      failed.push(...(d.failed ?? []))
+    }
+    if (aborted) {
+      toast.error(`${paidCount} marked paid before it stopped: ${aborted}. Reload to see what is left, then retry — nothing is paid twice.`, { duration: 15000 })
+      setLoading(false)
+      if (paidCount > 0) setTimeout(() => window.location.reload(), 6000)
+      return
+    }
+    if (failed.length) {
+      toast.error(`${paidCount} marked paid, ${failed.length} failed: ${failed.slice(0, 3).map(f => f.error).join('; ')}`, { duration: 12000 })
       setTimeout(() => window.location.reload(), 4000)
     } else {
-      toast.success(`${d.paid} payout${d.paid === 1 ? '' : 's'} marked paid`)
+      toast.success(`${paidCount} payout${paidCount === 1 ? '' : 's'} marked paid`)
       window.location.reload()
     }
   }

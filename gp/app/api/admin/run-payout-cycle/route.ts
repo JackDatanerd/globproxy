@@ -3,10 +3,13 @@ import { logAdminAction } from '@/lib/adminAudit'
 import { adminNoticeHtml, appUrl } from '@/lib/adminEmail'
 import { sendEmailSafe, escapeHtml } from '@/lib/email'
 import { lastCompletedCycle, formatCycleLabel, currentAccruingCycle, cycleIsPayable } from '@/lib/payoutCycle'
+import { AFFILIATE_MIN_PAYOUT_USD, AFFILIATE_HOLD_HOURS } from '@/lib/referrals'
 import { NextResponse } from 'next/server'
 
-const DEFAULT_MIN_PAYOUT_USD = 20
-const DEFAULT_HOLD_HOURS = 48
+// Single source of truth with the Terms page and the affiliate dashboard
+// (lib/referrals) — a second copy here could drift from what affiliates are told.
+const DEFAULT_MIN_PAYOUT_USD = AFFILIATE_MIN_PAYOUT_USD
+const DEFAULT_HOLD_HOURS = AFFILIATE_HOLD_HOURS
 
 type Row = { out_referrer_id: string; out_status: string; out_amount_usd: number; out_payout_id: string | null }
 

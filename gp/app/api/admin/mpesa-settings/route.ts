@@ -24,7 +24,10 @@ export async function POST(req: Request) {
     rows.push({ key: 'mpesa_enabled', value: String(body.enabled), updated_at: now }); details.enabled = body.enabled
   }
   if (body.markupPct !== undefined) {
-    const m = Number(body.markupPct)
+    // null / '' / non-numbers must NOT coerce to 0 (a blank or NaN field from the
+    // form would otherwise silently save a zero-margin FX rate).
+    if (typeof body.markupPct !== 'number') return badRequest('Markup must be a number')
+    const m = body.markupPct
     if (!Number.isFinite(m) || m < 0 || m > MAX_MARKUP_PCT) return badRequest(`Markup must be between 0 and ${MAX_MARKUP_PCT}%`)
     rows.push({ key: 'kes_fx_markup_pct', value: String(m), updated_at: now }); details.markupPct = m
   }

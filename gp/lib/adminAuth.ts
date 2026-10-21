@@ -13,7 +13,12 @@ export type AdminAuthResult =
 // real user -> role === 'admin' -> TOTP step-up cookie. Same order and
 // same status codes the routes each used to hand-roll (401 / 403 / 403),
 // pulled into one place so a future route can't forget the MFA step.
-export async function authorizeAdmin(req: Request): Promise<AdminAuthResult> {
+//
+// `opts.stepUp` demands the full step-up on a GET too. Use it for reads that
+// hand over bulk sensitive data (CSV exports of payout destinations / the audit
+// log): a plain read only needs the verified 2FA cookie, which an admin who never
+// enrolled doesn't have to present, so a stolen session alone could export them.
+export async function authorizeAdmin(req: Request, opts: { stepUp?: boolean } = {}): Promise<AdminAuthResult> {
   const token = req.headers.get('authorization')?.replace('Bearer ', '')
   if (!token) return { ok: false, response: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) }
 
@@ -36,7 +41,7 @@ export async function authorizeAdmin(req: Request): Promise<AdminAuthResult> {
   // the last 10 minutes — otherwise a stolen admin session alone could change
   // roles, mark payouts paid or reset someone's 2FA with no further proof.
   const isRead = req.method === 'GET' || req.method === 'HEAD'
-  const mfaCheck = isRead ? await requireMfaVerified(req, user.id) : await requireStepUp(req, user.id)
+  const mfaCheck = isRead && !opts.stepUp ? await requireMfaVerified(req, user.id) : await requireStepUp(req, user.id)
   if (mfaCheck) return { ok: false, response: mfaCheck }
 
   return { ok: true, supabase, adminId: user.id }

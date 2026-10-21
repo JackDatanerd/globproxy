@@ -2,7 +2,7 @@ import Link from 'next/link'
 import { createAdminClient } from '@/lib/supabase/server'
 import AdminPager, { parsePage, cleanSearch } from '@/components/admin/AdminPager'
 import AdminCsvButton from '@/components/admin/AdminCsvButton'
-import { parseAuditFilters, resolveWhoIds, applyAuditFilters } from '@/lib/adminAuditFilters'
+import { parseAuditFilters, resolveWhoIds, applyAuditFilters, WHO_MATCH_CAP } from '@/lib/adminAuditFilters'
 
 const PAGE_SIZE = 50
 
@@ -51,6 +51,12 @@ export default async function AdminAuditPage({ searchParams }: { searchParams: P
       {error && (
         <div className="bg-red-50 border border-red-200 text-red-600 text-xs font-mono rounded-xl px-4 py-3 mb-6">
           Could not load the audit log — has migration 0043_admin_hardening.sql been run?
+        </div>
+      )}
+
+      {whoIds && whoIds.length >= WHO_MATCH_CAP && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs font-mono rounded-xl px-4 py-3 mb-4">
+          “{f.who}” matches {WHO_MATCH_CAP}+ accounts, so only the first {WHO_MATCH_CAP} are searched and rows are missing. Type more of the email to narrow it.
         </div>
       )}
 

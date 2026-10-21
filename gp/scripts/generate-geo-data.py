@@ -1,20 +1,19 @@
 # Regenerates public/geo/ (the static data behind the country/state/city
-# picker on the New Proxy Session form) from Geonode's real targeting-options
-# response.
+# picker on the New Proxy Session form) from the upstream supplier's real
+# targeting-options response.
 #
-# Run from the gp/ directory whenever geonode-residential-premium.json is
-# refreshed (Geonode's location/ISP inventory does drift over time — see the
-# diffs Claude found between two earlier snapshot exports):
+# Run from the gp/ directory whenever upstream-targeting.json is
+# refreshed (the supplier's location/ISP inventory drifts over time):
 #
 #   python3 scripts/generate-geo-data.py
 #
-# Re-pull the source file first with:
-#   curl -X GET "https://monitor.geonode.com/services/RESIDENTIAL-PREMIUM/targeting-options" \
-#     -u <upstream_username>:<password> -o "geonode-residential-premium.json"
+# Re-pull the source file first from the supplier's targeting-options
+# endpoint (kept out of this repo on purpose) and save it as
+# upstream-targeting.json in gp/. That file is git-ignored.
 
 import json, os, re, sys
 
-SRC = "geonode-residential-premium.json"
+SRC = "upstream-targeting.json"
 OUT_ROOT = "public/geo"
 
 with open(SRC, "r", encoding="utf-8") as f:
@@ -34,7 +33,7 @@ for c in countries:
         ccodes = [ci["code"] for ci in s.get("cities", [])]
         assert len(ccodes) == len(set(ccodes)), f"duplicate city codes in {c['code']}/{s['code']}"
 
-# Geonode's own codes are already lowercase/no-space slugs — verify that
+# The supplier's own codes are already lowercase/no-space slugs — verify that
 # assumption instead of trusting it, since buildProxyUsername's slug()
 # depends on these values needing no further transformation.
 slug_re = re.compile(r'^[a-z0-9]+$')

@@ -1,4 +1,4 @@
-// Generated from geonode-residential-premium.json — regenerate by re-running
+// Generated from upstream-targeting.json — regenerate by re-running
 // scripts/generate-locations.py from the gp/ directory if the underlying
 // network data changes. asnCount / stateCount / cityCount and majorCities are
 // real figures pulled from that dataset, not placeholders — this is what

@@ -24,13 +24,19 @@ export async function POST(req: Request) {
 
   const { data: order } = await supabase
     .from('orders')
-    .select('id, user_id, amount_usd, refunded_usd, payment_status, payment_method, paystack_reference, is_canary, pay_currency, pay_amount')
+    .select('id, user_id, amount_usd, refunded_usd, payment_status, payment_method, paystack_reference, is_canary, pay_currency, pay_amount, dispute_status')
     .eq('id', body.orderId)
     .single()
   if (!order) return NextResponse.json({ error: 'Order not found' }, { status: 404 })
   if (order.is_canary) return NextResponse.json({ error: 'This is an automated test payment — refund it from the Paystack dashboard if needed.' }, { status: 409 })
   if (order.payment_status !== 'paid') return NextResponse.json({ error: `Only a paid order can be refunded (status: ${order.payment_status}).` }, { status: 409 })
   if (!order.paystack_reference) return NextResponse.json({ error: 'This order has no Paystack reference.' }, { status: 409 })
+
+  // An open chargeback dispute: refunding on top of it can pay the customer twice
+  // (the refund AND the dispute outcome). Settle the dispute first.
+  if (order.dispute_status === 'open') {
+    return NextResponse.json({ error: 'This order has an open payment dispute. Resolve the dispute before refunding, otherwise the customer can be paid twice.' }, { status: 409 })
+  }
 
   const remaining = Math.round((Number(order.amount_usd) - Number(order.refunded_usd ?? 0)) * 100) / 100
   if (remaining <= 0) return NextResponse.json({ error: 'This order has already been fully refunded.' }, { status: 409 })
@@ -64,8 +70,13 @@ export async function POST(req: Request) {
     // locked onto the order (the webhook converts back the same way); a full
     // refund just omits the amount.
     const payCur = String(order.pay_currency ?? 'USD').toUpperCase()
+    // The amount is omitted ONLY for a full refund of an order with nothing
+    // refunded yet. Once part of an order has been refunded, "no amount" is
+    // ambiguous (Paystack could read it as the whole original charge), so the
+    // remaining amount is always sent explicitly.
+    const untouched = Number(order.refunded_usd ?? 0) === 0
     let amountMajor: number | undefined
-    if (!full) {
+    if (!(full && untouched)) {
       amountMajor = payCur === 'USD' || order.pay_amount == null
         ? amount
         : Math.round(Number(order.pay_amount) * (amount / Number(order.amount_usd)))

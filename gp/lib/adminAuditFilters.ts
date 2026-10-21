@@ -20,9 +20,13 @@ export function parseAuditFilters(get: (key: string) => string | undefined, clea
 }
 
 // Email search resolves to profile ids first (the log stores ids, not emails).
+// The email search is capped at this many matching profiles (the ids travel in the
+// query string). When it is hit the result is incomplete — callers must say so.
+export const WHO_MATCH_CAP = 200
+
 export async function resolveWhoIds(supabase: AdminSupabase, who: string): Promise<string[] | null> {
   if (!who) return null
-  const { data } = await supabase.from('profiles').select('id').ilike('email', `%${who}%`).limit(200)
+  const { data } = await supabase.from('profiles').select('id').ilike('email', `%${who}%`).limit(WHO_MATCH_CAP)
   return (data ?? []).map(r => r.id)
 }
 

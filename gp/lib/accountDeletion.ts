@@ -29,6 +29,12 @@ export function anonymisedProfilePatch(): Record<string, any> {
     payout_mpesa_phone: null,
     payout_method_updated_at: null,
     mfa_enabled: false,
+    // A deleted account must not keep the Verified Operator badge (it still
+    // counted in operator lists and stats). The flag and its rate bookkeeping.
+    is_verified_operator: false,
+    verified_operator_since: null,
+    verified_operator_prev_rate: null,
+    verified_operator_prev_rate_lifetime: null,
   }
 }
 
@@ -37,7 +43,7 @@ export function anonymisedProfilePatch(): Record<string, any> {
 export function rollbackProfilePatch(before: Record<string, any>): Record<string, any> {
   const restore: Record<string, any> = {}
   for (const key of Object.keys(anonymisedProfilePatch())) {
-    restore[key] = before[key] ?? (key === 'api_access' || key === 'mfa_enabled' ? false : null)
+    restore[key] = before[key] ?? (key === 'api_access' || key === 'mfa_enabled' || key === 'is_verified_operator' ? false : null)
   }
   restore.is_deleted = false
   restore.deleted_at = null

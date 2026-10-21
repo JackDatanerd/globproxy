@@ -3,7 +3,7 @@ import { authorizeAdmin } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
 import { toCsv, csvResponse } from '@/lib/csv'
 import { fetchAllRows } from '@/lib/dbPaging'
-import { parseAuditFilters, resolveWhoIds, applyAuditFilters } from '@/lib/adminAuditFilters'
+import { parseAuditFilters, resolveWhoIds, applyAuditFilters, WHO_MATCH_CAP } from '@/lib/adminAuditFilters'
 
 const clean = (v: string | undefined) => (v ?? '').replace(/[,()%*\\"']/g, ' ').trim().slice(0, 80)
 
@@ -11,7 +11,7 @@ const clean = (v: string | undefined) => (v ?? '').replace(/[,()%*\\"']/g, ' ').
 // ?from / ?to dates). The export itself is audited — it's the whole trail.
 export async function GET(req: Request) {
   try {
-    const auth = await authorizeAdmin(req)
+    const auth = await authorizeAdmin(req, { stepUp: true })
     if (!auth.ok) return auth.response
 
     const url = new URL(req.url)
@@ -27,7 +27,7 @@ export async function GET(req: Request) {
     )
     if (error) return NextResponse.json({ error: 'Export failed' }, { status: 500 })
 
-    await logAdminAction(auth.supabase, { adminId: auth.adminId, action: 'audit_log_exported', details: { rows: rows.length, ...f } })
+    await logAdminAction(auth.supabase, { adminId: auth.adminId, action: 'audit_log_exported', details: { rows: rows.length, ...f, ...(whoIds && whoIds.length >= WHO_MATCH_CAP ? { who_match_capped: true } : {}) } })
 
     const csv = toCsv(rows as any[], [
       { header: 'When (UTC)', value: r => r.created_at },

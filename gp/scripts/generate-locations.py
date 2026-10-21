@@ -9,7 +9,7 @@
 # are dropped and printed, not silently included) — this is what keeps the
 # location pages honest instead of just templated with placeholder claims.
 #
-# Run from the gp/ directory whenever geonode-residential-premium.json is
+# Run from the gp/ directory whenever upstream-targeting.json is
 # refreshed:
 #
 #   python3 scripts/generate-locations.py
@@ -17,7 +17,7 @@
 import json
 import re
 
-SRC = "geonode-residential-premium.json"
+SRC = "upstream-targeting.json"
 OUT = "lib/locations/data.ts"
 
 CURATED = {
@@ -94,7 +94,7 @@ def main():
         )
 
     lines = [
-        "// Generated from geonode-residential-premium.json — regenerate by re-running",
+        "// Generated from upstream-targeting.json — regenerate by re-running",
         "// scripts/generate-locations.py from the gp/ directory if the underlying",
         "// network data changes. asnCount / stateCount / cityCount and majorCities are",
         "// real figures pulled from that dataset, not placeholders — this is what",

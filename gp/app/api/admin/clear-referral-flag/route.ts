@@ -27,10 +27,6 @@ export async function POST(req: Request) {
     }
     if (!result) return NextResponse.json({ error: 'That referral is not flagged.' }, { status: 409 })
 
-    // A flag that was marked as confirmed fraud and is now cleared is no longer
-    // "confirmed" (migration 0052).
-    await auth.supabase.from('referrals').update({ flag_confirmed_at: null }).eq('id', body!.referralId)
-
     await logAdminAction(auth.supabase, { adminId: auth.adminId, action: 'referral_flag_cleared', targetRef: body!.referralId, details: result as Record<string, unknown> })
     return NextResponse.json({ success: true, backfill: result })
   } catch (err: any) {
