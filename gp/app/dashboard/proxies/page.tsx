@@ -1,8 +1,9 @@
-import { createClient } from '@/lib/supabase/server'
+import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import ProxyList from '@/components/dashboard/ProxyList'
 import { formatGb, formatPct } from '@/lib/format'
+import { passwordRotationEnabled } from '@/lib/credentials'
 
 export default async function ProxiesPage() {
   const supabase = await createClient()
@@ -13,9 +14,15 @@ export default async function ProxiesPage() {
   // internal provisioning columns (last_provision_error, provision_attempts,
   // provisioning_claimed_at, upstream_sub_user_id…) have no business in the
   // browser payload. The supplier-named columns below are renamed server-side.
+  // The proxy username/password are NOT selectable with the customer's own
+  // session any more (column-level SELECT, migration 0059 — otherwise a
+  // password-only session could read them straight from the REST API before
+  // passing the MFA gate). This page is behind the MFA-gated middleware, so it
+  // reads them server-side with the service role, scoped to the signed-in user.
+  const admin = await createAdminClient()
   const [{ data: creds, error: credsError }, { data: bw, error: bwError }] = await Promise.all([
-    supabase.from('proxy_credentials')
-      .select('id, user_id, created_by, label, status, gb_allocated, gb_used, country, state, city, asn, session_type, protocol, sticky_duration, endpoint_count, host, port, upstream_username, upstream_password, activated_at, created_at, auto_topup_enabled, auto_topup_threshold_gb, auto_topup_amount_gb')
+    admin.from('proxy_credentials')
+      .select('id, user_id, created_by, label, status, gb_allocated, gb_used, country, state, city, asn, session_type, protocol, sticky_duration, endpoint_count, host, port, upstream_username, upstream_password, activated_at, created_at, auto_topup_enabled, auto_topup_threshold_gb, auto_topup_amount_gb, auto_topup_insufficient_alerted_at, pending_reason, provision_stalled_at, upstream_missing_since')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false }),
     // maybeSingle: a brand-new account legitimately has no row (not an error);
@@ -127,7 +134,7 @@ export default async function ProxiesPage() {
 
       {/* Proxy list */}
       {creds && creds.length > 0 ? (
-        <ProxyList creds={safeCreds as unknown as React.ComponentProps<typeof ProxyList>["creds"]} availableGb={available} />
+        <ProxyList creds={safeCreds as unknown as React.ComponentProps<typeof ProxyList>["creds"]} availableGb={available} rotationEnabled={passwordRotationEnabled()} />
       ) : total > 0 ? (
         <div className="bg-white border border-border rounded-xl p-12 text-center">
           <div className="text-3xl mb-3">⬡</div>

@@ -1,5 +1,5 @@
 import { requireMfaVerified } from '@/lib/mfa'
-import { createClient } from '@/lib/supabase/server'
+import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { rateLimited, rateLimitedUser } from '@/lib/rateLimit'
 import { getPeriodStats, getHostCountryStatsWithMeta, GeonodeApiError, type PeriodStat, type HostCountryStat } from '@/lib/geonode'
@@ -37,20 +37,29 @@ type CredRow = {
   gb_used: number | null
 }
 
-async function loadScopedCredentials(supabase: Awaited<ReturnType<typeof createClient>>, userId: string) {
-  const { data } = await supabase
+// `credentialId` narrows the report to ONE session (the per-session drill-down
+// in the usage page); without it the report covers the account's heaviest
+// sessions. Read with the service role and an explicit user_id filter: the
+// upstream_username column is not selectable with a customer session
+// (migration 0059).
+async function loadScopedCredentials(admin: Awaited<ReturnType<typeof createAdminClient>>, userId: string, credentialId?: string) {
+  let q = admin
     .from('proxy_credentials')
     .select('id, label, upstream_username, country, gb_used')
     .eq('user_id', userId)
     .not('upstream_username', 'is', null)
+  if (credentialId) q = q.eq('id', credentialId)
+  const { data } = await q
     .order('gb_used', { ascending: false })
     .limit(MAX_CREDENTIALS)
 
-  const { count: totalCount } = await supabase
+  let countQ = admin
     .from('proxy_credentials')
     .select('id', { count: 'exact', head: true })
     .eq('user_id', userId)
     .not('upstream_username', 'is', null)
+  if (credentialId) countQ = countQ.eq('id', credentialId)
+  const { count: totalCount } = await countQ
 
   const creds = (data ?? []) as CredRow[]
   return { creds, truncated: (totalCount ?? creds.length) > creds.length }
@@ -155,7 +164,14 @@ export async function GET(req: Request) {
   const format = url.searchParams.get('format') === 'csv' ? 'csv' : 'json'
   const dataset = url.searchParams.get('dataset') === 'breakdown' ? 'breakdown' : 'series'
 
-  const { creds, truncated } = await loadScopedCredentials(supabase, user.id)
+  // Optional single-session drill-down. Anything that isn't a UUID is ignored
+  // rather than interpolated into a query.
+  const rawCredentialId = url.searchParams.get('credential_id')
+  const credentialId = rawCredentialId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawCredentialId)
+    ? rawCredentialId
+    : undefined
+  const admin = await createAdminClient()
+  const { creds, truncated } = await loadScopedCredentials(admin, user.id, credentialId)
 
   if (creds.length === 0) {
     if (format === 'csv') {

@@ -1,10 +1,10 @@
 import { requireMfaVerified } from '@/lib/mfa'
-import { createClient } from '@/lib/supabase/server'
+import { createClient, createAdminClient } from '@/lib/supabase/server'
+import { rateLimitedUser } from '@/lib/rateLimit'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { listWhitelistedIps, addWhitelistedIp, removeWhitelistedIp } from '@/lib/geonode'
-import { isValidIp, validateDescription, whitelistErrorResponse } from '@/lib/ipWhitelist'
+import { isValidIp, validateIpForAdd, validateDescription, whitelistErrorResponse } from '@/lib/ipWhitelist'
 import { NextResponse } from 'next/server'
-import { rateLimitedUser } from '@/lib/rateLimit'
 
 // Shared ownership + provisioning lookup for every handler below. Not
 // gated on `created_by` the way delete/topup are — unlike releasing
@@ -12,13 +12,16 @@ import { rateLimitedUser } from '@/lib/rateLimit'
 // source IPs doesn't reverse anything a reseller paid for, so any owner
 // (self-created or reseller-allocated) can manage it on their own
 // credential, same as sticky sessions.
-async function loadOwnedCredential(supabase: Awaited<ReturnType<typeof createClient>>, id: string, userId: string) {
-  const { data: cred } = await supabase
+async function loadOwnedCredential(_supabase: Awaited<ReturnType<typeof createClient>>, id: string, userId: string) {
+  // Service role + an explicit user_id filter: customers can't SELECT the
+  // upstream_* columns directly (migration 0059), and ownership is enforced here.
+  const admin = await createAdminClient()
+  const { data: cred } = await admin
     .from('proxy_credentials')
     .select('id, user_id, upstream_sub_user_id')
     .eq('id', id)
     .eq('user_id', userId)
-    .single()
+    .maybeSingle()
   return cred
 }
 
@@ -70,9 +73,8 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
   const ip = typeof body?.ip === 'string' ? body.ip.trim() : ''
   const description = typeof body?.description === 'string' ? body.description.trim() : ''
 
-  if (!isValidIp(ip)) {
-    return NextResponse.json({ error: `"${ip}" is not a valid IPv4 or IPv6 address.` }, { status: 400 })
-  }
+  const ipError = validateIpForAdd(ip)
+  if (ipError) return NextResponse.json({ error: ipError }, { status: 400 })
   const descError = validateDescription(description)
   if (descError) return NextResponse.json({ error: descError }, { status: 400 })
 

@@ -1,6 +1,6 @@
 import { withApiAuth, readJsonBody, writeBudgetExceeded } from '@/lib/apiHelpers'
 import { apiError } from '@/lib/apiAuth'
-import { parseCreateCredential } from '@/lib/apiValidation'
+import { parseCreateCredential, parseCreateAutoTopup } from '@/lib/apiValidation'
 import { createCredential, toApiCredential } from '@/lib/credentials'
 import { runIdempotent, parseIdempotencyKey } from '@/lib/idempotency'
 
@@ -28,7 +28,12 @@ export async function POST(req: Request) {
     if (!Array.isArray(items) || items.length === 0) return apiError(400, 'invalid_request', 'items must be a non-empty array of sub-user definitions.')
     if (items.length > MAX_BULK_CREATE) return apiError(400, 'invalid_request', `A bulk request can create at most ${MAX_BULK_CREATE} sub-users.`)
 
-    const parsed = items.map((it) => parseCreateCredential(it))
+    const parsed = items.map((it) => {
+      const p = parseCreateCredential(it)
+      if (!p.ok) return p
+      const a = parseCreateAutoTopup(it?.auto_topup)
+      return a.ok ? { ok: true as const, value: { ...p.value, auto_topup: a.value } } : { ok: false as const, error: a.error }
+    })
     if (!(await consumeWrites(items.length - 1))) return writeBudgetExceeded()
 
     return runIdempotent(req, supabase, user.id, 'POST /sub-users/bulk', JSON.stringify(parsed.map((p) => (p.ok ? p.value : null))), async (key) => {
@@ -36,7 +41,8 @@ export async function POST(req: Request) {
       for (let i = 0; i < parsed.length; i++) {
         const p = parsed[i]
         if (!p.ok) { results.push({ index: i, status: 400, error: { code: 'invalid_request', message: p.error } }); continue }
-        const r = await createCredential(supabase, user.id, p.value, { source: 'api', idempotencyKey: `${key}#${i}` })
+        const { auto_topup: autoTopup, ...createInput } = p.value as typeof p.value & { auto_topup: { threshold_gb: number; amount_gb: number } | null }
+        const r = await createCredential(supabase, user.id, createInput, { source: 'api', idempotencyKey: `${key}#${i}`, autoTopup })
         results.push(r.ok
           ? { index: i, status: 201, sub_user: { ...toApiCredential(r.data.cred), ...(r.data.warning ? { warning: r.data.warning } : {}) } }
           : { index: i, status: r.status, error: { code: r.code, message: r.message } })

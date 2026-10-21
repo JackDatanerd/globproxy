@@ -5,7 +5,7 @@ import { computeStockStatus } from '@/lib/stockStatus'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { runWebhookRetries, runBandwidthThresholdWebhooks, pruneIntegrationData } from '@/lib/webhooks'
 import { warnExpiringApiKeys } from '@/lib/apiKeyExpiry'
-import { provisionPendingCredentials, reconcileLimitSync } from '@/lib/credentials'
+import { provisionPendingCredentials, reconcileLimitSync, flagStalledPending } from '@/lib/credentials'
 import { runConfiguredBenchmark } from '@/lib/networkProbe'
 import { chargeAuthorization, generateReference, verifyTransaction, paymentMismatchReason } from '@/lib/paystack'
 import { activateBandwidth, retryPostCredit } from '@/lib/bandwidth'
@@ -85,8 +85,48 @@ async function checkUsageSyncFreshness(supabase: Awaited<ReturnType<typeof creat
 // ── Stock check ──────────────────────────────────────────────────
 async function runStockCheck() {
   const supabase = await createAdminClient()
-  const stock = await computeStockStatus(supabase)
-  const syncHealth = await checkUsageSyncFreshness(supabase)
+
+  // The usage-sync watchdog runs FIRST and on its own. It used to sit after
+  // computeStockStatus, which calls the upstream provider: during exactly the
+  // outage that makes usage sync stale (provider down, key revoked), the stock
+  // read threw first and the watchdog never ran — silence at the moment an
+  // alert matters most.
+  let syncHealth: Awaited<ReturnType<typeof checkUsageSyncFreshness>> | { error: string }
+  try { syncHealth = await checkUsageSyncFreshness(supabase) }
+  catch (e) { console.error('[stock] usage-sync freshness check failed', e); syncHealth = { error: 'freshness_check_failed' } }
+
+  let stock: Awaited<ReturnType<typeof computeStockStatus>>
+  try {
+    stock = await computeStockStatus(supabase)
+  } catch (e) {
+    // Provider API unreachable / rejecting us. Nothing in the app alerted on
+    // this before (only the log). Email once, remind every 24h while it
+    // persists, and return 200 so the cron job isn't auto-disabled by the
+    // external scheduler after repeated failures.
+    console.error('[stock] upstream stock read failed', e)
+    const { data: row } = await supabase
+      .from('platform_settings').select('value').eq('key', 'upstream_api_alert_at').maybeSingle()
+    const last = row?.value ? new Date(row.value).getTime() : 0
+    if (!last || Date.now() - last > 24 * 60 * 60 * 1000) {
+      if (process.env.ADMIN_EMAIL) {
+        await sendEmail({
+          to: process.env.ADMIN_EMAIL,
+          subject: '[UPSTREAM API FAILING] Could not read proxy provider stock',
+          html: `<p>The hourly stock check could not read the proxy provider's account balance, so stock and
+                 exposure are unknown. Usage sync and provisioning depend on the same API — check the provider
+                 status page and that the reseller API key is still valid.</p>
+                 <p style="color:#666">Error (also in the worker logs): <code>${escapeHtml(String((e as any)?.message ?? e).slice(0, 300))}</code></p>`,
+        }).catch((err) => console.error('[stock] failure alert email failed', err))
+      }
+      await supabase.from('platform_settings')
+        .upsert({ key: 'upstream_api_alert_at', value: new Date().toISOString() }, { onConflict: 'key' })
+    }
+    // `error` makes the cron heartbeat (lib/cronHealth) record this run as failed, so it
+    // also shows on the admin cron-health panel — not only in the alert email.
+    return { action: 'stock_unavailable', error: 'upstream_stock_unavailable', usage_sync: syncHealth }
+  }
+  // Recovered — clear the failure flag so the next outage alerts immediately.
+  await supabase.from('platform_settings').delete().eq('key', 'upstream_api_alert_at')
 
   await supabase.from('platform_settings')
     .upsert({ key: 'geonode_stock', value: JSON.stringify(stock) }, { onConflict: 'key' })
@@ -460,7 +500,7 @@ async function runCleanup() {
   const { error: mfaErr } = await supabase.rpc('cleanup_expired_mfa_sessions')
   if (mfaErr) console.error('cleanup_expired_mfa_sessions failed:', mfaErr)
 
-  // Aggregated CSP reports older than 30 days (migration 0055).
+  // Aggregated CSP reports older than 30 days (migration 0059).
   const { error: cspErr } = await supabase.rpc('prune_csp_violations')
   if (cspErr) console.error('prune_csp_violations failed:', cspErr)
 
@@ -476,7 +516,15 @@ async function runCleanup() {
     return { warned: 0 }
   })
 
-  return { cleaned: stale?.length ?? 0, mfa_sessions_swept: !mfaErr, csp_pruned: !cspErr, ...pruned, api_keys_expiry_warned: keyExpiry.warned }
+  // Terminated ("hidden") sticky sessions are kept for a week, then purged:
+  // nothing ever removed them, so they only accumulated (and count toward the
+  // per-credential stored-session cap in migration 0059).
+  const sessionCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+  const { error: sessErr } = await supabase.from('proxy_sessions')
+    .delete().not('terminated_at', 'is', null).lt('terminated_at', sessionCutoff)
+  if (sessErr) console.error('terminated proxy_sessions purge failed:', sessErr)
+
+  return { cleaned: stale?.length ?? 0, mfa_sessions_swept: !mfaErr, csp_pruned: !cspErr, sessions_purged: !sessErr, ...pruned, api_keys_expiry_warned: keyExpiry.warned }
 }
 
 // ── Security notices + audit-log retention (migration 0039) ──────────
@@ -634,7 +682,15 @@ async function runProvision() {
   try {
     const provision = await provisionPendingCredentials({ limit: 5 })
     const limits = await reconcileLimitSync(5)
-    return { provision, limits }
+    // Sessions pending for many hours get a one-time customer + admin notice
+    // (they used to be retried silently, forever). Its own try/catch: a failed
+    // notice must never fail the task — a non-OK provision task stops the
+    // whole */5 chain after it.
+    const stalled = await flagStalledPending(await createAdminClient()).catch((e) => {
+      console.error('[cron provision] stalled-session flagging failed:', e)
+      return { flagged: 0 }
+    })
+    return { provision, limits, stalled }
   } catch (e: any) {
     console.error('[cron provision] failed:', e)
     return { error: String(e?.message ?? e) }

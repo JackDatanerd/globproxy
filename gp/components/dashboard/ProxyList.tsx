@@ -9,6 +9,7 @@ import toast from 'react-hot-toast'
 interface Props {
   creds: any[]
   availableGb: number
+  rotationEnabled?: boolean
 }
 
 type StatusFilter = 'all' | 'active' | 'pending'
@@ -29,11 +30,21 @@ const DISMISS_KEY = 'gp_usage_banner_dismissed'
 // skipped only implicitly, because auto_topup is never enabled on them…
 // which meant they got the warning with a button for a feature they can't use.
 function isResellerAllocated(cred: any): boolean {
-  return !!cred.created_by && cred.created_by !== cred.user_id
+  // Any created_by: the server refuses top-up/auto-allocate/edit/delete on all
+  // of them, including one whose creator is the owner.
+  return !!cred.created_by
+}
+
+// Auto-allocate only counts as protection while it can actually act. Once the
+// server has flagged it (balance empty / partial funding / size limit), the
+// session is back to "will run out" — it used to stay silent because the flag
+// was ignored here.
+function autoAllocateCovering(cred: any): boolean {
+  return !!cred.auto_topup_enabled && !cred.auto_topup_insufficient_alerted_at
 }
 
 function usageTier(cred: any): 'urgent' | 'warn' | null {
-  if (cred.status !== 'active' || cred.auto_topup_enabled) return null
+  if (cred.status !== 'active' || autoAllocateCovering(cred)) return null
   if (!cred.gb_allocated || cred.gb_allocated <= 0) return null
   const pct = ((cred.gb_used ?? 0) / cred.gb_allocated) * 100
   if (pct >= 95) return 'urgent'
@@ -45,7 +56,7 @@ function usageTier(cred: any): 'urgent' | 'warn' | null {
 // once someone has more than a handful of sessions to scan through. Only
 // one row is expanded at a time so opening a new one doesn't leave a wall
 // of open cards behind.
-export default function ProxyList({ creds, availableGb }: Props) {
+export default function ProxyList({ creds, availableGb, rotationEnabled }: Props) {
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [expandedId, setExpandedId] = useState<string | null>(null)
@@ -175,14 +186,18 @@ export default function ProxyList({ creds, availableGb }: Props) {
                 </button>
                 {' '}has used {formatGb(cred.gb_used ?? 0)} of {formatGb(cred.gb_allocated)} GB
                 {tier === 'urgent' ? ' — about to stop working' : ''}
-                {isResellerAllocated(cred) ? ' — ask your reseller for more bandwidth.' : ' and auto-topup isn\u2019t on.'}
+                {isResellerAllocated(cred)
+                  ? ' — ask your reseller for more bandwidth.'
+                  : cred.auto_topup_enabled
+                    ? ' and auto-allocate can\u2019t top it up — your account balance is empty or too low.'
+                    : ' and auto-topup isn\u2019t on.'}
               </span>
               {!isResellerAllocated(cred) && (
                 <button onClick={() => jumpTo(cred.id)}
                   className={`font-mono text-[11px] px-2.5 py-1 rounded-md border flex-shrink-0 ${
                     tier === 'urgent' ? 'border-red-300 hover:bg-red-100' : 'border-amber-300 hover:bg-amber-100'
                   }`}>
-                  Set up auto-topup
+                  {cred.auto_topup_enabled ? 'Review' : 'Set up auto-topup'}
                 </button>
               )}
               <button onClick={() => dismiss(cred, tier)} aria-label="Dismiss"
@@ -241,6 +256,7 @@ export default function ProxyList({ creds, availableGb }: Props) {
                 requestedTab={requestedTab && requestedTab.id === cred.id ? requestedTab : null}
                 expanded={expandedId === cred.id}
                 onToggle={() => setExpandedId(prev => prev === cred.id ? null : cred.id)}
+                rotationEnabled={rotationEnabled}
               />
             </div>
           ))}

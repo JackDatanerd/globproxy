@@ -373,11 +373,12 @@ export default function ApiDocsPage() {
               ['country', 'string', '2-letter ISO code (e.g. "us"). Required if state, city, or asn is set.'],
               ['state', 'string', 'Lowercase, no spaces/punctuation. Requires country.'],
               ['city', 'string', 'Lowercase, no spaces/punctuation. Requires country. state and city can both be set together.'],
-              ['asn', 'string | number', 'Numeric ASN, e.g. "13868".'],
+              ['asn', 'string | number', 'Numeric ASN, e.g. "13868". Requires country, and must be an ASN that exists in that country — otherwise 400 (a session pinned to an ASN with no peers could never connect).'],
               ['session_type', 'string', '"rotating" (default) or "sticky".'],
               ['protocol', 'string', '"http" (default) or "socks5".'],
               ['sticky_duration', 'integer', 'Minutes (1–1440) the sticky session stays on the same peer. Only used when session_type is "sticky". Default 10.'],
               ['endpoint_count', 'integer', 'Informational — how many endpoints you intend to generate from this credential, 1–100. Default 1.'],
+              ['auto_topup', 'object', 'Optional. Turn on auto-topup at creation: { "enabled": true, "threshold_gb": 1, "amount_gb": 5 } — same rules as PATCH /auto-topup.'],
             ]} />
             <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response — 201 Created</p>
             <Code>{`{
@@ -400,7 +401,11 @@ export default function ApiDocsPage() {
               unavailable — the credential and bandwidth reservation are still created and activation is retried
               automatically in the background (typically within a few minutes). While pending,{' '}
               <span className="font-mono text-ink">username</span>, <span className="font-mono text-ink">password</span> and{' '}
-              <span className="font-mono text-ink">connection_username</span> are <span className="font-mono text-ink">null</span>. Subscribe to the{' '}
+              <span className="font-mono text-ink">connection_username</span> are <span className="font-mono text-ink">null</span>, and{' '}
+              <span className="font-mono text-ink">pending_reason</span> says why it isn't live yet:{' '}
+              <span className="font-mono text-ink">"capacity"</span> (network capacity is being added),{' '}
+              <span className="font-mono text-ink">"unavailable"</span> (a temporary outage) or{' '}
+              <span className="font-mono text-ink">"error"</span>. Subscribe to the{' '}
               <span className="font-mono text-ink">session_activated</span> webhook, or poll{' '}
               <span className="font-mono text-ink">GET /api/v1/sub-users/:id</span>, to know when it's live.
             </p>
@@ -566,11 +571,47 @@ export default function ApiDocsPage() {
 }`}</Code>
           </Endpoint>
 
+          <Endpoint method="POST" path="/api/v1/sub-users/:id/release" title="Release unused bandwidth">
+            <p className="text-sm text-ink2 mb-4">
+              Returns bandwidth a sub-user hasn't used to your account balance, without deleting it — the reverse of{' '}
+              <span className="font-mono text-ink">/topup</span>. The sub-user's live usage plus a small safety margin always
+              stays, so you can only release what is genuinely unused.
+            </p>
+            <Code>{`curl -X POST https://globproxy.com/api/v1/sub-users/SUB_USER_ID/release \\
+  -H "Authorization: Bearer YOUR_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "gb_amount": 2 }'`}</Code>
+            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <Code>{`{ "success": true, "gb_allocated": 3, "gb_released": 2, "max_releasable_gb": 0.41 }`}</Code>
+            <p className="text-sm text-ink2 mt-4">
+              <span className="font-mono text-ink">400</span> with the releasable amount if you ask for more than is unused,{' '}
+              <span className="font-mono text-ink">409</span> if it would immediately re-trigger auto-topup (lower the amount or
+              turn auto-topup off first), <span className="font-mono text-ink">502</span> if live usage couldn't be confirmed
+              (nothing is changed). Reseller-allocated sub-users return <span className="font-mono text-ink">403</span>.
+            </p>
+          </Endpoint>
+
+          <Endpoint method="POST" path="/api/v1/sub-users/:id/rotate-password" title="Rotate password">
+            <p className="text-sm text-ink2 mb-4">
+              Replaces the sub-user's proxy password; the previous one stops working immediately. Returns the new password
+              (it is also what <span className="font-mono text-ink">GET /sub-users/:id</span> now shows). Returns{' '}
+              <span className="font-mono text-ink">503</span> while password rotation isn't enabled for the platform.
+            </p>
+            <Code>{`curl -X POST https://globproxy.com/api/v1/sub-users/SUB_USER_ID/rotate-password \\
+  -H "Authorization: Bearer YOUR_KEY"`}</Code>
+            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <Code>{`{ "success": true, "password": "5d0c1e7a-..." }`}</Code>
+          </Endpoint>
+
           <Endpoint method="PATCH" path="/api/v1/sub-users/:id/auto-topup" title="Configure auto-topup">
             <p className="text-sm text-ink2 mb-4">
               Turns automatic top-up on or off for a sub-user — when its remaining bandwidth drops to{' '}
               <span className="font-mono text-ink">threshold_gb</span>, <span className="font-mono text-ink">amount_gb</span>{' '}
-              is added automatically from your balance, checked on the same cycle that syncs usage.
+              is added automatically from your balance, checked on the same cycle that syncs usage. If your balance can't
+              cover the full <span className="font-mono text-ink">amount_gb</span>, the sub-user is topped up with whatever the
+              balance can cover and you're notified (<span className="font-mono text-ink">auto_topup_failed</span>, reason{' '}
+              <span className="font-mono text-ink">partial_funding</span>); with no balance at all nothing is added and the same event is
+              sent with reason <span className="font-mono text-ink">insufficient_balance</span>. Both numbers are capped at 100000.
             </p>
             <Code>{`curl -X PATCH https://globproxy.com/api/v1/sub-users/SUB_USER_ID/auto-topup \\
   -H "Authorization: Bearer YOUR_KEY" \\
@@ -775,9 +816,11 @@ export default function ApiDocsPage() {
             ['session_activated', 'event', 'A pending sub-user finished provisioning and is now live. data: credential_id, label, gb_allocated, status.'],
             ['session_deleted', 'event', 'A sub-user was deleted. data: credential_id, label, gb_allocated, gb_used, gb_released, source.'],
             ['session_topped_up', 'event', 'GB were added to a sub-user (manual top-up). data: credential_id, label, gb_added, gb_allocated, source.'],
-            ['session_exhausted', 'event', 'A single sub-user used its entire allocation and has stopped connecting (sent once per exhaustion; not sent when auto-topup is enabled on it). data: credential_id, label, gb_allocated, gb_used.'],
-            ['auto_topup_triggered', 'event', 'Auto-topup added bandwidth. data: credential_id, gb_added, gb_allocated.'],
-            ['auto_topup_failed', 'event', 'Auto-topup could not run because your balance was too low (sent once until it recovers). data: credential_id, reason, gb_allocated, gb_used, amount_gb.'],
+            ['session_released', 'event', 'Unused GB were returned from a sub-user to your balance (the /release endpoint or the dashboard). data: credential_id, label, gb_released, gb_allocated, source.'],
+            ['session_low', 'event', 'A sub-user has used 80% or 95% of its allocation (sent once per tier; not sent while auto-topup is able to refill it). data: credential_id, label, threshold_pct, used_pct, gb_allocated, gb_used, gb_remaining.'],
+            ['session_exhausted', 'event', 'A single sub-user used its entire allocation and has stopped connecting (sent once per exhaustion; not sent while auto-topup is able to refill it — it IS sent if auto-topup is on but your balance cannot fund it). data: credential_id, label, gb_allocated, gb_used.'],
+            ['auto_topup_triggered', 'event', 'Auto-topup added bandwidth. data: credential_id, gb_added, gb_allocated, partial (true when your balance could only cover part of the configured amount).'],
+            ['auto_topup_failed', 'event', 'Auto-topup could not fully run (sent once until it recovers). reason is insufficient_balance, partial_funding or session_limit. data: credential_id, reason, gb_allocated, gb_used, amount_gb (and gb_added for partial_funding).'],
             ['session_suspended', 'event', 'GlobProxy suspended a sub-user (abuse or policy action). data: credential_id, label.'],
             ['session_resumed', 'event', 'A suspended sub-user was re-enabled. data: credential_id, label.'],
             ['bandwidth_threshold_crossed', 'event', 'The share of your account that is COMMITTED (allocated into sub-users) crossed 80% or 95%. data: threshold_pct, allocated_pct (what triggers it), used_pct (GB actually consumed ÷ total), available_gb, total_gb, used_gb, allocated_gb. Checked every 5 minutes. (used_pct used to carry the allocated figure; it now means what it says.)'],

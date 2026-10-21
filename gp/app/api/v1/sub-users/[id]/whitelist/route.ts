@@ -1,7 +1,7 @@
 import { withApiAuth, readJsonBody } from '@/lib/apiHelpers'
 import { apiError } from '@/lib/apiAuth'
 import { listWhitelistedIps, addWhitelistedIp, removeWhitelistedIp } from '@/lib/geonode'
-import { isValidIp, validateDescription, whitelistErrorResponse } from '@/lib/ipWhitelist'
+import { isValidIp, validateIpForAdd, validateDescription, whitelistErrorResponse } from '@/lib/ipWhitelist'
 import { getOwnedCredential } from '@/lib/credentials'
 import { NextResponse } from 'next/server'
 
@@ -43,7 +43,9 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
       const ip = typeof body?.ip === 'string' ? body.ip.trim() : ''
       const description = typeof body?.description === 'string' ? body.description.trim() : ''
 
-      if (!isValidIp(ip)) return apiError(400, 'invalid_request', `"${ip.slice(0, 60)}" is not a valid IPv4 or IPv6 address.`)
+      // Well-formed AND publicly routable (a private/loopback address can never match a real connection).
+      const ipError = validateIpForAdd(ip)
+      if (ipError) return apiError(400, 'invalid_request', ipError.slice(0, 300))
       const descError = validateDescription(description)
       if (descError) return apiError(400, 'invalid_request', descError)
 

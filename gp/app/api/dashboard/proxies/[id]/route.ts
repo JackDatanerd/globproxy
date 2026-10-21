@@ -1,9 +1,9 @@
 import { requireMfaVerified } from '@/lib/mfa'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
+import { rateLimitedUser } from '@/lib/rateLimit'
 import { deleteCredential, updateCredentialSettings } from '@/lib/credentials'
 import { NextResponse } from 'next/server'
-import { rateLimitedUser } from '@/lib/rateLimit'
 
 export async function DELETE(
   req: Request,
@@ -52,6 +52,8 @@ export async function PATCH(
   if (mfaBlock) return mfaBlock
   const suspended = await requireActiveUser(user.id)
   if (suspended) return suspended
+  const throttled = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'proxy-edit')
+  if (throttled) return throttled
 
   const { id } = await context.params
   const body = await req.json().catch(() => null)

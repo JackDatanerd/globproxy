@@ -1,6 +1,6 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
-import { parseCreateCredential, parseFiniteNumber } from '@/lib/apiValidation'
+import { parseCreateCredential, parseAutoTopup } from '@/lib/apiValidation'
 import { createCredential } from '@/lib/credentials'
 import { rateLimited, rateLimitedUser } from '@/lib/rateLimit'
 import { NextResponse } from 'next/server'
@@ -38,23 +38,18 @@ export async function POST(req: Request) {
   // Auto-allocate config is validated up front too (set_auto_topup() makes
   // the same checks at the DB layer; duplicated so a typo fails with no side
   // effects instead of after a reservation and a real sub-user exist).
-  let autoTopup: { threshold_gb: number; amount_gb: number } | null = null
-  if (body?.auto_topup_enabled === true) {
-    const threshold = parseFiniteNumber(body.auto_topup_threshold_gb)
-    const amount = parseFiniteNumber(body.auto_topup_amount_gb)
-    if (threshold === null || threshold < 0) {
-      return NextResponse.json({ error: 'auto_topup_threshold_gb must be a number ≥ 0' }, { status: 400 })
-    }
-    if (amount === null || amount <= 0) {
-      return NextResponse.json({ error: 'auto_topup_amount_gb must be a number greater than 0' }, { status: 400 })
-    }
-    // The top-up must lift the session above its own threshold, or the cron
-    // would re-fire on every tick and drain the account balance into it.
-    if (amount <= threshold) {
-      return NextResponse.json({ error: 'auto_topup_amount_gb must be greater than auto_topup_threshold_gb' }, { status: 400 })
-    }
-    autoTopup = { threshold_gb: threshold, amount_gb: amount }
-  }
+  // Same strict parser as the auto-top-up route and the v1 API (bounds, no
+  // null-becomes-0, amount > threshold).
+  const auto = parseAutoTopup({
+    // Strictly `=== true`: an absent / null / non-boolean flag means "off" for this optional create-time setting.
+    enabled: body?.auto_topup_enabled === true,
+    threshold_gb: body?.auto_topup_threshold_gb,
+    amount_gb: body?.auto_topup_amount_gb,
+  })
+  if (!auto.ok) return NextResponse.json({ error: auto.error }, { status: 400 })
+  const autoTopup = auto.value.enabled
+    ? { threshold_gb: auto.value.threshold_gb, amount_gb: auto.value.amount_gb }
+    : null
 
   // Reserve/release are service_role-only (migration 0040), so this goes
   // through the admin client — the user's identity was verified above.

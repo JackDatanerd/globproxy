@@ -1,7 +1,7 @@
 import { withApiAuth, readJsonBody } from '@/lib/apiHelpers'
 import { apiError } from '@/lib/apiAuth'
 import { bulkAddWhitelistedIps, bulkRemoveWhitelistedIps } from '@/lib/geonode'
-import { isValidIp, validateDescription, whitelistErrorResponse, MAX_BULK_ITEMS } from '@/lib/ipWhitelist'
+import { isValidIp, validateIpForAdd, validateDescription, whitelistErrorResponse, MAX_BULK_ITEMS } from '@/lib/ipWhitelist'
 import { getOwnedCredential } from '@/lib/credentials'
 import { NextResponse } from 'next/server'
 
@@ -23,7 +23,8 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
       for (const raw of rawItems) {
         const ip = typeof raw?.ip === 'string' ? raw.ip.trim() : ''
         const description = typeof raw?.description === 'string' ? raw.description.trim() : ''
-        if (!isValidIp(ip)) return apiError(400, 'invalid_request', `"${(ip || '(empty)').slice(0, 60)}" is not a valid IPv4 or IPv6 address.`)
+        const ipError = validateIpForAdd(ip)
+        if (ipError) return apiError(400, 'invalid_request', `${(ip || '(empty)').slice(0, 60)}: ${ipError}`)
         const descError = validateDescription(description)
         if (descError) return apiError(400, 'invalid_request', `${ip}: ${descError}`)
         items.push({ ip, description })

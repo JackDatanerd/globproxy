@@ -17,6 +17,9 @@ interface Props {
   availableGb?: number
   expanded: boolean
   onToggle: () => void
+  // Server flag (PASSWORD_ROTATION_ENABLED): shows "Rotate password" only
+  // where the backend will actually do it.
+  rotationEnabled?: boolean
   // Lets the list jump straight to a tab (the near-limit banner opens
   // Bandwidth). `nonce` changes on every request so asking for the same tab
   // twice still works after the user has clicked elsewhere.
@@ -37,7 +40,7 @@ type Lang = 'py' | 'node' | 'browser'
 // detail the old always-open card showed, just organized into tabs so the
 // expanded state doesn't turn into another giant scroll once someone has a
 // handful of sessions.
-export default function ProxyCard({ cred, index, availableGb, expanded, onToggle, requestedTab }: Props) {
+export default function ProxyCard({ cred, index, availableGb, expanded, onToggle, requestedTab, rotationEnabled }: Props) {
   const router = useRouter()
   const [showPass, setShowPass] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -60,6 +63,17 @@ export default function ProxyCard({ cred, index, availableGb, expanded, onToggle
   const [autoLoading, setAutoLoading] = useState(false)
   // Pending credentials: on-demand "retry provisioning"
   const [retrying, setRetrying] = useState(false)
+  // Hand unused GB back to the account balance
+  const [releaseAmount, setReleaseAmount] = useState('')
+  const [releasing, setReleasing] = useState(false)
+  // Password rotation (two-click confirm, disarms itself like delete)
+  const [confirmRotate, setConfirmRotate] = useState(false)
+  const [rotating, setRotating] = useState(false)
+  useEffect(() => {
+    if (!confirmRotate) return
+    const t = setTimeout(() => setConfirmRotate(false), 4000)
+    return () => clearTimeout(t)
+  }, [confirmRotate])
   useEffect(() => {
     setAutoEnabled(!!cred.auto_topup_enabled)
     setAutoThreshold(String(cred.auto_topup_threshold_gb ?? ''))
@@ -106,7 +120,15 @@ export default function ProxyCard({ cred, index, availableGb, expanded, onToggle
 
   const isSticky = cred.session_type === 'sticky'
   const isSocks5 = cred.protocol === 'socks5'
-  const canDelete = !cred.created_by || cred.created_by === cred.user_id
+  // The server refuses delete / edit / top-up / release on ANY reseller-
+  // allocated session (created_by set), including one whose creator is the
+  // owner — mirror that exactly instead of showing buttons that return 403.
+  const canDelete = !cred.created_by
+  const canEdit = canDelete
+  // What a release can hand back: unused GB minus the safety margin the
+  // server keeps (it re-checks against live usage, this is just the hint).
+  const unusedGb = Math.max(0, gbAllocated - gbUsed)
+  const releasableGb = Math.max(0, Math.floor((unusedGb - 0.06) * 100) / 100)
 
   // A rotating username carries no session id (buildProxyUsername only adds
   // one for sticky), so endpoint_count > 1 used to render N byte-identical
@@ -202,6 +224,45 @@ export default function ProxyCard({ cred, index, availableGb, expanded, onToggle
       toast.error(err.message)
     } finally {
       setTopupLoading(false)
+    }
+  }
+
+  async function handleRelease(e: React.FormEvent) {
+    e.preventDefault()
+    const gb = Number(releaseAmount)
+    if (!Number.isFinite(gb) || gb < 0.01) { toast.error('Enter at least 0.01 GB'); return }
+    if (gb > releasableGb + 0.0001) {
+      toast.error(releasableGb >= 0.01
+        ? `Only ${formatGb(releasableGb)} GB can be released right now — the rest is used or kept as a safety margin.`
+        : 'This session has no unused bandwidth that can be released right now.')
+      return
+    }
+    setReleasing(true)
+    try {
+      const data = await apiJson('POST', `/api/dashboard/proxies/${cred.id}/release`, { gb_amount: gb })
+      toast.success(`${formatGb(gb)} GB returned to your balance`)
+      if (data.warning) toast(data.warning, { icon: '⚠️', duration: 6000 })
+      setReleaseAmount('')
+      router.refresh()
+    } catch (err: any) {
+      toast.error(err.message)
+    } finally {
+      setReleasing(false)
+    }
+  }
+
+  async function handleRotatePassword() {
+    if (!confirmRotate) { setConfirmRotate(true); return }
+    setRotating(true)
+    try {
+      await apiJson('POST', `/api/dashboard/proxies/${cred.id}/rotate-password`)
+      toast.success('Password changed — update it anywhere this session is in use')
+      setShowPass(true)
+      router.refresh()
+    } catch (err: any) {
+      toast.error(err.message)
+    } finally {
+      setRotating(false); setConfirmRotate(false)
     }
   }
 
@@ -386,11 +447,25 @@ const agent = new HttpsProxyAgent(
         <div className="border-t border-border px-6 pb-5 pt-4">
           {cred.status === 'pending' && (
             <div className="mb-4 text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-4 py-3 font-mono">
-              <div>⏳ This session is queued: the proxy network was unreachable when it was created. We retry automatically every few minutes, and your bandwidth is already reserved.</div>
+              <div>
+                {cred.pending_reason === 'capacity'
+                  ? '⏳ This session is queued: we’re adding network capacity right now. It will activate automatically as soon as capacity is available, and your bandwidth is already reserved.'
+                  : '⏳ This session is queued: the proxy network was unreachable when it was created. We retry automatically, and your bandwidth is already reserved.'}
+              </div>
+              {cred.provision_stalled_at && (
+                <div className="mt-1.5 text-amber-800">
+                  This is taking longer than usual. We’ve been alerted and emailed you — nothing is lost, and you can also delete this session to return its bandwidth to your balance.
+                </div>
+              )}
               <button onClick={handleRetryProvisioning} disabled={retrying}
                 className="mt-2 border border-amber-300 text-amber-800 px-3 py-1.5 rounded-lg text-[11px] hover:bg-amber-100 disabled:opacity-60 transition-colors">
                 {retrying ? 'Retrying…' : 'Retry now'}
               </button>
+            </div>
+          )}
+          {cred.status === 'active' && cred.upstream_missing_since && (
+            <div className="mb-4 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-4 py-3 font-mono">
+              ⚠ This session isn’t responding on our network right now. We’ve been alerted and are fixing it — your bandwidth is safe. If it’s still down after a while, contact support.
             </div>
           )}
           {cred.status === 'active' && isWarmingUp && (
@@ -419,10 +494,12 @@ const agent = new HttpsProxyAgent(
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'whitelist' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
                   IP whitelist
                 </button>
-                <button role="tab" aria-selected={tab === 'edit'} onClick={() => setTab('edit')}
-                  className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'edit' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
-                  Edit
-                </button>
+                {canEdit && (
+                  <button role="tab" aria-selected={tab === 'edit'} onClick={() => setTab('edit')}
+                    className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'edit' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
+                    Edit
+                  </button>
+                )}
                 <button role="tab" aria-selected={tab === 'code'} onClick={() => setTab('code')}
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'code' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
                   Code snippets
@@ -452,6 +529,20 @@ const agent = new HttpsProxyAgent(
                       </button>
                     </div>
                   ))}
+                </div>
+              )}
+              {tab === 'cred' && rotationEnabled && canEdit && (
+                <div className="flex items-center justify-between gap-3 mb-2">
+                  <p className="text-[10.5px] text-muted">
+                    Think the password leaked? Rotating gives this session a new one — the old one stops working immediately.
+                  </p>
+                  <button onClick={handleRotatePassword} disabled={rotating}
+                    className={clsx(
+                      'text-[11px] font-mono px-3 py-1.5 rounded-lg border transition-all flex-shrink-0 disabled:opacity-50',
+                      confirmRotate ? 'bg-red-500 text-white border-red-500 hover:opacity-90' : 'border-border text-muted hover:border-accent hover:text-accent'
+                    )}>
+                    {rotating ? 'Rotating…' : confirmRotate ? 'Confirm rotate' : 'Rotate password'}
+                  </button>
                 </div>
               )}
               {tab === 'cred' && isSticky && (
@@ -507,6 +598,32 @@ const agent = new HttpsProxyAgent(
                         </p>
                       </form>
 
+                      {/* Release unused GB back to the account balance */}
+                      <form onSubmit={handleRelease} className="mb-4 border-t border-border pt-4">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <div className="text-[10px] font-mono text-muted uppercase tracking-widest">Release unused GB</div>
+                          <button type="button" disabled={releasableGb < 0.01}
+                            onClick={() => setReleaseAmount(String(releasableGb))}
+                            className="text-[10px] font-mono text-accent hover:opacity-70 disabled:opacity-40">
+                            {formatGb(releasableGb)} GB releasable · use max
+                          </button>
+                        </div>
+                        <div className="flex gap-2">
+                          <input
+                            type="number" inputMode="decimal" min="0.01" step="any" placeholder="GB to release"
+                            value={releaseAmount} onChange={e => setReleaseAmount(e.target.value)}
+                            className="flex-1 bg-white border border-border px-3 py-2 rounded-lg text-xs focus:outline-none focus:border-accent transition-colors"
+                          />
+                          <button type="submit" disabled={releasing || releasableGb < 0.01}
+                            className="border border-border text-ink2 px-4 py-2 rounded-lg text-xs font-medium hover:border-accent hover:text-accent transition-colors disabled:opacity-50 flex-shrink-0">
+                            {releasing ? 'Releasing…' : 'Release GB'}
+                          </button>
+                        </div>
+                        <p className="text-[10.5px] text-muted mt-1.5">
+                          Moves bandwidth this session hasn’t used back to your account balance, so you can give it to another session — without deleting this one. A small safety margin always stays.
+                        </p>
+                      </form>
+
                       {/* Auto-allocate */}
                       <form onSubmit={handleAutoTopupSave} className="border-t border-border pt-4">
                         <div className="flex items-center justify-between mb-2">
@@ -557,9 +674,14 @@ const agent = new HttpsProxyAgent(
                           className="text-xs font-mono px-3 py-1.5 rounded-lg border border-border text-ink2 hover:border-accent hover:text-accent transition-colors disabled:opacity-50">
                           {autoLoading ? 'Saving…' : 'Save auto-allocate settings'}
                         </button>
+                        {autoEnabled && cred.auto_topup_insufficient_alerted_at && (
+                          <p className="text-[10.5px] text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mt-2 font-mono">
+                            ⚠ Auto-allocate couldn’t fully top this session up — your account balance is empty or too low. Buy more bandwidth and it will resume on its own.
+                          </p>
+                        )}
                         {autoEnabled && (
                           <p className="text-[10.5px] text-muted mt-1.5">
-                            Checked roughly every 5 minutes. If your account balance can't cover a top-up, you'll get an email instead — the session keeps working off its current allocation until then.
+                            Checked roughly every 5 minutes. If your balance can't cover the full amount it tops up with whatever is available, and emails you if there's nothing left — the session keeps working off its current allocation meanwhile.
                           </p>
                         )}
                       </form>

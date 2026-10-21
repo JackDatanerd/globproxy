@@ -39,17 +39,27 @@ export async function computeStockStatus(supabase: any): Promise<StockStatus> {
   const active = await fetchAllRows<{ gb_allocated: number | null; gb_used: number | null }>((from, to) =>
     supabase.from('proxy_credentials').select('gb_allocated, gb_used').eq('status', 'active').order('id').range(from, to)
   )
-  const pending = await fetchAllRows<{ gb_allocated: number | null }>((from, to) =>
-    supabase.from('proxy_credentials').select('gb_allocated').eq('status', 'pending').order('id').range(from, to)
+  const pendingAll = await fetchAllRows<{ user_id: string; gb_allocated: number | null }>((from, to) =>
+    supabase.from('proxy_credentials').select('user_id, gb_allocated').eq('status', 'pending').order('id').range(from, to)
   )
-  const accounts = await fetchAllRows<{ available_gb: number | null }>((from, to) =>
-    supabase.from('bandwidth_accounts').select('available_gb').gt('available_gb', 0).order('user_id').range(from, to)
+  const accountsAll = await fetchAllRows<{ user_id: string; available_gb: number | null }>((from, to) =>
+    supabase.from('bandwidth_accounts').select('user_id, available_gb').gt('available_gb', 0).order('user_id').range(from, to)
+  )
+  // Suspended and deleted accounts can't turn their balance (or a pending
+  // reservation) into live sessions, so counting them overstated exposure and
+  // raised false "not covered" alarms — deleted accounts keep their balance
+  // row forever.
+  const inactive = await fetchAllRows<{ id: string }>((from, to) =>
+    supabase.from('profiles').select('id').or('is_suspended.eq.true,is_deleted.eq.true').order('id').range(from, to)
   )
   // A truncated read would silently UNDERSTATE exposure — the dangerous
   // direction for an alerting metric. Fail loudly instead.
-  if (active.error || pending.error || accounts.error) {
-    throw new Error(`Stock status read failed: ${active.error ?? pending.error ?? accounts.error}`)
+  if (active.error || pendingAll.error || accountsAll.error || inactive.error) {
+    throw new Error(`Stock status read failed: ${active.error ?? pendingAll.error ?? accountsAll.error ?? inactive.error}`)
   }
+  const inactiveIds = new Set(inactive.rows.map(r => r.id))
+  const pending = { rows: pendingAll.rows.filter(c => !inactiveIds.has(c.user_id)) }
+  const accounts = { rows: accountsAll.rows.filter(a => !inactiveIds.has(a.user_id)) }
 
   const sum = (xs: number[]) => xs.reduce((s, n) => s + n, 0)
   const totalAllocated = sum(active.rows.map(c => Number(c.gb_allocated ?? 0)))

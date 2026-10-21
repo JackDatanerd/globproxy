@@ -1,6 +1,6 @@
 import { withApiAuth, readJsonBody, failFrom, parsePage, parseDateParam, likeEscape } from '@/lib/apiHelpers'
 import { apiError } from '@/lib/apiAuth'
-import { parseCreateCredential } from '@/lib/apiValidation'
+import { parseCreateCredential, parseCreateAutoTopup } from '@/lib/apiValidation'
 import { createCredential, toApiCredential, CRED_COLS } from '@/lib/credentials'
 import { runIdempotent } from '@/lib/idempotency'
 import { NextResponse } from 'next/server'
@@ -65,8 +65,16 @@ export async function POST(req: Request) {
     const parsed = parseCreateCredential(json.body)
     if (!parsed.ok) return apiError(400, 'invalid_request', parsed.error)
 
-    return runIdempotent(req, supabase, user.id, 'POST /sub-users', JSON.stringify(parsed.value), async (key) => {
-      const result = await createCredential(supabase, user.id, parsed.value, { source: 'api', idempotencyKey: key })
+    // Optional auto-allocate at creation (parity with the dashboard, and the
+    // `auto_topup` field the OpenAPI document advertises):
+    //   "auto_topup": { "threshold_gb": 1, "amount_gb": 5 }
+    // Same strict bounds as PATCH /sub-users/:id/auto-topup.
+    const auto = parseCreateAutoTopup(json.body?.auto_topup)
+    if (!auto.ok) return apiError(400, 'invalid_request', auto.error)
+    const autoTopup = auto.value
+
+    return runIdempotent(req, supabase, user.id, 'POST /sub-users', JSON.stringify({ ...parsed.value, auto_topup: autoTopup }), async (key) => {
+      const result = await createCredential(supabase, user.id, parsed.value, { source: 'api', idempotencyKey: key, autoTopup })
       if (!result.ok) return { kind: 'fail', response: failFrom(result) }
       const body = { ...toApiCredential(result.data.cred), ...(result.data.warning ? { warning: result.data.warning } : {}) }
       return { kind: 'ok', status: 201, body }

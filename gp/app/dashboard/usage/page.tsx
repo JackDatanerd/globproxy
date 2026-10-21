@@ -54,7 +54,7 @@ export default async function UsagePage() {
           </>
         )}
       </div>
-      <UsageHistoryChart />
+      <UsageHistoryChart sessions={(creds ?? []).map(c => ({ id: c.id, label: c.label || c.country || 'Unnamed' }))} />
 
       <div className="bg-white border border-border rounded-xl overflow-hidden">
         <div className="px-6 py-4 border-b border-border">

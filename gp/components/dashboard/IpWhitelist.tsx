@@ -13,7 +13,7 @@ interface Props {
   credentialId: string
 }
 
-// Geonode's reseller API has always had a full set of endpoints for
+// The upstream provider's API has always had a full set of endpoints for
 // locking a sub-user's credential down to specific source IPs
 // (list/add/bulk-add/bulk-remove/remove-by-ip) — this is the first UI
 // GlobProxy has exposed for it. With no whitelist entries, a credential's
@@ -22,7 +22,7 @@ interface Props {
 //
 // COPY NOTE: the user-facing text below used to claim listed IPs are the ONLY
 // sources that can authenticate and that an empty list "accepts connections
-// from any IP". Neither was ever verified against Geonode's real behaviour —
+// from any IP". Neither was ever verified against the provider's real behaviour —
 // a provider whitelist can just as easily mean "these IPs may connect without
 // credentials" as "only these IPs may connect". It now says only what is
 // certain. Verify with a live test (connect from a non-listed IP with valid
@@ -93,7 +93,7 @@ export default function IpWhitelist({ credentialId }: Props) {
   // "ip description" — blank descriptions fall back to a timestamped
   // default rather than failing the whole batch over a missing label.
   // Comma is checked first (so a description containing spaces, e.g.
-  // "203.0.113.4, Office VPN exit", still splits correctly); falls back
+  // "<ip>, Office VPN exit", still splits correctly); falls back
   // to splitting on the first run of whitespace when there's no comma.
   function parseBulkLines(text: string): { ip: string; description: string }[] {
     const fallbackDesc = `Bulk added ${new Date().toLocaleDateString()}`
@@ -213,7 +213,7 @@ export default function IpWhitelist({ credentialId }: Props) {
             <form onSubmit={addIp} className="flex flex-wrap gap-2">
               <input
                 value={ip} onChange={e => setIp(e.target.value)}
-                placeholder="e.g. 203.0.113.4"
+                placeholder="Your public IP"
                 className="flex-1 min-w-[140px] bg-white border border-border px-3 py-2 rounded-lg text-xs font-mono focus:outline-none focus:border-accent transition-colors"
               />
               <input
@@ -235,7 +235,7 @@ export default function IpWhitelist({ credentialId }: Props) {
             <div>
               <textarea
                 value={bulkText} onChange={e => setBulkText(e.target.value)}
-                placeholder={'One IP per line, e.g.\n203.0.113.4, Office IP\n198.51.100.7, Home IP'}
+                placeholder={'One per line: IP, description\n(public IPs only — not 192.168.x or 10.x)'}
                 rows={4}
                 className="w-full bg-white border border-border px-3 py-2 rounded-lg text-xs font-mono focus:outline-none focus:border-accent transition-colors resize-y"
               />

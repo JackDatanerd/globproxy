@@ -28,6 +28,74 @@ export function isValidIp(value: string): boolean {
   return IPV4_RE.test(v) || IPV6_RE.test(v) || IPV4_MAPPED_RE.test(v)
 }
 
+// ── Non-routable addresses ────────────────────────────────────────────
+// A whitelist entry only helps if it is the address the proxy provider will
+// actually SEE the connection come from — i.e. a public one. The most common
+// mistake (people behind a router typing the 192.168.x / 10.x address their
+// OS shows) is syntactically valid but can never match, so the customer
+// believes they're whitelisted while every connection is refused. Applied to
+// ADDING only; removal accepts any valid IP so a bad legacy entry can still
+// be deleted.
+function v4NonPublic(o: number[]): boolean {
+  const [a, b, c] = o
+  return (
+    a === 0 || a === 10 || a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) ||            // carrier-grade NAT
+    (a === 169 && b === 254) ||                       // link-local
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 0 && (c === 0 || c === 2)) ||  // IETF / TEST-NET-1
+    (a === 192 && b === 168) ||
+    (a === 198 && (b === 18 || b === 19)) ||          // benchmarking
+    (a === 198 && b === 51 && c === 100) ||           // TEST-NET-2
+    (a === 203 && b === 0 && c === 113) ||            // TEST-NET-3
+    a >= 224                                          // multicast + reserved
+  )
+}
+
+function expandV6(v: string): number[] | null {
+  const halves = v.split('::')
+  if (halves.length > 2) return null
+  const parse = (s: string) => (s === '' ? [] : s.split(':').map((h) => parseInt(h, 16)))
+  const head = parse(halves[0])
+  const tail = halves.length === 2 ? parse(halves[1]) : []
+  const missing = 8 - head.length - tail.length
+  if (halves.length === 1 ? head.length !== 8 : missing < 0) return null
+  const out = [...head, ...new Array(halves.length === 2 ? missing : 0).fill(0), ...tail]
+  return out.length === 8 && out.every((n) => Number.isInteger(n) && n >= 0 && n <= 0xffff) ? out : null
+}
+
+function v6NonPublic(h: number[]): boolean {
+  if (h.every((n) => n === 0)) return true                       // ::
+  if (h.slice(0, 7).every((n) => n === 0) && h[7] === 1) return true // ::1
+  if ((h[0] & 0xffc0) === 0xfe80) return true                     // fe80::/10
+  if ((h[0] & 0xfe00) === 0xfc00) return true                     // fc00::/7
+  if ((h[0] >> 8) === 0xff) return true                           // ff00::/8
+  if (h[0] === 0x2001 && h[1] === 0x0db8) return true             // documentation
+  if (h.slice(0, 5).every((n) => n === 0) && h[5] === 0xffff) {   // v4-mapped
+    return v4NonPublic([h[6] >> 8, h[6] & 255, h[7] >> 8, h[7] & 255])
+  }
+  return false
+}
+
+export function isNonPublicIp(value: string): boolean {
+  const v = value.trim()
+  if (IPV4_RE.test(v)) return v4NonPublic(v.split('.').map(Number))
+  const mapped = v.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i)
+  if (mapped) return v4NonPublic(mapped[1].split('.').map(Number))
+  const h = expandV6(v)
+  return h ? v6NonPublic(h) : false
+}
+
+// Full add-time check: well-formed AND publicly routable. Returns the message
+// to show, or null when fine.
+export function validateIpForAdd(value: string): string | null {
+  if (!isValidIp(value)) return 'Enter a valid IPv4 or IPv6 address (no ranges).'
+  if (isNonPublicIp(value)) {
+    return 'That is a private or reserved address, so it can never match a real connection. Use the PUBLIC IP of the machine that will connect (the “Use my IP” button fills it in).'
+  }
+  return null
+}
+
 // Mirrors the spec's `description` schema (minLength 1, maxLength 100) —
 // required on every write, not optional client-side sugar.
 export function validateDescription(value: unknown): string | null {
@@ -56,6 +124,10 @@ export function whitelistErrorResponse(e: unknown): NextResponse {
       console.error('Geonode rejected reseller API credentials on whitelist call:', e.status, e.body)
       return NextResponse.json({ error: 'IP whitelist service is temporarily unavailable. Please try again shortly.', code: 'upstream_unavailable' }, { status: 502 })
     }
+    // The provider's own `message` text is NEVER relayed: it is supplier-
+    // authored copy that can name the supplier and carry account/sub-user
+    // identifiers, and customers must never see either. Fixed wording only;
+    // the real cause is logged.
     if (e.status === 404) {
       console.error('Whitelist upstream 404:', e.body)
       return NextResponse.json({ error: 'That whitelist entry could not be found.', code: 'not_found' }, { status: 404 })

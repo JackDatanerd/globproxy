@@ -60,6 +60,7 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
     const { data, error } = await supabase.from('proxy_sessions').insert({
       credential_id: id, user_id: user.id, session_token: genSessionId(), label: label.value ?? 'Session',
     }).select('id, session_token, label, pinned, collapsed, created_at').single()
+    if (error?.code === '23514') return apiError(400, 'invalid_request', error.message) // enforce_proxy_session_limits (0059)
     if (error || !data) {
       console.error('[v1 POST sessions] insert failed', error)
       return apiError(500, 'internal_error', 'Could not create the session.')

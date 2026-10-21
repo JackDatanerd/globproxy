@@ -127,7 +127,9 @@ export async function createSubUser(p: CreateSubUserParams): Promise<GCred> {
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(`Geonode createSubUser failed: ${res.status} ${JSON.stringify(err)}`)
+    // GeonodeApiError so callers can classify the failure (capacity vs auth
+    // vs outage) without regex-parsing a message string.
+    throw new GeonodeApiError(`Geonode createSubUser failed: ${res.status} ${JSON.stringify(err)}`, res.status, err)
   }
 
   const d = await res.json()
@@ -187,6 +189,52 @@ export async function updateSubUserTrafficLimit(
   }
 }
 
+// Replaces a sub-user's password (credential rotation). Same rule as the
+// limit PATCH above: the body is exactly { password } — never activeUntil,
+// which would reset the sub-user's traffic usage. Returns the password the
+// provider echoes back (or null when it echoes nothing) so the caller can
+// refuse to commit a rotation the provider silently ignored.
+export async function updateSubUserPassword(
+  geonodeSubUserId: string,
+  newPassword: string
+): Promise<string | null> {
+  const res = await gfetch(
+    `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${geonodeSubUserId}`,
+    {
+      method: 'PATCH',
+      headers: headers(),
+      body: JSON.stringify({ password: newPassword }),
+    }
+  )
+  const d = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new GeonodeApiError(`Geonode updateSubUserPassword failed: ${res.status} ${JSON.stringify(d)}`, res.status, d)
+  }
+  const result = d?.result ?? d?.data ?? d
+  return typeof result?.password === 'string' ? result.password : null
+}
+
+// Maps a failed upstream call to a SUPPLIER-NEUTRAL reason. This is the only
+// shape that may be persisted on a customer-readable row or shown in the UI:
+// the raw error text names the supplier and can carry account identifiers.
+//   capacity    — the pool can't cover the request (stock to be replenished)
+//   unavailable — network/timeout/5xx: transient outage
+//   error       — anything else (auth, validation, unknown)
+export type UpstreamReason = 'capacity' | 'unavailable' | 'error'
+export function classifyUpstreamError(e: unknown): UpstreamReason {
+  if (e instanceof GeonodeApiError) {
+    if (e.status >= 500 || e.status === 408 || e.status === 429) return 'unavailable'
+    const msg = String(e.body?.message ?? e.body?.error ?? e.message ?? '').toLowerCase()
+    if (e.status === 402 || /traffic|bandwidth|insufficient|not enough|allocat|balance|quota|capacity|stock|exceed/.test(msg)) {
+      return 'capacity'
+    }
+    return 'error'
+  }
+  const name = (e as any)?.name
+  if (name === 'AbortError' || name === 'TypeError') return 'unavailable'
+  return 'error'
+}
+
 // Per spec there is no separate "/usage" endpoint — usage comes back as
 // trafficUsedMB on the same "get sub-user" call.
 //
@@ -220,7 +268,15 @@ export async function getSubUserUsage(geonodeSubUserId: string): Promise<number>
   }
   const d = await res.json()
   const result = d.result ?? d.data ?? d
-  return mbToGb(result.trafficUsedMB ?? 0)
+  // A response without a numeric trafficUsedMB (schema change, partial
+  // payload) must not read as "0 GB used" — that is the same fake zero this
+  // function's header explains. Throw so every caller takes its existing
+  // "unknown, leave the number alone" path.
+  const usedMb = typeof result?.trafficUsedMB === 'number' ? result.trafficUsedMB : Number.NaN
+  if (!Number.isFinite(usedMb) || usedMb < 0) {
+    throw new Error('Geonode getSubUserUsage returned no usable trafficUsedMB')
+  }
+  return mbToGb(usedMb)
 }
 
 // Bulk version — fetches usage for ALL sub-users in pages of 100 instead of
@@ -238,8 +294,10 @@ export async function getSubUserUsage(geonodeSubUserId: string): Promise<number>
 // freshness marker the staleness watchdog depends on. Callers must check
 // `complete` before treating absence from the map as meaningful.
 export interface SubUserSnapshot {
-  usedGb: number
-  usedMb: number
+  // null when Geonode didn't report a numeric usage figure for this sub-user.
+  // Never coerced to 0: a missing figure must not overwrite real usage.
+  usedGb: number | null
+  usedMb: number | null
   limitMb: number | null // null when Geonode didn't report one
   username: string | null
 }
@@ -269,18 +327,38 @@ export async function listAllSubUsers(): Promise<{ subUsers: Map<string, SubUser
     if (!d) return { subUsers, complete: false }
     const result = d.result ?? d.data ?? d
     const docs = result.documents ?? []
+    // The listing ends at an EMPTY page, not at "a page shorter than the
+    // limit we asked for": if the provider ever caps its page size below 100
+    // the old short-page rule declared a partial listing complete — stamping
+    // the freshness marker, skipping usage for everything after page one and
+    // reporting live sub-users as missing. One extra (cheap) call buys that
+    // certainty. A provider-reported total, when present, short-circuits it.
+    if (docs.length === 0) return { subUsers, complete: true }
+    let added = 0
     for (const doc of docs) {
-      const usedMb = Number(doc.trafficUsedMB ?? 0)
+      const id = String(doc.id)
+      if (!subUsers.has(id)) added++
+      const usedMb = typeof doc.trafficUsedMB === 'number' && Number.isFinite(doc.trafficUsedMB) && doc.trafficUsedMB >= 0
+        ? doc.trafficUsedMB
+        : null
       const limitMb = doc.trafficLimitMB === undefined || doc.trafficLimitMB === null ? null : Number(doc.trafficLimitMB)
-      subUsers.set(String(doc.id), {
-        usedGb: mbToGb(usedMb),
+      subUsers.set(id, {
+        usedGb: usedMb === null ? null : mbToGb(usedMb),
         usedMb,
         limitMb: limitMb !== null && Number.isFinite(limitMb) ? limitMb : null,
         username: typeof doc.username === 'string' ? doc.username : null,
       })
     }
-    if (docs.length < limit) return { subUsers, complete: true } // last page
-    offset += limit
+    // A page of nothing but ids we already have means the provider is
+    // ignoring `offset` — the listing is NOT complete and looping on it
+    // would only burn subrequests.
+    if (added === 0) {
+      console.error('Geonode listAllSubUsers: page repeated already-seen sub-users — treating the listing as incomplete')
+      return { subUsers, complete: false }
+    }
+    const total = Number(result.total ?? result.totalCount)
+    if (docs.length < limit && Number.isFinite(total) && subUsers.size >= total) return { subUsers, complete: true }
+    offset += docs.length
   }
   console.error('Geonode listAllSubUsers hit MAX_LIST_PAGES — treating the listing as incomplete')
   return { subUsers, complete: false }

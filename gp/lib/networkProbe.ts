@@ -11,6 +11,7 @@
 // building cleanly — the build succeeding was never proof the import
 // would actually resolve at request time in this specific wrapper mode).
 import net from 'node:net'
+import { buildProxyUsername } from '@/lib/proxyEndpoint'
 
 // Neutral, single-purpose reachability targets — dedicated IP-echo/diagnostic
 // services, not commercial sites with anti-bot systems. Deliberately kept to
@@ -206,7 +207,7 @@ export async function runConfiguredBenchmark(supabase: SupabaseAdminClient): Pro
 
   const { data: cred } = await supabase
     .from('proxy_credentials')
-    .select('host, port, protocol, upstream_username, upstream_password, status, gb_allocated, gb_used')
+    .select('host, port, protocol, session_type, sticky_duration, country, state, city, asn, upstream_username, upstream_password, status, gb_allocated, gb_used')
     .eq('id', setting.value)
     .single()
 
@@ -223,7 +224,11 @@ export async function runConfiguredBenchmark(supabase: SupabaseAdminClient): Pro
     return { action: 'skipped', reason: 'benchmark credential has exhausted its allocated GB' }
   }
 
-  const results = await runNetworkProbe(cred.host, cred.port, cred.upstream_username, cred.upstream_password)
+  // Probe with the SAME username shape customers connect with (type /
+  // country / session suffixes), not the bare base username — otherwise the
+  // public status page measures a path no customer actually uses.
+  const probeUsername = buildProxyUsername(cred.upstream_username, cred)
+  const results = await runNetworkProbe(cred.host, cred.port, probeUsername, cred.upstream_password)
 
   for (const r of results) {
     const { error } = await supabase.from('network_benchmarks').insert({

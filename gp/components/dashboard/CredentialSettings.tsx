@@ -7,6 +7,8 @@ import {
   fetchCountryList, fetchCountryDetail,
   type CountryListItem, type CountryDetail,
 } from '@/lib/geoTargeting'
+import AsnPicker from '@/components/dashboard/AsnPicker'
+import StickyDurationSelect from '@/components/dashboard/StickyDurationSelect'
 
 // "Edit" tab: rename or retarget an existing session in place. Everything
 // here is database-only (see updateCredentialSettings in lib/credentials.ts) —
@@ -15,12 +17,6 @@ import {
 // means delete + recreate (the one path that rounds, refunds and archives GB).
 // Existing sticky sessions keep working; they just pick up the new targeting
 // the next time a connection is made with the updated username.
-
-const STICKY_DURATIONS = [
-  { value: 1, label: '1 min' }, { value: 10, label: '10 min' }, { value: 30, label: '30 min' },
-  { value: 60, label: '1 hour' }, { value: 360, label: '6 hours' }, { value: 720, label: '12 hours' },
-  { value: 1440, label: '24 hours' },
-]
 
 const field = 'w-full bg-white border border-border px-3 py-2 rounded-lg text-xs focus:outline-none focus:border-accent transition-colors disabled:opacity-50'
 
@@ -109,10 +105,8 @@ export default function CredentialSettings({ cred }: { cred: any }) {
         </div>
         <div>
           <label className="block text-[10px] font-mono text-muted uppercase tracking-widest mb-1">Sticky duration</label>
-          <select value={stickyDuration} onChange={e => setStickyDuration(Number(e.target.value))}
-            disabled={sessionType !== 'sticky'} className={field}>
-            {STICKY_DURATIONS.map(d => <option key={d.value} value={d.value}>{d.label}</option>)}
-          </select>
+          <StickyDurationSelect value={stickyDuration} onChange={setStickyDuration}
+            disabled={sessionType !== 'sticky'} className={field} />
         </div>
       </div>
 
@@ -143,9 +137,9 @@ export default function CredentialSettings({ cred }: { cred: any }) {
       </div>
       {geoError && <p className="text-xs text-red-600">Couldn’t load locations — {geoError}</p>}
 
-      <div className="max-w-[220px]">
-        <label className="block text-[10px] font-mono text-muted uppercase tracking-widest mb-1">ASN <span className="normal-case">(optional)</span></label>
-        <input value={asn} onChange={e => setAsn(e.target.value)} inputMode="numeric" placeholder="e.g. 7922" className={field} />
+      <div className="max-w-[320px]">
+        <label className="block text-[10px] font-mono text-muted uppercase tracking-widest mb-1">ISP / ASN <span className="normal-case">(optional)</span></label>
+        <AsnPicker country={country} value={asn} onChange={setAsn} className={field} />
       </div>
 
       <button type="submit" disabled={saving}

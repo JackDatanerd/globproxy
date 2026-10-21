@@ -10,6 +10,7 @@ import {
 import { buildProxyUsername, getProxyPort, validateTargeting } from '@/lib/proxyEndpoint'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
+import AsnPicker from '@/components/dashboard/AsnPicker'
 
 const STICKY_DURATIONS = [
   { value: 1,    label: '1 min' },
@@ -55,9 +56,9 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
 
   // Geo picker data — country list loads once on mount; the state/city
   // tree for whichever country is selected loads on demand (see
-  // lib/geoTargeting.ts). Both are backed by Geonode's real supported
+  // lib/geoTargeting.ts). Both are backed by the network's real supported
   // locations, not hand-typed text, so a selection here can never end up
-  // being something Geonode doesn't recognize.
+  // being something the network doesn't recognize.
   const [countryList, setCountryList] = useState<CountryListItem[]>([])
   const [countryListError, setCountryListError] = useState<string | null>(null)
   const [countryDetail, setCountryDetail] = useState<CountryDetail | null>(null)
@@ -89,6 +90,12 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
   const selectedStateOption = countryDetail?.states.find(s => s.code === form.state) ?? null
   const selectedCountryName = countryList.find(c => c.code === form.country)?.name ?? ''
   const selectedCityName = selectedStateOption?.cities.find(c => c.code === form.city)?.name ?? ''
+
+  // Custom sticky lifetime (the API accepts any 1–1440 minutes; the pills only
+  // cover the common ones). Active when chosen explicitly or when the current
+  // value isn't one of the pills.
+  const [customDuration, setCustomDuration] = useState(false)
+  const customDurationActive = customDuration || !STICKY_DURATIONS.some(d => d.value === form.sticky_duration)
 
   // Live endpoint preview — uses the same builder as ProxyCard and the v1
   // API, so this preview can never drift out of sync with what the customer
@@ -288,10 +295,10 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
             {advancedOpen && (
               <div className="mt-3">
                 <label className="block text-xs text-ink2 font-medium mb-1.5">ASN / ISP <span className="text-muted font-normal">(optional)</span></label>
-                <input value={form.asn} onChange={e => set('asn', e.target.value.replace(/[^0-9]/g, ''))}
-                  placeholder="e.g. 13868"
+                <AsnPicker
+                  country={form.country} value={form.asn} onChange={v => set('asn', v)}
                   className="w-full bg-surface border border-border px-3.5 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors" />
-                <p className="text-xs text-muted mt-1.5">Target a specific ISP by ASN number — look yours up at a public ASN lookup tool (e.g. bgp.he.net) if you're not sure of the number.</p>
+                <p className="text-xs text-muted mt-1.5">Target a specific ISP. Pick a country first and you can search that country&apos;s ISPs by name or number; an ISP that doesn&apos;t exist in the chosen country is rejected rather than creating a session that can&apos;t connect.</p>
               </div>
             )}
           </div>
@@ -328,12 +335,28 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
                 <label className="block text-xs text-ink2 font-medium mb-1.5">Sticky duration</label>
                 <div className="flex gap-1.5 flex-wrap">
                   {STICKY_DURATIONS.map(d => (
-                    <button type="button" key={d.value} onClick={() => set('sticky_duration', d.value)}
+                    <button type="button" key={d.value} onClick={() => { setCustomDuration(false); set('sticky_duration', d.value) }}
                       className={clsx('px-3.5 py-1.5 rounded-full border text-[11.5px] font-mono transition-all', form.sticky_duration === d.value ? 'border-accent bg-accent-light text-accent' : 'border-border text-ink2 hover:border-accent/40')}>
                       {d.label}
                     </button>
                   ))}
+                  <button type="button" onClick={() => setCustomDuration(true)}
+                    className={clsx('px-3.5 py-1.5 rounded-full border text-[11.5px] font-mono transition-all', customDurationActive ? 'border-accent bg-accent-light text-accent' : 'border-border text-ink2 hover:border-accent/40')}>
+                    Custom
+                  </button>
                 </div>
+                {customDurationActive && (
+                  <div className="flex items-center gap-2 mt-2.5">
+                    <input type="number" inputMode="numeric" min={1} max={1440} step={1}
+                      value={form.sticky_duration}
+                      onChange={e => {
+                        const n = Math.round(Number(e.target.value))
+                        set('sticky_duration', Number.isFinite(n) ? Math.min(1440, Math.max(1, n)) : 1)
+                      }}
+                      className="w-28 bg-surface border border-border px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors" />
+                    <span className="text-xs text-muted">minutes (1–1440)</span>
+                  </div>
+                )}
               </div>
             )}
           </div>

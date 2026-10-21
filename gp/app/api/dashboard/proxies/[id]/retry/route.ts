@@ -47,5 +47,12 @@ export async function POST(
   if (result.claimed === 0) {
     return NextResponse.json({ error: 'A provisioning attempt is already in progress — check back in a moment.' }, { status: 409 })
   }
-  return NextResponse.json({ error: 'The proxy network is still unreachable. We’ll keep retrying automatically.' }, { status: 502 })
+  // Tell the customer WHY, in supplier-neutral terms, using the reason the
+  // failed attempt just recorded (migration 0059).
+  const { data: after } = await supabase
+    .from('proxy_credentials').select('pending_reason').eq('id', id).maybeSingle()
+  const message = after?.pending_reason === 'capacity'
+    ? 'We’re adding network capacity right now. Your bandwidth is reserved and this session will activate automatically — no action needed.'
+    : 'The proxy network is still unreachable. We’ll keep retrying automatically.'
+  return NextResponse.json({ error: message }, { status: 502 })
 }

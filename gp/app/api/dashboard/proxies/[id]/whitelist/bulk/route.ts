@@ -1,18 +1,21 @@
 import { requireMfaVerified } from '@/lib/mfa'
-import { createClient } from '@/lib/supabase/server'
+import { createClient, createAdminClient } from '@/lib/supabase/server'
+import { rateLimitedUser } from '@/lib/rateLimit'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { bulkAddWhitelistedIps, bulkRemoveWhitelistedIps } from '@/lib/geonode'
-import { isValidIp, validateDescription, whitelistErrorResponse, MAX_BULK_ITEMS } from '@/lib/ipWhitelist'
+import { isValidIp, validateIpForAdd, validateDescription, whitelistErrorResponse, MAX_BULK_ITEMS } from '@/lib/ipWhitelist'
 import { NextResponse } from 'next/server'
-import { rateLimitedUser } from '@/lib/rateLimit'
 
-async function loadOwnedCredential(supabase: Awaited<ReturnType<typeof createClient>>, id: string, userId: string) {
-  const { data: cred } = await supabase
+async function loadOwnedCredential(_supabase: Awaited<ReturnType<typeof createClient>>, id: string, userId: string) {
+  // Service role + an explicit user_id filter: customers can't SELECT the
+  // upstream_* columns directly (migration 0059), and ownership is enforced here.
+  const admin = await createAdminClient()
+  const { data: cred } = await admin
     .from('proxy_credentials')
     .select('id, user_id, upstream_sub_user_id')
     .eq('id', id)
     .eq('user_id', userId)
-    .single()
+    .maybeSingle()
   return cred
 }
 
@@ -47,9 +50,8 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
   for (const raw of rawItems) {
     const ip = typeof raw?.ip === 'string' ? raw.ip.trim() : ''
     const description = typeof raw?.description === 'string' ? raw.description.trim() : ''
-    if (!isValidIp(ip)) {
-      return NextResponse.json({ error: `"${ip || '(empty)'}" is not a valid IPv4 or IPv6 address.` }, { status: 400 })
-    }
+    const ipError = validateIpForAdd(ip)
+    if (ipError) return NextResponse.json({ error: `${ip || '(empty)'}: ${ipError}` }, { status: 400 })
     const descError = validateDescription(description)
     if (descError) return NextResponse.json({ error: `${ip}: ${descError}` }, { status: 400 })
     items.push({ ip, description })

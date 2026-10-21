@@ -110,8 +110,11 @@ function TrendChart({ points }: { points: SeriesPoint[] }) {
   )
 }
 
-export default function UsageHistoryChart() {
+export default function UsageHistoryChart({ sessions = [] }: { sessions?: { id: string; label: string }[] }) {
   const [range, setRange] = useState<7 | 30 | 90>(7)
+  // '' = all sessions (the account-wide view); otherwise one session's own history.
+  const [sessionId, setSessionId] = useState('')
+  const scope = sessionId ? `&credential_id=${encodeURIComponent(sessionId)}` : ""
   const [data, setData] = useState<HistoryResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -120,21 +123,34 @@ export default function UsageHistoryChart() {
     let cancelled = false
     setLoading(true)
     setError(null)
-    apiFetch<HistoryResponse>(`/api/dashboard/usage/history?range=${range}`)
+    apiFetch<HistoryResponse>(`/api/dashboard/usage/history?range=${range}${scope}`)
       .then(json => { if (!cancelled) setData(json) })
       .catch(err => { if (!cancelled) setError(err.message) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [range])
+  }, [range, scope])
 
   return (
     <div className="bg-white border border-border rounded-xl overflow-hidden mb-6">
       <div className="px-6 py-4 border-b border-border flex items-center justify-between flex-wrap gap-3">
         <div>
           <h2 className="font-display font-bold text-base text-ink">Usage over time</h2>
-          <p className="text-[11px] text-muted mt-0.5">Daily bandwidth across all your sessions</p>
+          <p className="text-[11px] text-muted mt-0.5">
+            {sessionId ? 'Daily bandwidth for the selected session' : 'Daily bandwidth across all your sessions'}
+          </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {sessions.length > 1 && (
+            <select
+              value={sessionId}
+              onChange={e => setSessionId(e.target.value)}
+              aria-label="Session to show"
+              className="text-[11px] font-mono px-2.5 py-1.5 rounded-lg border border-border bg-white text-ink max-w-[180px]"
+            >
+              <option value="">All sessions</option>
+              {sessions.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+            </select>
+          )}
           <div className="flex bg-surface rounded-lg p-0.5">
             {RANGES.map(r => (
               <button
@@ -150,7 +166,7 @@ export default function UsageHistoryChart() {
             ))}
           </div>
           <a
-            href={`/api/dashboard/usage/history?range=${range}&format=csv&dataset=series`}
+            href={`/api/dashboard/usage/history?range=${range}${scope}&format=csv&dataset=series`}
             className="text-[11px] font-mono px-3 py-1.5 rounded-lg border border-border text-muted hover:text-accent hover:border-accent transition-colors"
           >
             Export CSV
@@ -195,7 +211,7 @@ export default function UsageHistoryChart() {
             </p>
           </div>
           <a
-            href={`/api/dashboard/usage/history?range=${range}&format=csv&dataset=breakdown`}
+            href={`/api/dashboard/usage/history?range=${range}${scope}&format=csv&dataset=breakdown`}
             className="text-[11px] font-mono px-3 py-1.5 rounded-lg border border-border text-muted hover:text-accent hover:border-accent transition-colors flex-shrink-0"
           >
             Export full CSV

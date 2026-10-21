@@ -4,7 +4,9 @@ import { requireActiveUser } from '@/lib/apiAuth'
 import { genSessionId } from '@/lib/proxyEndpoint'
 import { NextResponse } from 'next/server'
 
-const MAX_STICKY_SESSIONS = 50
+// Mirrors enforce_proxy_session_limits() (migration 0059) and the v1 API's cap —
+// the dashboard used to stop at 50 while the API allowed 200.
+const MAX_STICKY_SESSIONS = 200
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
@@ -85,6 +87,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }).select().single()
 
   if (error) {
+    // The database trigger is the authoritative cap / sticky-only / active-
+    // account check; its messages are written for customers.
+    if (error.code === '23514') return NextResponse.json({ error: error.message }, { status: 409 })
+    if (error.code === '42501') return NextResponse.json({ error: 'Account is not active.' }, { status: 403 })
     console.error('[dashboard/proxies/[id]/sessions] db error:', error)
     return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
   }

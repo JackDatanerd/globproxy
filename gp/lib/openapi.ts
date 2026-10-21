@@ -46,7 +46,7 @@ const cursorQ = (max: number) => [q('limit', `Page size (max ${max})`, { type: '
 const createBody = { type: 'object', required: ['gb_allocated'], properties: {
   label: { type: 'string' }, gb_allocated: { type: 'number', minimum: 0.01 }, country: { type: 'string' }, state: { type: 'string' }, city: { type: 'string' }, asn: { type: 'integer' },
   protocol: { type: 'string', enum: ['http', 'socks5'] }, session_type: { type: 'string', enum: ['rotating', 'sticky'] }, sticky_duration: { type: 'integer' },
-  auto_topup: { type: 'object', properties: { threshold_gb: { type: 'number' }, amount_gb: { type: 'number' } } } } }
+  auto_topup: { type: 'object', description: 'Turn on auto-topup at creation (same rules as PATCH /auto-topup). enabled defaults to true.', properties: { enabled: { type: 'boolean' }, threshold_gb: { type: 'number' }, amount_gb: { type: 'number', description: 'Must exceed threshold_gb' } } } } }
 const bulkResult = { type: 'object', properties: { results: { type: 'array', items: { type: 'object' } }, succeeded: { type: 'integer' }, failed: { type: 'integer' } } }
 
 export function buildOpenApi(origin: string): Json {
@@ -88,6 +88,8 @@ export function buildOpenApi(origin: string): Json {
       '/api/v1/sub-users/{id}/usage': { get: op({ summary: 'Live usage', params: [idParam()], ok: { schema: ref('Object') } }) },
       '/api/v1/sub-users/{id}/usage/history': { get: op({ summary: 'Daily usage history', params: [idParam(), q('days', '1–90', { type: 'integer' })], ok: { schema: ref('Object') } }) },
       '/api/v1/sub-users/{id}/topup': { post: op({ summary: 'Add bandwidth to a sub-user', scope: 'write', params: [idParam()], body: { type: 'object', required: ['gb_amount'], properties: { gb_amount: { type: 'number' } } }, idempotency: 'optional', ok: { schema: ref('Object') }, errors: [400, 402, 404, 409, 422] }) },
+      '/api/v1/sub-users/{id}/release': { post: op({ summary: 'Return unused bandwidth from a sub-user to the account balance', scope: 'write', params: [idParam()], body: { type: 'object', required: ['gb_amount'], properties: { gb_amount: { type: 'number' } } }, ok: { schema: ref('Object') }, errors: [400, 403, 404, 409, 502] }) },
+      '/api/v1/sub-users/{id}/rotate-password': { post: op({ summary: 'Replace the sub-user proxy password (503 until enabled platform-side)', scope: 'write', params: [idParam()], ok: { schema: ref('Object') }, errors: [404, 409, 502, 503] }) },
       '/api/v1/sub-users/{id}/auto-topup': { patch: op({ summary: 'Configure auto top-up', scope: 'write', params: [idParam()], body: { type: 'object', required: ['enabled'], properties: { enabled: { type: 'boolean' }, threshold_gb: { type: 'number' }, amount_gb: { type: 'number', description: 'Must exceed threshold_gb' } } }, ok: { schema: ref('Object') } }) },
       '/api/v1/sub-users/{id}/sessions': {
         get: op({ summary: 'List sticky sessions', params: [idParam()], ok: { schema: ref('Object') } }),

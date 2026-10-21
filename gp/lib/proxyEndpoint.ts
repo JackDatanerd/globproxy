@@ -133,7 +133,11 @@ export function buildProxyUsername(baseUsername: string, opts: TargetingOptions,
     // and produce a literal "lifetime-NaN" in the username.
     const rawLifetime = Number(opts.sticky_duration ?? 10)
     const lifetimeMinutes = Number.isFinite(rawLifetime) ? Math.min(1440, Math.max(1, Math.round(rawLifetime))) : 10
-    const id = sessionId ?? genSessionId()
+    // The id is interpolated straight into the username, so it is reduced to
+    // [A-Za-z0-9] here no matter where it came from (a named session's token
+    // is stored in a table the customer can write to).
+    const cleanId = sessionId === undefined ? '' : String(sessionId).replace(/[^A-Za-z0-9]/g, '').slice(0, 32)
+    const id = cleanId || genSessionId()
     u += `-lifetime-${lifetimeMinutes}-session-${id}`
   }
 

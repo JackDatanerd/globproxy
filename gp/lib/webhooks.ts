@@ -21,7 +21,7 @@ const MAX_ATTEMPTS = 6
 const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 30 * 60_000, 2 * 3_600_000, 6 * 3_600_000] // after attempt 1..5
 const DISABLE_THRESHOLD = 50
 const REQUEST_TIMEOUT_MS = 8000
-const RETRIES_PER_RUN = 8 // Workers caps subrequests per invocation — keep each cron tick small
+const RETRIES_PER_RUN = 10 // Workers caps subrequests per invocation — keep each cron tick small
 const CLAIM_LEASE_MS = 5 * 60_000
 const TEST_COOLDOWN_MS = 10_000
 
@@ -242,10 +242,17 @@ async function attemptDelivery(
 // ALWAYS awaited by the caller (Workers kills pending promises once the
 // response is sent). Never throws — a customer's broken endpoint must never
 // fail the request or cron batch that triggered the event.
+//
+// `defer: true` persists the delivery as due-now and returns WITHOUT making
+// the first HTTP attempt; the 'webhooks' cron task delivers it moments later.
+// Cron-driven callers (usage sync, auto top-up) use this: the first attempt
+// otherwise runs inline with an 8 s timeout, which let one customer's slow
+// endpoint stall the usage sync for every other customer.
 export async function dispatchWebhook(
   userId: string,
   event: WebhookEvent,
-  data: Record<string, unknown>
+  data: Record<string, unknown>,
+  opts: { defer?: boolean } = {}
 ): Promise<void> {
   try {
     const supabase = await createAdminClient()
@@ -273,7 +280,8 @@ export async function dispatchWebhook(
           .from('webhook_deliveries')
           .insert({
             endpoint_id: ep.id, user_id: userId, event_id: eventId, event_type: event, payload,
-            status: 'retrying', attempts: 0, next_attempt_at: new Date(Date.now() + 2 * 60_000).toISOString(),
+            status: 'retrying', attempts: 0,
+            next_attempt_at: new Date(Date.now() + (opts.defer ? 0 : 2 * 60_000)).toISOString(),
           })
           .select(DELIVERY_COLS)
           .single()
@@ -281,6 +289,7 @@ export async function dispatchWebhook(
           console.error('[webhooks] failed to persist delivery', ep.id, insErr)
           return
         }
+        if (opts.defer) return
         await attemptDelivery(supabase, ep, row as Delivery, { retry: true })
       })
     )
