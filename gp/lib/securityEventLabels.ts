@@ -20,6 +20,8 @@ export const SECURITY_EVENT_LABELS: Record<string, string> = {
   api_key_rotated: 'API key rotated',
   api_key_revoked: 'API key revoked',
   webhook_created: 'Webhook endpoint created',
+  webhook_updated: 'Webhook endpoint changed',
+  webhook_deleted: 'Webhook endpoint deleted',
   webhook_secret_rotated: 'Webhook signing secret rotated',
   account_deleted: 'Account deleted',
   payout_method_changed: 'Affiliate payout method changed',

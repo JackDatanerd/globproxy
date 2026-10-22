@@ -1,3 +1,4 @@
+import { applyCursor } from '@/lib/cursor'
 import { createAdminClient } from '@/lib/supabase/server'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { dispatchWebhook } from '@/lib/webhooks'
@@ -222,8 +223,8 @@ export async function reclaimAllocation(
 // pages back. Read through the service role scoped to reseller_id (resellers
 // have no RLS access to client profile rows — migration 0039).
 export async function listTransfers(
-  admin: Admin, resellerId: string, opts: { limit?: number; before?: string | null }
-): Promise<AllocResult<{ transfers: any[]; has_more: boolean; next_before: string | null }>> {
+  admin: Admin, resellerId: string, opts: { limit?: number; before?: string | null; beforeId?: string | null }
+): Promise<AllocResult<{ transfers: any[]; has_more: boolean; next_before: string | null; next_before_id: string | null }>> {
   const limit = Math.min(Math.max(Math.trunc(opts.limit ?? 50) || 50, 1), 200)
   let q = admin
     .from('reseller_transfers')
@@ -231,10 +232,9 @@ export async function listTransfers(
     .eq('reseller_id', resellerId)
     .order('created_at', { ascending: false }).order('id', { ascending: false })
     .limit(limit)
-  if (opts.before) {
-    if (Number.isNaN(Date.parse(opts.before))) return fail(400, 'invalid_request', 'before must be an ISO 8601 timestamp.')
-    q = q.lt('created_at', opts.before)
-  }
+  const cur = applyCursor(q, opts.before, opts.beforeId, 'uuid')
+  if (!cur.ok) return fail(400, 'invalid_request', cur.message)
+  q = cur.query
   const { data, error } = await q
   if (error) { console.error('[reseller/transfers] list failed', error); return fail(500, 'internal_error', 'Could not load transfers.') }
   const transfers = (data ?? []).map((r: any) => ({
@@ -243,5 +243,5 @@ export async function listTransfers(
     status: r.status, note: r.note ?? null, created_at: r.created_at,
   }))
   const hasMore = transfers.length === limit
-  return { ok: true, data: { transfers, has_more: hasMore, next_before: hasMore ? transfers[transfers.length - 1].created_at : null } }
+  return { ok: true, data: { transfers, has_more: hasMore, next_before: hasMore ? transfers[transfers.length - 1].created_at : null, next_before_id: hasMore ? transfers[transfers.length - 1].id : null } }
 }

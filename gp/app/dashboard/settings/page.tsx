@@ -56,9 +56,11 @@ function SettingsPageInner() {
   // both; the UI only ever offered enable/disable).
   const [editingWebhookId, setEditingWebhookId] = useState<string | null>(null)
   const [editUrl, setEditUrl] = useState('')
+  const [editDesc, setEditDesc] = useState('')
   const [editEvents, setEditEvents] = useState<string[]>([])
   const [savingWebhook, setSavingWebhook] = useState(false)
   const [newWebhookUrl, setNewWebhookUrl] = useState('')
+  const [newWebhookDesc, setNewWebhookDesc] = useState('')
   const [newWebhookEvents, setNewWebhookEvents] = useState<string[]>(['session_created', 'bandwidth_threshold_crossed', 'bandwidth_exhausted'])
   const [creatingWebhook, setCreatingWebhook] = useState(false)
   // Shown exactly once, right after creation — the API never returns the
@@ -69,7 +71,7 @@ function SettingsPageInner() {
   // Delivery log: one endpoint's log open at a time.
   const [logId, setLogId] = useState<string | null>(null)
   const [logRows, setLogRows] = useState<any[]>([])
-  const [logNext, setLogNext] = useState<string | null>(null) // `before` cursor for older deliveries
+  const [logNext, setLogNext] = useState<{ before: string; id: string | null } | null>(null) // cursor (next_before + next_before_id) for older deliveries
   const [detailId, setDetailId] = useState<string | null>(null)
   const [detail, setDetail] = useState<any | null>(null)
   const [logLoading, setLogLoading] = useState(false)
@@ -204,10 +206,11 @@ function SettingsPageInner() {
     if (newWebhookEvents.length === 0) { toast.error('Select at least one event'); return }
     setCreatingWebhook(true)
     try {
-      const data = await apiJson('POST', '/api/dashboard/webhooks', { url: newWebhookUrl.trim(), event_types: newWebhookEvents })
+      const data = await apiJson('POST', '/api/dashboard/webhooks', { url: newWebhookUrl.trim(), event_types: newWebhookEvents, ...(newWebhookDesc.trim() ? { description: newWebhookDesc.trim() } : {}) })
       setRevealedSecret({ url: data.webhook.url, secret: data.webhook.secret })
       setWebhooks(w => [{ ...data.webhook, secret: undefined }, ...w])
       setNewWebhookUrl('')
+      setNewWebhookDesc('')
     } catch (err: any) {
       if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Failed to add webhook')
     }
@@ -226,6 +229,7 @@ function SettingsPageInner() {
   function startEditWebhook(w: any) {
     setEditingWebhookId(w.id)
     setEditUrl(w.url)
+    setEditDesc(w.description ?? '')
     setEditEvents([...(w.event_types ?? [])])
   }
 
@@ -233,7 +237,7 @@ function SettingsPageInner() {
     if (editEvents.length === 0) { toast.error('Select at least one event'); return }
     setSavingWebhook(true)
     try {
-      const data = await apiJson('PATCH', `/api/dashboard/webhooks/${id}`, { url: editUrl.trim(), event_types: editEvents })
+      const data = await apiJson('PATCH', `/api/dashboard/webhooks/${id}`, { url: editUrl.trim(), event_types: editEvents, description: editDesc.trim() || null })
       setWebhooks(w => w.map(x => x.id === id ? { ...x, ...data.webhook } : x))
       setEditingWebhookId(null)
       toast.success('Webhook updated')
@@ -282,12 +286,12 @@ function SettingsPageInner() {
     }
   }
 
-  async function loadDeliveries(id: string, before?: string | null) {
+  async function loadDeliveries(id: string, cursor?: { before: string; id: string | null } | null) {
     setLogLoading(true)
     try {
-      const data = await apiFetch(`/api/dashboard/webhooks/${id}/deliveries?limit=25${before ? `&before=${encodeURIComponent(before)}` : ''}`)
-      setLogRows(prev => before ? [...prev, ...(data.deliveries ?? [])] : (data.deliveries ?? []))
-      setLogNext(data.next_before ?? null)
+      const data = await apiFetch(`/api/dashboard/webhooks/${id}/deliveries?limit=25${cursor ? `&before=${encodeURIComponent(cursor.before)}${cursor.id ? `&before_id=${encodeURIComponent(cursor.id)}` : ''}` : ''}`)
+      setLogRows(prev => cursor ? [...prev, ...(data.deliveries ?? [])] : (data.deliveries ?? []))
+      setLogNext(data.next_before ? { before: data.next_before, id: data.next_before_id ?? null } : null)
     } catch (err: any) {
       setLogRows([])
       toast.error(err.message ?? 'Failed to load deliveries')
@@ -477,8 +481,11 @@ function SettingsPageInner() {
                 <div className="flex items-center justify-between gap-3 flex-wrap">
                   <div className="min-w-0">
                     <div className="text-sm text-ink font-mono truncate max-w-full">{w.url}</div>
+                    {w.description ? <div className="text-xs text-ink2 mt-0.5 truncate max-w-full">{w.description}</div> : null}
                     <div className="text-xs text-muted mt-0.5">
                       {w.event_types.join(', ')}
+                      {w.previous_secret_expires_at && new Date(w.previous_secret_expires_at) > new Date()
+                        ? <span className="text-amber-600"> · old signing secret also accepted until {new Date(w.previous_secret_expires_at).toLocaleString()}</span> : null}
                       {!w.enabled && w.disabled_reason ? <span className="text-red-500"> · disabled: {w.disabled_reason}</span> : null}
                       {w.last_failure_at && (!w.last_success_at || new Date(w.last_failure_at) > new Date(w.last_success_at))
                         ? <span className="text-red-500"> · last delivery failed{w.last_error ? ` (${w.last_error})` : ''}</span>
@@ -517,6 +524,9 @@ function SettingsPageInner() {
                     <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">Endpoint URL</label>
                     <input type="url" value={editUrl} onChange={e => setEditUrl(e.target.value)}
                       className="w-full bg-surface border border-border px-3 py-2 rounded-lg text-sm font-mono focus:outline-none focus:border-accent transition-colors mb-3" />
+                    <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">Description (optional)</label>
+                    <input type="text" maxLength={200} value={editDesc} onChange={e => setEditDesc(e.target.value)} placeholder="e.g. production billing listener"
+                      className="w-full bg-surface border border-border px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors mb-3" />
                     <div className="flex flex-wrap gap-4 mb-3">
                       {WEBHOOK_EVENTS.map(val => (
                         <label key={val} className="flex items-center gap-2 cursor-pointer select-none">
@@ -602,6 +612,9 @@ function SettingsPageInner() {
           <input type="url" placeholder="https://your-server.com/webhooks/globproxy" value={newWebhookUrl}
             onChange={e => setNewWebhookUrl(e.target.value)}
             className="w-full bg-surface border border-border px-4 py-3 rounded-xl text-sm font-mono focus:outline-none focus:border-accent transition-colors mb-3" />
+          <input type="text" maxLength={200} placeholder="Description (optional) — e.g. production billing listener" value={newWebhookDesc}
+            onChange={e => setNewWebhookDesc(e.target.value)}
+            className="w-full bg-surface border border-border px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-accent transition-colors mb-3" />
           <div className="flex flex-wrap gap-4 mb-4">
             {WEBHOOK_EVENTS.map((val) => [val, WEBHOOK_EVENT_LABELS[val]] as const).map(([val, label]) => (
               <label key={val} className="flex items-center gap-2 cursor-pointer select-none">

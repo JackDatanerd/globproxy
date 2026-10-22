@@ -1,3 +1,4 @@
+import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { appUrl } from '@/lib/appUrl'
 import { createAdminClient } from '@/lib/supabase/server'
 import { validateWebhookUrl, validateWebhookPort, checkHostnameResolution } from '@/lib/ssrfGuard'
@@ -8,8 +9,9 @@ export type { WebhookEvent } from '@/lib/webhookEvents'
 
 // ── Delivery model ────────────────────────────────────────────────────
 // Every (event, endpoint) pair gets a webhook_deliveries row holding the
-// exact JSON body that is signed. The first attempt runs inline (callers
-// await dispatchWebhook — Workers kills un-awaited promises), and a failed
+// exact JSON body that is signed. The first attempt runs right after the
+// request that caused the event (ctx.waitUntil — see runInBackground — so a
+// receiver's slowness never delays the caller's own response), and a failed
 // attempt is retried by the 'webhooks' cron task (runWebhookRetries) with
 // backoff: 1m, 5m, 30m, 2h, 6h, then the delivery is marked failed.
 // After DISABLE_THRESHOLD consecutive failed attempts the endpoint is
@@ -128,6 +130,33 @@ async function notifyAutoDisabled(supabase: SupabaseAdmin, ep: Endpoint) {
   }
 }
 
+// Runs `work` after the response is sent when we are inside a Workers
+// invocation (ctx.waitUntil keeps it alive); returns false outside one (local
+// dev, scripts) so the caller awaits it instead. Used for first delivery
+// attempts: they used to run inline, so one slow receiver (8 s timeout + DNS)
+// stalled the customer's own API call — and a 10-item bulk create or a
+// 20-item bulk top-up serialised that into minutes.
+function runInBackground(work: Promise<unknown>): boolean {
+  const safe = work.then(() => {}, (e) => console.error('[webhooks] background delivery failed', e))
+  try {
+    getCloudflareContext({ async: false }).ctx.waitUntil(safe)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// An endpoint that was just auto-disabled can never deliver its queued retries.
+// Failing them in one statement stops them occupying retry slots (and the
+// delivery log keeps the reason) instead of each being claimed and failed one
+// by one over the following ticks.
+async function failPendingDeliveries(supabase: SupabaseAdmin, endpointId: string, reason: string) {
+  const { error } = await supabase.from('webhook_deliveries')
+    .update({ status: 'failed', next_attempt_at: null, last_error: reason })
+    .eq('endpoint_id', endpointId).eq('status', 'retrying')
+  if (error) console.error('[webhooks] failed to fail pending deliveries', endpointId, error)
+}
+
 // One attempt against one endpoint for one stored delivery; records the
 // outcome on both the delivery row and the endpoint. Never throws.
 async function attemptDelivery(
@@ -235,7 +264,10 @@ async function attemptDelivery(
       p_disable_threshold: DISABLE_THRESHOLD,
       p_force_disable_reason: forceDisable,
     })
-    if (justDisabled === true) await notifyAutoDisabled(supabase, ep)
+    if (justDisabled === true) {
+      await failPendingDeliveries(supabase, ep.id, 'Endpoint was disabled after repeated failures')
+      await notifyAutoDisabled(supabase, ep)
+    }
   } catch (e) {
     console.error('[webhooks] failed to record endpoint attempt', ep.id, e)
   }
@@ -244,8 +276,8 @@ async function attemptDelivery(
 }
 
 // Fires `event` to every enabled endpoint the user subscribed to it.
-// ALWAYS awaited by the caller (Workers kills pending promises once the
-// response is sent). Never throws — a customer's broken endpoint must never
+// Callers still await it (the deliveries are persisted before it returns); the
+// first HTTP attempts then continue in the background. Never throws — a customer's broken endpoint must never
 // fail the request or cron batch that triggered the event.
 //
 // `defer: true` persists the delivery as due-now and returns WITHOUT making
@@ -282,6 +314,7 @@ export async function dispatchWebhook(
     const eventId = crypto.randomUUID()
     const payload = JSON.stringify({ id: eventId, event, created_at: new Date().toISOString(), data })
 
+    const pending: Promise<unknown>[] = []
     await Promise.all(
       targets.map(async (ep) => {
         // Inserted as 'retrying' due in 2 minutes: if this Worker dies
@@ -300,9 +333,15 @@ export async function dispatchWebhook(
           return
         }
         if (opts.defer) return
-        await attemptDelivery(supabase, ep, row as Delivery, { retry: true })
+        pending.push(
+          attemptDelivery(supabase, ep, row as Delivery, { retry: true }).catch((e) => console.error('[webhooks] attempt crashed', ep.id, e))
+        )
       })
     )
+    if (pending.length) {
+      const all = Promise.all(pending)
+      if (!runInBackground(all)) await all
+    }
   } catch (e) {
     console.error('[webhooks] dispatch failed', userId, event, e)
   }
@@ -373,27 +412,42 @@ export async function redeliverWebhook(userId: string, deliveryId: string, endpo
 export async function runWebhookRetries(limit = RETRIES_PER_RUN) {
   const supabase = await createAdminClient()
   const nowIso = new Date().toISOString()
-  const { data: dueRows, error } = await supabase
-    .from('webhook_deliveries')
-    .select(DELIVERY_COLS)
-    .eq('status', 'retrying')
-    .lte('next_attempt_at', nowIso)
-    .order('next_attempt_at', { ascending: true })
-    .limit(limit * 4)
-  if (error) {
-    console.error('[webhooks] failed to load due deliveries', error)
-    return { due: 0, retried: 0, succeeded: 0 }
-  }
 
+  // Fairness has to be applied while SELECTING, not after: a single window of
+  // the oldest rows can be entirely one dead endpoint's backlog, which used to
+  // push every other customer's due deliveries out of the window altogether.
+  // Each round excludes the endpoints that already hit their per-tick quota, so
+  // the next page reaches further down the queue.
+  const PAGE = limit * 4
   const byEndpoint = new Map<string, Delivery[]>()
+  const saturated: string[] = []
   let picked = 0
-  for (const d of (dueRows ?? []) as Delivery[]) {
-    if (picked >= limit) break
-    const list = byEndpoint.get(d.endpoint_id) ?? []
-    if (list.length >= PER_ENDPOINT_PER_RUN) continue
-    list.push(d)
-    byEndpoint.set(d.endpoint_id, list)
-    picked++
+  for (let round = 0; round < 6 && picked < limit; round++) {
+    let q = supabase
+      .from('webhook_deliveries')
+      .select(DELIVERY_COLS)
+      .eq('status', 'retrying')
+      .lte('next_attempt_at', nowIso)
+      .order('next_attempt_at', { ascending: true })
+      .limit(PAGE)
+    if (saturated.length) q = q.not('endpoint_id', 'in', `(${saturated.join(',')})`)
+    const { data: dueRows, error } = await q
+    if (error) {
+      console.error('[webhooks] failed to load due deliveries', error)
+      if (picked === 0) return { due: 0, retried: 0, succeeded: 0 }
+      break
+    }
+    const rows = (dueRows ?? []) as Delivery[]
+    for (const d of rows) {
+      if (picked >= limit) break
+      const list = byEndpoint.get(d.endpoint_id) ?? []
+      if (list.length >= PER_ENDPOINT_PER_RUN) continue
+      list.push(d)
+      byEndpoint.set(d.endpoint_id, list)
+      picked++
+      if (list.length >= PER_ENDPOINT_PER_RUN && !saturated.includes(d.endpoint_id)) saturated.push(d.endpoint_id)
+    }
+    if (rows.length < PAGE) break
   }
 
   let retried = 0
@@ -546,6 +600,12 @@ export async function pruneIntegrationData() {
   const b = await supabase.from('api_idempotency_keys').delete().lt('created_at', dayAgo)
   const monthAgo = new Date(Date.now() - 30 * 24 * 3_600_000).toISOString()
   const c = await supabase.from('api_request_log').delete().lt('created_at', monthAgo)
+  // A rotated-away signing secret has no use once its grace window lapses;
+  // keeping it in plaintext forever only widens what a database leak exposes.
+  const d = await supabase.from('webhook_endpoints')
+    .update({ previous_secret: null, previous_secret_expires_at: null })
+    .not('previous_secret', 'is', null).lt('previous_secret_expires_at', new Date().toISOString())
+  if (d.error) console.error('[webhooks] expired previous-secret clear failed', d.error)
   if (a.error) console.error('[webhooks] delivery prune failed', a.error)
   if (b.error) console.error('[webhooks] idempotency prune failed', b.error)
   if (c.error) console.error('[webhooks] api request log prune failed', c.error)

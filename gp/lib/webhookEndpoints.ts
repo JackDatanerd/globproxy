@@ -1,6 +1,7 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { validateWebhookUrlFull } from '@/lib/ssrfGuard'
 import { parseEventTypes } from '@/lib/webhookEvents'
+import { applyCursor, isUuidString } from '@/lib/cursor'
 
 // Webhook-endpoint management, shared by /api/dashboard/webhooks/* (session
 // auth) and /api/v1/webhooks/* (API-key auth) so both surfaces enforce
@@ -40,6 +41,7 @@ export async function listEndpoints(admin: Admin, userId: string): Promise<Servi
 }
 
 export async function getEndpoint(admin: Admin, userId: string, id: string): Promise<ServiceResult<any>> {
+  if (!isUuidString(id)) return fail(404, 'not_found', 'Webhook not found')
   const { data } = await admin.from('webhook_endpoints').select(VIEW_COLS).eq('id', id).eq('user_id', userId).maybeSingle()
   return data ? { ok: true, data } : fail(404, 'not_found', 'Webhook not found')
 }
@@ -74,6 +76,8 @@ export async function createEndpoint(admin: Admin, userId: string, body: any): P
 }
 
 export async function updateEndpoint(admin: Admin, userId: string, id: string, body: any): Promise<ServiceResult<any>> {
+  // A malformed id used to reach Postgres (22P02) and come back as a 500.
+  if (!isUuidString(id)) return fail(404, 'not_found', 'Webhook not found')
   const patch: Record<string, unknown> = {}
 
   if (body?.url !== undefined) {
@@ -112,6 +116,7 @@ export async function updateEndpoint(admin: Admin, userId: string, id: string, b
 }
 
 export async function deleteEndpoint(admin: Admin, userId: string, id: string): Promise<ServiceResult<{ deleted: true }>> {
+  if (!isUuidString(id)) return fail(404, 'not_found', 'Webhook not found')
   const { error, count } = await admin.from('webhook_endpoints').delete({ count: 'exact' }).eq('id', id).eq('user_id', userId)
   if (error) { console.error('[webhooks] delete failed', error); return fail(500, 'internal_error', 'Could not delete the webhook.') }
   return count ? { ok: true, data: { deleted: true } } : fail(404, 'not_found', 'Webhook not found')
@@ -131,6 +136,7 @@ export async function rotateSecret(
   if (!Number.isFinite(graceMinutes) || graceMinutes < 0 || graceMinutes > MAX_ROTATION_GRACE_MINUTES) {
     return fail(400, 'invalid_request', `grace_minutes must be between 0 and ${MAX_ROTATION_GRACE_MINUTES}.`)
   }
+  if (!isUuidString(id)) return fail(404, 'not_found', 'Webhook not found')
   const { data: current } = await admin
     .from('webhook_endpoints').select('secret').eq('id', id).eq('user_id', userId).maybeSingle()
   if (!current) return fail(404, 'not_found', 'Webhook not found')
@@ -149,12 +155,13 @@ const DELIVERY_LIST_COLS =
   'id, event_id, event_type, status, attempts, next_attempt_at, last_attempt_at, response_status, last_error, duration_ms, created_at'
 
 // Newest first. `before` (an ISO timestamp — the previous page's last
-// created_at) pages further back; without it only the latest `limit` came
+// created_at) with `beforeId` (that row's id) pages further back; without it only the latest `limit` came
 // back, so older failures could not be reached at all.
 export async function listDeliveries(
   admin: Admin, userId: string, endpointId: string,
-  opts: { limit?: number; status?: string | null; before?: string | null } = {}
+  opts: { limit?: number; status?: string | null; before?: string | null; beforeId?: string | null } = {}
 ): Promise<ServiceResult<any[]>> {
+  if (!isUuidString(endpointId)) return fail(404, 'not_found', 'Webhook not found')
   const owned = await admin.from('webhook_endpoints').select('id').eq('id', endpointId).eq('user_id', userId).maybeSingle()
   if (!owned.data) return fail(404, 'not_found', 'Webhook not found')
 
@@ -165,10 +172,9 @@ export async function listDeliveries(
     .eq('endpoint_id', endpointId).eq('user_id', userId)
     .order('created_at', { ascending: false }).order('id', { ascending: false }).limit(limit)
   if (opts.status && ['succeeded', 'retrying', 'failed'].includes(opts.status)) q = q.eq('status', opts.status)
-  if (opts.before) {
-    if (Number.isNaN(Date.parse(opts.before))) return fail(400, 'invalid_request', 'before must be an ISO 8601 timestamp.')
-    q = q.lt('created_at', opts.before)
-  }
+  const cur = applyCursor(q, opts.before, opts.beforeId, 'uuid')
+  if (!cur.ok) return fail(400, 'invalid_request', cur.message)
+  q = cur.query
 
   const { data, error } = await q
   if (error) { console.error('[webhooks] deliveries failed', error); return fail(500, 'internal_error', 'Could not load deliveries.') }
@@ -180,6 +186,7 @@ export async function listDeliveries(
 export async function getDelivery(
   admin: Admin, userId: string, endpointId: string, deliveryId: string
 ): Promise<ServiceResult<any>> {
+  if (!isUuidString(endpointId) || !isUuidString(deliveryId)) return fail(404, 'not_found', 'Delivery not found')
   const { data, error } = await admin
     .from('webhook_deliveries')
     .select(`${DELIVERY_LIST_COLS}, payload, response_body`)

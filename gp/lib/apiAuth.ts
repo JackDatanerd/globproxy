@@ -44,6 +44,7 @@ export type ApiErrorCode =
   | 'upstream_unavailable'
   | 'service_unavailable'
   | 'idempotency_conflict'
+  | 'payload_too_large'
   | 'internal_error'
 
 // A Response body can only be consumed once, so this must build a fresh

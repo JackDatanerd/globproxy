@@ -17,7 +17,7 @@ export async function GET(req: Request) {
 
   const url = new URL(req.url)
   const r = await listApiActivity(await createAdminClient(), user.id, {
-    keyId: url.searchParams.get('key_id'), limit: Number(url.searchParams.get('limit')) || undefined, before: url.searchParams.get('before'),
+    keyId: url.searchParams.get('key_id'), limit: Number(url.searchParams.get('limit')) || undefined, before: url.searchParams.get('before'), beforeId: url.searchParams.get('before_id'),
   })
   if (!r.ok) return NextResponse.json({ error: r.message }, { status: r.status })
   return NextResponse.json(r.data)

@@ -27,6 +27,8 @@ export type SecurityEventType =
   | 'api_key_rotated'
   | 'api_key_revoked'
   | 'webhook_created'
+  | 'webhook_updated'
+  | 'webhook_deleted'
   | 'webhook_secret_rotated'
   | 'account_deleted'
   | 'mfa_recovery_requested'

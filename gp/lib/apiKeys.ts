@@ -1,6 +1,7 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { parseAllowedIps } from '@/lib/ipAllowlist'
 import { dispatchWebhook } from '@/lib/webhooks'
+import { isUuidString } from '@/lib/cursor'
 
 // API-key management shared by /api/dashboard/api-keys/* (session auth + step-up).
 // Keys authenticate /api/v1/* (lib/apiAuth.ts); this file only creates, edits,
@@ -245,6 +246,11 @@ export async function rotateApiKey(
 
 // ── Revoke ────────────────────────────────────────────────────────────
 export async function revokeApiKeys(admin: Admin, userId: string, ids: string[] | 'all'): Promise<KeyResult<{ revoked: { id: string; label: string; key_prefix: string }[] }>> {
+  // Non-UUID ids would reach Postgres as 22P02 and come back as a 500.
+  if (ids !== 'all') {
+    ids = ids.filter(isUuidString)
+    if (ids.length === 0) return fail(404, 'Key not found or already revoked')
+  }
   let q = admin.from('api_keys').update({ revoked_at: new Date().toISOString() }).eq('user_id', userId).is('revoked_at', null)
   if (ids !== 'all') q = q.in('id', ids)
   const { data, error } = await q.select('id, label, key_prefix')

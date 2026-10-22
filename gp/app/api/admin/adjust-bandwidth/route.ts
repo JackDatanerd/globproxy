@@ -3,6 +3,7 @@ import { authorizeAdmin, readJson, isUuid, badRequest } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
 import { sendEmailSafe, escapeHtml } from '@/lib/email'
 import { adminNoticeHtml, appUrl } from '@/lib/adminEmail'
+import { dispatchWebhook } from '@/lib/webhooks'
 
 const MAX_ADJUST_GB = 100_000
 
@@ -47,6 +48,16 @@ export async function POST(req: Request) {
     adminId, action: gb > 0 ? 'bandwidth.credit' : 'bandwidth.debit', targetUserId: body.userId,
     details: { gb, reason, total_gb_after: r.total_gb, available_gb_after: r.available_gb },
   })
+
+  // Integrations mirroring the balance hear about it too. The internal reason is
+  // never included.
+  if (gb > 0) {
+    await dispatchWebhook(body.userId, 'bandwidth_credited', { gb_credited: gb, source: 'admin_adjustment' })
+  } else {
+    await dispatchWebhook(body.userId, 'bandwidth_debited', {
+      gb_debited: Math.abs(gb), source: 'admin_adjustment', total_gb: r.total_gb ?? null, available_gb: r.available_gb ?? null,
+    })
+  }
 
   if (target.email && target.email !== '[deleted]') {
     const name = escapeHtml(target.full_name?.split(' ')[0]) || 'there'

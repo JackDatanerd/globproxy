@@ -87,8 +87,11 @@ export function withBodyLimit(request: Request, max: number = MAX_API_BODY_BYTES
   return new Request(request, { body: request.body.pipeThrough(limiter), duplex: 'half' } as RequestInit)
 }
 
+// Carries the same machine-readable `code` every /api/v1 error has, so a client
+// that switches on `code` is not surprised by a bare `{ error }` from the edge.
 export function guardResponse(verdict: { status: number; error: string }): Response {
-  return new Response(JSON.stringify({ error: verdict.error }), {
+  const code = verdict.status === 413 ? 'payload_too_large' : verdict.status === 400 ? 'invalid_request' : 'forbidden'
+  return new Response(JSON.stringify({ error: verdict.error, code }), {
     status: verdict.status,
     headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
   })

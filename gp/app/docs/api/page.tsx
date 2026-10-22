@@ -184,6 +184,7 @@ export default function ApiDocsPage() {
             ['invalid_request', '400', 'A parameter is missing or invalid; the message says which.'],
             ['insufficient_bandwidth', '402', 'Your available balance cannot cover the request.'],
             ['not_found', '404', "The resource doesn't exist or isn't yours."],
+            ['payload_too_large', '413', 'The request body is over the 1 MiB limit.'],
             ['conflict / idempotency_conflict', '409 / 422', 'See status codes above. On money-moving calls a 409 can also mean an earlier request with the same Idempotency-Key finished with an unknown outcome — check the resource, then retry with a NEW key.'],
             ['ip_not_allowed', '403', "The request didn't come from one of the key's allowed IP addresses."],
             ['service_unavailable', '503', 'Transient failure verifying the account; safe to retry.'],
@@ -231,7 +232,7 @@ export default function ApiDocsPage() {
           <p className="text-sm text-ink2 leading-relaxed mt-3">
             Time-ordered logs (<span className="font-mono text-ink">/webhooks/:id/deliveries</span>, <span className="font-mono text-ink">/account/activity</span>,{' '}
             <span className="font-mono text-ink">/reseller/allocations</span>) are newest-first and use a cursor: when <span className="font-mono text-ink">has_more</span> is true,
-            pass <span className="font-mono text-ink">next_before</span> as the <span className="font-mono text-ink">before</span> parameter to get the next, older page.
+            pass <span className="font-mono text-ink">next_before</span> as <span className="font-mono text-ink">before</span> <em>and</em> <span className="font-mono text-ink">next_before_id</span> as <span className="font-mono text-ink">before_id</span> to get the next, older page (sending both keeps rows that share a timestamp from being skipped).
           </p>
         </section>
 
@@ -285,8 +286,10 @@ export default function ApiDocsPage() {
             <Code>{`{
   "account": { "id": "9c1e...", "email": "you@example.com", "role": "reseller" },
   "api_key": { "id": "b72d...", "key_prefix": "gp_live_a1b2c3", "label": "billing-bot", "scopes": ["read", "write"],
-               "allowed_ips": ["203.0.113.0/24"], "expires_at": "2027-01-10T00:00:00.000Z", "created_at": "2026-10-10T09:00:00.000Z" }
+               "allowed_ips": ["203.0.113.0/24"], "expires_at": "2027-01-10T00:00:00.000Z", "created_at": "2026-10-10T09:00:00.000Z" },
+  "features": { "password_rotation": false }
 }`}</Code>
+            <p className="text-sm text-ink2 mt-3"><span className="font-mono text-ink">features</span> reports optional endpoints that are switched on per deployment — <span className="font-mono text-ink">password_rotation: false</span> means <span className="font-mono text-ink">rotate-password</span> answers 503.</p>
           </Endpoint>
 
           <Endpoint method="GET" path="/api/v1/account/activity" title="API activity log">
@@ -299,7 +302,7 @@ export default function ApiDocsPage() {
     { "id": 812, "key_id": "b72d...", "key_prefix": "gp_live_a1b2c3", "key_label": "billing-bot", "method": "POST",
       "path": "/api/v1/sub-users/3f1a.../topup", "status": 200, "ip": "203.0.113.7", "request_id": "5e0c...", "created_at": "2026-10-18T09:30:00.000Z" }
   ],
-  "has_more": false, "next_before": null
+  "has_more": false, "next_before": null, "next_before_id": null
 }`}</Code>
           </Endpoint>
 
@@ -552,6 +555,42 @@ export default function ApiDocsPage() {
             <p className="text-sm text-ink2 mt-4">Re-sending the same request (same key) returns the same result without creating anything twice. To retry only the failed items, send them under a <em>new</em> key.</p>
           </Endpoint>
 
+          <Endpoint method="POST" path="/api/v1/sub-users/:id/pause" title="Pause / resume a sub-user">
+            <p className="text-sm text-ink2 mb-4">
+              <span className="font-mono text-ink">POST /sub-users/:id/pause</span> stops a sub-user from using bandwidth while keeping its allocation, credentials and settings;{' '}
+              <span className="font-mono text-ink">POST /sub-users/:id/resume</span> turns it back on. Both are idempotent (repeating them answers 200 with <span className="font-mono text-ink">changed: false</span>).
+              Only a sub-user <em>you</em> paused can be resumed this way — one suspended by GlobProxy answers <span className="font-mono text-ink">403</span> (see <span className="font-mono text-ink">can_resume</span> on the sub-user).
+              A paused sub-user is not affected by account-level suspension cycles. Fires <span className="font-mono text-ink">session_suspended</span> / <span className="font-mono text-ink">session_resumed</span> with <span className="font-mono text-ink">source: "customer"</span>.
+            </p>
+            <Code>{`curl -X POST https://globproxy.com/api/v1/sub-users/SUB_USER_ID/pause \\
+  -H "Authorization: Bearer YOUR_KEY"
+
+{ "id": "…", "status": "suspended", "changed": true }`}</Code>
+          </Endpoint>
+
+          <Endpoint method="POST" path="/api/v1/sub-users/bulk-action" title="Delete, pause or resume in bulk">
+            <p className="text-sm text-ink2 mb-4">
+              Up to 20 sub-users per call: <span className="font-mono text-ink">{'{ "action": "delete" | "pause" | "resume", "ids": [...] }'}</span>. Items are independent and each counts as one write.
+              Every action is safe to repeat, so no Idempotency-Key is needed — if a request times out, send it again (items already deleted report 404).
+              Response: <span className="font-mono text-ink">{'{ results: [{ index, id, status, … }], succeeded, failed }'}</span>; deletes include <span className="font-mono text-ink">gb_released</span>.
+            </p>
+            <Code>{`curl -X POST https://globproxy.com/api/v1/sub-users/bulk-action \\
+  -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" \\
+  -d '{ "action": "pause", "ids": ["SUB_USER_ID_1", "SUB_USER_ID_2"] }'`}</Code>
+          </Endpoint>
+
+          <Endpoint method="GET" path="/api/v1/locations" title="Targeting values: countries, states, cities, ISPs">
+            <p className="text-sm text-ink2 mb-4">
+              Find out which values are valid before creating a sub-user. <span className="font-mono text-ink">GET /locations</span> lists countries (<span className="font-mono text-ink">code</span> → <span className="font-mono text-ink">country</span>);{' '}
+              <span className="font-mono text-ink">GET /locations/:country</span> lists its states with their cities (<span className="font-mono text-ink">state</span> / <span className="font-mono text-ink">city</span>; add <span className="font-mono text-ink">?cities=false</span> to skip the city lists);{' '}
+              <span className="font-mono text-ink">GET /locations/:country/asns</span> lists ISPs (<span className="font-mono text-ink">asn</span>; empty where ISP targeting isn't offered).
+            </p>
+            <Code>{`curl https://globproxy.com/api/v1/locations/us/asns \\
+  -H "Authorization: Bearer YOUR_KEY"
+
+{ "country": "us", "asns": [ { "asn": 7922, "name": "AS7922 COMCAST-7922" }, … ] }`}</Code>
+          </Endpoint>
+
           <Endpoint method="POST" path="/api/v1/sub-users/bulk-topup" title="Top up sub-users in bulk">
             <p className="text-sm text-ink2 mb-4">
               Up to 20 independent top-ups per call. <span className="font-mono text-ink">Idempotency-Key</span> is <strong>required</strong>; each item counts as one write.
@@ -702,7 +741,7 @@ export default function ApiDocsPage() {
     { "id": "e4a1...", "recipient_email": "client@example.com", "gb_amount": 25, "gb_reclaimed": 0, "gb_net": 25,
       "status": "completed", "note": "October top-up", "created_at": "2026-10-18T09:30:00.000Z" }
   ],
-  "has_more": false, "next_before": null
+  "has_more": false, "next_before": null, "next_before_id": null
 }`}</Code>
           </Endpoint>
 
@@ -808,7 +847,7 @@ export default function ApiDocsPage() {
           <p className="text-sm text-ink2 leading-relaxed mb-3">
             Get an HTTPS POST when something happens on your account. Create endpoints in{' '}
             <Link href="/dashboard/settings" className="text-accent hover:underline">Settings → Webhooks</Link> or over the API
-            (below). Each endpoint subscribes to the events it wants; up to 10 endpoints per account. Endpoint URLs must be public{' '}
+            (below). Each endpoint subscribes to the events it wants; up to 10 endpoints per account. Adding, changing, rotating or deleting an endpoint — from the dashboard <em>or</em> with an API key — is recorded in your account's security log and e-mailed to you (at most one e-mail per kind of change every 10 minutes). Events caused by your own request are first delivered right after that request returns; events raised by background checks (<span className="font-mono text-ink">session_low</span>, <span className="font-mono text-ink">session_exhausted</span>, <span className="font-mono text-ink">auto_topup_*</span>, <span className="font-mono text-ink">session_activated</span>, <span className="font-mono text-ink">bandwidth_threshold_crossed</span>) can arrive up to about five minutes after the cause. Endpoint URLs must be public{' '}
             <span className="font-mono text-ink">https://</span> addresses on port 443 (or 8443) — private, loopback and link-local
             destinations (including hostnames that resolve to them), GlobProxy's own domains and redirects are rejected.
           </p>
@@ -828,7 +867,8 @@ export default function ApiDocsPage() {
             ['session_resumed', 'event', 'A suspended sub-user was re-enabled. data: credential_id, label.'],
             ['bandwidth_threshold_crossed', 'event', 'The share of your account that is COMMITTED (allocated into sub-users) crossed 80% or 95%. data: threshold_pct, allocated_pct (what triggers it), used_pct (GB actually consumed ÷ total), available_gb, total_gb, used_gb, allocated_gb. Checked every 5 minutes. Endpoints that do not also subscribe to bandwidth_exhausted get it once more at 100% (threshold_pct 100). (used_pct used to carry the allocated figure; it now means what it says.)'],
             ['bandwidth_exhausted', 'event', 'Available (unallocated) bandwidth reached zero. data: allocated_pct, used_pct, available_gb, total_gb, used_gb, allocated_gb.'],
-            ['bandwidth_credited', 'event', 'Bandwidth was added to the account. data: gb_credited, source ("purchase" or "reseller_allocation"), plus order_id and amount_usd for purchases, transfer_id for allocations.'],
+            ['bandwidth_credited', 'event', 'Bandwidth was added to the account. data: gb_credited, source ("purchase", "reseller_allocation", "referral_bonus" or "admin_adjustment"), plus order_id and amount_usd for purchases, transfer_id for allocations, role ("referrer" / "referred") for referral bonuses.'],
+            ['bandwidth_debited', 'event', 'Unallocated bandwidth was removed from the account by a support adjustment. data: gb_debited, source ("admin_adjustment"), total_gb, available_gb. Refund clawbacks arrive as bandwidth_refunded and reseller reclaims as bandwidth_reclaimed.'],
             ['bandwidth_allocated', 'event', 'You allocated bandwidth to a client (resellers). data: transfer_id, recipient_email, gb, note.'],
             ['bandwidth_reclaimed', 'event', 'Unused bandwidth was reclaimed from your account by the reseller who allocated it. data: transfer_id, gb_reclaimed, gb_remaining.'],
             ['bandwidth_refunded', 'event', 'A purchase was refunded and its bandwidth taken back. data: order_id, refund_usd, gb_clawed_back, gb_not_recoverable, fully_refunded.'],
@@ -900,7 +940,7 @@ def verify(raw_body: bytes, header: str, secret: str) -> bool:
             ['POST /api/v1/webhooks/:id/test', 'write', 'Sends a signed "test" event now (one per 10 seconds per account).'],
             ['POST /api/v1/webhooks/:id/rotate-secret', 'write', 'Issues a new secret (returned once). Body (optional): grace_minutes 0–4320 — keep the old secret signing the -Previous header for that long. Default: the old secret stops immediately.'],
             ['GET /api/v1/webhooks/events', 'read', 'The event catalog: every subscribable event with its description and data keys.'],
-            ['GET /api/v1/webhooks/:id/deliveries', 'read', 'Delivery log, newest first. Optional limit (max 100), status (succeeded | retrying | failed) and before (cursor — use next_before when has_more is true).'],
+            ['GET /api/v1/webhooks/:id/deliveries', 'read', 'Delivery log, newest first. Optional limit (max 100), status (succeeded | retrying | failed) and before and before_id (cursor — pass next_before and next_before_id when has_more is true).'],
             ['GET /api/v1/webhooks/:id/deliveries/:deliveryId', 'read', 'One delivery in full: the exact event body (payload) and your endpoint\'s response_body (first 500 characters).'],
             ['POST /api/v1/webhooks/:id/deliveries/:deliveryId/redeliver', 'write', 'Re-sends a stored event (same id and body, fresh signature).'],
           ]} />

@@ -23,6 +23,13 @@ type CredRow = { id: string; upstream_sub_user_id: string | null; gb_used: numbe
 const MAX_LIMIT_PATCHES_PER_RUN = 15
 const MAX_EXHAUSTION_NOTICES_PER_RUN = 8
 const MAX_LOW_NOTICES_PER_RUN = 8
+// E-mails are capped hard (inbox protection, provider quota). WEBHOOKS are not
+// e-mail: they used to ride the same caps, so a reseller with hundreds of
+// sessions crossing a threshold together heard about one session per tick (an
+// 8-per-run global cap for exhaustion, one per customer per tick for low).
+// Webhooks now carry every crossing, up to this many per run; the rest follow on
+// the next tick. Each is only a database insert here — delivery is deferred.
+const MAX_WEBHOOK_EVENTS_PER_RUN = 60
 const UPSTREAM_MISSING_GRACE_MS = 10 * 60_000 // listing may lag a just-created sub-user
 
 function buildChanges(creds: CredRow[], usageMap: Map<string, number>) {
@@ -355,8 +362,9 @@ async function notifyExhaustion(
   }
 
   let sent = 0
-  for (const c of due.slice(0, MAX_EXHAUSTION_NOTICES_PER_RUN)) {
-    const { email, name } = await firstName(supabase, c.user_id)
+  for (const [idx, c] of due.slice(0, MAX_WEBHOOK_EVENTS_PER_RUN).entries()) {
+    const emailDue = idx < MAX_EXHAUSTION_NOTICES_PER_RUN
+    const { email, name } = emailDue ? await firstName(supabase, c.user_id) : { email: null, name: '' }
     const autoStuck = !!c.auto_topup_enabled // enabled but flagged: it could not top this session up
     if (email) {
       await sendEmail({
@@ -436,10 +444,13 @@ async function notifyLowBandwidth(
 
   let sent = 0
   const emailed = new Set<string>()
+  let emailsSent = 0
   for (const c of due) {
-    if (sent >= MAX_LOW_NOTICES_PER_RUN) break
-    if (emailed.has(c.user_id)) continue // one email per customer per tick
-    emailed.add(c.user_id)
+    if (sent >= MAX_WEBHOOK_EVENTS_PER_RUN) break
+    // E-mail: one per customer per tick and a capped number overall. The
+    // webhook below is NOT subject to either limit.
+    const emailDue = !emailed.has(c.user_id) && emailsSent < MAX_LOW_NOTICES_PER_RUN
+    if (emailDue) { emailed.add(c.user_id); emailsSent++ }
 
     // Claim before sending: a duplicate notice is worse than a lost one.
     const { data: claimed } = await supabase.from('proxy_credentials')
@@ -447,7 +458,7 @@ async function notifyLowBandwidth(
     if (!claimed?.length) continue
 
     const remaining = Math.max(0, Number(c.gb_allocated) - c.used)
-    const { email, name } = await firstName(supabase, c.user_id)
+    const { email, name } = emailDue ? await firstName(supabase, c.user_id) : { email: null, name: '' }
     if (email) {
       await sendEmail({
         to: email,

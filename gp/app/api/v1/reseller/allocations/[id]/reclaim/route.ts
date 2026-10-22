@@ -20,13 +20,12 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
     const input = parseReclaimBody({ ...(body && typeof body === 'object' ? body : {}), transfer_id: id })
     if (!input.ok) return failFrom(input)
 
-    const limited = await rateLimited(req, 'RESELLER_RATE_LIMITER', `reclaim:${user.id}`)
-    if (limited) return limited
-
     const { data: profile } = await supabase.from('profiles').select('email, full_name, role').eq('id', user.id).maybeSingle()
     if (!profile || !['reseller', 'admin'].includes(profile.role ?? '')) return apiError(403, 'reseller_required', 'Reseller access required.')
 
     return runIdempotent(req, supabase, user.id, `POST /reseller/allocations/${id}/reclaim`, JSON.stringify(input.data), async () => {
+      const limited = await rateLimited(req, 'RESELLER_RATE_LIMITER', `reclaim:${user.id}`)
+      if (limited) return { kind: 'fail', response: limited }
       const result = await reclaimAllocation(supabase, { id: user.id, email: profile.email, full_name: profile.full_name }, input.data)
       if (!result.ok) return { kind: 'fail', response: failFrom(result) }
       return { kind: 'ok', status: 200, body: { transfer_id: id, reclaimed_gb: result.data.reclaimed_gb, remaining_gb: result.data.remaining_gb } }

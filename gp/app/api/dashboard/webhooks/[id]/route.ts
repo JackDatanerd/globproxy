@@ -4,6 +4,7 @@ import { updateEndpoint, deleteEndpoint } from '@/lib/webhookEndpoints'
 import { NextResponse } from 'next/server'
 import { requireStepUp } from '@/lib/reauth'
 import { rateLimitedUser } from '@/lib/rateLimit'
+import { auditWebhookChange, hostOf } from '@/lib/integrationAudit'
 
 // Ownership is enforced inside lib/webhookEndpoints.ts by scoping every
 // write to user_id (RLS can't run the SSRF guard — see migration 0018).
@@ -27,10 +28,12 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
   const body = await req.json().catch(() => ({}))
   const r = await updateEndpoint(await createAdminClient(), user.id, id, body)
   if (!r.ok) return NextResponse.json({ error: r.message }, { status: r.status })
+  const changed = ['url', 'event_types', 'description', 'enabled'].filter((k) => body?.[k] !== undefined)
+  await auditWebhookChange({ userId: user.id, event: 'webhook_updated', req, via: 'dashboard', webhookId: id, host: hostOf(r.data.url), changed })
   return NextResponse.json({ webhook: r.data })
 }
 
-export async function DELETE(_req: Request, context: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, context: { params: Promise<{ id: string }> }) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -41,5 +44,6 @@ export async function DELETE(_req: Request, context: { params: Promise<{ id: str
   const { id } = await context.params
   const r = await deleteEndpoint(await createAdminClient(), user.id, id)
   if (!r.ok) return NextResponse.json({ error: r.message }, { status: r.status })
+  await auditWebhookChange({ userId: user.id, event: 'webhook_deleted', req, via: 'dashboard', webhookId: id })
   return NextResponse.json({ success: true })
 }

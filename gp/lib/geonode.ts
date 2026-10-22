@@ -610,7 +610,14 @@ async function whitelistRequest(
     )
   }
   const result = d.result ?? d.data ?? d
-  return Array.isArray(result) ? result : []
+  // Projected to exactly what customers are meant to see. The provider's entries
+  // were passed through untouched, so any extra field it returns (its own ids,
+  // account or sub-user identifiers) went straight into customer API responses.
+  return Array.isArray(result)
+    ? result
+        .filter((x: any) => x && typeof x.ip === 'string')
+        .map((x: any): WhitelistedIp => ({ ip: x.ip, description: typeof x.description === 'string' ? x.description : '' }))
+    : []
 }
 
 export function listWhitelistedIps(geonodeSubUserId: string): Promise<WhitelistedIp[]> {

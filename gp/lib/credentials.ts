@@ -36,7 +36,7 @@ export function providerConfigured(): boolean {
 export const MAX_CREDENTIALS_PER_ACCOUNT = 100
 
 export const CRED_COLS =
-  'id, label, status, gb_allocated, gb_used, country, state, city, asn, session_type, protocol, sticky_duration, endpoint_count, host, port, upstream_username, upstream_password, activated_at, created_at, created_by, auto_topup_enabled, auto_topup_threshold_gb, auto_topup_amount_gb, pending_reason'
+  'id, label, status, gb_allocated, gb_used, country, state, city, asn, session_type, protocol, sticky_duration, endpoint_count, host, port, upstream_username, upstream_password, activated_at, created_at, created_by, auto_topup_enabled, auto_topup_threshold_gb, auto_topup_amount_gb, pending_reason, suspended_reason'
 
 // Public API shape for a credential. `password` is returned because the
 // credential is unusable without it (the dashboard reads the same column
@@ -71,6 +71,9 @@ export function toApiCredential(c: any) {
     // Supplier-neutral: why a 'pending' session hasn't come online yet
     // ('capacity' | 'unavailable' | 'error'), else null.
     pending_reason: c.status === 'pending' ? (c.pending_reason ?? null) : null,
+    // true only for a sub-user YOU paused (POST /sub-users/:id/pause); a session
+    // suspended by GlobProxy can't be resumed from the API.
+    can_resume: c.status === 'suspended' && c.suspended_reason === 'customer',
     activated_at: c.activated_at,
     created_at: c.created_at,
   }

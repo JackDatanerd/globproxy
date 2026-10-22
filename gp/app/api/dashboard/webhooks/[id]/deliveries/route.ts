@@ -21,8 +21,9 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
     limit,
     status: url.searchParams.get('status'),
     before: url.searchParams.get('before'),
+    beforeId: url.searchParams.get('before_id'),
   })
   if (!r.ok) return NextResponse.json({ error: r.message }, { status: r.status })
   const hasMore = r.data.length === limit
-  return NextResponse.json({ deliveries: r.data, has_more: hasMore, next_before: hasMore ? r.data[r.data.length - 1].created_at : null })
+  return NextResponse.json({ deliveries: r.data, has_more: hasMore, next_before: hasMore ? r.data[r.data.length - 1].created_at : null, next_before_id: hasMore ? r.data[r.data.length - 1].id : null })
 }

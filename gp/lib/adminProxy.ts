@@ -22,7 +22,9 @@ export type ProxyToggleResult = { changed: number; failed: { id: string; error: 
 // itself disabled: one an admin killed individually ('admin') stays off, and a
 // deleted account's ('deleted') never comes back. NULL = suspended before the
 // column existed, treated as account-level (the old behaviour).
-export type SuspendReason = 'account' | 'admin'
+// 'customer' = the owner paused it themselves (POST /api/v1/sub-users/:id/pause);
+// only the owner can resume it, and an account re-enable never touches it.
+export type SuspendReason = 'account' | 'admin' | 'customer'
 
 export async function disableCredential(supabase: AdminSupabase, cred: CredRow, reason: SuspendReason = 'admin'): Promise<void> {
   if (cred.upstream_sub_user_id) {

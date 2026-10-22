@@ -10,7 +10,7 @@ export async function GET(req: Request) {
   return withApiAuth(req, 'GET account/activity', async ({ user, supabase }) => {
     const url = new URL(req.url)
     const r = await listApiActivity(supabase, user.id, {
-      keyId: url.searchParams.get('key_id'), limit: Number(url.searchParams.get('limit')) || undefined, before: url.searchParams.get('before'),
+      keyId: url.searchParams.get('key_id'), limit: Number(url.searchParams.get('limit')) || undefined, before: url.searchParams.get('before'), beforeId: url.searchParams.get('before_id'),
     })
     return r.ok ? NextResponse.json(r.data) : failFrom({ status: r.status, code: r.status === 400 ? 'invalid_request' : 'internal_error', message: r.message })
   })

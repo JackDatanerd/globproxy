@@ -34,9 +34,11 @@ export async function POST(req: Request) {
       const a = parseCreateAutoTopup(it?.auto_topup)
       return a.ok ? { ok: true as const, value: { ...p.value, auto_topup: a.value } } : { ok: false as const, error: a.error }
     })
-    if (!(await consumeWrites(items.length - 1))) return writeBudgetExceeded()
 
     return runIdempotent(req, supabase, user.id, 'POST /sub-users/bulk', JSON.stringify(parsed.map((p) => (p.ok ? p.value : null))), async (key) => {
+      // Charged only when the work actually runs: a replay of a finished request
+      // (a client retry) must not eat the write budget a second time.
+      if (!(await consumeWrites(items.length - 1))) return { kind: 'fail', response: writeBudgetExceeded() }
       const results: any[] = []
       for (let i = 0; i < parsed.length; i++) {
         const p = parsed[i]

@@ -32,9 +32,10 @@ export async function POST(req: Request) {
       const gb = parseGbAmount(it.gb_amount)
       return gb.ok ? { ok: true as const, id: it.id, gb: gb.value } : { ok: false as const, id: it.id, error: gb.error }
     })
-    if (!(await consumeWrites(items.length - 1))) return writeBudgetExceeded()
 
     return runIdempotent(req, supabase, user.id, 'POST /sub-users/bulk-topup', JSON.stringify(parsed.map((p) => (p.ok ? [p.id, p.gb] : null))), async () => {
+      // Charged only when the work actually runs (not on an idempotent replay).
+      if (!(await consumeWrites(items.length - 1))) return { kind: 'fail', response: writeBudgetExceeded() }
       const results: any[] = []
       for (let i = 0; i < parsed.length; i++) {
         const p = parsed[i]

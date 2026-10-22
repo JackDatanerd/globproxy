@@ -1,4 +1,5 @@
 import type { createAdminClient } from '@/lib/supabase/server'
+import { dispatchWebhook } from '@/lib/webhooks'
 import { cleanReferralCode, cleanSubId } from '@/lib/referralAttribution'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { appUrl } from '@/lib/appUrl'
@@ -140,6 +141,14 @@ export async function processReferralForOrder(
       })
       if (error) { console.error('[referrals] credit_referral_bonus failed', p.order_id, error); return false }
       if (credited === true) {
+        // Both sides just received GB, so both accounts get the same event a
+        // purchase would have produced — this credit used to be invisible to
+        // anything reconciling balances from webhooks. Fired once: the RPC only
+        // returns true on the call that actually paid the bonus.
+        await Promise.all([
+          dispatchWebhook(p.user_id, 'bandwidth_credited', { gb_credited: REFERRAL_GB_BONUS, source: 'referral_bonus', role: 'referred' }),
+          dispatchWebhook(referral.referrer_id, 'bandwidth_credited', { gb_credited: REFERRAL_GB_BONUS, source: 'referral_bonus', role: 'referrer' }),
+        ]).catch((e) => console.error('[referrals] bandwidth_credited webhook failed (bonus already paid)', p.order_id, e))
         await notifyReferrerConverted(admin, referral.referrer_id, { kind: 'bonus', gb: REFERRAL_GB_BONUS })
       }
     }

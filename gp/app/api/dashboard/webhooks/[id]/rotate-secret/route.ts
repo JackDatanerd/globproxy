@@ -3,7 +3,7 @@ import { rateLimitedUser } from '@/lib/rateLimit'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { rotateSecret } from '@/lib/webhookEndpoints'
 import { requireStepUp } from '@/lib/reauth'
-import { logSecurityEvent } from '@/lib/securityEvents'
+import { auditWebhookChange, hostOf } from '@/lib/integrationAudit'
 import { NextResponse } from 'next/server'
 
 // Replaces the signing secret; the new one is returned once, in this response.
@@ -31,6 +31,6 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
   const body = await req.json().catch(() => ({}))
   const r = await rotateSecret(await createAdminClient(), user.id, id, body?.grace_minutes === undefined ? 0 : Number(body.grace_minutes))
   if (!r.ok) return NextResponse.json({ error: r.message }, { status: r.status })
-  await logSecurityEvent({ userId: user.id, event: 'webhook_secret_rotated', req })
+  await auditWebhookChange({ userId: user.id, event: 'webhook_secret_rotated', req, via: 'dashboard', webhookId: id })
   return NextResponse.json(r.data)
 }

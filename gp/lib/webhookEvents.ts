@@ -1,7 +1,7 @@
 // Pure constants — no server imports — so the dashboard (client component),
 // the API routes, the delivery engine and the docs all read the same list.
 // Keep in sync with the webhook_endpoints_valid_events CHECK constraint
-// (migrations 0042 + 0046 + 0054 + 0059): an event added here must be added there too, or the
+// (migrations 0042 + 0046 + 0054 + 0059 + 0062): an event added here must be added there too, or the
 // insert/update is rejected by the database.
 export const WEBHOOK_EVENTS = [
   'session_created',
@@ -18,6 +18,7 @@ export const WEBHOOK_EVENTS = [
   'bandwidth_threshold_crossed',
   'bandwidth_exhausted',
   'bandwidth_credited',
+  'bandwidth_debited',
   'bandwidth_allocated',
   'bandwidth_reclaimed',
   'bandwidth_refunded',
@@ -42,7 +43,8 @@ export const WEBHOOK_EVENT_LABELS: Record<WebhookEvent, string> = {
   auto_topup_failed: 'Auto top-up failed or only partly funded',
   bandwidth_threshold_crossed: 'Bandwidth crossed 80% / 95%',
   bandwidth_exhausted: 'Bandwidth exhausted (100%)',
-  bandwidth_credited: 'Bandwidth credited (purchase / allocation)',
+  bandwidth_credited: 'Bandwidth credited (purchase / allocation / bonus / adjustment)',
+  bandwidth_debited: 'Bandwidth debited (support adjustment)',
   bandwidth_allocated: 'Bandwidth allocated to a client (reseller)',
   bandwidth_reclaimed: 'Bandwidth reclaimed by your reseller',
   bandwidth_refunded: 'Purchase refunded (bandwidth clawed back)',
@@ -66,7 +68,8 @@ export const WEBHOOK_EVENT_DESCRIPTIONS: Record<WebhookEvent, { description: str
   auto_topup_failed: { description: 'Auto-topup could not fully run (once until it recovers). reason is insufficient_balance, partial_funding or session_limit.', data: ['credential_id', 'reason', 'gb_allocated', 'gb_used', 'amount_gb', 'gb_added'] },
   bandwidth_threshold_crossed: { description: 'The share of your account that is committed (allocated into sub-users) crossed 80% or 95%. Checked every 5 minutes. Endpoints that do not also subscribe to bandwidth_exhausted receive it once more at 100% (threshold_pct 100).', data: ['threshold_pct', 'allocated_pct', 'used_pct', 'available_gb', 'total_gb', 'used_gb', 'allocated_gb'] },
   bandwidth_exhausted: { description: 'Available (unallocated) bandwidth reached zero.', data: ['allocated_pct', 'used_pct', 'available_gb', 'total_gb', 'used_gb', 'allocated_gb'] },
-  bandwidth_credited: { description: 'Bandwidth was added to your account (purchase or reseller allocation). For purchases data has order_id and amount_usd; for allocations, transfer_id.', data: ['gb_credited', 'source', 'order_id', 'amount_usd', 'transfer_id'] },
+  bandwidth_credited: { description: 'Bandwidth was added to your account. source is purchase (order_id, amount_usd), reseller_allocation (transfer_id), referral_bonus (role: referrer or referred) or admin_adjustment (a goodwill credit from support).', data: ['gb_credited', 'source', 'order_id', 'amount_usd', 'transfer_id', 'role'] },
+  bandwidth_debited: { description: 'Unallocated bandwidth was removed from your account by a support adjustment. Allocated bandwidth is never taken back this way. (Refund clawbacks arrive as bandwidth_refunded; reseller reclaims as bandwidth_reclaimed.)', data: ['gb_debited', 'source', 'total_gb', 'available_gb'] },
   bandwidth_allocated: { description: 'You allocated bandwidth to a client (resellers).', data: ['transfer_id', 'recipient_email', 'gb', 'note'] },
   bandwidth_reclaimed: { description: 'Unused bandwidth was reclaimed from your account by the reseller who allocated it.', data: ['transfer_id', 'gb_reclaimed', 'gb_remaining'] },
   bandwidth_refunded: { description: 'A purchase was refunded and its bandwidth taken back.', data: ['order_id', 'refund_usd', 'gb_clawed_back', 'gb_not_recoverable', 'fully_refunded'] },

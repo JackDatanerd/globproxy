@@ -85,7 +85,12 @@ export function writeBudgetExceeded() {
 export async function readJsonBody(req: Request): Promise<{ ok: true; body: any } | { ok: false; response: NextResponse }> {
   try {
     return { ok: true, body: await req.json() }
-  } catch {
+  } catch (e) {
+    // A chunked body that crossed the size cap errors the stream (see
+    // lib/edgeGuard.ts withBodyLimit); that is a 413, not "invalid JSON".
+    if (e instanceof Error && /too large/i.test(e.message)) {
+      return { ok: false, response: apiError(413, 'payload_too_large', 'Request body is too large (1 MiB maximum).') }
+    }
     return { ok: false, response: apiError(400, 'invalid_request', 'Request body must be valid JSON.') }
   }
 }

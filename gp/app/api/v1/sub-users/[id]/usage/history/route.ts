@@ -13,13 +13,6 @@ const MAX_DAYS = 90
 // is limited to 30 days (the provider caps a query at 720 periods).
 export async function GET(req: Request, context: { params: Promise<{ id: string }> }) {
   return withApiAuth(req, 'GET sub-user usage history', async ({ user, supabase, key }) => {
-    // Each call fans out up to 30 requests on the one shared reseller API key
-    // at the provider, so an unthrottled loop here could exhaust its limits
-    // for every customer. 10/minute per key on top of the general limiter.
-    if (!(await allowApiRequest('API_HISTORY_RATE_LIMITER', key.id))) {
-      return apiError(429, 'rate_limited', 'Usage history is limited to 10 requests/minute per key. Retry after the Retry-After interval.', { 'Retry-After': '60', 'X-RateLimit-Limit': '10' })
-    }
-
     const { id } = await context.params
     const url = new URL(req.url)
 
@@ -41,6 +34,15 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
     if (!cred.upstream_username) {
       return apiError(409, 'conflict', 'This sub-user has not been activated yet, so it has no usage history.')
     }
+
+    // Charged only once the request is valid and owned: bad parameters and wrong ids
+    // used to burn the budget. Each call fans out up to 30 requests on the one shared reseller API key
+    // at the provider, so an unthrottled loop here could exhaust its limits
+    // for every customer. 10/minute per key on top of the general limiter.
+    if (!(await allowApiRequest('API_HISTORY_RATE_LIMITER', key.id))) {
+      return apiError(429, 'rate_limited', 'Usage history is limited to 10 requests/minute per key. Retry after the Retry-After interval.', { 'Retry-After': '60', 'X-RateLimit-Limit': '10' })
+    }
+
 
     const to = new Date()
     const from = new Date(to.getTime() - days * 24 * 3_600_000)

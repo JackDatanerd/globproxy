@@ -1,10 +1,11 @@
 import { withApiAuth } from '@/lib/apiHelpers'
 import { apiError } from '@/lib/apiAuth'
 import { NextResponse } from 'next/server'
+import { passwordRotationEnabled } from '@/lib/credentials'
 
 // GET /api/v1/account — who this key belongs to and what it may do. Lets an
 // integration check its own scopes / expiry (and warn before it lapses)
-// without guessing from 403s.
+// without guessing from 403s. `features` reports which optional endpoints are live.
 export async function GET(req: Request) {
   return withApiAuth(req, 'GET account', async ({ user, supabase, key }) => {
     const { data: k, error } = await supabase
@@ -21,6 +22,10 @@ export async function GET(req: Request) {
         id: k.id, key_prefix: k.key_prefix, label: k.label, scopes: k.scopes,
         allowed_ips: k.allowed_ips ?? [], expires_at: k.expires_at, created_at: k.created_at,
       },
+      // Capabilities that are switched on per deployment, so an integration can
+      // check instead of discovering a 503. rotate-password answers 503 while
+      // password_rotation is false.
+      features: { password_rotation: passwordRotationEnabled() },
     })
   })
 }

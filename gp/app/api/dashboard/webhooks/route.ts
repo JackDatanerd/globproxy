@@ -4,7 +4,7 @@ import { requireActiveUser } from '@/lib/apiAuth'
 import { listEndpoints, createEndpoint } from '@/lib/webhookEndpoints'
 import { NextResponse } from 'next/server'
 import { requireStepUp } from '@/lib/reauth'
-import { logSecurityEvent, notifySecurityChange } from '@/lib/securityEvents'
+import { auditWebhookChange, hostOf } from '@/lib/integrationAudit'
 
 // All webhook-endpoint rules live in lib/webhookEndpoints.ts, shared with
 // /api/v1/webhooks. `secret` is never selected on list — only the create
@@ -40,7 +40,6 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}))
   const r = await createEndpoint(await createAdminClient(), user.id, body)
   if (!r.ok) return NextResponse.json({ error: r.message }, { status: r.status })
-  await logSecurityEvent({ userId: user.id, event: 'webhook_created', req })
-  await notifySecurityChange(user.id, 'A new webhook endpoint was added to your GlobProxy account', 'a new webhook endpoint was just added to your account. Account events will be delivered to it.')
+  await auditWebhookChange({ userId: user.id, event: 'webhook_created', req, via: 'dashboard', webhookId: r.data.id, host: hostOf(r.data.url) })
   return NextResponse.json({ webhook: r.data })
 }
