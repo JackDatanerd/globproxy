@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { releaseGeonodeSubUsers, purgeAccountSecrets } from '@/lib/accountDeletion'
+import { anonymisedProfilePatch, rollbackProfilePatch, releaseGeonodeSubUsers, purgeAccountSecrets } from '@/lib/accountDeletion'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { requireStepUp } from '@/lib/reauth'
 import { logSecurityEvent } from '@/lib/securityEvents'
@@ -27,7 +27,7 @@ export async function DELETE(req: Request) {
     // Step 2: Fetch profile before wiping it
     const { data: profile } = await adminSupabase
       .from('profiles')
-      .select('email, full_name, is_deleted, company_name, billing_address, tax_id, api_access, reseller_application, affiliate_application, api_access_application, payout_method, payout_wallet_address, payout_wallet_network, payout_bank_details, payout_mpesa_phone, payout_method_updated_at, mfa_enabled')
+      .select('*')
       .eq('id', user.id)
       .single()
 
@@ -67,26 +67,7 @@ export async function DELETE(req: Request) {
     // clear the suspension fields, turning self-deletion into an unsuspend).
     const { error: profileError } = await adminSupabase
       .from('profiles')
-      .update({
-        full_name: '[deleted]',
-        email: '[deleted]',
-        company_name: null,
-        billing_address: null,
-        tax_id: null,
-        is_deleted: true,
-        deleted_at: new Date().toISOString(),
-        api_access: false,
-        reseller_application: null,
-        affiliate_application: null,
-        api_access_application: null,
-        payout_method: null,
-        payout_wallet_address: null,
-        payout_wallet_network: null,
-        payout_bank_details: null,
-        payout_mpesa_phone: null,
-        payout_method_updated_at: null,
-        mfa_enabled: false,
-      })
+      .update(anonymisedProfilePatch())
       .eq('id', user.id)
 
     if (profileError) {
@@ -115,26 +96,7 @@ export async function DELETE(req: Request) {
 
     if (banError) {
       // Rollback anonymisation (everything the update above cleared)
-      await adminSupabase.from('profiles').update({
-        full_name: profile?.full_name ?? null,
-        email: profile?.email ?? null,
-        company_name: profile?.company_name ?? null,
-        billing_address: profile?.billing_address ?? null,
-        tax_id: profile?.tax_id ?? null,
-        is_deleted: false,
-        deleted_at: null,
-        api_access: profile?.api_access ?? false,
-        reseller_application: profile?.reseller_application ?? null,
-        affiliate_application: profile?.affiliate_application ?? null,
-        api_access_application: profile?.api_access_application ?? null,
-        payout_method: profile?.payout_method ?? null,
-        payout_wallet_address: profile?.payout_wallet_address ?? null,
-        payout_wallet_network: profile?.payout_wallet_network ?? null,
-        payout_bank_details: profile?.payout_bank_details ?? null,
-        payout_mpesa_phone: profile?.payout_mpesa_phone ?? null,
-        payout_method_updated_at: profile?.payout_method_updated_at ?? null,
-        mfa_enabled: profile?.mfa_enabled ?? false,
-      }).eq('id', user.id)
+      await adminSupabase.from('profiles').update(rollbackProfilePatch(profile ?? {})).eq('id', user.id)
       console.error('delete-account: ban failed', banError)
       return NextResponse.json({ error: 'Could not delete the account. Please try again.' }, { status: 500 })
     }

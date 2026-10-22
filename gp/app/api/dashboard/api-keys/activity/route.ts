@@ -2,6 +2,7 @@ import { createAdminClient, createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { listApiActivity } from '@/lib/apiActivity'
 import { requireActiveUser } from '@/lib/apiAuth'
+import { requireMfaVerified } from '@/lib/mfa'
 
 // Mutating API calls made with this account's keys (last 30 days) — "what did
 // that key do?" after a suspected leak. ?key_id=&limit=&before=<ISO>
@@ -14,6 +15,11 @@ export async function GET(req: Request) {
   // session would otherwise still read its key activity.
   const inactive = await requireActiveUser(user.id)
   if (inactive) return inactive
+
+  // 2FA step-up, like every sibling api-keys route: middleware excludes /api,
+  // so without this a password-only session could read what the keys did.
+  const mfaGate = await requireMfaVerified(req, user.id)
+  if (mfaGate) return mfaGate
 
   const url = new URL(req.url)
   const r = await listApiActivity(await createAdminClient(), user.id, {

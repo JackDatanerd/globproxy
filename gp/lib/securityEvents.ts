@@ -1,6 +1,7 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { sendEmailSafe, securityNoticeHtml, escapeHtml } from '@/lib/email'
 import { appUrl } from '@/lib/appUrl'
+import { normalizeClientIp } from '@/lib/rateLimit'
 
 type AdminClient = Awaited<ReturnType<typeof createAdminClient>>
 
@@ -129,7 +130,18 @@ export async function isKnownLoginIp(email: string, ip: string | null): Promise<
     const since = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()
     const { data } = await admin.from('security_events').select('id')
       .eq('user_id', owner.id).eq('event', 'login').eq('ip', ip).gte('created_at', since).limit(1)
-    return (data?.length ?? 0) > 0
+    if ((data?.length ?? 0) > 0) return true
+    // IPv6 clients rotate privacy addresses inside their /64, and the rate
+    // limiter already treats a /64 as one client (clientKey): do the same here,
+    // otherwise those users look like a new device on every login.
+    if (ip.includes(':')) {
+      const want = normalizeClientIp(ip)
+      const { data: recent } = await admin.from('security_events').select('ip')
+        .eq('user_id', owner.id).eq('event', 'login').gte('created_at', since)
+        .like('ip', '%:%').order('created_at', { ascending: false }).limit(200)
+      return (recent ?? []).some((r: { ip: string | null }) => !!r.ip && normalizeClientIp(r.ip) === want)
+    }
+    return false
   } catch (e) {
     console.error('[security_events] isKnownLoginIp failed', e)
     return false

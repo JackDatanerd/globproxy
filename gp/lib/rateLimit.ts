@@ -128,6 +128,11 @@ async function sha256Hex(input: string): Promise<string> {
 export function clientKey(req: Request): string | null {
   const raw = req.headers.get('cf-connecting-ip')?.trim()
   if (!raw) return null
+  return normalizeClientIp(raw)
+}
+
+/** Same grouping clientKey uses (IPv6 -> its /64, v4-mapped -> v4), for a bare address string. */
+export function normalizeClientIp(raw: string): string {
   if (!raw.includes(':')) return raw
   const g = parseIpv6(raw)
   if (!g) return raw

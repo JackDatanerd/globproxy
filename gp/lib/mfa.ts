@@ -424,9 +424,17 @@ export async function verifyFactor(
 
   const result: VerifyResult = { session_token: token, session_ttl_s: ttlS, used_backup_code: kind === 'backup' }
   if (kind === 'backup') {
-    const remaining = await countRemainingBackupCodes(userId, supabase)
-    result.backup_codes_remaining = remaining
-    if (remaining <= 2) {
+    // Best-effort: the code is already spent and the session created, so a DB
+    // hiccup while counting what is left must not turn a successful sign-in
+    // into a 400 with no cookie (the user would lose a code AND not get in).
+    let remaining: number | null = null
+    try {
+      remaining = await countRemainingBackupCodes(userId, supabase)
+    } catch (e) {
+      console.error('[mfa] could not count remaining backup codes after a successful verify', e)
+    }
+    if (remaining !== null) result.backup_codes_remaining = remaining
+    if (remaining !== null && remaining <= 2) {
       try {
         const { data: profile } = await supabase.from('profiles').select('email, full_name').eq('id', userId).maybeSingle()
         if (profile?.email && profile.email !== '[deleted]') await sendBackupCodesLowNotice(profile.email, profile.full_name, remaining)

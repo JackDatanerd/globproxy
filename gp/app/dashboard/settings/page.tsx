@@ -150,6 +150,16 @@ function SettingsPageInner() {
   const searchParams = useSearchParams()
   useEffect(() => {
     if (searchParams.get('apply_reseller') === '1') setShowForm(true)
+    // /auth/callback sends a completed e-mail change here. Say so once, then
+    // drop the param so a refresh doesn't repeat it.
+    if (searchParams.get('success') === 'email_updated') {
+      toast.success('Your sign-in email was updated.')
+      try {
+        const u = new URL(window.location.href)
+        u.searchParams.delete('success')
+        window.history.replaceState(null, '', u.pathname + u.search + u.hash)
+      } catch { /* cosmetic only */ }
+    }
   }, [searchParams])
 
   async function toggleLowEmails(next: boolean) {

@@ -110,6 +110,24 @@ export async function purgeAccountSecrets(supabase: AdminSupabase, userId: strin
   check('credentials', (await supabase.from('proxy_credentials')
     .update({ status: 'suspended', suspended_reason: 'deleted', upstream_password: null, upstream_username: null, upstream_sub_user_id: null })
     .eq('user_id', userId)).error)
+  // auth.users keeps its own copy of what the person typed at signup (name,
+  // intended role, ...) in user_metadata; the profile scrub never touches it.
+  // GoTrue merges metadata and removes a key set to null, so null every key.
+  // The sign-in email itself stays on the banned record on purpose (it blocks
+  // re-registration — the deletion email says so).
+  try {
+    const { data: au, error: getErr } = await supabase.auth.admin.getUserById(userId)
+    if (getErr) throw getErr
+    const meta = (au?.user?.user_metadata ?? {}) as Record<string, unknown>
+    const keys = Object.keys(meta)
+    if (keys.length) {
+      const wipe: Record<string, null> = {}
+      for (const k of keys) wipe[k] = null
+      check('auth_user_metadata', (await supabase.auth.admin.updateUserById(userId, { user_metadata: wipe })).error)
+    }
+  } catch (e: any) {
+    check('auth_user_metadata', { message: String(e?.message ?? e) })
+  }
   check('webhook_endpoints', (await supabase.from('webhook_endpoints').delete().eq('user_id', userId)).error)
   // The API request log holds source IPs; the profile row is kept (scrubbed), so
   // the FK cascade never fires — clear it explicitly (migration 0054).
