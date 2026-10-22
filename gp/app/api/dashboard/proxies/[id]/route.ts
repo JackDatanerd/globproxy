@@ -33,7 +33,9 @@ export async function DELETE(
       { status: result.status }
     )
   }
-  return NextResponse.json({ success: true })
+  // The lib already knows how much went back to the balance and how much was
+  // used; the dashboard shows it instead of a bare "deleted".
+  return NextResponse.json({ success: true, gb_released: result.data?.gb_released ?? 0, gb_used: result.data?.gb_used ?? 0 })
 }
 
 // Edit in place — label, targeting, protocol, session type, sticky lifetime,

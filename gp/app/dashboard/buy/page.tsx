@@ -6,6 +6,7 @@ import { kesFor } from '@/lib/fx'
 import { confirmPayment } from '@/lib/verifyPayment'
 import { formatUsd } from '@/lib/format'
 import toast from 'react-hot-toast'
+import { redirectToMfa } from '@/lib/clientApi'
 import clsx from 'clsx'
 
 // /dashboard/proxies/new redirects here with ?reason=no_bandwidth when the
@@ -100,6 +101,11 @@ export default function BuyPage() {
         return
       }
 
+      if (res.status === 403 && data?.code === 'mfa_required') {
+        // Verified session expired while this page was open: go verify and come back.
+        redirectToMfa(data)
+        return
+      }
       if (res.status === 409 && data.rate_changed && Number(data.rate) > 0) {
         // The exchange rate refreshed since the page loaded: show the new price
         // and let the customer confirm it, rather than charging an unseen amount.
@@ -186,7 +192,7 @@ export default function BuyPage() {
         <h2 className="font-display font-bold text-base text-ink mb-4">Select a plan</h2>
         <div className="grid grid-cols-2 gap-3">
           {PLANS.map(p => (
-            <button key={p.name} onClick={() => setChoice(p.slug)}
+            <button key={p.name} type="button" aria-pressed={choice===p.slug} onClick={() => setChoice(p.slug)}
               className={clsx('text-left p-4 rounded-xl border-2 transition-all', choice===p.slug ? 'border-accent bg-accent-light' : 'border-border hover:border-accent/40 bg-white')}>
               <div className="flex justify-between items-start">
                 <div>

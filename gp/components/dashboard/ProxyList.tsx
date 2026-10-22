@@ -12,7 +12,7 @@ interface Props {
   rotationEnabled?: boolean
 }
 
-type StatusFilter = 'all' | 'active' | 'pending'
+type StatusFilter = 'all' | 'active' | 'pending' | 'suspended'
 
 const DISMISS_KEY = 'gp_usage_banner_dismissed'
 
@@ -61,6 +61,9 @@ export default function ProxyList({ creds, availableGb, rotationEnabled }: Props
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [dismissed, setDismissed] = useState<Record<string, boolean>>({})
+  // Warnings stay hidden until the stored dismissals are read: showing them
+  // first made already-dismissed banners flash on every page load.
+  const [dismissedLoaded, setDismissedLoaded] = useState(false)
   const cardRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const [requestedTab, setRequestedTab] = useState<{ id: string; tab: 'bandwidth'; nonce: number } | null>(null)
 
@@ -84,6 +87,7 @@ export default function ProxyList({ creds, availableGb, rotationEnabled }: Props
       if (Object.keys(pruned).length !== Object.keys(stored).length) localStorage.setItem(DISMISS_KEY, JSON.stringify(pruned))
       setDismissed(pruned)
     } catch {}
+    setDismissedLoaded(true)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // The key includes the credential's current allocation: after a top-up the
@@ -99,7 +103,7 @@ export default function ProxyList({ creds, availableGb, rotationEnabled }: Props
     })
   }
 
-  const visibleWarnings = nearLimit.filter(({ cred, tier }) => !dismissed[dismissKeyFor(cred, tier)])
+  const visibleWarnings = !dismissedLoaded ? [] : nearLimit.filter(({ cred, tier }) => !dismissed[dismissKeyFor(cred, tier)])
 
   function jumpTo(credId: string) {
     // The target may be hidden by the current search/status filter — clear
@@ -163,6 +167,7 @@ export default function ProxyList({ creds, availableGb, rotationEnabled }: Props
     all: creds.length,
     active: creds.filter(c => c.status === 'active').length,
     pending: creds.filter(c => c.status === 'pending').length,
+    suspended: creds.filter(c => c.status === 'suspended').length,
   }), [creds])
 
   return (
@@ -219,7 +224,11 @@ export default function ProxyList({ creds, availableGb, rotationEnabled }: Props
           />
         </div>
         <div className="flex gap-1.5 flex-wrap">
-          {([['all', 'All'], ['active', 'Active'], ['pending', 'Pending']] as const).map(([val, label]) => (
+          {/* Suspended only appears when there is one — a session an admin
+              disabled was previously findable only by scrolling "All". */}
+          {([['all', 'All'], ['active', 'Active'], ['pending', 'Pending'], ['suspended', 'Suspended']] as const)
+            .filter(([val]) => val !== 'suspended' || counts.suspended > 0 || statusFilter === 'suspended')
+            .map(([val, label]) => (
             <button key={val} onClick={() => setStatusFilter(val)}
               className={`text-[11px] font-mono px-3 py-1.5 rounded-full border transition-colors ${
                 statusFilter === val ? 'bg-ink text-white border-ink' : 'bg-white text-ink2 border-border hover:border-ink2/40'

@@ -1,5 +1,5 @@
 'use client'
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { apiJson } from '@/lib/clientApi'
 import { formatGb } from '@/lib/format'
@@ -11,6 +11,7 @@ import { buildProxyUsername, getProxyPort, validateTargeting } from '@/lib/proxy
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 import AsnPicker from '@/components/dashboard/AsnPicker'
+import NumberField from '@/components/dashboard/NumberField'
 
 const STICKY_DURATIONS = [
   { value: 1,    label: '1 min' },
@@ -71,16 +72,22 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
       .catch(e => setCountryListError(e.message))
   }, [])
 
+  // Latest country the customer picked. fetchCountryDetail has no
+  // cancellation, so switching A → B quickly could let A's late response
+  // overwrite B's regions/cities (and the form would then accept a region that
+  // belongs to the wrong country). Only the response for the current pick counts.
+  const countryReq = useRef('')
   function setCountry(v: string) {
+    countryReq.current = v
     setForm(f => ({ ...f, country: v, state: '', city: '' }))
     setCountryDetail(null)
     setGeoError(null)
-    if (!v) return
+    if (!v) { setGeoLoading(false); return }
     setGeoLoading(true)
     fetchCountryDetail(v)
-      .then(setCountryDetail)
-      .catch(e => setGeoError(e.message))
-      .finally(() => setGeoLoading(false))
+      .then(d => { if (countryReq.current === v) setCountryDetail(d) })
+      .catch(e => { if (countryReq.current === v) setGeoError(e.message) })
+      .finally(() => { if (countryReq.current === v) setGeoLoading(false) })
   }
 
   function setState(v: string) {
@@ -117,6 +124,10 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    if (!Number.isFinite(form.gb_allocated) || form.gb_allocated < 0.01) {
+      toast.error('Enter at least 0.01 GB to allocate')
+      return
+    }
     if (overBudget) {
       toast.error(`You only have ${formatGb(availableGb)} GB available`)
       return
@@ -383,9 +394,9 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
                   </button>
                 </label>
                 <div className="relative">
-                  <input type="number" inputMode="decimal" required min={0.01} step="any"
+                  <NumberField required min={0.01}
                     value={form.gb_allocated}
-                    onChange={e => set('gb_allocated', e.target.value === '' ? 0 : +e.target.value)}
+                    onValue={n => set('gb_allocated', n)}
                     className="w-full bg-surface border border-border px-3.5 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors pr-11" />
                   <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11.5px] font-mono text-muted pointer-events-none">GB</span>
                 </div>
@@ -423,9 +434,9 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
                 <div>
                   <label className="block text-xs text-ink2 font-medium mb-1.5">When remaining falls below</label>
                   <div className="relative">
-                    <input type="number" inputMode="decimal" min={0} step="any"
+                    <NumberField min={0}
                       value={form.auto_topup_threshold_gb}
-                      onChange={e => set('auto_topup_threshold_gb', +e.target.value)}
+                      onValue={n => set('auto_topup_threshold_gb', n)}
                       className="w-full bg-surface border border-border px-3.5 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors pr-11" />
                     <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11.5px] font-mono text-muted pointer-events-none">GB</span>
                   </div>
@@ -433,9 +444,9 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
                 <div>
                   <label className="block text-xs text-ink2 font-medium mb-1.5">Add</label>
                   <div className="relative">
-                    <input type="number" inputMode="decimal" min={0.01} step="any"
+                    <NumberField min={0.01}
                       value={form.auto_topup_amount_gb}
-                      onChange={e => set('auto_topup_amount_gb', +e.target.value)}
+                      onValue={n => set('auto_topup_amount_gb', n)}
                       className="w-full bg-surface border border-border px-3.5 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors pr-11" />
                     <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11.5px] font-mono text-muted pointer-events-none">GB</span>
                   </div>
@@ -488,7 +499,7 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
                 <span className="font-mono text-[10.5px] uppercase tracking-wide text-white/45">Auto-allocate</span>
                 <span className="font-medium text-white/90">
                   {form.auto_topup_enabled
-                    ? `Below ${form.auto_topup_threshold_gb} GB → +${form.auto_topup_amount_gb} GB`
+                    ? `Below ${Number.isFinite(form.auto_topup_threshold_gb) ? form.auto_topup_threshold_gb : 0} GB → +${Number.isFinite(form.auto_topup_amount_gb) ? form.auto_topup_amount_gb : 0} GB`
                     : 'Off'}
                 </span>
               </div>

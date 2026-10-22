@@ -64,7 +64,19 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
 
   const body = await req.json().catch(() => ({}))
-  const label = (typeof body.label === 'string' ? body.label.trim() : '').slice(0, 100) || 'Session'
+  // One session (`label`) or a batch (`labels`, 1–MAX_BATCH) created in a single
+  // insert — all rows or none, so a scraper that wants twenty fixed IPs doesn't
+  // make twenty requests and end up with eleven if one of them fails.
+  const MAX_BATCH = 25
+  let labels: string[]
+  if (Array.isArray(body.labels)) {
+    if (body.labels.length < 1 || body.labels.length > MAX_BATCH) {
+      return NextResponse.json({ error: `Create between 1 and ${MAX_BATCH} sessions at a time.` }, { status: 400 })
+    }
+    labels = body.labels.map((l: unknown) => (typeof l === 'string' ? l.trim() : '').slice(0, 100) || 'Session')
+  } else {
+    labels = [(typeof body.label === 'string' ? body.label.trim() : '').slice(0, 100) || 'Session']
+  }
 
   // Cap live named sessions per credential. Nothing bounded this: each one is
   // a row (and a rendered, polled-on-load list entry), so a script or a stuck
@@ -75,16 +87,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     .eq('credential_id', id)
     .eq('user_id', user.id)
     .is('terminated_at', null)
-  if ((liveCount ?? 0) >= MAX_STICKY_SESSIONS) {
+  if ((liveCount ?? 0) + labels.length > MAX_STICKY_SESSIONS) {
     return NextResponse.json({ error: `You can have at most ${MAX_STICKY_SESSIONS} sticky sessions on one credential — delete one you no longer use first.` }, { status: 409 })
   }
 
-  const { data, error } = await supabase.from('proxy_sessions').insert({
-    credential_id: id,
-    user_id: user.id,
-    session_token: genSessionId(), // fixed at creation — this IS the point of a persisted session
-    label,
-  }).select().single()
+  const { data: created, error } = await supabase.from('proxy_sessions').insert(
+    labels.map(label => ({
+      credential_id: id,
+      user_id: user.id,
+      session_token: genSessionId(), // fixed at creation — this IS the point of a persisted session
+      label,
+    }))
+  ).select()
 
   if (error) {
     // The database trigger is the authoritative cap / sticky-only / active-
@@ -94,5 +108,5 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     console.error('[dashboard/proxies/[id]/sessions] db error:', error)
     return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
   }
-  return NextResponse.json({ session: data }, { status: 201 })
+  return NextResponse.json({ session: created?.[0] ?? null, sessions: created ?? [] }, { status: 201 })
 }

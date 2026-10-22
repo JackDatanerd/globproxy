@@ -67,6 +67,14 @@ function SettingsPageInner() {
   // secret again after this response (see app/api/dashboard/webhooks/route.ts).
   // Carries the endpoint URL so the banner says WHICH secret this is.
   const [revealedSecret, setRevealedSecret] = useState<{ url: string; secret: string } | null>(null)
+  // Inline rotate panel (replaces two back-to-back confirm() dialogs, where
+  // dismissing the second one — Esc, or closing the box — silently chose
+  // "revoke the old secret immediately").
+  const [rotatingWebhookId, setRotatingWebhookId] = useState<string | null>(null)
+  const [rotateGrace, setRotateGrace] = useState<'1440' | '0'>('1440')
+  const [rotatingSecret, setRotatingSecret] = useState(false)
+  const [lowEmails, setLowEmails] = useState(true)
+  const [savingLowEmails, setSavingLowEmails] = useState(false)
   const [testingId, setTestingId] = useState<string | null>(null)
   // Delivery log: one endpoint's log open at a time.
   const [logId, setLogId] = useState<string | null>(null)
@@ -103,7 +111,9 @@ function SettingsPageInner() {
   useEffect(() => {
     const sb = createClient()
     sb.auth.getUser().then(async ({ data: { user } }) => {
-      if (!user) return
+      // No session (or getUser failing, see .catch below) used to leave the page
+      // on its loading skeleton forever with no message.
+      if (!user) { setProfileError('Couldn\u2019t load your profile. Refresh the page to try again.'); return }
       // Only the columns this page uses — `select('*')` also pulled payout
       // bank details and application JSON into component state.
       const { data, error } = await sb.from('profiles')
@@ -127,7 +137,12 @@ function SettingsPageInner() {
       }
       const { count } = await sb.from('proxy_credentials').select('id', { count: 'exact', head: true }).eq('user_id', user.id)
       setDeleteFacts({ remainingGb: Math.max(0, (bw?.total_gb ?? 0) - (bw?.used_gb ?? 0)), sessions: count ?? 0 })
-    })
+
+      // Separate and tolerant: if migration 0063 isn't applied yet this errors,
+      // and the page must still load (the toggle then just shows its default).
+      const { data: prefs } = await sb.from('profiles').select('low_bandwidth_emails').eq('id', user.id).maybeSingle()
+      if (prefs && typeof (prefs as any).low_bandwidth_emails === 'boolean') setLowEmails((prefs as any).low_bandwidth_emails)
+    }).catch(() => setProfileError('Couldn\u2019t load your profile. Refresh the page to try again.'))
 
     loadWebhooks()
   }, [])
@@ -136,6 +151,17 @@ function SettingsPageInner() {
   useEffect(() => {
     if (searchParams.get('apply_reseller') === '1') setShowForm(true)
   }, [searchParams])
+
+  async function toggleLowEmails(next: boolean) {
+    if (savingLowEmails || !profile) return
+    setSavingLowEmails(true)
+    const prev = lowEmails
+    setLowEmails(next) // optimistic; rolled back on failure
+    const { error } = await createClient().from('profiles').update({ low_bandwidth_emails: next }).eq('id', profile.id)
+    setSavingLowEmails(false)
+    if (error) { setLowEmails(prev); toast.error('Couldn\u2019t save that preference. Please try again.'); return }
+    toast.success(next ? 'Low-bandwidth e-mails on' : 'Low-bandwidth e-mails off')
+  }
 
   async function saveProfile(e: React.FormEvent) {
     e.preventDefault()
@@ -271,18 +297,26 @@ function SettingsPageInner() {
     setTestingId(null)
   }
 
-  async function rotateWebhookSecret(id: string) {
+  function openRotateWebhook(id: string) {
     if (secretPending()) return
-    if (!confirm('Rotate the signing secret? You will get a new secret to put in your receiver.')) return
-    // OK = keep the old secret signing a second header for 24 h so receivers can
-    // be switched over without dropping events; Cancel = old secret dies now
-    // (the right choice if it leaked).
-    const keepOld = confirm('Keep the OLD secret working for 24 hours while you switch over?\n\nOK = yes, 24-hour overlap (events carry an extra X-GlobProxy-Signature-V2-Previous header).\nCancel = no, the old secret stops working immediately (choose this if it leaked).')
+    setRotatingWebhookId(prev => prev === id ? null : id)
+    setRotateGrace('1440')
+  }
+
+  // grace 1440 = the old secret keeps signing a second header for 24 h so the
+  // receiver can be switched over without dropping events; 0 = it dies now
+  // (the right choice if it leaked).
+  async function rotateWebhookSecret(id: string) {
+    if (secretPending() || rotatingSecret) return
+    setRotatingSecret(true)
     try {
-      const data = await apiJson('POST', `/api/dashboard/webhooks/${id}/rotate-secret`, { grace_minutes: keepOld ? 1440 : 0 })
+      const data = await apiJson('POST', `/api/dashboard/webhooks/${id}/rotate-secret`, { grace_minutes: Number(rotateGrace) })
       setRevealedSecret({ url: webhooks.find(w => w.id === id)?.url ?? 'webhook', secret: data.secret })
+      setRotatingWebhookId(null)
     } catch (err: any) {
       if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Failed to rotate secret')
+    } finally {
+      setRotatingSecret(false)
     }
   }
 
@@ -382,6 +416,22 @@ function SettingsPageInner() {
 
       {/* Change email — current password + 2FA step-up, double confirmation, notice to old address */}
       <ChangeEmailCard currentEmail={profile?.email} />
+
+      {/* E-mail notifications — advisory e-mails only */}
+      <div className="bg-white border border-border rounded-xl p-6 mb-5">
+        <h2 className="font-display font-bold text-base text-ink mb-3">E-mail notifications</h2>
+        <label className="flex items-start gap-3 cursor-pointer">
+          <input type="checkbox" checked={lowEmails} disabled={savingLowEmails || !profile}
+            onChange={e => toggleLowEmails(e.target.checked)} className="mt-1" />
+          <span>
+            <span className="block text-sm text-ink">E-mail me when a session is running low</span>
+            <span className="block text-xs text-muted mt-0.5">
+              A heads-up at 80% and 95% of a session&apos;s allocation. We&apos;ll always e-mail you when a session runs out, and
+              for security events and receipts. Webhooks are set up per endpoint and aren&apos;t affected by this.
+            </span>
+          </span>
+        </label>
+      </div>
 
       {/* Default auto-allocate */}
       <div className="bg-white border border-border rounded-xl p-6 mb-5">
@@ -505,7 +555,7 @@ function SettingsPageInner() {
                       className="text-xs font-mono text-muted hover:text-ink border border-border px-2.5 py-1 rounded-lg transition-colors">
                       {logId === w.id ? 'Hide log' : 'Log'}
                     </button>
-                    <button onClick={() => rotateWebhookSecret(w.id)}
+                    <button onClick={() => openRotateWebhook(w.id)}
                       className="text-xs font-mono text-muted hover:text-ink border border-border px-2.5 py-1 rounded-lg transition-colors">
                       Rotate secret
                     </button>
@@ -519,6 +569,25 @@ function SettingsPageInner() {
                     </button>
                   </div>
                 </div>
+                {rotatingWebhookId === w.id && (
+                  <div className="mt-3 border-t border-border pt-3 flex flex-col gap-2">
+                    <label className="flex items-start gap-2 text-xs text-ink cursor-pointer">
+                      <input type="radio" name={`wh-grace-${w.id}`} checked={rotateGrace === '1440'} onChange={() => setRotateGrace('1440')} className="mt-0.5" />
+                      <span>Keep the old secret working for 24 hours <span className="text-muted">— events carry an extra X-GlobProxy-Signature-V2-Previous header while you switch your receiver over.</span></span>
+                    </label>
+                    <label className="flex items-start gap-2 text-xs text-ink cursor-pointer">
+                      <input type="radio" name={`wh-grace-${w.id}`} checked={rotateGrace === '0'} onChange={() => setRotateGrace('0')} className="mt-0.5" />
+                      <span>Revoke the old secret now <span className="text-muted">— choose this if it leaked. Events signed with it stop verifying immediately.</span></span>
+                    </label>
+                    <div className="flex gap-2">
+                      <button onClick={() => rotateWebhookSecret(w.id)} disabled={rotatingSecret}
+                        className="text-xs bg-accent text-white px-3 py-1.5 rounded-lg disabled:opacity-60">
+                        {rotatingSecret ? 'Rotating…' : 'Rotate secret'}
+                      </button>
+                      <button onClick={() => setRotatingWebhookId(null)} className="text-xs text-muted hover:text-ink px-2">Cancel</button>
+                    </div>
+                  </div>
+                )}
                 {editingWebhookId === w.id && (
                   <div className="mt-3 border-t border-border pt-3">
                     <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">Endpoint URL</label>
@@ -642,6 +711,11 @@ function SettingsPageInner() {
       {profile?.role === 'user' && profile?.reseller_status !== 'pending' && (
         <div className="bg-accent2-light border border-accent2/20 rounded-xl p-6">
           <h2 className="font-display font-bold text-base text-accent2 mb-2">Become a reseller</h2>
+          {profile?.reseller_status === 'rejected' && (
+            <p className="text-xs text-ink2 bg-white/60 border border-accent2/20 rounded-lg px-3 py-2 mb-3">
+              Your previous application wasn&apos;t approved. You&apos;re welcome to apply again with more detail about how you plan to resell.
+            </p>
+          )}
           <p className="text-sm text-ink2 font-light mb-4">
             Buy wholesale bandwidth and resell under your own brand. No minimum commitment.
           </p>

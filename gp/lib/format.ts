@@ -16,7 +16,21 @@
  */
 
 export function formatGb(value: number | null | undefined): string {
-  return (value ?? 0).toFixed(2)
+  // NaN (an emptied number field) must not print as "NaN".
+  return (Number.isFinite(value as number) ? (value as number) : 0).toFixed(2)
+}
+
+/**
+ * Like formatGb, but a small non-zero amount is shown in MB instead of being
+ * flattened to "0.00" (per-host rows are routinely a few MB).
+ */
+export function formatGbPrecise(value: number | null | undefined): string {
+  const v = value ?? 0
+  if (v > 0 && v < 0.01) {
+    const mb = v * 1024
+    return `${mb < 1 ? mb.toFixed(2) : mb.toFixed(1)} MB`
+  }
+  return formatGb(v)
 }
 
 /**

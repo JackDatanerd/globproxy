@@ -19,6 +19,13 @@ export class ApiError extends Error {
   }
 }
 
+// Shared by every call that doesn't go through apiFetch: the step-up gate's
+// 403 must send the customer to verify, not leave them on a raw error.
+export function redirectToMfa(data: any): void {
+  const next = encodeURIComponent(window.location.pathname + window.location.search)
+  window.location.href = `${data?.redirect || '/auth/mfa-verify'}?next=${next}`
+}
+
 export async function apiFetch<T = any>(url: string, init?: RequestInit): Promise<T> {
   let res: Response
   try {
@@ -31,8 +38,7 @@ export async function apiFetch<T = any>(url: string, init?: RequestInit): Promis
   const data: any = await res.json().catch(() => ({}))
   if (!res.ok) {
     if (res.status === 403 && data?.code === 'mfa_required') {
-      const next = encodeURIComponent(window.location.pathname + window.location.search)
-      window.location.href = `${data.redirect || '/auth/mfa-verify'}?next=${next}`
+      redirectToMfa(data)
       throw new ApiError('Two-factor verification required — redirecting…', 403, 'mfa_required')
     }
     if (res.status === 403 && data?.code === 'reauth_required') {
@@ -75,4 +81,37 @@ export async function copyText(text: string): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+// Downloads a server-generated file (CSV export). A plain <a href> navigation
+// to these step-up-gated routes turned an expired 2FA session into a raw JSON
+// error page; fetching them lets the 403 redirect to verification and any
+// other failure show as a toast on the page the customer is already on.
+export async function downloadFile(url: string, fallbackName: string): Promise<void> {
+  let res: Response
+  try {
+    res = await fetchWithReauth(url)
+  } catch {
+    throw new ApiError('Network error — check your connection and try again.', 0)
+  }
+  if (!res.ok) {
+    const data: any = await res.json().catch(() => ({}))
+    if (res.status === 403 && data?.code === 'mfa_required') {
+      redirectToMfa(data)
+      throw new ApiError('Two-factor verification required — redirecting…', 403, 'mfa_required')
+    }
+    throw new ApiError(data?.error || `Export failed (${res.status})`, res.status, data?.code)
+  }
+  const cd = res.headers.get('content-disposition') || ''
+  const m = cd.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i)
+  const name = m ? decodeURIComponent(m[1]) : fallbackName
+  const blob = await res.blob()
+  const href = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = href
+  a.download = name
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  setTimeout(() => URL.revokeObjectURL(href), 10_000)
 }

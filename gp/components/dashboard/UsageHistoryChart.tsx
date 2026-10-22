@@ -1,8 +1,9 @@
 'use client'
 import { useEffect, useState } from 'react'
 import clsx from 'clsx'
-import { formatGb } from '@/lib/format'
+import { formatGb, formatGbPrecise } from '@/lib/format'
 import { apiFetch } from '@/lib/clientApi'
+import ExportButton from '@/components/dashboard/ExportButton'
 
 interface SeriesPoint { date: string; gb: number }
 interface BreakdownRow {
@@ -123,6 +124,9 @@ export default function UsageHistoryChart({ sessions = [] }: { sessions?: { id: 
     let cancelled = false
     setLoading(true)
     setError(null)
+    // Drop the previous range's numbers up front: after a failed range change
+    // the old table used to stay on screen under the new range's error.
+    setData(null)
     apiFetch<HistoryResponse>(`/api/dashboard/usage/history?range=${range}${scope}`)
       .then(json => { if (!cancelled) setData(json) })
       .catch(err => { if (!cancelled) setError(err.message) })
@@ -165,12 +169,13 @@ export default function UsageHistoryChart({ sessions = [] }: { sessions?: { id: 
               </button>
             ))}
           </div>
-          <a
-            href={`/api/dashboard/usage/history?range=${range}${scope}&format=csv&dataset=series`}
+          <ExportButton
+            url={`/api/dashboard/usage/history?range=${range}${scope}&format=csv&dataset=series`}
+            filename="globproxy-usage.csv"
             className="text-[11px] font-mono px-3 py-1.5 rounded-lg border border-border text-muted hover:text-accent hover:border-accent transition-colors"
           >
             Export CSV
-          </a>
+          </ExportButton>
         </div>
       </div>
 
@@ -210,18 +215,21 @@ export default function UsageHistoryChart({ sessions = [] }: { sessions?: { id: 
               )}
             </p>
           </div>
-          <a
-            href={`/api/dashboard/usage/history?range=${range}${scope}&format=csv&dataset=breakdown`}
+          <ExportButton
+            url={`/api/dashboard/usage/history?range=${range}${scope}&format=csv&dataset=breakdown`}
+            filename="globproxy-usage-breakdown.csv"
             className="text-[11px] font-mono px-3 py-1.5 rounded-lg border border-border text-muted hover:text-accent hover:border-accent transition-colors flex-shrink-0"
           >
             Export full CSV
-          </a>
+          </ExportButton>
         </div>
 
         {!loading && data && data.breakdown.length === 0 ? (
           <div className="text-center py-10">
             <p className="text-muted text-sm font-light">No host/country activity recorded in this range yet.</p>
           </div>
+        ) : !data ? (
+          <div className="text-center py-10 text-xs font-mono text-muted">{loading ? 'Loading…' : ''}</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
@@ -230,7 +238,7 @@ export default function UsageHistoryChart({ sessions = [] }: { sessions?: { id: 
                   <th className="text-left px-6 py-2.5 font-medium">Session</th>
                   <th className="text-left px-3 py-2.5 font-medium">Host</th>
                   <th className="text-left px-3 py-2.5 font-medium">Country</th>
-                  <th className="text-right px-3 py-2.5 font-medium">GB used</th>
+                  <th className="text-right px-3 py-2.5 font-medium">Used</th>
                   <th className="text-right px-3 py-2.5 font-medium">Requests</th>
                   <th className="text-right px-6 py-2.5 font-medium">Success</th>
                 </tr>
@@ -243,7 +251,7 @@ export default function UsageHistoryChart({ sessions = [] }: { sessions?: { id: 
                     <td className="px-3 py-2.5">
                       <span className="text-[10.5px] font-mono bg-accent-light text-accent px-2 py-0.5 rounded">{row.country}</span>
                     </td>
-                    <td className="px-3 py-2.5 text-right font-mono text-ink">{formatGb(row.gb)}</td>
+                    <td className="px-3 py-2.5 text-right font-mono text-ink">{formatGbPrecise(row.gb)}</td>
                     <td className="px-3 py-2.5 text-right font-mono text-muted">{row.requests.toLocaleString()}</td>
                     <td className="px-6 py-2.5 text-right font-mono text-muted">{row.successRate.toFixed(1)}%</td>
                   </tr>

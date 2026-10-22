@@ -15,7 +15,8 @@ export default async function NewProxyPage() {
 
   const available = bw?.available_gb ?? 0
 
-  if (available <= 0) {
+  // Under the 0.01 GB minimum the form could open but never submit.
+  if (available < 0.01) {
     redirect('/dashboard/buy?reason=no_bandwidth')
   }
 

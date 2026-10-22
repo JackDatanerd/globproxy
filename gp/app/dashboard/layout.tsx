@@ -19,8 +19,10 @@ export default async function DashboardLayout({ children }: { children: React.Re
     .single()
 
   // A failed lookup must not be read as "plain user, nothing wrong": every
-  // suspended/deleted/MFA check below would silently pass. Fail closed to the
-  // error boundary (app/dashboard/error.tsx) instead.
+  // suspended/deleted/MFA check below would silently pass. Fail closed by
+  // throwing. NOTE: app/dashboard/error.tsx does NOT catch this — an error
+  // boundary only wraps its segment's page and children, never the layout of
+  // the same segment. It is caught by the root boundary, app/error.tsx.
   if (profileError || !profile) {
     throw new Error('Could not load your account. Please refresh and try again.')
   }

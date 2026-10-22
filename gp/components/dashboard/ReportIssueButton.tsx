@@ -1,12 +1,14 @@
 'use client'
 import { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import toast from 'react-hot-toast'
 import { apiJson } from '@/lib/clientApi'
 
 // Sits in DashTopbar next to Sign out. Backend: app/api/support/report/route.ts
 // (writes to support_reports, migration 0036) + an immediate admin email —
 // doesn't require the @globproxy inbox to be active since it only sends.
-export default function ReportIssueButton() {
+export default function ReportIssueButton({ variant = 'topbar' }: { variant?: 'topbar' | 'primary' }) {
+  const router = useRouter()
   const [open, setOpen] = useState(false)
   const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(false)
@@ -27,6 +29,7 @@ export default function ReportIssueButton() {
       toast.success('Thanks — we got it and will follow up by email.')
       setMessage('')
       setOpen(false)
+      router.refresh() // the Support page lists what was just sent
     } catch (err: any) {
       // A network failure used to throw out of submit() and leave the button
       // stuck on "Sending…" with the report unsent.
@@ -40,9 +43,13 @@ export default function ReportIssueButton() {
     <>
       <button
         onClick={() => setOpen(true)}
-        className="text-xs text-muted hover:text-ink border border-border px-3 py-1.5 rounded-lg transition-colors"
+        className={variant === 'primary'
+          ? 'bg-accent text-white px-5 py-2.5 rounded-xl text-sm font-medium hover:opacity-90 transition-opacity'
+          : 'text-xs text-muted hover:text-ink border border-border px-2.5 sm:px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap'}
       >
-        Report an issue
+        {variant === 'primary'
+          ? 'Report an issue'
+          : <><span className="sm:hidden">Report</span><span className="hidden sm:inline">Report an issue</span></>}
       </button>
       {open && (
         <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-center p-4" 

@@ -31,6 +31,7 @@ interface Props {
 export default function SessionManager({ credentialId, cred, host, port, baseUser, pass, onCopy }: Props) {
   const [sessions, setSessions] = useState<Session[] | null>(null)
   const [creating, setCreating] = useState(false)
+  const [batchCount, setBatchCount] = useState(1)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editLabel, setEditLabel] = useState('')
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -51,19 +52,25 @@ export default function SessionManager({ credentialId, cred, host, port, baseUse
 
   // Next unused "Session N". Using sessions.length + 1 handed out duplicate
   // names after any deletion (create 1,2,3 → delete 2 → next was "Session 3").
-  function nextDefaultLabel(): string {
+  function nextDefaultLabels(count: number): string[] {
     const taken = new Set((sessions ?? []).map(s => s.label))
     let n = (sessions?.length ?? 0) + 1
-    while (taken.has(`Session ${n}`)) n++
-    return `Session ${n}`
+    const out: string[] = []
+    while (out.length < count) {
+      const l = `Session ${n}`
+      if (!taken.has(l)) out.push(l)
+      n++
+    }
+    return out
   }
 
   async function createSession() {
     setCreating(true)
     try {
-      const data = await apiJson('POST', `/api/dashboard/proxies/${credentialId}/sessions`, { label: nextDefaultLabel() })
-      setSessions(prev => [...(prev ?? []), data.session])
-      toast.success('Session created')
+      const data = await apiJson('POST', `/api/dashboard/proxies/${credentialId}/sessions`, { labels: nextDefaultLabels(batchCount) })
+      const made: Session[] = data.sessions ?? (data.session ? [data.session] : [])
+      setSessions(prev => [...(prev ?? []), ...made])
+      toast.success(made.length > 1 ? `${made.length} sessions created` : 'Session created')
     } catch (err: any) {
       if (err?.code !== 'mfa_required') toast.error(err.message)
     } finally {
@@ -143,10 +150,17 @@ export default function SessionManager({ credentialId, cred, host, port, baseUse
         <span className="text-[10px] font-mono text-white/40 uppercase tracking-widest">
           Sticky sessions {sessions.length > 0 ? `(${sessions.length})` : ''}
         </span>
-        <button onClick={createSession} disabled={creating}
-          className="text-[10px] font-mono text-accent hover:opacity-70 border border-accent/30 px-2.5 py-1 rounded transition-colors disabled:opacity-50">
-          {creating ? 'creating...' : '+ new session'}
-        </button>
+        <div className="flex items-center gap-1.5">
+          <select value={batchCount} onChange={e => setBatchCount(Number(e.target.value))} disabled={creating}
+            aria-label="How many sessions to create"
+            className="text-[10px] font-mono bg-white/5 text-white/70 border border-white/15 rounded px-1.5 py-1 focus:outline-none focus:border-accent">
+            {[1, 5, 10, 25].map(n => <option key={n} value={n} className="text-ink">{n}</option>)}
+          </select>
+          <button onClick={createSession} disabled={creating}
+            className="text-[10px] font-mono text-accent hover:opacity-70 border border-accent/30 px-2.5 py-1 rounded transition-colors disabled:opacity-50">
+            {creating ? 'creating...' : batchCount > 1 ? `+ ${batchCount} new sessions` : '+ new session'}
+          </button>
+        </div>
       </div>
 
       {sorted.length === 0 ? (
@@ -161,7 +175,7 @@ export default function SessionManager({ credentialId, cred, host, port, baseUse
               <div key={s.id} className="px-3 py-2.5">
                 <div className="flex items-center gap-2">
                   <button onClick={() => patchSession(s.id, { pinned: !s.pinned }, { pinned: !s.pinned })}
-                    title={s.pinned ? 'Unpin' : 'Pin to top'}
+                    title={s.pinned ? 'Unpin' : 'Pin to top'} aria-label={s.pinned ? `Unpin ${s.label}` : `Pin ${s.label} to top`} aria-pressed={!!s.pinned}
                     className={clsx('text-xs', s.pinned ? 'text-accent' : 'text-white/30 hover:text-white/60')}>
                     ★
                   </button>
@@ -180,20 +194,25 @@ export default function SessionManager({ credentialId, cred, host, port, baseUse
                   )}
 
                   <button onClick={() => patchSession(s.id, { collapsed: !s.collapsed }, { collapsed: !s.collapsed })}
+                    aria-label={s.collapsed ? `Show endpoint for ${s.label}` : `Hide endpoint for ${s.label}`} aria-expanded={!s.collapsed}
                     className="text-[10px] font-mono text-white/40 hover:text-white/70 px-1">
                     {s.collapsed ? '▸' : '▾'}
                   </button>
-                  <button onClick={() => onCopy(endpoint, 'Endpoint copied')}
+                  <button onClick={() => onCopy(endpoint, 'Endpoint copied')} aria-label={`Copy endpoint for ${s.label}`}
                     className="text-[10px] font-mono text-accent hover:opacity-70 border border-accent/30 px-2 py-0.5 rounded">
                     copy
                   </button>
-                  <button onClick={() => terminateSession(s.id)} title="Stop showing this session (it still expires naturally once its lifetime elapses)"
+                  {/* Two near-identical glyph buttons that both just made the row
+                      vanish; spelled out so the difference is visible. */}
+                  <button onClick={() => terminateSession(s.id)} aria-label={`Remove ${s.label} from the list`}
+                    title="Remove from this list. The IP itself keeps working until its lifetime elapses."
                     className="text-[10px] font-mono text-white/40 hover:text-amber-400 px-1.5">
-                    ⏻
+                    remove
                   </button>
-                  <button onClick={() => deleteSession(s.id)} title="Delete"
+                  <button onClick={() => deleteSession(s.id)} aria-label={`Delete ${s.label}`}
+                    title="Delete this session and its fixed endpoint"
                     className="text-[10px] font-mono text-white/40 hover:text-red-400 px-1.5">
-                    ✕
+                    delete
                   </button>
                 </div>
                 {!s.collapsed && (

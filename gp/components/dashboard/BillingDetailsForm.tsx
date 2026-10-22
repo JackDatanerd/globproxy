@@ -1,6 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
+import { apiFetch, apiJson } from '@/lib/clientApi'
 
 // Postal address + tax / VAT id printed on FUTURE invoices (invoices already
 // issued keep the details they were issued with).
@@ -14,10 +15,8 @@ export default function BillingDetailsForm() {
 
   useEffect(() => {
     let cancelled = false
-    fetch('/api/dashboard/billing/details')
-      .then(async r => {
-        const d = await r.json().catch(() => ({}))
-        if (!r.ok) throw new Error(d.error || 'load failed')
+    apiFetch('/api/dashboard/billing/details')
+      .then(d => {
         if (!cancelled) { setAddress(d.billing_address ?? ''); setTaxId(d.tax_id ?? ''); setLoaded(true) }
       })
       .catch(() => { if (!cancelled) setLoadFailed(true) })
@@ -27,16 +26,11 @@ export default function BillingDetailsForm() {
   async function save() {
     setSaving(true)
     try {
-      const res = await fetch('/api/dashboard/billing/details', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ billing_address: address, tax_id: taxId }),
-      })
-      const d = await res.json().catch(() => ({}))
-      if (!res.ok) toast.error(d.error || 'Could not save billing details')
-      else { toast.success('Billing details saved — they appear on your next invoices.'); setOpen(false) }
-    } catch {
-      toast.error('Could not save billing details')
+      await apiJson('PUT', '/api/dashboard/billing/details', { billing_address: address, tax_id: taxId })
+      toast.success('Billing details saved — they appear on your next invoices.')
+      setOpen(false)
+    } catch (err: any) {
+      if (err?.code !== 'mfa_required') toast.error(err?.message || 'Could not save billing details')
     }
     setSaving(false)
   }

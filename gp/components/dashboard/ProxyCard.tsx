@@ -1,6 +1,7 @@
 'use client'
 import { useState, useMemo, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { buildProxyUsername, getProxyPort, deriveSessionId } from '@/lib/proxyEndpoint'
 import { apiJson, copyText } from '@/lib/clientApi'
 import { formatGb, formatPct } from '@/lib/format'
@@ -44,6 +45,7 @@ export default function ProxyCard({ cred, index, availableGb, expanded, onToggle
   const router = useRouter()
   const [showPass, setShowPass] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [pausing, setPausing] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [tab, setTab] = useState<Tab>('cred')
   const [lang, setLang] = useState<Lang>('py')
@@ -186,8 +188,32 @@ export default function ProxyCard({ cred, index, availableGb, expanded, onToggle
     // Labels are free text — keep the download name filesystem-safe.
     const safe = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'proxy-session'
     a.href = url; a.download = `${safe}.txt`
-    a.click(); URL.revokeObjectURL(url)
+    // Attached while clicked and revoked later: revoking in the same tick can
+    // cancel the download in Safari/Firefox, and a detached anchor's click is
+    // ignored by some of them.
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    setTimeout(() => URL.revokeObjectURL(url), 10_000)
     toast.success('Downloaded')
+  }
+
+  // Pause keeps the allocation, credentials and settings but stops the session
+  // from using bandwidth (same mechanism as an admin kill); resume restores it.
+  // Only a pause the customer made can be undone here — one set by GlobProxy
+  // can't (the server answers 403 and says to contact support).
+  async function togglePause(resume: boolean) {
+    if (pausing) return
+    setPausing(true)
+    try {
+      await apiJson('POST', `/api/dashboard/proxies/${cred.id}/${resume ? 'resume' : 'pause'}`)
+      toast.success(resume ? 'Session resumed' : 'Session paused — it won’t use bandwidth until you resume it')
+      router.refresh()
+    } catch (err: any) {
+      if (err?.code !== 'mfa_required') toast.error(err.message ?? (resume ? 'Could not resume' : 'Could not pause'))
+    } finally {
+      setPausing(false)
+    }
   }
 
   async function handleDelete(e: React.MouseEvent) {
@@ -195,8 +221,11 @@ export default function ProxyCard({ cred, index, availableGb, expanded, onToggle
     if (!confirmDelete) { setConfirmDelete(true); return }
     setDeleting(true)
     try {
-      await apiJson('DELETE', `/api/dashboard/proxies/${cred.id}`)
-      toast.success('Session deleted')
+      const res = await apiJson<{ gb_released?: number; gb_used?: number }>('DELETE', `/api/dashboard/proxies/${cred.id}`)
+      const released = Number(res?.gb_released ?? 0)
+      toast.success(released >= 0.01
+        ? `Session deleted — ${formatGb(released)} GB returned to your balance`
+        : 'Session deleted')
       router.refresh()
     } catch (err: any) {
       toast.error(err.message)
@@ -369,7 +398,8 @@ const agent = new HttpsProxyAgent(
   // running out of its allocated GB.
   const railColor =
     cred.status === 'pending' ? 'bg-amber-500'
-    : isWarmingUp ? 'bg-accent'
+    : cred.status === 'active' && isWarmingUp ? 'bg-accent'
+    : cred.status === 'suspended' ? 'bg-red-300'
     : cred.status === 'active' && pct >= URGENT_PCT ? 'bg-red-400'
     : cred.status === 'active' && pct >= WARN_PCT ? 'bg-amber-400'
     : cred.status === 'active' ? 'bg-accent2'
@@ -388,33 +418,31 @@ const agent = new HttpsProxyAgent(
       <div className={clsx('absolute left-0 top-0 bottom-0 w-[3px] rounded-l-xl', railColor)} />
 
       {/* Collapsed row header — click to expand */}
+      {/* The row is clickable for mouse users, but the keyboard/screen-reader
+          control is the real <button> around the title block — a role="button"
+          container holding another button (quick copy) is invalid ARIA. */}
       <div
         onClick={onToggle}
-        role="button" tabIndex={0} aria-expanded={expanded}
-        aria-label={`${cred.label || `Session #${index + 1}`} — ${expanded ? 'collapse' : 'expand'} details`}
-        onKeyDown={e => {
-          // Only the header itself: Enter/Space on the nested copy button must keep its own meaning.
-          if (e.target !== e.currentTarget) return
-          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle() }
-        }}
-        className="flex items-center gap-4 pl-6 pr-4 py-3.5 cursor-pointer select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded-xl">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
+        className="flex items-center gap-4 pl-6 pr-4 py-3.5 cursor-pointer select-none rounded-xl">
+        <button type="button" onClick={e => { e.stopPropagation(); onToggle() }} aria-expanded={expanded}
+          aria-label={`${cred.label || `Session #${index + 1}`} — ${expanded ? 'collapse' : 'expand'} details`}
+          className="flex-1 min-w-0 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded-md">
+          <span className="flex items-center gap-2 flex-wrap w-full">
             <span className="text-sm font-medium text-ink truncate">{cred.label || `Session #${index + 1}`}</span>
             <span className={clsx('text-[9px] font-mono px-2 py-0.5 rounded-full uppercase tracking-wide', statusBadge)}>{cred.status}</span>
             {isWarmingUp && cred.status === 'active' && (
               <span className="text-[9px] font-mono px-2 py-0.5 rounded-full uppercase tracking-wide text-accent bg-accent-light">warming up</span>
             )}
-            {cred.created_by && cred.created_by !== cred.user_id && (
+            {cred.created_by && (
               <span className="text-[9px] font-mono px-2 py-0.5 rounded-full uppercase tracking-wide text-muted bg-surface border border-border">via reseller</span>
             )}
-          </div>
-          <div className="flex items-center gap-1.5 text-[11px] font-mono text-muted mt-0.5">
+          </span>
+          <span className="flex items-center gap-1.5 text-[11px] font-mono text-muted mt-0.5 w-full">
             <span>{cred.session_type}</span><span>·</span><span>{(cred.protocol || 'http').toUpperCase()}</span>
             {isSticky && cred.sticky_duration && <><span>·</span><span>{cred.sticky_duration}min sticky</span></>}
             {(cred.country || cred.city) && <><span>·</span><span>{[cred.city, cred.country].filter(Boolean).join(', ')}</span></>}
-          </div>
-        </div>
+          </span>
+        </button>
 
         {cred.status === 'active' && gbAllocated > 0 && (
           <div className="w-36 flex-shrink-0 hidden sm:block">
@@ -463,6 +491,28 @@ const agent = new HttpsProxyAgent(
               </button>
             </div>
           )}
+          {cred.status === 'suspended' && (
+            <div className="mb-4 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-4 py-3 font-mono">
+              <div>
+                {cred.suspended_reason === 'customer'
+                  ? '⏸ You paused this session. It keeps its bandwidth and settings but won’t connect until you resume it.'
+                  : cred.suspended_reason === 'account'
+                  ? '⏸ This session is paused because your account is suspended. It comes back when the account is reinstated — nothing has been lost.'
+                  : cred.suspended_reason === 'admin'
+                    ? '⏸ This session was disabled by our team. Your bandwidth is safe and nothing has been deducted, but it won’t connect until we re-enable it.'
+                    : '⏸ This session is currently disabled and won’t connect. Your bandwidth is safe.'}
+              </div>
+              {cred.suspended_reason === 'customer' && canDelete && (
+                <button onClick={() => togglePause(true)} disabled={pausing}
+                  className="mt-2 bg-red-600 text-white px-3 py-1.5 rounded-lg text-xs disabled:opacity-60 hover:opacity-90">
+                  {pausing ? 'Resuming…' : 'Resume session'}
+                </button>
+              )}
+              <div className="mt-1.5">
+                Think this is a mistake? <Link href="/dashboard/support" className="underline hover:opacity-80">Contact support</Link> and quote “{cred.label || cred.id.slice(0, 8)}”.
+              </div>
+            </div>
+          )}
           {cred.status === 'active' && cred.upstream_missing_since && (
             <div className="mb-4 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-4 py-3 font-mono">
               ⚠ This session isn’t responding on our network right now. We’ve been alerted and are fixing it — your bandwidth is safe. If it’s still down after a while, contact support.
@@ -477,30 +527,43 @@ const agent = new HttpsProxyAgent(
           {cred.status === 'active' && (
             <>
               {/* Tabs */}
-              <div role="tablist" aria-label="Session details" className="flex items-center gap-5 border-b border-border mb-4 overflow-x-auto">
-                <button role="tab" aria-selected={tab === 'cred'} onClick={() => setTab('cred')}
+              <div role="tablist" aria-label="Session details"
+                onKeyDown={e => {
+                  // Standard tab pattern: arrows move between tabs, Home/End jump.
+                  const keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End']
+                  if (!keys.includes(e.key)) return
+                  const tabs = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]'))
+                  const i = tabs.findIndex(t => t === document.activeElement)
+                  if (i === -1) return
+                  e.preventDefault()
+                  const next = e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1
+                    : e.key === 'ArrowRight' ? (i + 1) % tabs.length : (i - 1 + tabs.length) % tabs.length
+                  tabs[next].focus(); tabs[next].click()
+                }}
+                className="flex items-center gap-5 border-b border-border mb-4 overflow-x-auto">
+                <button role="tab" aria-selected={tab === 'cred'} tabIndex={tab === 'cred' ? 0 : -1} onClick={() => setTab('cred')}
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'cred' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
                   Credentials
                 </button>
-                <button role="tab" aria-selected={tab === 'bandwidth'} onClick={() => setTab('bandwidth')}
+                <button role="tab" aria-selected={tab === 'bandwidth'} tabIndex={tab === 'bandwidth' ? 0 : -1} onClick={() => setTab('bandwidth')}
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'bandwidth' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
                   Bandwidth{pct >= WARN_PCT && <span className={clsx('ml-1', pct >= URGENT_PCT ? 'text-red-400' : 'text-amber-400')}>●</span>}
                 </button>
-                <button role="tab" aria-selected={tab === 'endpoints'} onClick={() => setTab('endpoints')}
+                <button role="tab" aria-selected={tab === 'endpoints'} tabIndex={tab === 'endpoints' ? 0 : -1} onClick={() => setTab('endpoints')}
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'endpoints' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
                   {isSticky ? 'Sticky sessions' : 'Endpoint'}
                 </button>
-                <button role="tab" aria-selected={tab === 'whitelist'} onClick={() => setTab('whitelist')}
+                <button role="tab" aria-selected={tab === 'whitelist'} tabIndex={tab === 'whitelist' ? 0 : -1} onClick={() => setTab('whitelist')}
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'whitelist' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
                   IP whitelist
                 </button>
                 {canEdit && (
-                  <button role="tab" aria-selected={tab === 'edit'} onClick={() => setTab('edit')}
+                  <button role="tab" aria-selected={tab === 'edit'} tabIndex={tab === 'edit' ? 0 : -1} onClick={() => setTab('edit')}
                     className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'edit' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
                     Edit
                   </button>
                 )}
-                <button role="tab" aria-selected={tab === 'code'} onClick={() => setTab('code')}
+                <button role="tab" aria-selected={tab === 'code'} tabIndex={tab === 'code' ? 0 : -1} onClick={() => setTab('code')}
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'code' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
                   Code snippets
                 </button>
@@ -807,6 +870,14 @@ const agent = new HttpsProxyAgent(
             <div className="text-[11px] text-muted font-mono">
               {!canDelete ? '⚠ Allocated by reseller — cannot delete' : 'Deleting returns this session\u2019s unused GB to your account — GB already used isn\u2019t refunded'}
             </div>
+            <div className="flex items-center flex-shrink-0">
+            {canDelete && cred.status === 'active' && (
+              <button onClick={() => togglePause(false)} disabled={pausing || deleting}
+                title="Stop this session using bandwidth without deleting it. Resume any time."
+                className="text-xs font-mono px-3 py-1.5 rounded-lg border border-border text-muted hover:border-amber-300 hover:text-amber-600 transition-all disabled:opacity-50 mr-2">
+                {pausing ? 'Pausing…' : 'Pause'}
+              </button>
+            )}
             {canDelete && (
               <button onClick={handleDelete} disabled={deleting}
                 className={clsx(
@@ -818,6 +889,7 @@ const agent = new HttpsProxyAgent(
                 {deleting ? 'Deleting...' : confirmDelete ? 'Confirm delete' : 'Delete session'}
               </button>
             )}
+            </div>
           </div>
         </div>
       )}

@@ -19,7 +19,8 @@ const resellerNav = [
   { label: 'My Stock',      href: '/dashboard/proxies' },
   { label: 'Sub-users',     href: '/reseller/users' },
   { label: 'Transfers',     href: '/reseller/transfers' },
-  { label: 'Buy Wholesale', href: '/dashboard/buy' },
+  { label: 'Buy Bandwidth', href: '/dashboard/buy' },
+  { label: 'Usage',         href: '/dashboard/usage' },
   { label: 'Earnings',      href: '/reseller/earnings' },
   { label: 'Billing',       href: '/dashboard/billing' },
   { label: 'Referrals',     href: '/dashboard/referrals' },
@@ -28,6 +29,15 @@ const resellerNav = [
 
 // API Keys only injected if api_access is true (handled below)
 const apiKeyItem = { label: 'API Keys', href: '/dashboard/api-keys' }
+
+type NavItem = { label: string; href: string }
+// Insert by label rather than by array index: the index-based slices that used
+// to do this broke silently whenever an item was added to a list (the reseller
+// list gained no Usage link for exactly that kind of reason).
+function insertBefore(list: NavItem[], beforeLabel: string, item: NavItem): NavItem[] {
+  const i = list.findIndex(n => n.label === beforeLabel)
+  return i === -1 ? [...list, item] : [...list.slice(0, i), item, ...list.slice(i)]
+}
 
 const adminNav = [
   { label: 'Overview',    href: '/admin' },
@@ -74,7 +84,7 @@ export default function DashSidebar({ role, open = false, onClose }: Props) {
     return () => window.removeEventListener('keydown', onKey)
   }, [open, onClose])
 
-  let nav = role === 'admin' ? adminNav : role === 'reseller' ? resellerNav : userNav
+  let nav: NavItem[] = role === 'admin' ? adminNav : role === 'reseller' ? resellerNav : userNav
 
   // API Keys nav item shown for every reseller, not just ones who already
   // have api_access — previously this was gated on `apiAccess`, which
@@ -84,21 +94,17 @@ export default function DashSidebar({ role, open = false, onClose }: Props) {
   // just unreachable via nav. Admin still always sees it (has access
   // unconditionally).
   if (role === 'reseller') {
-    nav = [
-      ...resellerNav.slice(0, 6), // up to Earnings
-      apiKeyItem,
-      ...resellerNav.slice(6),    // Billing, Referrals, Settings
-    ]
+    nav = insertBefore(resellerNav, 'Billing', apiKeyItem)
   }
   if (role === 'admin') {
-    nav = [...adminNav.slice(0, 5), apiKeyItem, ...adminNav.slice(5)] // up to Credentials, then API Keys, then Affiliates + Sales Cycles + Settings
+    nav = insertBefore(adminNav, 'Support', apiKeyItem) // after Credentials
   }
 
   // An admin browsing their OWN account pages (/dashboard/*) used to be shown
   // only the admin nav — no way to reach their proxies, billing or settings.
   const adminOnOwnAccount = role === 'admin' && path.startsWith('/dashboard')
   if (adminOnOwnAccount) {
-    nav = [...userNav.slice(0, 6), apiKeyItem, userNav[6], { label: '← Admin Panel', href: '/admin' }]
+    nav = [...insertBefore(userNav, 'Settings', apiKeyItem), { label: '← Admin Panel', href: '/admin' }]
   }
 
   const label = adminOnOwnAccount ? 'My Account' : role === 'admin' ? 'Admin Panel' : role === 'reseller' ? 'Reseller Panel' : 'My Account'
@@ -111,7 +117,10 @@ export default function DashSidebar({ role, open = false, onClose }: Props) {
       className={clsx(
         'w-56 bg-white border-r border-border flex-shrink-0 flex-col py-6',
         // md+: normal in-flow column. Below md: fixed drawer under the topbar.
-        'md:flex md:static md:translate-x-0',
+        // md+: sticky under the topbar and scrolls on its own when the nav is
+        // taller than the viewport (the drawer used to cut items off on short
+        // screens). Below md the drawer scrolls too.
+        'overflow-y-auto md:flex md:sticky md:top-16 md:bottom-auto md:self-start md:h-[calc(100vh-4rem)] md:translate-x-0',
         open ? 'flex fixed top-16 bottom-0 left-0 z-40 shadow-xl' : 'hidden'
       )}>
       <nav className="flex flex-col gap-0.5 px-3 flex-1">
@@ -130,10 +139,21 @@ export default function DashSidebar({ role, open = false, onClose }: Props) {
         ))}
       </nav>
       <div className="px-3 pt-4 border-t border-border mx-3">
-        <a href="mailto:support@globproxy.com"
-          className="flex items-center px-3 py-2.5 rounded-xl text-sm text-muted hover:text-ink hover:bg-surface transition-all">
-          Support
-        </a>
+        {role === 'admin' && !adminOnOwnAccount ? (
+          <a href="mailto:support@globproxy.com"
+            className="flex items-center px-3 py-2.5 rounded-xl text-sm text-muted hover:text-ink hover:bg-surface transition-all">
+            Support
+          </a>
+        ) : (
+          <Link href="/dashboard/support"
+            aria-current={isActive(path, '/dashboard/support') ? 'page' : undefined}
+            className={clsx(
+              'flex items-center px-3 py-2.5 rounded-xl text-sm transition-all',
+              isActive(path, '/dashboard/support') ? 'bg-accent-light text-accent font-medium' : 'text-muted hover:text-ink hover:bg-surface'
+            )}>
+            Support
+          </Link>
+        )}
       </div>
     </aside>
     </>

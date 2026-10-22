@@ -41,21 +41,21 @@ export default function DashTopbar({
     router.refresh()
   }
   return (
-    <header className="bg-white border-b border-border h-16 flex items-center px-4 md:px-6 gap-3 md:gap-4 sticky top-0 z-40 flex-shrink-0">
+    <header className="bg-white border-b border-border h-16 flex items-center px-4 md:px-6 gap-2 sm:gap-3 md:gap-4 sticky top-0 z-40 flex-shrink-0">
       {onMenu && (
         <button onClick={onMenu} aria-label={menuOpen ? 'Close menu' : 'Open menu'} aria-expanded={menuOpen} aria-controls="dash-sidebar"
           className="md:hidden -ml-1 w-9 h-9 flex items-center justify-center rounded-lg border border-border text-ink2 hover:text-ink">
           {menuOpen ? '✕' : '☰'}
         </button>
       )}
-      <Link href="/dashboard" className="font-display font-black text-xl text-ink tracking-tight">Glob<span className="text-accent">Proxy</span></Link>
+      <Link href="/dashboard" className="font-display font-black text-lg sm:text-xl text-ink tracking-tight flex-shrink-0">Glob<span className="text-accent">Proxy</span></Link>
       <div className="flex-1" />
-      <div className="flex items-center gap-3">
-        {profile?.role === 'reseller' && <span className="bg-accent2-light text-accent2 text-[10px] font-mono tracking-widest px-2.5 py-1 rounded-full">RESELLER</span>}
-        {profile?.role === 'admin' && <span className="bg-accent-light text-accent text-[10px] font-mono tracking-widest px-2.5 py-1 rounded-full">ADMIN</span>}
+      <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+        {profile?.role === 'reseller' && <span className="hidden sm:inline bg-accent2-light text-accent2 text-[10px] font-mono tracking-widest px-2.5 py-1 rounded-full">RESELLER</span>}
+        {profile?.role === 'admin' && <span className="hidden sm:inline bg-accent-light text-accent text-[10px] font-mono tracking-widest px-2.5 py-1 rounded-full">ADMIN</span>}
         <span className="text-sm text-ink2 hidden md:block">{profile?.email}</span>
         <ReportIssueButton />
-        <button onClick={signOut} disabled={signingOut} className="text-xs disabled:opacity-50 text-muted hover:text-ink border border-border px-3 py-1.5 rounded-lg transition-colors">Sign out</button>
+        <button onClick={signOut} disabled={signingOut} className="text-xs disabled:opacity-50 text-muted hover:text-ink border border-border px-2.5 sm:px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap">Sign out</button>
       </div>
     </header>
   )

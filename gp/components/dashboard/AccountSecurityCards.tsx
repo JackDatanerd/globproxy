@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { SECURITY_EVENT_LABELS } from '@/lib/securityEventLabels'
 import toast from 'react-hot-toast'
+import { shortUa } from '@/lib/userAgent'
 
 const inputCls = 'w-full bg-surface border border-border px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-accent transition-colors'
 const labelCls = 'block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5'
@@ -138,13 +139,6 @@ interface SecurityEventRow {
   ip: string | null
   user_agent: string | null
   created_at: string
-}
-
-function shortUa(ua: string | null): string {
-  if (!ua) return ''
-  const browser = /Edg\//.test(ua) ? 'Edge' : /Chrome\//.test(ua) ? 'Chrome' : /Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : 'Browser'
-  const os = /Windows/.test(ua) ? 'Windows' : /Android/.test(ua) ? 'Android' : /iPhone|iPad/.test(ua) ? 'iOS' : /Mac OS/.test(ua) ? 'macOS' : /Linux/.test(ua) ? 'Linux' : ''
-  return os ? `${browser} on ${os}` : browser
 }
 
 export function SecurityActivityCard({ className = 'mb-5' }: { className?: string }) {

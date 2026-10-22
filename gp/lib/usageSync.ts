@@ -326,9 +326,24 @@ async function sweepOrphans(
 const autoTopupCovering = (c: any) => !!c.auto_topup_enabled && !c.auto_topup_insufficient_alerted_at
 
 async function firstName(supabase: AdminClient, userId: string) {
-  const { data: profile } = await supabase
-    .from('profiles').select('email, full_name').eq('id', userId).single()
-  return { email: profile?.email as string | undefined, name: escapeHtml(profile?.full_name?.split(' ')[0]) || 'there' }
+  // Ask for the opt-out column first; if migration 0063 isn't applied yet that
+  // select errors, and treating the error as "no profile" would silently stop
+  // EVERY notice e-mail (exhaustion included) until the migration runs — so
+  // fall back to the columns that have always existed.
+  let { data: profile, error } = await supabase
+    .from('profiles').select('email, full_name, low_bandwidth_emails').eq('id', userId).single()
+  if (error) {
+    ;({ data: profile } = await supabase
+      .from('profiles').select('email, full_name').eq('id', userId).single() as any)
+  }
+  const p = profile as any
+  return {
+    email: p?.email as string | undefined,
+    name: escapeHtml(p?.full_name?.split(' ')[0]) || 'there',
+    // Opt-out for the advisory "running low" e-mail only (migration 0063).
+    // Anything unknown (column not migrated yet, null) keeps today's behaviour.
+    lowEmails: p?.low_bandwidth_emails !== false,
+  }
 }
 
 // Per-credential exhaustion notice. The existing 80%/95% alerts are
@@ -458,8 +473,8 @@ async function notifyLowBandwidth(
     if (!claimed?.length) continue
 
     const remaining = Math.max(0, Number(c.gb_allocated) - c.used)
-    const { email, name } = emailDue ? await firstName(supabase, c.user_id) : { email: null, name: '' }
-    if (email) {
+    const { email, name, lowEmails } = emailDue ? await firstName(supabase, c.user_id) : { email: null, name: '', lowEmails: false }
+    if (email && lowEmails) {
       await sendEmail({
         to: email,
         subject: `Your proxy session is ${c.tier}% used — GlobProxy`,

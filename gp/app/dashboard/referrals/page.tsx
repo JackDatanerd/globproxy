@@ -5,6 +5,8 @@ import ReferralLinkCard from '@/components/dashboard/ReferralLinkCard'
 import AffiliateApplyForm from '@/components/dashboard/AffiliateApplyForm'
 import PayoutMethodForm from '@/components/dashboard/PayoutMethodForm'
 import ClaimReferralForm from '@/components/dashboard/ClaimReferralForm'
+import ExportButton from '@/components/dashboard/ExportButton'
+import { maskWallet, maskPhone, maskBank } from '@/lib/maskPayout'
 import { currentAccruingCycle, lastCompletedCycle, cycleIsPayable, formatCycleLabel } from '@/lib/payoutCycle'
 import { formatUsd } from '@/lib/format'
 import {
@@ -160,9 +162,9 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
         <div className="mt-4">
           <PayoutMethodForm
             currentMethod={profile?.payout_method as 'usdt' | 'bank' | 'mpesa' | null}
-            currentWalletAddress={profile?.payout_wallet_address ?? null}
-            currentBankDetails={profile?.payout_bank_details as any}
-            currentMpesaPhone={profile?.payout_mpesa_phone ?? null}
+            currentWalletAddress={maskWallet(profile?.payout_wallet_address)}
+            currentBankDetails={maskBank(profile?.payout_bank_details)}
+            currentMpesaPhone={maskPhone(profile?.payout_mpesa_phone)}
             updatedAt={profile?.payout_method_updated_at ?? null}
             holdHours={AFFILIATE_HOLD_HOURS}
           />
@@ -206,8 +208,8 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
               <div className="flex items-center justify-between mb-3">
                 <div className="text-sm font-medium text-ink">Commissions <span className="text-muted font-mono font-normal">({Number(commissionsCount ?? 0)})</span></div>
                 <div className="flex gap-3 text-[11px] font-mono">
-                  <a href="/api/dashboard/referrals/export?dataset=commissions" className="text-accent hover:underline">Export CSV ↓</a>
-                  <a href="/api/dashboard/referrals/export?dataset=payouts" className="text-accent hover:underline">Payouts CSV ↓</a>
+                  <ExportButton url="/api/dashboard/referrals/export?dataset=commissions" filename="globproxy-commissions.csv" className="text-accent hover:underline">Export CSV ↓</ExportButton>
+                  <ExportButton url="/api/dashboard/referrals/export?dataset=payouts" filename="globproxy-payouts.csv" className="text-accent hover:underline">Payouts CSV ↓</ExportButton>
                 </div>
               </div>
               {commissions && commissions.length > 0 ? (

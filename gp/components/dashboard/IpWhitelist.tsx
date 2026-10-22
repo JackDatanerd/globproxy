@@ -56,7 +56,7 @@ export default function IpWhitelist({ credentialId }: Props) {
     }
   }
 
-  useEffect(() => { setIps(null); setSelected(new Set()); load() }, [credentialId]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setIps(null); setLoadError(null); setSelected(new Set()); load() }, [credentialId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function fillMyIp() {
     setDetectingIp(true)

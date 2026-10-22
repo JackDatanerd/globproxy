@@ -6,6 +6,7 @@ import toast from 'react-hot-toast'
 import { formatGb, formatUsd } from '@/lib/format'
 import { PLANS } from '@/lib/plans'
 import BillingDetailsForm from '@/components/dashboard/BillingDetailsForm'
+import ExportButton from '@/components/dashboard/ExportButton'
 
 export default function BillingPage() {
   const [orders, setOrders] = useState<any[]>([])
@@ -29,7 +30,7 @@ export default function BillingPage() {
       for (let from = 0; ; from += PAGE) {
         const { data, error } = await sb
           .from('orders')
-          .select('*')
+          .select('id, created_at, gb_amount, amount_usd, refunded_usd, payment_status, payment_method, pay_amount, pay_currency, failure_reason')
           .eq('user_id', user.id)
           .order('created_at', { ascending: false })
           .order('id', { ascending: false })
@@ -98,12 +99,12 @@ export default function BillingPage() {
           <p className="text-muted text-sm mt-1">Your order history and spend</p>
         </div>
         {!loading && !loadError && orders.length > 0 && (
-          <a
-            href="/api/dashboard/billing/export"
+          <ExportButton
+            url="/api/dashboard/billing/export" filename="globproxy-orders.csv"
             className="text-sm font-medium text-ink2 border border-border hover:border-accent hover:text-accent px-4 py-2 rounded-xl transition-colors flex-shrink-0"
           >
             Export CSV ↓
-          </a>
+          </ExportButton>
         )}
       </div>
 

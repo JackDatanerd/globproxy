@@ -7,7 +7,8 @@ import { apiJson } from '@/lib/clientApi'
 type Props = {
   currentMethod: 'usdt' | 'bank' | 'mpesa' | null
   currentWalletAddress: string | null
-  currentBankDetails: { bankName?: string; accountName?: string; accountNumber?: string; country?: string; swift?: string } | null
+  // Masked by the server (lib/maskPayout): the form never holds the real values.
+  currentBankDetails: { bankName?: string; country?: string; accountLast4?: string } | null
   currentMpesaPhone: string | null
   updatedAt: string | null
   // The real hold from lib/referrals (AFFILIATE_HOLD_HOURS), passed by the server page so this copy can't drift from it.
@@ -17,13 +18,14 @@ type Props = {
 export default function PayoutMethodForm({ currentMethod, currentWalletAddress, currentBankDetails, currentMpesaPhone, updatedAt, holdHours = 48 }: Props) {
   const router = useRouter()
   const [method, setMethod] = useState<'usdt' | 'bank' | 'mpesa'>(currentMethod ?? 'usdt')
-  const [walletAddress, setWalletAddress] = useState(currentWalletAddress ?? '')
-  const [mpesaPhone, setMpesaPhone] = useState(currentMpesaPhone ?? '')
+  // Sensitive fields start empty — re-enter the full value to change it.
+  const [walletAddress, setWalletAddress] = useState('')
+  const [mpesaPhone, setMpesaPhone] = useState('')
   const [bankName, setBankName] = useState(currentBankDetails?.bankName ?? '')
-  const [accountName, setAccountName] = useState(currentBankDetails?.accountName ?? '')
-  const [accountNumber, setAccountNumber] = useState(currentBankDetails?.accountNumber ?? '')
+  const [accountName, setAccountName] = useState('')
+  const [accountNumber, setAccountNumber] = useState('')
   const [country, setCountry] = useState(currentBankDetails?.country ?? '')
-  const [swift, setSwift] = useState(currentBankDetails?.swift ?? '')
+  const [swift, setSwift] = useState('')
   const [loading, setLoading] = useState(false)
   const [editing, setEditing] = useState(!currentMethod)
 
@@ -41,7 +43,9 @@ export default function PayoutMethodForm({ currentMethod, currentWalletAddress, 
       await apiJson('POST', '/api/dashboard/update-payout-method', body)
       toast.success('Payout method saved — check your email for confirmation')
       setEditing(false)
-      // Re-fetch the server data (new updated_at / masked values) in place.
+      // Re-fetch the server data (new updated_at / masked values) in place,
+      // and drop what was typed: the full values must not linger in state.
+      setWalletAddress(''); setMpesaPhone(''); setAccountName(''); setAccountNumber(''); setSwift('')
       router.refresh()
     } catch (err: any) {
       // A network failure used to throw out of this handler and leave the
@@ -67,7 +71,7 @@ export default function PayoutMethodForm({ currentMethod, currentWalletAddress, 
         )}
         {currentMethod === 'bank' && (
           <div className="text-xs text-muted font-mono mt-2">
-            Bank · {currentBankDetails?.bankName} · ****{currentBankDetails?.accountNumber?.slice(-4)}
+            Bank · {currentBankDetails?.bankName} · ****{currentBankDetails?.accountLast4}
           </div>
         )}
         {updatedAt && (
@@ -87,6 +91,9 @@ export default function PayoutMethodForm({ currentMethod, currentWalletAddress, 
         <div className="text-xs text-muted">
           For security, a new or changed payout method takes {holdHours} hours before it's eligible for a payout — this protects you if your account is ever compromised. We'll also email you every time this changes.
         </div>
+        {currentMethod && (
+          <div className="text-xs text-muted mt-1.5">Your saved details aren&apos;t shown here — enter the full details again to change them.</div>
+        )}
       </div>
       <div className="flex gap-2">
         <button type="button" onClick={() => setMethod('usdt')}

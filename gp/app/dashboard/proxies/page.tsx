@@ -22,7 +22,7 @@ export default async function ProxiesPage() {
   const admin = await createAdminClient()
   const [{ data: creds, error: credsError }, { data: bw, error: bwError }] = await Promise.all([
     admin.from('proxy_credentials')
-      .select('id, user_id, created_by, label, status, gb_allocated, gb_used, country, state, city, asn, session_type, protocol, sticky_duration, endpoint_count, host, port, upstream_username, upstream_password, activated_at, created_at, auto_topup_enabled, auto_topup_threshold_gb, auto_topup_amount_gb, auto_topup_insufficient_alerted_at, pending_reason, provision_stalled_at, upstream_missing_since')
+      .select('id, user_id, created_by, label, status, gb_allocated, gb_used, country, state, city, asn, session_type, protocol, sticky_duration, endpoint_count, host, port, upstream_username, upstream_password, activated_at, created_at, auto_topup_enabled, auto_topup_threshold_gb, auto_topup_amount_gb, auto_topup_insufficient_alerted_at, pending_reason, provision_stalled_at, upstream_missing_since, suspended_reason')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false }),
     // maybeSingle: a brand-new account legitimately has no row (not an error);

@@ -16,7 +16,7 @@ export default async function DashboardPage() {
   const [bwRes, credsRes, orderRes, activeRes, profileRes] = await Promise.all([
     supabase.from('bandwidth_accounts').select('total_gb, used_gb, available_gb').eq('user_id', user.id).maybeSingle(),
     supabase.from('proxy_credentials').select('id, label, host, port, protocol, session_type, country, status, activated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(5),
-    supabase.from('orders').select('id, gb_amount, amount_usd, refunded_usd, payment_status').eq('user_id', user.id).order('created_at', { ascending: false }).limit(4),
+    supabase.from('orders').select('id, gb_amount, amount_usd, refunded_usd, payment_status, payment_method').eq('user_id', user.id).order('created_at', { ascending: false }).limit(4),
     // A real count: "Active proxies" used to be computed from the 5 rows
     // fetched for the list below, so it could never read above 5.
     supabase.from('proxy_credentials').select('id', { count: 'exact', head: true }).eq('user_id', user.id).eq('status', 'active'),
@@ -138,7 +138,9 @@ export default async function DashboardPage() {
           {creds && creds.length > 0 ? (
             <div className="px-3 pb-3">
               {creds.map(c => {
-                const isWarming = c.activated_at && (Date.now() - new Date(c.activated_at).getTime()) < 10 * 60 * 1000
+                // Only an ACTIVE session is "warming up" — a session suspended or
+                // deleted inside its first 10 minutes used to show it too.
+                const isWarming = c.status === 'active' && c.activated_at && (Date.now() - new Date(c.activated_at).getTime()) < 10 * 60 * 1000
                 const rail = c.status === 'pending' ? 'bg-amber-500' : c.status !== 'active' ? 'bg-border' : isWarming ? 'bg-accent' : 'bg-accent2'
                 return (
                   <div key={c.id} className="relative flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-surface transition-colors">
@@ -177,10 +179,21 @@ export default async function DashboardPage() {
                 <div key={o.id} className={`flex items-center justify-between py-3 ${i < orders.length - 1 ? 'border-b border-border' : ''}`}>
                   <div>
                     <div className="text-[13.5px] font-semibold text-ink">{formatGb(o.gb_amount)} GB</div>
-                    <div className="text-[10.5px] font-mono text-muted mt-0.5">Paystack</div>
+                    <div className="text-[10.5px] font-mono text-muted mt-0.5">{o.payment_method === 'mpesa' ? 'M-Pesa' : 'Card'}</div>
                   </div>
                   <div className="text-right">
-                    <div className="text-xs font-mono text-ink2">{formatUsd(o.amount_usd)}</div>
+                    {(() => {
+                      // A partly refunded order stays 'paid' with refunded_usd set;
+                      // the full amount used to show with no hint of the refund.
+                      const refunded = Number(o.refunded_usd ?? 0)
+                      const partial = o.payment_status === 'paid' && refunded > 0.004
+                      return (
+                        <>
+                          <div className="text-xs font-mono text-ink2">{formatUsd(partial ? Math.max(0, Number(o.amount_usd) - refunded) : o.amount_usd)}</div>
+                          {partial && <div className="text-[9.5px] font-mono text-muted">of {formatUsd(o.amount_usd)} · {formatUsd(refunded)} refunded</div>}
+                        </>
+                      )
+                    })()}
                     <span className={`text-[9px] font-mono px-2 py-0.5 rounded-full uppercase tracking-wide inline-block mt-1 ${
                       o.payment_status === 'paid' ? 'bg-accent2-light text-accent2'
                       : o.payment_status === 'pending' ? 'bg-amber-50 text-amber-600'

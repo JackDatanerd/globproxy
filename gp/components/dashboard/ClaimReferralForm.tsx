@@ -1,6 +1,7 @@
 'use client'
 import { useState } from 'react'
 import toast from 'react-hot-toast'
+import { apiJson } from '@/lib/clientApi'
 
 // Shown only to accounts that were never referred.
 export default function ClaimReferralForm() {
@@ -11,17 +12,11 @@ export default function ClaimReferralForm() {
     e.preventDefault()
     setLoading(true)
     try {
-      const res = await fetch('/api/dashboard/claim-referral', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error ?? 'Could not apply that code')
+      await apiJson('POST', '/api/dashboard/claim-referral', { code })
       toast.success('Referral code applied')
       setTimeout(() => window.location.reload(), 600)
     } catch (err: any) {
-      toast.error(err.message)
+      if (err?.code !== 'mfa_required') toast.error(err?.message || 'Could not apply that code')
     } finally {
       setLoading(false)
     }

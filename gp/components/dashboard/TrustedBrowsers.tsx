@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
 import { apiFetch, apiJson } from '@/lib/clientApi'
+import { shortUa } from '@/lib/userAgent'
 
 interface Browser {
   id: string
@@ -11,13 +12,6 @@ interface Browser {
   user_agent: string | null
   ip: string | null
   current: boolean
-}
-
-function shortUa(ua: string | null): string {
-  if (!ua) return 'Unknown browser'
-  const browser = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Chrome\//.test(ua) ? 'Chrome' : /Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : 'Browser'
-  const os = /Windows/.test(ua) ? 'Windows' : /Android/.test(ua) ? 'Android' : /iPhone|iPad|iOS/.test(ua) ? 'iOS' : /Mac OS X|Macintosh/.test(ua) ? 'macOS' : /Linux/.test(ua) ? 'Linux' : ''
-  return os ? `${browser} on ${os}` : browser
 }
 
 // Browsers that completed the second factor. A 12-hour "verified" session and
@@ -63,7 +57,7 @@ export default function TrustedBrowsers() {
             <li key={b.id} className="py-2.5 flex items-center justify-between gap-3 text-sm">
               <div className="min-w-0">
                 <div className="text-ink2 truncate">
-                  {shortUa(b.user_agent)}
+                  {shortUa(b.user_agent) || 'Unknown browser'}
                   {b.current && <span className="ml-2 text-[10px] font-mono text-accent uppercase">this browser</span>}
                   {b.remembered && <span className="ml-2 text-[10px] font-mono text-muted uppercase">trusted 30 days</span>}
                 </div>

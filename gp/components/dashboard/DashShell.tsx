@@ -22,9 +22,14 @@ export default function DashShell({
   return (
     <div className="min-h-screen bg-surface flex flex-col">
       <DashTopbar profile={{ role, email }} onMenu={() => setNavOpen(o => !o)} menuOpen={navOpen} />
-      <div className="flex flex-1 overflow-hidden">
+      {/* No overflow-* on this row or <main>: an ancestor with overflow set
+          becomes the scroll container for `position: sticky`, and since neither
+          is height-constrained it never scrolls — so every sticky element inside
+          a page (the new-session summary/Create button) silently stopped
+          sticking. The document scrolls; the sidebar sticks itself. */}
+      <div className="flex flex-1">
         <DashSidebar role={role} open={navOpen} onClose={closeNav} />
-        <main className="flex-1 min-w-0 p-4 sm:p-6 md:p-8 overflow-y-auto">
+        <main className="flex-1 min-w-0 p-4 sm:p-6 md:p-8">
           {showMfaBanner && <MfaRecommendBanner role={role} />}
           {children}
         </main>
