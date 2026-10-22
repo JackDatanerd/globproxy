@@ -1,6 +1,8 @@
 import { createServerClient } from '@supabase/ssr'
 import { createClient as createSupabaseJsClient } from '@supabase/supabase-js'
 import { NextResponse, type NextRequest } from 'next/server'
+import { isAuthOutage } from '@/lib/authOutage'
+import { buildCsp, cspHeaderName } from '@/lib/csp'
 
 type CookieToSet = {
   name: string
@@ -136,7 +138,28 @@ export async function middleware(request: NextRequest) {
   const isMfaFlowPath = path === '/auth/mfa-setup' || path === '/auth/mfa-verify'
   const needsAuth = isProtected || isMfaFlowPath
 
-  let response = NextResponse.next({ request })
+  // The signed-in areas get a per-request nonce CSP (lib/csp.ts). Those pages are
+  // per-user and never edge-cached, so a nonce costs nothing there, and it lets
+  // the policy drop 'unsafe-inline' for scripts. Next reads the nonce from the
+  // CSP header on the REQUEST and stamps it on its own scripts, so the header has
+  // to be forwarded on the request as well as set on the response. Public pages
+  // keep the static policy from next.config.ts (they are served from the edge
+  // cache, where a per-request nonce cannot work).
+  const nonce = isProtected ? btoa(crypto.randomUUID()) : null
+  const nonceCsp = nonce ? buildCsp({ nonce }) : null
+  const nextResponse = () => {
+    if (!nonce || !nonceCsp) return NextResponse.next({ request })
+    // Rebuilt from request.headers on every call, so cookies Supabase has just
+    // written onto the request (setAll below) are not lost.
+    const headers = new Headers(request.headers)
+    headers.set(cspHeaderName(), nonceCsp)
+    headers.set('x-nonce', nonce)
+    const res = NextResponse.next({ request: { headers } })
+    res.headers.set(cspHeaderName(), nonceCsp)
+    return res
+  }
+
+  let response = nextResponse()
 
   // Anything returned from here on must carry the cookies Supabase just set
   // on `response` — a refreshed session after getUser(), or the deletions
@@ -176,7 +199,7 @@ export async function middleware(request: NextRequest) {
           getAll: () => request.cookies.getAll(),
           setAll: (toSet: CookieToSet[]) => {
             toSet.forEach(({ name, value }) => request.cookies.set(name, value))
-            response = NextResponse.next({ request })
+            response = nextResponse()
             toSet.forEach(({ name, value, options }) =>
               response.cookies.set(name, value, options)
             )
@@ -190,12 +213,11 @@ export async function middleware(request: NextRequest) {
     // "No session" and "Supabase Auth could not be reached" both come back
     // with user === null. Treating the second as a logout bounces every
     // signed-in user to the login page during an outage. A real missing or
-    // invalid session is a 4xx (AuthSessionMissingError and friends); only
-    // network failures and 5xx count as an outage.
-    const authOutage =
-      !!authError &&
-      (authError.name === 'AuthRetryableFetchError' ||
-        (typeof (authError as { status?: number }).status === 'number' && (authError as { status: number }).status >= 500))
+    // invalid session is a 4xx (AuthSessionMissingError and friends); network
+    // failures, 5xx, 429 and an error answer with a non-JSON body (supabase-js's
+    // AuthUnknownError, e.g. an HTML 500/52x page from the edge) are an outage.
+    // See lib/authOutage.ts.
+    const authOutage = isAuthOutage(authError)
     if (authOutage) {
       if (needsAuth) {
         console.error('[middleware] auth backend unreachable — returning 503 instead of treating the visitor as logged out', authError?.message)

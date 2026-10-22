@@ -1,4 +1,5 @@
 import type { NextConfig } from 'next'
+import { buildCsp, cspHeaderName } from './lib/csp'
 
 // Content-Security-Policy. REPORT-ONLY by default: the browser evaluates every
 // rule below and posts violations to /api/csp-report (which logs them and counts
@@ -12,41 +13,20 @@ import type { NextConfig } from 'next'
 // and redeploy. Unset it (or any other value) to go back to report-only. The
 // header is fixed at build time, so a redeploy is what applies the change.
 //
-// Known looseness, deliberately left for the enforcement step rather than
-// guessed at now: script-src carries 'unsafe-inline' because Next's own
-// hydration bootstrap is inline and a nonce-based policy needs a per-request
-// nonce minted in middleware — which would make every page dynamic and defeat
-// the anonymous edge cache in custom-worker.ts. Revisit with that trade-off in
-// view; object-src, base-uri, frame-ancestors and the connect/frame allow-lists
-// below are already strict.
-function supabaseOrigins(): string[] {
-  const out = ['https://*.supabase.co', 'wss://*.supabase.co']
-  try {
-    const u = new URL(process.env.NEXT_PUBLIC_SUPABASE_URL ?? '')
-    out.push(u.origin, u.origin.replace(/^http/, 'ws'))
-  } catch {
-    /* env not present at config time — the wildcard entries still cover hosted projects */
-  }
-  return [...new Set(out)]
-}
-
-const CSP_ENFORCE = process.env.CSP_MODE === 'enforce'
-const CSP_HEADER_NAME = CSP_ENFORCE ? 'Content-Security-Policy' : 'Content-Security-Policy-Report-Only'
-
-const CSP_POLICY = [
-  `default-src 'self'`,
-  `script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com https://js.paystack.co https://checkout.paystack.com`,
-  `style-src 'self' 'unsafe-inline' https://fonts.googleapis.com`,
-  `font-src 'self' data: https://fonts.gstatic.com`,
-  `img-src 'self' data: blob: https:`,
-  `connect-src 'self' ${supabaseOrigins().join(' ')} https://api.paystack.co https://checkout.paystack.com https://challenges.cloudflare.com`,
-  `frame-src https://challenges.cloudflare.com https://checkout.paystack.com https://js.paystack.co`,
-  `frame-ancestors 'self'`,
-  `base-uri 'self'`,
-  `object-src 'none'`,
-  `form-action 'self'`,
-  `report-uri /api/csp-report`,
-].join('; ')
+// Two policies, one source (lib/csp.ts):
+//  - THIS file sets the static one every response carries. Its script-src keeps
+//    'unsafe-inline', because Next's hydration bootstrap is inline and a nonce
+//    needs a per-request value — which would make the public pages dynamic and
+//    defeat the anonymous edge cache in custom-worker.ts.
+//  - middleware.ts sets its own instead (the static header is not sent there), on
+//    /dashboard, /reseller, /admin and /invoice only — per-user, never cached — with
+//    a per-request-nonce + 'strict-dynamic' policy that has no 'unsafe-inline' for
+//    scripts. That is where an injected
+//    script would do real damage, so that is where the strict policy matters.
+// Both follow CSP_MODE. object-src, base-uri, frame-ancestors and the
+// connect/frame allow-lists are strict in both.
+const CSP_HEADER_NAME = cspHeaderName()
+const CSP_POLICY = buildCsp()
 
 const nextConfig: NextConfig = {
   // The app defines no Server Actions at all (no 'use server' anywhere), so
@@ -54,6 +34,9 @@ const nextConfig: NextConfig = {
   // *.workers.dev host — i.e. any Worker on any Cloudflare account — which
   // would be an open door the day a Server Action is added.
   experimental: { serverActions: { allowedOrigins: ['globproxy.com', 'www.globproxy.com'] } },
+  // The Worker has no CSP_MODE at runtime (it is a build variable), and middleware.ts
+  // needs it to pick report-only vs enforcing for its nonce policy: inline it.
+  env: { CSP_MODE: process.env.CSP_MODE ?? '' },
   // Don't announce the framework on every response.
   poweredByHeader: false,
   async headers() {
@@ -69,8 +52,15 @@ const nextConfig: NextConfig = {
           // allow-popups, not same-origin: payment and verification widgets may
           // open windows that must keep a reference back to this page.
           { key: 'Cross-Origin-Opener-Policy', value: 'same-origin-allow-popups' },
-          { key: CSP_HEADER_NAME, value: CSP_POLICY },
         ],
+      },
+      // The static CSP, on everything EXCEPT the signed-in areas: middleware.ts sets
+      // its own per-request-nonce policy there, and sending both would have the browser
+      // evaluate (and report against) two policies. The prefixes mirror middleware's
+      // isProtected check, which is a plain startsWith — keep the two in step.
+      {
+        source: '/((?!dashboard|reseller|admin|invoice).*)',
+        headers: [{ key: CSP_HEADER_NAME, value: CSP_POLICY }],
       },
       // The Worker is also reachable at its *.workers.dev address (see the
       // note in wrangler.jsonc). Keep that copy of the site out of search

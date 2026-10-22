@@ -11,7 +11,7 @@ export default function AdminCredentialAction({ credentialId, status }: { creden
   const disabling = status === 'active'
 
   async function handle() {
-    if (disabling && !confirm('Disable this credential? Proxy traffic through it stops (Geonode limit is capped at what it has used). Reversible with Enable.')) return
+    if (disabling && !confirm('Disable this credential? Proxy traffic through it stops (the upstream limit is capped at what it has used). Reversible with Enable.')) return
     setLoading(true)
     const { ok, data } = await adminPost('/api/admin/credential-action', { credentialId, action: disabling ? 'disable' : 'enable' })
     if (!ok) { toast.error(data.error ?? 'Action failed'); setLoading(false); return }

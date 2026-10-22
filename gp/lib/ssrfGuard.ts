@@ -111,6 +111,7 @@ function isBlockedIpv6(g: number[]): boolean {
   if (g[0] === 0x2002) return true                       // 6to4 (2002::/16) embeds an IPv4 address; never a real webhook receiver
   if (g[0] === 0x2001 && g[1] === 0) return true    // Teredo
   if (g[0] === 0x2001 && g[1] === 0x0db8) return true // documentation
+  if (g[0] === 0x3fff && (g[1] & 0xf000) === 0) return true // 3fff::/20 documentation (RFC 9637)
   if (g[0] === 0x2001 && g[1] < 0x0200) return true // IETF protocol assignments
   if (g[0] === 0x0100 && g[1] === 0 && g[2] === 0 && g[3] === 0) return true // discard-only
   if ((g[0] & 0xfe00) === 0xfc00) return true       // fc00::/7 unique-local
@@ -244,11 +245,24 @@ export async function checkHostnameResolution(
     // addresses), but a hostname aliased to our own domain would otherwise get
     // past the name-based isOwnHost() check in validateWebhookUrl().
     const cnames = [...(a.Answer ?? []), ...(aaaa.Answer ?? [])].filter((x) => x.type === 5)
+    // DNS response codes: 0 NOERROR, 3 NXDOMAIN. Anything else (2 SERVFAIL, 5
+    // REFUSED, …) means the lookup itself did not work — not that the name is fine.
+    const lookupFailed = (r: DohResponse) => (r.Status ?? 0) !== 0 && (r.Status ?? 0) !== 3
     if (answers.some((x) => isBlockedHostLiteral(x.data))) {
       result = 'Webhook hostname resolves to a private, loopback, or link-local address'
     } else if (cnames.some((x) => isOwnHost(x.data))) {
       result = 'Webhook hostname points at GlobProxy itself'
-    } else if (opts.requireResolvable && answers.length === 0 && a.Status === 3 && aaaa.Status === 3) {
+    } else if (lookupFailed(a) || lookupFailed(aaaa)) {
+      // Treated like the resolver being down (fail open, as documented above), but
+      // NOT cached: a SERVFAIL "pass" used to be remembered for a minute, so the
+      // name could be checked as clean once and then re-resolved to something
+      // private inside that window with no second look.
+      console.error('[ssrfGuard] DNS lookup returned', a.Status, aaaa.Status, 'for', h, '— not cached, failing open')
+      return null
+    } else if (opts.requireResolvable && answers.length === 0) {
+      // NXDOMAIN, or NOERROR with no A/AAAA records at all (a name that exists but
+      // has no address — deliveries to it could never connect). Only NXDOMAIN used
+      // to be caught here.
       result = 'That hostname does not resolve'
     }
   } catch (e) {

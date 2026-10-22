@@ -10,7 +10,8 @@
 //     inside a Worker isolate that other requests share. Bodies over
 //     MAX_API_BODY_BYTES are refused with 413 up front (Content-Length), and
 //     bodies that arrive without a Content-Length (chunked) are wrapped in a
-//     counting stream that errors once the limit is crossed.
+//     read (bounded by that same limit) before the app runs and answered with a
+//     413 if they cross it — see limitBody().
 //
 //  2. SAME-ORIGIN ENFORCEMENT. Only 21 routes called rejectCrossSite(); the
 //     other cookie-authenticated mutating routes under /api/dashboard relied on
@@ -27,7 +28,14 @@
 export const MAX_API_BODY_BYTES = 1024 * 1024 // 1 MiB — the largest legitimate JSON body here is a few KB
 
 const UNSAFE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
-const ORIGIN_EXEMPT_PREFIXES = ['/api/webhooks/', '/api/cron/', '/api/v1/', '/api/csp-report']
+// A trailing slash means "everything under this folder"; without one the entry
+// is that exact route only. (`/api/csp-report` used to be a bare prefix, so any
+// future `/api/csp-report-*` route would have inherited the exemption.)
+const ORIGIN_EXEMPT = ['/api/webhooks/', '/api/cron/', '/api/v1/', '/api/csp-report']
+
+function originExempt(pathname: string): boolean {
+  return ORIGIN_EXEMPT.some((p) => (p.endsWith('/') ? pathname.startsWith(p) : pathname === p || pathname === p + '/'))
+}
 
 export type GuardVerdict = { status: number; error: string } | null
 
@@ -59,7 +67,7 @@ export function guardApiRequest(request: Request, url: URL, appOrigin?: string):
     if (n > MAX_API_BODY_BYTES) return { status: 413, error: 'Request body too large' }
   }
 
-  if (ORIGIN_EXEMPT_PREFIXES.some((p) => url.pathname.startsWith(p))) return null
+  if (originExempt(url.pathname)) return null
 
   const origin = request.headers.get('origin')
   if (origin !== null) {
@@ -71,20 +79,40 @@ export function guardApiRequest(request: Request, url: URL, appOrigin?: string):
   return null
 }
 
-// For a body that did not announce its size: pass it through, but error the
-// stream once more than `max` bytes have been read.
-export function withBodyLimit(request: Request, max: number = MAX_API_BODY_BYTES): Request {
-  if (!request.body || request.headers.has('content-length')) return request
+export type LimitedBody = { ok: true; request: Request } | { ok: false; verdict: { status: number; error: string } }
+
+// For a body that did not announce its size (chunked): read it here, up to
+// `max` bytes, and hand the route a Request whose body is the buffered bytes.
+// Over the cap the caller gets a verdict to answer with a clean 413 BEFORE the
+// app runs. It used to wrap the stream and error it mid-read, which surfaced as
+// whatever the route's body parser made of a failed read — a 500, a dropped
+// connection, or (for routes that swallow parse errors) an "empty body" — never
+// a 413. Buffering is bounded by `max` (1 MiB), the same ceiling the
+// Content-Length rule enforces.
+export async function limitBody(request: Request, max: number = MAX_API_BODY_BYTES): Promise<LimitedBody> {
+  if (!request.body || request.headers.has('content-length')) return { ok: true, request }
+  const reader = request.body.getReader()
+  const chunks: Uint8Array[] = []
   let seen = 0
-  const limiter = new TransformStream<Uint8Array, Uint8Array>({
-    transform(chunk, controller) {
-      seen += chunk.byteLength
-      if (seen > max) controller.error(new Error('Request body too large'))
-      else controller.enqueue(chunk)
-    },
-  })
-  // `duplex` is required by the fetch spec (and Node) whenever a Request is built from a stream; Workers ignore it.
-  return new Request(request, { body: request.body.pipeThrough(limiter), duplex: 'half' } as RequestInit)
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      seen += value.byteLength
+      if (seen > max) {
+        await reader.cancel().catch(() => {})
+        return { ok: false, verdict: { status: 413, error: 'Request body too large' } }
+      }
+      chunks.push(value)
+    }
+  } catch {
+    // The client hung up mid-body: nothing sensible to run the app with.
+    return { ok: false, verdict: { status: 400, error: 'Invalid request body' } }
+  }
+  const body = new Uint8Array(seen)
+  let at = 0
+  for (const c of chunks) { body.set(c, at); at += c.byteLength }
+  return { ok: true, request: new Request(request, { body }) }
 }
 
 // Carries the same machine-readable `code` every /api/v1 error has, so a client
@@ -93,6 +121,13 @@ export function guardResponse(verdict: { status: number; error: string }): Respo
   const code = verdict.status === 413 ? 'payload_too_large' : verdict.status === 400 ? 'invalid_request' : 'forbidden'
   return new Response(JSON.stringify({ error: verdict.error, code }), {
     status: verdict.status,
-    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    // These answers are produced in the Worker, ahead of Next, so the headers
+    // next.config.ts adds to every app response are not applied to them.
+    headers: {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+      'Strict-Transport-Security': 'max-age=63072000; includeSubDomains',
+    },
   })
 }

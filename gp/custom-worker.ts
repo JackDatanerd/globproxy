@@ -36,20 +36,23 @@
 // SCHEDULE: matched to the real, already-proven cadence in those three
 // workflows (see CRON_TASKS below for the mapping and reasoning) rather
 // than guessed — usage every 5 min, stock hourly, and alerts → summary →
-// cleanup once a day at 8am UTC as a chain, exactly replicating
-// cron-daily.yml's `needs:` dependency (each step only runs if the
-// previous one succeeded). If you want tighter alerting than once a day
+// cleanup once a day at 8am UTC (originally chained like cron-daily.yml's
+// `needs:`; now run independently — see INDEPENDENT_CHAINS below).
+// If you want tighter alerting than once a day
 // — e.g. a customer crossing 95% usage at 9am currently won't be emailed
 // until the next day's 8am run — that's a deliberate product change to
 // make separately, not something to fold in here silently.
 
 // @ts-ignore `.open-next/worker.js` is generated at build time
 import { default as handler } from './.open-next/worker.js'
-import { guardApiRequest, guardResponse, withBodyLimit } from './lib/edgeGuard'
+import { guardApiRequest, guardResponse, limitBody } from './lib/edgeGuard'
 
 // Keep this in sync with wrangler.jsonc's triggers.crons array — every
 // pattern here needs a matching entry there, and vice versa. Cloudflare
-// cron expressions run in UTC.
+// cron expressions run in UTC. scripts/check-cron-sync.mjs enforces this (and
+// that every task name exists in app/api/cron/[task]/route.ts); it runs at the
+// start of `npm run build:cf`, so drift fails the deploy instead of silently
+// skipping tasks.
 //
 // These three schedules replace the three GitHub Actions workflows
 // (cron-usage.yml, cron-stock.yml, cron-daily.yml) — matched to their
@@ -165,7 +168,11 @@ async function fetchWithEdgeCache(request: Request, env: any, ctx: any): Promise
   // state-changing calls (see lib/edgeGuard.ts for what is exempt and why).
   const verdict = guardApiRequest(request, url, appOriginOf(env))
   if (verdict) return guardResponse(verdict)
-  if (url.pathname.startsWith('/api/')) request = withBodyLimit(request)
+  if (url.pathname.startsWith('/api/')) {
+    const limited = await limitBody(request)
+    if (!limited.ok) return guardResponse(limited.verdict)
+    request = limited.request
+  }
 
   if (!isEdgeCacheable(request, url)) return handler.fetch(request, env, ctx)
 
@@ -274,12 +281,19 @@ async function taskReportedError(res: Response): Promise<string | null> {
 // events have nothing to do with the usage sync, and must not go silent for as
 // long as one of the tasks before them is failing (the chain used to stop at
 // the first non-OK response).
-const INDEPENDENT_CHAINS = new Set(['*/5 * * * *'])
+//
+// The daily 8am chain is in here too. It inherited cron-daily.yml's `needs:`
+// ordering, but nothing in it actually depends on the step before: cleanup
+// (abandoned orders, expired MFA sessions, CSP / usage / session pruning) reads
+// nothing alerts or summary produce. As a dependent chain, one Resend timeout in
+// the alerts loop, or a missing mail key making the summary throw, skipped the
+// cleanup for that day. Every task still records its own heartbeat and failure.
+const INDEPENDENT_CHAINS = new Set(['*/5 * * * *', '0 8 * * *'])
 
-// Runs tasks in order. For dependent chains (daily: alerts → summary → cleanup,
-// the same semantics as cron-daily.yml's `needs:`) it stops at the first
-// failure rather than firing blind on top of a known-bad state; for the
-// independent */5 chain it carries on.
+// Runs tasks in order. For a dependent chain it stops at the first failure
+// rather than firing blind on top of a known-bad state; for the independent
+// chains above it carries on. (No chain is dependent today; the mode is kept
+// for a future one whose steps really do feed each other.)
 async function runTaskChain(
   base: string,
   cronSecret: string,

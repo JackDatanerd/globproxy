@@ -56,7 +56,7 @@ export default function AdminStockPanel() {
   if (loadError) {
     return (
       <div className="bg-white border border-border rounded-xl p-6">
-        <h2 className="font-display font-bold text-base text-ink mb-3">Geonode Stock</h2>
+        <h2 className="font-display font-bold text-base text-ink mb-3">Upstream Stock</h2>
         <p className="text-sm text-red-600 mb-3">{loadError}</p>
         <button onClick={load} className="text-xs font-mono text-accent border border-accent/30 px-3 py-1.5 rounded-lg hover:bg-accent-light">Retry</button>
       </div>
@@ -65,7 +65,7 @@ export default function AdminStockPanel() {
   if (!stock) {
     return (
       <div className="bg-white border border-border rounded-xl p-6">
-        <h2 className="font-display font-bold text-base text-ink mb-3">Geonode Stock</h2>
+        <h2 className="font-display font-bold text-base text-ink mb-3">Upstream Stock</h2>
         <p className="text-sm text-muted">Loading…</p>
       </div>
     )
@@ -82,7 +82,7 @@ export default function AdminStockPanel() {
   return (
     <div className="bg-white border border-border rounded-xl p-6">
       <div className="flex items-center justify-between mb-5">
-        <h2 className="font-display font-bold text-base text-ink">Geonode Stock</h2>
+        <h2 className="font-display font-bold text-base text-ink">Upstream Stock</h2>
         <button onClick={syncStock} disabled={syncing} className="text-xs font-mono text-muted border border-border px-3 py-1.5 rounded-lg hover:text-ink transition-all disabled:opacity-50">
           {syncing ? 'Syncing...' : '↻ Sync'}
         </button>
@@ -138,8 +138,8 @@ export default function AdminStockPanel() {
         </div>
         <p className="text-[10px] text-muted mt-3 font-light leading-relaxed">
           Exposure = customer balance not yet allocated to a session ({formatGb(stock.unallocated_balances_gb ?? 0)}) + sessions
-          waiting to be provisioned ({formatGb(stock.pending_allocated_gb ?? 0)}) — what you&apos;d still have to carve out of Geonode&apos;s
-          available stock. GB already allocated to live sessions is already deducted from Available by Geonode, so it isn&apos;t counted again.
+          waiting to be provisioned ({formatGb(stock.pending_allocated_gb ?? 0)}) — what you&apos;d still have to carve out of the supplier&apos;s
+          available stock. GB already allocated to live sessions is already deducted from Available by the supplier, so it isn&apos;t counted again.
           {stock.covered === false
             ? ' Current stock is below this — you are exposed if customers allocate it all at once.'
             : ' Current stock covers this.'}
@@ -149,7 +149,7 @@ export default function AdminStockPanel() {
       <div className="mb-5 p-4 bg-surface border border-border rounded-xl">
         <div className="text-xs font-medium text-ink mb-1">Reloading stock</div>
         <p className="text-[11px] text-muted font-light leading-relaxed">
-          Geonode&apos;s reseller API has no purchase endpoint, so stock is topped up in the Geonode dashboard and then picked up here with <span className="font-mono">↻ Sync</span>.
+          The supplier&apos;s reseller API has no purchase endpoint, so stock is topped up in the supplier dashboard and then picked up here with <span className="font-mono">↻ Sync</span>.
         </p>
       </div>
 

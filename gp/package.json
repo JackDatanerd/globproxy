@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build --webpack",
-    "build:cf": "opennextjs-cloudflare build",
+    "build:cf": "node scripts/check-cron-sync.mjs && opennextjs-cloudflare build",
+    "check:cron": "node scripts/check-cron-sync.mjs",
     "start": "next start",
     "preview": "opennextjs-cloudflare preview",
     "deploy:manual-DANGER": "opennextjs-cloudflare build && npx wrangler deploy",

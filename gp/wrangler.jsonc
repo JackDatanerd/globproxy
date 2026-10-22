@@ -21,6 +21,13 @@
   // whatever this file declares (nothing), silently wiping any that were added by
   // hand. Keep them. (Secrets were never affected; deploy.yml pushes those.)
   "keep_vars": true,
+  // Every signed-in page makes several sequential Supabase round trips (middleware
+  // auth + profile, then the layout's own checks, then the page). With the Worker
+  // running at the visitor's edge location each one crosses to the database region;
+  // Smart Placement lets Cloudflare run the Worker near that backend when it measures
+  // that as faster overall, and leaves it at the edge when it is not. Anonymous cached
+  // pages are unaffected in kind (still served from Cache API). Remove this line to revert.
+  "placement": { "mode": "smart" },
   "main": "custom-worker.ts",
   "assets": { "directory": ".open-next/assets", "binding": "ASSETS" },
   // Left at Cloudflare's defaults on purpose: this file does not know whether
@@ -39,119 +46,111 @@
       "5 8 * * *"
     ]
   },
-  // Cloudflare's native rate-limiting bindings — auto-provisioned on deploy,
-  // no separate `wrangler kv namespace create`-style step needed. See
-  // lib/rateLimit.ts for what each one protects. namespace_id just needs to
+  // Cloudflare's native rate-limiting bindings (the stable `ratelimits` key; they
+  // used to live under `unsafe.bindings`, which wrangler flags as experimental and
+  // liable to change — and a dropped binding silently turns its limiter off).
+  // Auto-provisioned on deploy, no separate `wrangler kv namespace create`-style step needed.
+  // NOTE: the counters are local to each Cloudflare location and approximate, so
+  // these are abuse brakes, not exact quotas. Caps that must be exact (per-target
+  // email, staff-email) are also enforced in Postgres. See lib/rateLimit.ts for
+  // what each binding protects. namespace_id just needs to
   // be unique among rate-limit bindings in this account; the numbers have no
   // significance beyond that. `period` must be 10 or 60 (Cloudflare limit).
   // The edge-pipeline bindings below use the 11xx block on purpose: other work
   // keeps adding bindings at the next free low number, and a duplicated id would
   // silently make two limiters share one counter.
-  "unsafe": {
-    "bindings": [
-      // Unauthenticated / credential-handling auth endpoints, per client
-      // address per route group. 20/min rather than a tighter figure because
-      // mobile carriers put many subscribers behind one shared IPv4 address.
-      {
-        "name": "AUTH_RATE_LIMITER",
-        "type": "ratelimit",
-        "namespace_id": "1001",
-        "simple": { "limit": 20, "period": 60 }
-      },
-      // Public v1 API, per API key (lib/apiAuth.ts). 120 requests / minute
-      // overall, and a tighter 30 / minute for mutating calls (create /
-      // delete / top-up provision real upstream resources). Documented in
-      // /docs/api — change both places together.
-      {
-        "name": "API_RATE_LIMITER",
-        "type": "ratelimit",
-        "namespace_id": "1002",
-        "simple": { "limit": 120, "period": 60 }
-      },
-      {
-        "name": "API_WRITE_RATE_LIMITER",
-        "type": "ratelimit",
-        "namespace_id": "1003",
-        "simple": { "limit": 30, "period": 60 }
-      },
-      // GET /api/v1/sub-users/:id/usage/history — each call fans out up to 30
-      // requests on the one shared reseller key at the provider (same reason
-      // the dashboard's usage/history route is limited), so it gets a much
-      // tighter per-key budget than the general limiter.
-      {
-        "name": "API_HISTORY_RATE_LIMITER",
-        "type": "ratelimit",
-        "namespace_id": "1004",
-        "simple": { "limit": 10, "period": 60 }
-      },
-      // Reseller allocate / reclaim, applied per address+reseller AND per
-      // reseller via rateLimitedUser (see app/api/reseller/allocate/route.ts). Higher than AUTH so a legitimate
-      // bulk allocation isn't throttled, but low enough to stop the allocate
-      // endpoint being used as an email cannon or a registered-email oracle.
-      {
-        "name": "RESELLER_RATE_LIMITER",
-        "type": "ratelimit",
-        "namespace_id": "1005",
-        "simple": { "limit": 30, "period": 60 }
-      },
-      // Payments: /api/checkout (per user and per address+user) and the unauthenticated
-      // /api/verify-payment (keyed per IP). Every verify call that reaches a
-      // real reference spends one request against Paystack's own API quota,
-      // which the reconcile cron and genuine customers share — so the public
-      // endpoint is capped — per address AND reference, so the client's
-      // confirm-polling (<= 20 calls a minute) fits with room to spare.
-      {
-        "name": "PAYMENT_RATE_LIMITER",
-        "type": "ratelimit",
-        "namespace_id": "1006",
-        "simple": { "limit": 30, "period": 60 }
-      },
-      // /api/verify-payment per client ADDRESS only. A customer's confirm-polling
-      // is ~20 calls a minute and several customers on one mobile-carrier
-      // address (shared IPv4, common for M-Pesa users) poll at once, so this is
-      // deliberately loose; the per-reference bucket on PAYMENT_RATE_LIMITER is
-      // what bounds one payment. 1007 is the next free number in the 10xx block.
-      {
-        "name": "PAYMENT_VERIFY_RATE_LIMITER",
-        "type": "ratelimit",
-        "namespace_id": "1007",
-        "simple": { "limit": 300, "period": 60 }
-      },
-      // Per target email across all callers: signup / password reset /
-      // resend-confirmation. Bounds how many emails anyone can make us send
-      // to one inbox, however many addresses the requests come from.
-      {
-        "name": "AUTH_TARGET_RATE_LIMITER",
-        "type": "ratelimit",
-        "namespace_id": "1101",
-        "simple": { "limit": 5, "period": 60 }
-      },
-      // v1 API, per client address, checked BEFORE the key lookup. Deliberately
-      // very high: resellers often share one egress address across many keys
-      // (each allowed 120/min), and this must never throttle them. 6000/min is
-      // 100 requests/second from a single address — it only exists to cap how
-      // many database lookups invalid-key traffic can trigger.
-      {
-        "name": "API_IP_RATE_LIMITER",
-        "type": "ratelimit",
-        "namespace_id": "1102",
-        "simple": { "limit": 6000, "period": 60 }
-      },
-      // Per signed-in user: session-authenticated routes that spend money,
-      // create upstream resources, or make our server call out.
-      {
-        "name": "USER_ACTION_RATE_LIMITER",
-        "type": "ratelimit",
-        "namespace_id": "1103",
-        "simple": { "limit": 30, "period": 60 }
-      },
-      // Per signed-in user: routes that email staff on every call.
-      {
-        "name": "USER_EMAIL_RATE_LIMITER",
-        "type": "ratelimit",
-        "namespace_id": "1104",
-        "simple": { "limit": 3, "period": 60 }
-      }
-    ]
-  }
+  "ratelimits": [
+    // Unauthenticated / credential-handling auth endpoints, per client
+    // address per route group. 20/min rather than a tighter figure because
+    // mobile carriers put many subscribers behind one shared IPv4 address.
+    {
+      "name": "AUTH_RATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 20, "period": 60 }
+    },
+    // Public v1 API, per API key (lib/apiAuth.ts). 120 requests / minute
+    // overall, and a tighter 30 / minute for mutating calls (create /
+    // delete / top-up provision real upstream resources). Documented in
+    // /docs/api — change both places together.
+    {
+      "name": "API_RATE_LIMITER",
+      "namespace_id": "1002",
+      "simple": { "limit": 120, "period": 60 }
+    },
+    {
+      "name": "API_WRITE_RATE_LIMITER",
+      "namespace_id": "1003",
+      "simple": { "limit": 30, "period": 60 }
+    },
+    // GET /api/v1/sub-users/:id/usage/history — each call fans out up to 30
+    // requests on the one shared reseller key at the provider (same reason
+    // the dashboard's usage/history route is limited), so it gets a much
+    // tighter per-key budget than the general limiter.
+    {
+      "name": "API_HISTORY_RATE_LIMITER",
+      "namespace_id": "1004",
+      "simple": { "limit": 10, "period": 60 }
+    },
+    // Reseller allocate / reclaim, applied per address+reseller AND per
+    // reseller via rateLimitedUser (see app/api/reseller/allocate/route.ts). Higher than AUTH so a legitimate
+    // bulk allocation isn't throttled, but low enough to stop the allocate
+    // endpoint being used as an email cannon or a registered-email oracle.
+    {
+      "name": "RESELLER_RATE_LIMITER",
+      "namespace_id": "1005",
+      "simple": { "limit": 30, "period": 60 }
+    },
+    // Payments: /api/checkout (per user and per address+user) and the unauthenticated
+    // /api/verify-payment (keyed per IP). Every verify call that reaches a
+    // real reference spends one request against Paystack's own API quota,
+    // which the reconcile cron and genuine customers share — so the public
+    // endpoint is capped — per address AND reference, so the client's
+    // confirm-polling (<= 20 calls a minute) fits with room to spare.
+    {
+      "name": "PAYMENT_RATE_LIMITER",
+      "namespace_id": "1006",
+      "simple": { "limit": 30, "period": 60 }
+    },
+    // /api/verify-payment per client ADDRESS only. A customer's confirm-polling
+    // is ~20 calls a minute and several customers on one mobile-carrier
+    // address (shared IPv4, common for M-Pesa users) poll at once, so this is
+    // deliberately loose; the per-reference bucket on PAYMENT_RATE_LIMITER is
+    // what bounds one payment. 1007 is the next free number in the 10xx block.
+    {
+      "name": "PAYMENT_VERIFY_RATE_LIMITER",
+      "namespace_id": "1007",
+      "simple": { "limit": 300, "period": 60 }
+    },
+    // Per target email across all callers: signup / password reset /
+    // resend-confirmation. Bounds how many emails anyone can make us send
+    // to one inbox, however many addresses the requests come from.
+    {
+      "name": "AUTH_TARGET_RATE_LIMITER",
+      "namespace_id": "1101",
+      "simple": { "limit": 5, "period": 60 }
+    },
+    // v1 API, per client address, checked BEFORE the key lookup. Deliberately
+    // very high: resellers often share one egress address across many keys
+    // (each allowed 120/min), and this must never throttle them. 6000/min is
+    // 100 requests/second from a single address — it only exists to cap how
+    // many database lookups invalid-key traffic can trigger.
+    {
+      "name": "API_IP_RATE_LIMITER",
+      "namespace_id": "1102",
+      "simple": { "limit": 6000, "period": 60 }
+    },
+    // Per signed-in user: session-authenticated routes that spend money,
+    // create upstream resources, or make our server call out.
+    {
+      "name": "USER_ACTION_RATE_LIMITER",
+      "namespace_id": "1103",
+      "simple": { "limit": 30, "period": 60 }
+    },
+    // Per signed-in user: routes that email staff on every call.
+    {
+      "name": "USER_EMAIL_RATE_LIMITER",
+      "namespace_id": "1104",
+      "simple": { "limit": 3, "period": 60 }
+    }
+  ]
 }

@@ -1,6 +1,7 @@
 import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { NextResponse } from 'next/server'
 import { parseIpv6 } from '@/lib/ssrfGuard'
+import { throttleHit } from '@/lib/authThrottle'
 
 // Cloudflare's native Rate Limiting bindings — declared directly in
 // wrangler.jsonc (unsafe.bindings, type "ratelimit") and auto-provisioned
@@ -42,6 +43,14 @@ import { parseIpv6 } from '@/lib/ssrfGuard'
 //   API_IP_RATE_LIMITER       per client address, applied BEFORE the key
 //                             lookup so unauthenticated traffic with made-up
 //                             keys cannot hammer the database for free.
+//
+// COUNTERS ARE PER LOCATION. Cloudflare keeps each binding's counter local to the
+// data centre the Worker runs in, approximate and eventually consistent — there is
+// no worldwide total. That is fine for brakes on one source, but a sender spread
+// over many locations multiplies a cap like "5 emails a minute to one inbox". The
+// caps that exist to stop mail floods (per target address, per user for staff
+// mail) are therefore ALSO enforced exactly in Postgres (lib/authThrottle.ts), as
+// a longer-window second layer in rateLimitedTarget() / rateLimitedUser().
 //
 // Fails open, not closed: if a binding isn't present (local dev outside
 // wrangler, or the binding name changes) the helpers allow the request
@@ -113,9 +122,20 @@ export function missingRateLimiters(): string[] | null {
   }
 }
 
-function tooMany(message = 'Too many requests. Please try again in a minute.'): NextResponse {
-  return NextResponse.json({ error: message }, { status: 429, headers: { 'Retry-After': RETRY_AFTER } })
+function tooMany(message = 'Too many requests. Please try again in a minute.', retryAfterSeconds?: number): NextResponse {
+  return NextResponse.json(
+    { error: message },
+    { status: 429, headers: { 'Retry-After': retryAfterSeconds ? String(retryAfterSeconds) : RETRY_AFTER } }
+  )
 }
+
+// The exact (Postgres) caps. Sized well above any legitimate use — a person
+// signing up, re-sending the confirmation and resetting a password stays far
+// under them — and short enough that a mistaken lock-out clears quickly.
+const TARGET_EXACT_MAX = 6          // per scope, per target address
+const TARGET_EXACT_WINDOW_S = 600   // 10 minutes
+const USER_EMAIL_EXACT_MAX = 6      // per scope, per signed-in user
+const USER_EMAIL_EXACT_WINDOW_S = 3600 // 1 hour
 
 async function sha256Hex(input: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input))
@@ -207,9 +227,15 @@ export async function rateLimitedTarget(scope: string, email: unknown): Promise<
     const target = canonicalEmail(email)
     if (!target) return null
     const limiter = getLimiter('AUTH_TARGET_RATE_LIMITER')
-    if (!limiter) return null
-    const { success } = await limiter.limit({ key: `AUTH_TARGET_RATE_LIMITER:${scope}:${(await sha256Hex(target)).slice(0, 32)}` })
-    return success ? null : tooMany('Too many requests for this email address. Please try again in a minute.')
+    if (limiter) {
+      const { success } = await limiter.limit({ key: `AUTH_TARGET_RATE_LIMITER:${scope}:${(await sha256Hex(target)).slice(0, 32)}` })
+      if (!success) return tooMany('Too many requests for this email address. Please try again in a minute.')
+    }
+    // Exact, cross-location second layer (see the note at the top of this file).
+    // throttleHit fails open on a database error, so this can never be the outage.
+    const exact = await throttleHit(`target:${scope}`, target, TARGET_EXACT_MAX, TARGET_EXACT_WINDOW_S)
+    if (exact !== 'ok') return tooMany('Too many requests for this email address. Please try again in a few minutes.', TARGET_EXACT_WINDOW_S)
+    return null
   } catch (e) {
     console.error('[rateLimit] target check failed, allowing request through', e)
     return null
@@ -226,9 +252,18 @@ export async function rateLimitedUser(
 ): Promise<NextResponse | null> {
   try {
     const limiter = getLimiter(binding)
-    if (!limiter) return null
-    const { success } = await limiter.limit({ key: `${binding}:${scope}:${userId}` })
-    return success ? null : tooMany()
+    if (limiter) {
+      const { success } = await limiter.limit({ key: `${binding}:${scope}:${userId}` })
+      if (!success) return tooMany()
+    }
+    // Routes that email staff on every call also get an exact hourly cap per user
+    // (the per-location counter above lets a user spread across locations send
+    // several times the intended volume).
+    if (binding === 'USER_EMAIL_RATE_LIMITER') {
+      const exact = await throttleHit(`user-email:${scope}`, userId, USER_EMAIL_EXACT_MAX, USER_EMAIL_EXACT_WINDOW_S)
+      if (exact !== 'ok') return tooMany('Too many requests. Please try again later.', USER_EMAIL_EXACT_WINDOW_S)
+    }
+    return null
   } catch (e) {
     console.error('[rateLimit] user check failed, allowing request through', e)
     return null

@@ -13,6 +13,7 @@ import { alertAdminPayment, alertMismatchOnce } from '@/lib/paymentAlerts'
 import { failPendingOrder } from '@/lib/orderFailure'
 import { flushSecurityNotices } from '@/lib/securityEvents'
 import { REFERRAL_GB_BONUS } from '@/lib/referrals'
+import { fetchAllRows } from '@/lib/dbPaging'
 import { findReportedError, recordCronRun, checkCronFreshness, claimCronLock, releaseCronLock } from '@/lib/cronHealth'
 import { runInviteNotices, runResellerMaintenance } from '@/lib/resellerCron'
 import { NextResponse } from 'next/server'
@@ -231,15 +232,35 @@ async function runUsageSync() {
 // again on the next approach. Previously there was no de-dupe at all,
 // so any account sitting above a threshold got a fresh email on every
 // cron run (e.g. every 15 minutes) indefinitely.
+// An alert counts as sent only when the mail provider ACCEPTED it. sendEmail()
+// logs and returns a non-OK response instead of throwing, and the loop below
+// used to flag the account as alerted regardless — so a provider 429/5xx on the
+// day's run meant that customer was never warned again until their usage fell
+// back under 80%. Throwing here leaves the flag unset (retried next run).
+async function sendAlertEmail(p: { to: string; subject: string; html: string }) {
+  const res = await sendEmail(p)
+  if (!res.ok) throw new Error(`mail provider answered ${res.status}`)
+}
+
 async function runBandwidthAlerts() {
   const supabase = await createAdminClient()
-  const { data: accounts } = await supabase
-    .from('bandwidth_accounts')
-    .select('user_id, total_gb, used_gb, available_gb, alerted_80_at, alerted_95_at')
-    .gt('total_gb', 0)
+  // Paged: a plain select is silently capped at 1000 rows, which would leave every
+  // account past the 1000th without alerts.
+  const { rows: accounts, error: accountsErr } = await fetchAllRows((from, to) =>
+    supabase
+      .from('bandwidth_accounts')
+      .select('user_id, total_gb, used_gb, available_gb, alerted_80_at, alerted_95_at')
+      .gt('total_gb', 0)
+      .order('user_id', { ascending: true })
+      .range(from, to)
+  )
+  if (accountsErr) console.error('[alerts] could not read every bandwidth account:', accountsErr)
 
   let sent = 0
-  for (const acc of accounts ?? []) {
+  let failed = 0
+  // One account's failure (a mail timeout, a bad row) must not stop the rest.
+  for (const acc of accounts) {
+   try {
     if (!acc.total_gb) continue
     // Was (used_gb / total_gb) — but the email below reports available_gb,
     // which also subtracts allocated_gb (GB reserved into credentials, not
@@ -274,7 +295,7 @@ async function runBandwidthAlerts() {
       : ''
 
     if (pct >= 95 && !acc.alerted_95_at) {
-      await sendEmail({
+      await sendAlertEmail({
         to: profile.email,
         subject: `🚨 Only ${avail.toFixed(1)}GB remaining — GlobProxy`,
         html: `<p>Hi ${firstName}, you've used ${pct.toFixed(0)}% of your bandwidth. Only ${avail.toFixed(1)}GB remains.</p>
@@ -289,7 +310,7 @@ async function runBandwidthAlerts() {
         .eq('user_id', acc.user_id)
       sent++
     } else if (pct >= 80 && pct < 95 && !acc.alerted_80_at) {
-      await sendEmail({
+      await sendAlertEmail({
         to: profile.email,
         subject: `Heads up: ${avail.toFixed(1)}GB bandwidth remaining`,
         html: `<p>Hi ${firstName}, you've used ${pct.toFixed(0)}% of your bandwidth. ${avail.toFixed(1)}GB remains.</p>
@@ -301,8 +322,16 @@ async function runBandwidthAlerts() {
         .eq('user_id', acc.user_id)
       sent++
     }
+   } catch (e) {
+    failed++
+    console.error('[alerts] could not alert user', acc.user_id, e)
+   }
   }
-  return { alerts_sent: sent }
+  // `error` makes the cron heartbeat record the run as failed (lib/cronHealth).
+  return {
+    alerts_sent: sent,
+    ...(failed > 0 || accountsErr ? { alerts_failed: failed, error: accountsErr ? `bandwidth account read incomplete: ${accountsErr}` : `${failed} bandwidth alert(s) could not be sent` } : {}),
+  }
 }
 
 // ── Daily summary ─────────────────────────────────────────────────
@@ -741,7 +770,11 @@ export async function POST(req: Request, context: { params: Promise<{ task: stri
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
   const { task } = await context.params
-  const KNOWN = ['stock', 'usage', 'alerts', 'summary', 'cleanup', 'canary', 'reconcile', 'security', 'provision', 'webhooks', 'benchmark']
+  // Every task scheduled in custom-worker.ts's CRON_TASKS must be listed here, or it
+  // answers 400 on every tick and silently never runs ('invites' and 'resellers' were
+  // scheduled and handled in the switch below but missing from this list).
+  // scripts/check-cron-sync.mjs fails the build when the two drift.
+  const KNOWN = ['stock', 'usage', 'alerts', 'summary', 'cleanup', 'canary', 'reconcile', 'security', 'provision', 'webhooks', 'benchmark', 'invites', 'resellers']
   if (!KNOWN.includes(task)) return NextResponse.json({ error: `Unknown task: ${task}` }, { status: 400 })
 
   // One copy of a task at a time (migration 0056). A skipped run reports ok

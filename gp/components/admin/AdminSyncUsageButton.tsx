@@ -6,7 +6,7 @@ import { adminPost } from '@/lib/adminFetch'
 
 // user_id omitted = sync every active credential across every user
 // (same work the cron 'usage' task does). user_id present = just that
-// user's active credentials, pulled live from Geonode one at a time.
+// user's active credentials, pulled live from the upstream provider one at a time.
 export default function AdminSyncUsageButton({
   userId,
   label = 'Sync usage now',
