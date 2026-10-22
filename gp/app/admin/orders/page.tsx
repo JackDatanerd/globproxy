@@ -3,11 +3,14 @@ import { createAdminClient } from '@/lib/supabase/server'
 import AdminPager, { parsePage, cleanSearch } from '@/components/admin/AdminPager'
 import { formatGb } from '@/lib/format'
 import AdminRefundButton from '@/components/admin/AdminRefundButton'
+import { AdminVerifyOrderButton, AdminDisputeButtons, AdminDeclineRequestButton } from '@/components/admin/AdminOrderActions'
 
 const PAGE_SIZE = 50
 // 'refund' = any order with money refunded (partial refunds keep status 'paid').
 // 'disputed' = a Paystack chargeback is open on the order (migration 0047).
-const FILTERS = ['paid', 'pending', 'failed', 'cancelled', 'refunded', 'refund', 'disputed'] as const
+// 'refund_requested' = the customer asked for a refund from Billing (migration 0062).
+// 'uncredited' = not credited yet but has a payment reference (candidates for Verify & credit).
+const FILTERS = ['paid', 'pending', 'failed', 'cancelled', 'refunded', 'refund', 'disputed', 'refund_requested', 'uncredited'] as const
 
 export default async function AdminOrdersPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const sp = await searchParams
@@ -36,9 +39,17 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
     searchIds = (matches ?? []).map(m => m.id)
   }
 
+  let requestOrderIds: string[] = []
+  if (status === 'refund_requested') {
+    const { data: open } = await supabase.from('refund_requests').select('order_id').eq('status', 'open').limit(500)
+    requestOrderIds = (open ?? []).map(r => r.order_id)
+  }
+
   let query = supabase.from('orders').select('*', { count: 'exact' })
   if (status === 'refund') query = query.gt('refunded_usd', 0)
   else if (status === 'disputed') query = query.eq('dispute_status', 'open')
+  else if (status === 'refund_requested') query = requestOrderIds.length ? query.in('id', requestOrderIds) : query.in('id', ['00000000-0000-0000-0000-000000000000'])
+  else if (status === 'uncredited') query = query.eq('bandwidth_credited', false).in('payment_status', ['pending', 'failed', 'cancelled']).not('paystack_reference', 'is', null).eq('is_canary', false)
   else if (status) query = query.eq('payment_status', status)
   if (searchIds) query = searchIds.length ? query.in('user_id', searchIds) : query.in('user_id', ['00000000-0000-0000-0000-000000000000'])
   const from = (page - 1) * PAGE_SIZE
@@ -49,6 +60,13 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
     ? await supabase.from('profiles').select('id, email, full_name').in('id', userIds)
     : { data: [] }
   const profileMap = Object.fromEntries((profiles ?? []).map(p => [p.id, p]))
+
+  // Open refund requests for the orders on this page (customer → Billing → Request refund).
+  const pageOrderIds = (orders ?? []).map(o => o.id)
+  const { data: openRequests } = pageOrderIds.length
+    ? await supabase.from('refund_requests').select('id, order_id, reason, within_policy, created_at').eq('status', 'open').in('order_id', pageOrderIds)
+    : { data: [] }
+  const requestByOrder = Object.fromEntries((openRequests ?? []).map(r => [r.order_id, r]))
 
   const chip = (active: boolean) => `text-xs font-mono px-3 py-1.5 rounded-full border transition-all ${active ? 'bg-ink text-white border-ink' : 'border-border text-ink2 hover:border-ink2'}`
   const hrefFor = (s: string) => {
@@ -89,7 +107,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
 
       <div className="flex flex-wrap items-center gap-2 mb-4">
         <Link href={hrefFor('')} className={chip(!status)}>All</Link>
-        {FILTERS.map(f => <Link key={f} href={hrefFor(f)} className={chip(status === f)}>{f === 'refund' ? 'has refund' : f === 'disputed' ? 'open dispute' : f}</Link>)}
+        {FILTERS.map(f => <Link key={f} href={hrefFor(f)} className={chip(status === f)}>{f === 'refund' ? 'has refund' : f === 'disputed' ? 'open dispute' : f === 'refund_requested' ? 'refund requested' : f === 'uncredited' ? 'paid? (uncredited)' : f}</Link>)}
         <form method="get" className="ml-auto flex gap-2">
           {status && <input type="hidden" name="status" value={status} />}
           <input name="q" defaultValue={q} placeholder="Search customer email or name…"
@@ -152,14 +170,31 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
                         ⚠ dispute open{o.dispute_opened_at ? ` since ${new Date(o.dispute_opened_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}` : ''}
                       </div>
                     )}
-                    {o.dispute_status === 'resolved' && (
-                      <div className="text-[10px] font-mono text-muted mt-1">dispute resolved{o.dispute_resolution ? ` — ${o.dispute_resolution}` : ''}</div>
+                    {(o.dispute_status === 'resolved' || o.dispute_status === 'lost' || o.dispute_status === 'won') && (
+                      <div className={`text-[10px] font-mono mt-1 ${o.dispute_status === 'lost' ? 'text-red-600' : 'text-muted'}`}>
+                        dispute {o.dispute_status === 'resolved' ? 'resolved (outcome not recorded)' : o.dispute_status}{o.dispute_resolution ? ` — ${o.dispute_resolution}` : ''}
+                      </div>
+                    )}
+                    {requestByOrder[o.id] && (
+                      <div className="text-[10px] font-mono text-amber-700 mt-1 max-w-[220px]">
+                        ✋ refund requested{requestByOrder[o.id].within_policy ? ' · within policy' : ' · outside policy'}
+                        <div className="text-muted break-words whitespace-normal">“{requestByOrder[o.id].reason}”</div>
+                      </div>
                     )}
                     {o.paystack_reference && <div className="text-[10px] font-mono text-muted mt-1 break-all">{o.paystack_reference}</div>}
                   </td>
-                  <td className="px-6 py-4 text-right">
+                  <td className="px-6 py-4 text-right space-y-1.5">
+                    {!o.is_canary && !o.bandwidth_credited && o.paystack_reference && ['pending', 'failed', 'cancelled'].includes(o.payment_status) && (
+                      <div><AdminVerifyOrderButton orderId={o.id} email={profile?.email || 'this customer'} /></div>
+                    )}
+                    {(o.dispute_status === 'open' || o.dispute_status === 'resolved') && !o.is_canary && (
+                      <div><AdminDisputeButtons orderId={o.id} email={profile?.email || 'this customer'} /></div>
+                    )}
+                    {requestByOrder[o.id] && (
+                      <div><AdminDeclineRequestButton requestId={requestByOrder[o.id].id} email={profile?.email || 'this customer'} /></div>
+                    )}
                     {o.payment_status === 'paid' && !o.is_canary && o.paystack_reference && Number(o.amount_usd) - refunded > 0.005 && (
-                      <AdminRefundButton orderId={o.id} remainingUsd={Math.round((Number(o.amount_usd) - refunded) * 100) / 100} email={profile?.email || 'this customer'} />
+                      <div><AdminRefundButton orderId={o.id} remainingUsd={Math.round((Number(o.amount_usd) - refunded) * 100) / 100} email={profile?.email || 'this customer'} /></div>
                     )}
                   </td>
                 </tr>

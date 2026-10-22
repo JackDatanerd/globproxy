@@ -24,9 +24,14 @@ import { parseIpv6 } from '@/lib/ssrfGuard'
 //                             allocation isn't throttled but the endpoint can't
 //                             be used as an email cannon.
 //   PAYMENT_RATE_LIMITER      /api/checkout (per user AND per address+user) and
-//                             the public /api/verify-payment (per address) —
-//                             every call that reaches a real reference spends
-//                             Paystack API quota shared with the reconcile cron.
+//                             the public /api/verify-payment (per address AND
+//                             reference) — every call that reaches a real
+//                             reference spends Paystack API quota shared with
+//                             the reconcile cron.
+//   PAYMENT_VERIFY_RATE_LIMITER  /api/verify-payment, per client address only:
+//                             a loose ceiling (many customers share one mobile-
+//                             carrier address and each polls every few seconds),
+//                             so one address cannot hammer the endpoint.
 //   USER_ACTION_RATE_LIMITER  per signed-in user — session-authenticated
 //                             routes that spend money, create upstream
 //                             resources or make our server call out.
@@ -54,6 +59,7 @@ export type RateLimiterBinding =
   | 'AUTH_TARGET_RATE_LIMITER'
   | 'RESELLER_RATE_LIMITER'
   | 'PAYMENT_RATE_LIMITER'
+  | 'PAYMENT_VERIFY_RATE_LIMITER'
   | 'API_RATE_LIMITER'
   | 'API_WRITE_RATE_LIMITER'
   | 'API_HISTORY_RATE_LIMITER'
@@ -67,7 +73,7 @@ type Limiter = { limit: (opts: { key: string }) => Promise<{ success: boolean }>
 // absent: a renamed or dropped binding makes its limiter fail open, and nothing
 // else would ever say so.
 export const RATE_LIMITER_BINDINGS: RateLimiterBinding[] = [
-  'AUTH_RATE_LIMITER', 'AUTH_TARGET_RATE_LIMITER', 'RESELLER_RATE_LIMITER', 'PAYMENT_RATE_LIMITER',
+  'AUTH_RATE_LIMITER', 'AUTH_TARGET_RATE_LIMITER', 'RESELLER_RATE_LIMITER', 'PAYMENT_RATE_LIMITER', 'PAYMENT_VERIFY_RATE_LIMITER',
   'API_RATE_LIMITER', 'API_WRITE_RATE_LIMITER', 'API_HISTORY_RATE_LIMITER', 'API_IP_RATE_LIMITER',
   'USER_ACTION_RATE_LIMITER', 'USER_EMAIL_RATE_LIMITER',
 ]

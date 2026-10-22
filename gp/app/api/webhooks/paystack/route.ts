@@ -4,10 +4,11 @@ import { verifyWebhookSignature, paymentMismatchReason } from '@/lib/paystack'
 import { activateBandwidth } from '@/lib/bandwidth'
 import { createAdminClient } from '@/lib/supabase/server'
 import { escapeHtml, sendEmail } from '@/lib/email'
-import { alertAdminPayment } from '@/lib/paymentAlerts'
+import { alertAdminPayment, alertMismatchOnce } from '@/lib/paymentAlerts'
 import { sendRefundEmail } from '@/lib/billingEmails'
 import { dispatchWebhook } from '@/lib/webhooks'
 import { failPendingOrder } from '@/lib/orderFailure'
+import { applyDisputeLoss } from '@/lib/disputes'
 
 type Admin = Awaited<ReturnType<typeof createAdminClient>>
 
@@ -113,7 +114,9 @@ async function handleChargeSuccess(supabase: Admin, data: any) {
   const mismatch = paymentMismatchReason({ amount, currency, reference }, order)
   if (mismatch) {
     console.error('[webhook] payment does not match order — refusing to credit', { order_id: order.id, mismatch })
-    await alertAdminPayment('Payment does not match its order — NOT credited', {
+    // Once per order: Paystack redelivers, and verify / reconcile look at the same
+    // order again, none of which changes the outcome.
+    await alertMismatchOnce(supabase, order.id, 'Payment does not match its order — NOT credited', {
       order_id: order.id, reference, problem: mismatch, order_status: order.payment_status,
     })
     return NextResponse.json({ received: true })
@@ -211,7 +214,15 @@ async function handleRefundProcessed(supabase: Admin, data: any) {
 
   const txRef: string = data?.transaction_reference ?? data?.transaction?.reference ?? ''
   const refundCents = Number(data?.amount)
-  const refundRef: string = String(data?.refund_reference ?? data?.id ?? `${txRef}_${refundCents}`)
+  // Paystack's own id for the refund is the idempotency key. If a payload ever
+  // carries neither refund_reference nor id, fall back to transaction + amount +
+  // whatever timestamp it has — transaction + amount alone makes two genuine
+  // partial refunds of the same size look like one redelivery, and the second
+  // was dropped as a "duplicate" after the money had gone back to the customer.
+  const explicitRef = data?.refund_reference ?? data?.id
+  const usedFallback = explicitRef == null || explicitRef === ''
+  const stamp: string = String(data?.refunded_at ?? data?.updated_at ?? data?.updatedAt ?? data?.created_at ?? data?.createdAt ?? '')
+  const refundRef: string = usedFallback ? `${txRef}_${refundCents}${stamp ? `_${stamp}` : ''}` : String(explicitRef)
 
   if (!txRef || !Number.isFinite(refundCents) || refundCents <= 0) {
     await alertAdminPayment('refund.processed with an unreadable payload — handle manually', {
@@ -270,6 +281,9 @@ async function handleRefundProcessed(supabase: Admin, data: any) {
     p_order_id: order.id,
     p_refund_reference: refundRef,
     p_refund_usd: refundUsd,
+    // What actually went back to the customer, in the currency they paid in, so
+    // the credit note of an M-Pesa refund can state the shillings.
+    ...(paidCur !== 'USD' ? { p_charged_amount: refundCents / 100, p_charged_currency: paidCur } : {}),
   })
   if (rpcErr) throw rpcErr
 
@@ -296,7 +310,16 @@ async function handleRefundProcessed(supabase: Admin, data: any) {
         fully_refunded: !!result.fully_refunded,
       })
     }
-  } else if (result?.reason !== 'duplicate') {
+  } else if (result?.reason === 'duplicate') {
+    if (usedFallback && !stamp) {
+      // Nothing in the payload tells a redelivery from a second refund of the
+      // same amount; say so rather than silently dropping a possible real one.
+      await alertAdminPayment('Refund event ignored as a possible duplicate — please check', {
+        order_id: order.id, refund_reference: refundRef, amount: data?.amount, currency: data?.currency ?? '',
+        note: 'The payload had no refund id or timestamp. If this was a second refund of the same amount, apply it by hand (Admin → Orders / Adjust bandwidth).',
+      })
+    }
+  } else {
     await alertAdminPayment('Refund could not be applied automatically', {
       order_id: order.id, refund_reference: refundRef, reason: result?.reason ?? 'unknown',
     })
@@ -342,25 +365,73 @@ async function handleRefundProblem(supabase: Admin, kind: string, data: any) {
   )
 }
 
-// Disputes can be won, so no bandwidth is clawed back automatically. What IS
-// automatic: the order is flagged (orders.dispute_status) and the account
+// Disputes can be won, so nothing is clawed back when one OPENS. What IS
+// automatic then: the order is flagged (orders.dispute_status) and the account
 // cannot start new purchases while a dispute is open — otherwise buy → use →
 // charge back could be repeated indefinitely. The admin is told immediately
-// because Paystack's response window is short. Resolution does not guess who
-// won: it clears the purchase pause and tells the admin to act on the outcome
-// (a lost dispute normally arrives as a refund event, which does claw back).
+// because Paystack's response window is short.
+//
+// When it RESOLVES: a resolution the merchant accepted (including the one
+// Paystack applies itself when the response window lapses) means the money has
+// been taken back from our balance — and Paystack sends no refund.processed for
+// that, so the customer kept every GB. That case now takes the proportional
+// bandwidth back and issues a credit note (lib/disputes.ts), exactly as a refund
+// does. Any other resolution is recorded as 'resolved' without a guess about who
+// won; the admin settles it with the "Dispute lost" / "Dispute won" buttons on
+// Admin → Orders.
 async function handleDispute(supabase: Admin, kind: string, data: any) {
   const txRef: string = data?.transaction?.reference ?? data?.transaction_reference ?? ''
   const opened = kind === 'charge.dispute.create'
+  const resolution = data?.resolution ?? data?.status ?? null
+  const accepted = !opened && /accept/i.test(String(data?.resolution ?? ''))
 
   let flagged = false
+  let settledBefore: string | null = null
+  let lost: { applied: boolean; refundUsd: number; gbClawed: number; gbNotRecoverable: number } | null = null
   if (txRef) {
-    const patch = opened
-      ? { dispute_status: 'open', dispute_opened_at: new Date().toISOString(), dispute_resolution: null }
-      : { dispute_status: 'resolved', dispute_resolution: String(data?.resolution ?? data?.status ?? 'resolved').slice(0, 200) }
-    const { data: rows, error } = await supabase.from('orders').update(patch).eq('paystack_reference', txRef).select('id')
-    if (error) throw error // transient — let Paystack redeliver
-    flagged = (rows?.length ?? 0) > 0
+    const { data: cur, error: curErr } = await supabase.from('orders')
+      .select('id, user_id, amount_usd, refunded_usd, is_canary, bandwidth_credited, dispute_status, pay_currency, pay_amount')
+      .eq('paystack_reference', txRef).maybeSingle()
+    if (curErr) throw curErr // transient — let Paystack redeliver
+    if (cur) {
+      flagged = true
+      if (cur.dispute_status === 'lost' || cur.dispute_status === 'won' || (opened && cur.dispute_status === 'resolved')) {
+        // An admin already settled it (or an earlier delivery of this event did):
+        // never overwrite a decided outcome with a plain 'resolved'.
+        settledBefore = cur.dispute_status
+      } else {
+        const patch = opened
+          ? { dispute_status: 'open', dispute_opened_at: new Date().toISOString(), dispute_resolution: null }
+          : { dispute_status: 'resolved', dispute_resolution: String(resolution ?? 'resolved').slice(0, 200) }
+        const { error } = await supabase.from('orders').update(patch).eq('id', cur.id)
+        if (error) throw error // transient — let Paystack redeliver
+        if (accepted && cur.bandwidth_credited) {
+          // A partial chargeback takes only its share: convert refund_amount (minor
+          // units of the charged currency) with the order's own locked ratio.
+          let partialUsd: number | undefined
+          let unconvertible = false
+          const disputed = Number(data?.refund_amount)
+          if (Number.isFinite(disputed) && disputed > 0) {
+            const orderUsd = Number(cur.amount_usd)
+            const paidCur = String(cur.pay_currency ?? 'USD').toUpperCase()
+            const major = disputed / 100
+            let usd: number | null = null
+            if (paidCur === 'USD') usd = major
+            else if (Number(cur.pay_amount) > 0) usd = orderUsd * (major / Number(cur.pay_amount))
+            if (usd == null || !Number.isFinite(usd)) unconvertible = true
+            else if (usd < orderUsd - 0.005) partialUsd = Math.round(usd * 100) / 100
+          }
+          if (unconvertible) {
+            await alertAdminPayment('Dispute accepted with a partial amount that could not be converted — use "Dispute lost" with an amount', {
+              order_id: cur.id, transaction_reference: txRef, refund_amount: data?.refund_amount,
+            })
+          } else {
+            const r = await applyDisputeLoss(supabase, cur, { source: 'webhook charge.dispute.resolve', resolution: String(resolution ?? 'merchant-accepted'), amountUsd: partialUsd })
+            lost = { applied: r.applied, refundUsd: r.refundUsd, gbClawed: r.gbClawed, gbNotRecoverable: r.gbNotRecoverable }
+          }
+        }
+      }
+    }
   }
 
   await alertAdminPayment(opened ? 'DISPUTE OPENED — respond in Paystack' : 'Dispute resolved', {
@@ -368,6 +439,10 @@ async function handleDispute(supabase: Admin, kind: string, data: any) {
     status: data?.status ?? '', resolution: data?.resolution ?? '', refund_amount: data?.refund_amount ?? '',
     category: data?.category ?? '',
     order_flagged: flagged ? (opened ? 'yes — new purchases paused for this account' : 'yes — purchase pause lifted') : 'no matching order found',
-    ...(opened ? {} : { next_step: 'If the dispute was lost, review the account (refund events claw bandwidth back automatically; GB already used cannot be recovered).' }),
+    ...(opened ? {} : {
+      outcome: settledBefore ? `already settled as "${settledBefore}" — left unchanged` : lost
+        ? (lost.applied ? `LOST — ${lost.gbClawed} GB taken back, $${lost.refundUsd.toFixed(2)} credited back on the order` : 'LOST — nothing left on the order to take back')
+        : 'Not stated as lost — if it was lost, use "Dispute lost" on Admin → Orders',
+    }),
   })
 }

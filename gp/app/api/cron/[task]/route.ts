@@ -9,7 +9,7 @@ import { provisionPendingCredentials, reconcileLimitSync, flagStalledPending, al
 import { runConfiguredBenchmark } from '@/lib/networkProbe'
 import { chargeAuthorization, generateReference, verifyTransaction, paymentMismatchReason } from '@/lib/paystack'
 import { activateBandwidth, retryPostCredit } from '@/lib/bandwidth'
-import { alertAdminPayment } from '@/lib/paymentAlerts'
+import { alertAdminPayment, alertMismatchOnce } from '@/lib/paymentAlerts'
 import { failPendingOrder } from '@/lib/orderFailure'
 import { flushSecurityNotices } from '@/lib/securityEvents'
 import { REFERRAL_GB_BONUS } from '@/lib/referrals'
@@ -351,7 +351,7 @@ async function runDailySummary() {
 // processing failed, any order that isn't credited yet (pending, or locally
 // cancelled/failed) is re-verified directly with Paystack and credited if the
 // money really arrived. First look is ~5 min after creation, then at most
-// hourly, for 3 days — bounded so abandoned checkouts don't cost Paystack
+// hourly for 3 days, then daily up to 14 days — bounded so abandoned checkouts don't cost Paystack
 // calls forever. Never throws: it runs ahead of 'usage' in the same cron
 // chain and a failure here must not block that.
 async function runReconcile() {
@@ -362,8 +362,9 @@ async function runReconcile() {
     const maxAge = new Date(now - 3 * 24 * 60 * 60 * 1000).toISOString()
     const recheck = new Date(now - 60 * 60 * 1000).toISOString()
 
-    const { data: candidates, error } = await supabase.from('orders')
-      .select('id, user_id, payment_status, amount_usd, gb_amount, paystack_reference, is_canary, pay_currency, pay_amount, created_at')
+    const COLS = 'id, user_id, payment_status, amount_usd, gb_amount, paystack_reference, is_canary, pay_currency, pay_amount, created_at'
+    const { data: fresh, error } = await supabase.from('orders')
+      .select(COLS)
       .eq('bandwidth_credited', false)
       .in('payment_status', ['pending', 'cancelled', 'failed'])
       .not('paystack_reference', 'is', null)
@@ -374,6 +375,25 @@ async function runReconcile() {
       .limit(10)
     if (error) return { error: error.message }
 
+    // Past the 3-day window the safety net used to stop, so a payment whose
+    // webhook retries were also exhausted (Paystack gives up after ~3 days) was
+    // never credited. Orders up to 14 days old keep getting a once-a-day look —
+    // a handful per run, so it costs a few Paystack calls, not a flood.
+    const agedMax = new Date(now - 14 * 24 * 60 * 60 * 1000).toISOString()
+    const agedRecheck = new Date(now - 24 * 60 * 60 * 1000).toISOString()
+    const { data: aged, error: agedErr } = await supabase.from('orders')
+      .select(COLS)
+      .eq('bandwidth_credited', false)
+      .in('payment_status', ['pending', 'cancelled', 'failed'])
+      .not('paystack_reference', 'is', null)
+      .lte('created_at', maxAge)
+      .gt('created_at', agedMax)
+      .or(`reconcile_checked_at.is.null,reconcile_checked_at.lt.${agedRecheck}`)
+      .order('reconcile_checked_at', { ascending: true, nullsFirst: true })
+      .limit(5)
+    if (agedErr) console.error('[reconcile] aged-order query failed', agedErr)
+    const candidates = [...(fresh ?? []), ...(aged ?? [])]
+
     let recovered = 0, mismatched = 0, errors = 0, failed = 0
     for (const o of candidates ?? []) {
       let settled = true // whether to push the next look out by an hour
@@ -383,7 +403,7 @@ async function runReconcile() {
           const mismatch = paymentMismatchReason(txn, o)
           if (mismatch) {
             mismatched++
-            await alertAdminPayment('Reconcile: paid transaction does not match its order — NOT credited', {
+            await alertMismatchOnce(supabase, o.id, 'Reconcile: paid transaction does not match its order — NOT credited', {
               order_id: o.id, reference: o.paystack_reference, problem: mismatch,
             })
           } else {
@@ -427,7 +447,7 @@ async function runReconcile() {
         await supabase.from('orders').update({ reconcile_checked_at: new Date().toISOString() }).eq('id', o.id)
       }
     }
-    return { checked: candidates?.length ?? 0, recovered, mismatched, errors, failed }
+    return { checked: candidates.length, aged_checked: aged?.length ?? 0, recovered, mismatched, errors, failed }
   } catch (e: any) {
     console.error('[reconcile] failed', e)
     return { error: e?.message ?? 'reconcile failed' }

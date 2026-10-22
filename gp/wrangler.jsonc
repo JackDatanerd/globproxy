@@ -98,13 +98,24 @@
       // /api/verify-payment (keyed per IP). Every verify call that reaches a
       // real reference spends one request against Paystack's own API quota,
       // which the reconcile cron and genuine customers share — so the public
-      // endpoint is capped. Generous enough for the client's confirm-polling
-      // (<= 8 calls over ~25s) several times over.
+      // endpoint is capped — per address AND reference, so the client's
+      // confirm-polling (<= 20 calls a minute) fits with room to spare.
       {
         "name": "PAYMENT_RATE_LIMITER",
         "type": "ratelimit",
         "namespace_id": "1006",
         "simple": { "limit": 30, "period": 60 }
+      },
+      // /api/verify-payment per client ADDRESS only. A customer's confirm-polling
+      // is ~20 calls a minute and several customers on one mobile-carrier
+      // address (shared IPv4, common for M-Pesa users) poll at once, so this is
+      // deliberately loose; the per-reference bucket on PAYMENT_RATE_LIMITER is
+      // what bounds one payment. 1007 is the next free number in the 10xx block.
+      {
+        "name": "PAYMENT_VERIFY_RATE_LIMITER",
+        "type": "ratelimit",
+        "namespace_id": "1007",
+        "simple": { "limit": 300, "period": 60 }
       },
       // Per target email across all callers: signup / password reset /
       // resend-confirmation. Bounds how many emails anyone can make us send

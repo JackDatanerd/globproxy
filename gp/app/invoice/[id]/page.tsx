@@ -50,7 +50,7 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
   // invoice.
   const { data: refunds } = await supabase
     .from('order_refunds')
-    .select('credit_note_number, amount_usd, created_at')
+    .select('credit_note_number, amount_usd, created_at, charged_amount, charged_currency')
     .eq('order_id', order.id)
     .order('created_at', { ascending: true })
 
@@ -60,6 +60,9 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
   const sellerName = process.env.INVOICE_SELLER_NAME?.trim() || 'Saltern Studio'
   const sellerAddress = process.env.INVOICE_SELLER_ADDRESS?.trim() || ''
   const sellerTaxId = process.env.INVOICE_SELLER_TAX_ID?.trim() || ''
+  // Optional wording for the foot of the invoice, e.g. "Prices include all applicable
+  // taxes" or "Seller is not VAT-registered" — whatever the seller's jurisdiction needs.
+  const taxNote = process.env.INVOICE_TAX_NOTE?.trim() || ''
 
   // Buyer details as they were when the order was paid (frozen by
   // claim_and_credit_order); invoices issued before that fall back to the
@@ -205,7 +208,12 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
                       <Link href={`/invoice/${order.id}/credit/${r.credit_note_number}`} className="underline print:no-underline">{r.credit_note_number}</Link>
                       {' '}({formatDate(r.created_at)})
                     </td>
-                    <td className="pt-2 text-sm text-red-500 text-right font-mono">−${Number(r.amount_usd).toFixed(2)}</td>
+                    <td className="pt-2 text-sm text-red-500 text-right font-mono">
+                      −${Number(r.amount_usd).toFixed(2)}
+                      {r.charged_amount != null && r.charged_currency && (
+                        <div className="text-[10px] text-red-400">{r.charged_currency} {Number(r.charged_amount).toLocaleString('en-KE')} returned</div>
+                      )}
+                    </td>
                   </tr>
                 ))}
                 <tr>
@@ -228,6 +236,8 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
             The invoice total above is in USD.
           </p>
         )}
+
+        {taxNote && <p className="text-[11px] text-muted mb-3">{taxNote}</p>}
 
         {revised && (
           <p className="text-[11px] text-muted mb-3">

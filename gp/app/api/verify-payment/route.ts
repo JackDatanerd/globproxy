@@ -2,20 +2,30 @@ import { NextResponse } from 'next/server'
 import { verifyTransaction, paymentMismatchReason } from '@/lib/paystack'
 import { activateBandwidth } from '@/lib/bandwidth'
 import { createAdminClient } from '@/lib/supabase/server'
-import { alertAdminPayment } from '@/lib/paymentAlerts'
+import { alertMismatchOnce } from '@/lib/paymentAlerts'
 import { rateLimited } from '@/lib/rateLimit'
 import { failPendingOrder } from '@/lib/orderFailure'
 
+// The answer for anything that is OUR or the provider's hiccup rather than a
+// verdict on the payment. The client polls on `pending` and tells the customer it
+// is "still processing"; it used to get a bare 500, read that as a definitive
+// failure and showed a red error to someone whose money may well have moved.
+function stillConfirming(message = 'We could not confirm your payment just yet — it will be credited automatically once it is confirmed.') {
+  return NextResponse.json({ success: false, pending: true, error: message }, { status: 503 })
+}
+
 export async function POST(req: Request) {
   try {
-    // Unauthenticated by design (see below), so cap it per IP: each call that
-    // reaches a real reference spends Paystack API quota shared with the
-    // reconcile cron and every genuine customer.
-    // Its own bucket per address ('verify'): it must not share a budget with
-    // /api/checkout/options, and a shared mobile-carrier address polling for
-    // several M-Pesa customers at once needs room of its own.
-    const limited = await rateLimited(req, 'PAYMENT_RATE_LIMITER', 'verify')
-    if (limited) return limited
+    // Unauthenticated by design (see below), so cap it: each call that reaches a
+    // real reference spends Paystack API quota shared with the reconcile cron and
+    // every genuine customer.
+    // Two buckets. Per address only (loose): many customers share one mobile-
+    // carrier address and each polls every few seconds. Per address AND
+    // reference (below, once the body is read): bounds the calls for ONE payment.
+    // They were a single 30/min bucket per address, which two M-Pesa customers
+    // on the same carrier address polling at 20/min each exhausted.
+    const ipLimited = await rateLimited(req, 'PAYMENT_VERIFY_RATE_LIMITER')
+    if (ipLimited) return ipLimited
 
     let reference: unknown
     try {
@@ -26,6 +36,9 @@ export async function POST(req: Request) {
     if (typeof reference !== 'string' || !reference || reference.length > 100) {
       return NextResponse.json({ error: 'No reference' }, { status: 400 })
     }
+
+    const limited = await rateLimited(req, 'PAYMENT_RATE_LIMITER', `verify:${reference}`)
+    if (limited) return limited
 
     const supabase = await createAdminClient()
 
@@ -41,13 +54,13 @@ export async function POST(req: Request) {
     // reference can only replay the same idempotent credit.
     const { data: order, error } = await supabase
       .from('orders')
-      .select('id, user_id, payment_status, amount_usd, gb_amount, paystack_reference, bandwidth_credited, is_canary, pay_currency, pay_amount')
+      .select('id, user_id, payment_status, payment_method, amount_usd, gb_amount, paystack_reference, bandwidth_credited, is_canary, pay_currency, pay_amount, created_at')
       .eq('paystack_reference', reference)
       .maybeSingle()
 
     if (error) {
       console.error('[verify-payment] order lookup failed', error)
-      return NextResponse.json({ error: 'Could not look up your order. Please try again.' }, { status: 500 })
+      return stillConfirming()
     }
     if (!order) return NextResponse.json({ error: 'Order not found' }, { status: 404 })
 
@@ -64,19 +77,41 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'This order has been refunded.' }, { status: 400 })
     }
 
-    const txn = await verifyTransaction(reference)
+    let txn: Awaited<ReturnType<typeof verifyTransaction>>
+    try {
+      txn = await verifyTransaction(reference)
+    } catch (e) {
+      // Paystack unreachable / timing out / not (yet) aware of the reference:
+      // nothing is known about the payment, so the customer is told to wait.
+      console.error('[verify-payment] Paystack verify failed', order.id, e)
+      // A reference Paystack has never seen (checkout abandoned before it registered
+      // the transaction) is a verdict, not a hiccup — once the order is old enough
+      // that registration lag is ruled out, say so instead of "still confirming".
+      const ageMs = order.created_at ? Date.now() - Date.parse(order.created_at) : 0
+      if (/not found/i.test(String((e as any)?.message ?? '')) && Number.isFinite(ageMs) && ageMs > 10 * 60 * 1000) {
+        return NextResponse.json({ error: 'The payment was not completed. You have not been charged.' }, { status: 400 })
+      }
+      return stillConfirming()
+    }
     if (txn.status !== 'success') {
       // Not-yet-final states are NOT failures: a card awaiting 3-D Secure/OTP,
       // or a redirect that returned before the charge settled, still ends in
       // charge.success. Tell the client to keep waiting (it polls) instead of
       // showing a red "failed" for money that is about to arrive.
-      if (['ongoing', 'pending', 'processing', 'queued'].includes(txn.status)) {
+      if (['ongoing', 'pending', 'processing', 'queued', 'pay_offline'].includes(txn.status)) {
         return NextResponse.json({ success: false, pending: true, error: 'Your payment is still being processed.' }, { status: 202 })
       }
       if (txn.status === 'reversed') {
         return NextResponse.json({ error: 'This payment was reversed.' }, { status: 400 })
       }
       if (txn.status === 'abandoned') {
+        // An M-Pesa customer who has not yet entered their PIN on the STK push
+        // can read as 'abandoned' to the provider; ending the wait now would show
+        // a failure to someone mid-payment. Give a fresh M-Pesa order ten minutes
+        // (the prompt itself lapses long before that).
+        if (order.payment_method === 'mpesa' && Date.now() - Date.parse(order.created_at) < 10 * 60 * 1000) {
+          return NextResponse.json({ success: false, pending: true, error: 'Waiting for you to confirm the M-Pesa prompt on your phone.' }, { status: 202 })
+        }
         return NextResponse.json({ error: 'The payment was not completed. You have not been charged.' }, { status: 400 })
       }
       // A real decline. Paystack documents no charge.failed webhook, so this is
@@ -95,7 +130,7 @@ export async function POST(req: Request) {
     const mismatch = paymentMismatchReason(txn, order)
     if (mismatch) {
       console.error('[verify-payment] payment does not match order', { order_id: order.id, mismatch })
-      await alertAdminPayment('verify-payment: payment does not match its order — NOT credited', {
+      await alertMismatchOnce(supabase, order.id, 'verify-payment: payment does not match its order — NOT credited', {
         order_id: order.id, reference, problem: mismatch,
       })
       return NextResponse.json({ error: 'Payment amount mismatch. Please contact support.' }, { status: 400 })
@@ -124,6 +159,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ success: true, already_paid: result.status === 'already_credited' })
   } catch (err: any) {
     console.error('[verify-payment]', err)
-    return NextResponse.json({ error: 'Could not verify payment right now. Please try again shortly.' }, { status: 500 })
+    return stillConfirming('Could not verify payment right now.')
   }
 }

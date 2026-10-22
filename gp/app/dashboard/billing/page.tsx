@@ -13,6 +13,10 @@ export default function BillingPage() {
   const [loading, setLoading] = useState(true)
   const [cancelling, setCancelling] = useState<string | null>(null)
   const [loadError, setLoadError] = useState(false)
+  // Credit notes (one per refund) and the customer's refund requests, by order.
+  const [notes, setNotes] = useState<Record<string, { number: string; amount: number }[]>>({})
+  const [requests, setRequests] = useState<Record<string, { status: string; note: string | null }>>({})
+  const [requesting, setRequesting] = useState<string | null>(null)
 
   // PostgREST caps a single response (1000 rows by default) and reports
   // nothing when it truncates — page through so history and totals are
@@ -40,6 +44,20 @@ export default function BillingPage() {
         if ((data?.length ?? 0) < PAGE) break
       }
       setOrders(all)
+
+      // Credit notes and refund requests ride along; a failed read just omits
+      // them (the order history above is what matters).
+      const [{ data: refunds }, { data: reqs }] = await Promise.all([
+        sb.from('order_refunds').select('order_id, credit_note_number, amount_usd').order('created_at', { ascending: true }).limit(1000),
+        sb.from('refund_requests').select('order_id, status, decline_note, created_at').order('created_at', { ascending: true }).limit(1000),
+      ])
+      const n: Record<string, { number: string; amount: number }[]> = {}
+      for (const r of refunds ?? []) (n[r.order_id] ??= []).push({ number: r.credit_note_number, amount: Number(r.amount_usd) })
+      setNotes(n)
+      // Ascending, so the latest request per order wins.
+      const q: Record<string, { status: string; note: string | null }> = {}
+      for (const r of reqs ?? []) q[r.order_id] = { status: r.status, note: r.decline_note ?? null }
+      setRequests(q)
     } catch (e) {
       console.error('[billing] failed to load orders', e)
       setLoadError(true)
@@ -78,6 +96,30 @@ export default function BillingPage() {
       )
     }
     setCancelling(null)
+  }
+
+  async function requestRefund(o: any) {
+    const reason = window.prompt(
+      `Request a refund of ${formatUsd(Number(o.amount_usd) - Number(o.refunded_usd ?? 0))} for this ${o.gb_amount} GB order.\n\n` +
+      'Refunds are available within 72 hours of purchase if no bandwidth has been used (see the refund policy). Why are you asking for a refund?', '')
+    if (reason === null) return
+    if (reason.trim().length < 3) { toast.error('Please tell us briefly why you are asking for a refund.'); return }
+    setRequesting(o.id)
+    try {
+      const res = await fetch('/api/dashboard/billing/refund-request', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_id: o.id, reason }),
+      })
+      const d = await res.json().catch(() => ({}))
+      if (!res.ok) toast.error(d.error || 'Could not send your refund request')
+      else {
+        toast.success(d.within_policy ? 'Refund request sent — it falls inside our refund window. We reply within 2 business days.' : 'Refund request sent — it is outside our standard window, so we will review it. We reply within 2 business days.', { duration: 8000 })
+        setRequests(prev => ({ ...prev, [o.id]: { status: 'open', note: null } }))
+      }
+    } catch {
+      toast.error('Could not send your refund request')
+    }
+    setRequesting(null)
   }
 
   const paid = orders.filter(o => o.payment_status === 'paid')
@@ -158,9 +200,16 @@ export default function BillingPage() {
                     {o.pay_currency && o.pay_currency !== 'USD' && o.pay_amount != null && (
                       <div className="text-[10px] text-muted">{o.pay_currency} {Number(o.pay_amount).toLocaleString('en-KE')} via M-Pesa</div>
                     )}
-                    {Number(o.refunded_usd ?? 0) > 0 && o.payment_status === 'paid' && (
+                    {Number(o.refunded_usd ?? 0) > 0 && (
                       <div className="text-[10px] text-red-400">−{formatUsd(o.refunded_usd)} refunded</div>
                     )}
+                    {(notes[o.id] ?? []).map(n => (
+                      <div key={n.number} className="text-[10px]">
+                        <a href={`/invoice/${o.id}/credit/${n.number}`} target="_blank" rel="noopener noreferrer" className="text-muted hover:text-accent underline">
+                          Credit note {n.number}
+                        </a>
+                      </div>
+                    ))}
                   </td>
                   <td className="px-6 py-4">
                     <span className={`text-[10px] font-mono px-2.5 py-1 rounded-full ${
@@ -170,6 +219,12 @@ export default function BillingPage() {
                     }`}>
                       {o.payment_status}
                     </span>
+                    {requests[o.id]?.status === 'open' && (
+                      <div className="text-[10px] text-amber-700 mt-1">Refund requested</div>
+                    )}
+                    {requests[o.id]?.status === 'declined' && (
+                      <div className="text-[10px] text-muted mt-1 max-w-[180px]" title={requests[o.id]?.note ?? undefined}>Refund request declined</div>
+                    )}
                     {o.payment_status === 'failed' && o.failure_reason && (
                       <div className="text-[10px] text-muted mt-1 max-w-[180px] truncate" title={o.failure_reason}>{o.failure_reason}</div>
                     )}
@@ -184,6 +239,16 @@ export default function BillingPage() {
                       >
                         Invoice
                       </a>
+                    )}
+                    {o.payment_status === 'paid' && !o.is_canary && requests[o.id]?.status !== 'open'
+                      && Number(o.amount_usd) - Number(o.refunded_usd ?? 0) > 0.005 && (
+                      <button
+                        onClick={() => requestRefund(o)}
+                        disabled={requesting === o.id}
+                        className="text-[10px] font-mono text-muted hover:text-ink border border-border hover:border-ink2 px-3 py-1 rounded-lg transition-colors disabled:opacity-50 mr-2"
+                      >
+                        {requesting === o.id ? 'Sending…' : 'Request refund'}
+                      </button>
                     )}
                     {(o.payment_status === 'pending' || o.payment_status === 'failed') && (() => {
                       // Re-open the buy page on the same selection: a fixed plan when

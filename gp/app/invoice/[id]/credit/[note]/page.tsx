@@ -35,7 +35,7 @@ export default async function CreditNotePage({ params }: { params: Promise<{ id:
 
   const { data: refund } = await supabase
     .from('order_refunds')
-    .select('credit_note_number, amount_usd, created_at')
+    .select('credit_note_number, amount_usd, created_at, charged_amount, charged_currency, source')
     .eq('order_id', order.id)
     .eq('credit_note_number', note)
     .maybeSingle()
@@ -47,6 +47,7 @@ export default async function CreditNotePage({ params }: { params: Promise<{ id:
   const sellerName = process.env.INVOICE_SELLER_NAME?.trim() || 'Saltern Studio'
   const sellerAddress = process.env.INVOICE_SELLER_ADDRESS?.trim() || ''
   const sellerTaxId = process.env.INVOICE_SELLER_TAX_ID?.trim() || ''
+  const taxNote = process.env.INVOICE_TAX_NOTE?.trim() || ''
 
   // Same buyer block as the invoice it credits (frozen when it was paid).
   const snap = (order.billing_details ?? null) as { name?: string; contact?: string; email?: string; address?: string; tax_id?: string } | null
@@ -124,8 +125,8 @@ export default async function CreditNotePage({ params }: { params: Promise<{ id:
           <tbody>
             <tr className="border-b border-border">
               <td className="py-4 text-sm text-ink">
-                Refund against invoice {invoiceRef} ({formatDate(order.paid_at ?? order.created_at)})
-                <div className="text-xs text-muted mt-0.5">Bandwidth proportional to the refunded amount is removed from your balance.</div>
+                {refund.source === 'dispute' ? 'Payment dispute settled against invoice' : 'Refund against invoice'} {invoiceRef} ({formatDate(order.paid_at ?? order.created_at)})
+                <div className="text-xs text-muted mt-0.5">Bandwidth proportional to the {refund.source === 'dispute' ? 'amount returned' : 'refunded amount'} is removed from your balance.</div>
               </td>
               <td className="py-4 text-sm text-ink text-right font-mono">−${amount.toFixed(2)}</td>
             </tr>
@@ -139,10 +140,14 @@ export default async function CreditNotePage({ params }: { params: Promise<{ id:
         </table>
         {paidMpesa && (
           <p className="text-xs text-muted mb-4">
-            The original payment was made in {order.pay_currency}; the refund is returned in {order.pay_currency} at the rate that applied when the order was placed.
+            The original payment was made in {order.pay_currency}; the refund is returned in {order.pay_currency} at the rate that applied when the order was placed
+            {refund.charged_amount != null && refund.charged_currency
+              ? <>: <span className="font-mono">{refund.charged_currency} {Number(refund.charged_amount).toLocaleString('en-KE')}</span> was returned for this credit note</>
+              : null}.
             The credit note total above is in USD.
           </p>
         )}
+        {taxNote && <p className="text-xs text-muted mb-4">{taxNote}</p>}
 
         <div className="border-t border-border pt-6 text-center">
           <p className="text-xs text-muted">Questions about this credit note? support@globproxy.com</p>

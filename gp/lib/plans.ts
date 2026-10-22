@@ -65,7 +65,7 @@ export const PLANS: Plan[] = [
     total: 1000,
     tagline: 'High-volume operations',
     savings: 'Save 43%',
-    features: ['500 GB non-expiring bandwidth', 'Custom geo allocation', 'Dedicated account manager', 'White-label credentials', '24/7 priority support'],
+    features: ['500 GB non-expiring bandwidth', 'Custom geo allocation (set up with your team)', 'Dedicated account manager (in touch within 1 business day)', 'White-label credentials', '24/7 priority support'],
   },
 ]
 

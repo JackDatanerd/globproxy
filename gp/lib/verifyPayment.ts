@@ -30,11 +30,18 @@ export async function verifyPayment(reference: string): Promise<VerifyPaymentRes
     if (res.status === 429) {
       return { success: false, pending: true, error: 'Still confirming your payment…' }
     }
+    // A server-side hiccup (database blip, the payment provider unreachable) says
+    // nothing about whether the customer paid — the same reasoning as the network
+    // catch below. Only a definitive 4xx answer ("declined", "refunded", "not
+    // found") ends the wait.
+    const transient = res.status >= 500 && !data.delayed
     return {
       success: false,
-      pending: !!data.pending,
+      pending: !!data.pending || transient,
       delayed: !!data.delayed,
-      error: data.error || 'Payment verification failed',
+      error: transient && !data.pending
+        ? 'We could not confirm your payment just yet.'
+        : (data.error || 'Payment verification failed'),
     }
   } catch {
     // Network blip: the money may well have moved — treat as "keep trying",

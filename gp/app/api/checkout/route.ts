@@ -83,11 +83,14 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: 'M-Pesa is temporarily unavailable. Please pay by card or try again later.' }, { status: 503 })
       }
       const amount = kesFor(planData.total, quote.rate)
-      // The customer saw a KES price on the buy page. If the rate has refreshed
-      // since and the price moved by more than a rounding hair, make them
-      // re-confirm the new amount rather than charging a number they didn't see.
+      // The customer saw a KES price on the buy page. KES is charged in whole
+      // shillings, so what they saw and what is charged must be the SAME number:
+      // if the rate has refreshed since (or the caller did not say what it
+      // displayed) make them re-confirm the amount rather than charging a figure
+      // they did not see. This used to tolerate a 1% drift — up to 1% more or less
+      // than the price on screen — and skipped the check when nothing was sent.
       const expected = Number(body?.expected_kes)
-      if (Number.isFinite(expected) && expected > 0 && Math.abs(amount / expected - 1) > 0.01) {
+      if (!Number.isFinite(expected) || expected <= 0 || amount !== Math.round(expected)) {
         return NextResponse.json({
           error: 'The exchange rate just updated. Please review the new amount and try again.',
           rate_changed: true, rate: quote.rate, amount_kes: amount,

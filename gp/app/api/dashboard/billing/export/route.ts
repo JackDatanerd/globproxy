@@ -3,6 +3,8 @@ import { createClient } from '@/lib/supabase/server'
 import { rateLimitedUser } from '@/lib/rateLimit'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { toCsv, csvResponse } from '@/lib/csv'
+import { getPlan } from '@/lib/plans'
+import { appUrl } from '@/lib/appUrl'
 import { NextResponse } from 'next/server'
 
 // Reuses lib/csv.ts (added alongside the usage-history CSV export) rather
@@ -39,7 +41,7 @@ export async function GET(req: Request) {
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await supabase
       .from('orders')
-      .select('id, created_at, paid_at, invoice_number, gb_amount, amount_usd, refunded_usd, payment_status, paystack_reference, failure_reason, payment_method, pay_currency, pay_amount')
+      .select('id, created_at, paid_at, invoice_number, plan_slug, gb_amount, amount_usd, refunded_usd, payment_status, paystack_reference, failure_reason, payment_method, pay_currency, pay_amount')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false })
       .order('id', { ascending: false })
@@ -55,10 +57,11 @@ export async function GET(req: Request) {
   // Credit notes (one per refund) ride along on their order's row. RLS limits
   // order_refunds to the caller's own orders; paged like orders above.
   const notesByOrder = new Map<string, string[]>()
+  const refundedLocalByOrder = new Map<string, number>() // shillings (etc.) returned, summed per order
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await supabase
       .from('order_refunds')
-      .select('order_id, credit_note_number, amount_usd')
+      .select('order_id, credit_note_number, amount_usd, charged_amount')
       .order('created_at', { ascending: true })
       .order('refund_reference', { ascending: true })
       .range(from, from + PAGE - 1)
@@ -70,6 +73,7 @@ export async function GET(req: Request) {
       const list = notesByOrder.get(r.order_id) ?? []
       list.push(`${r.credit_note_number} (${Number(r.amount_usd).toFixed(2)})`)
       notesByOrder.set(r.order_id, list)
+      if (r.charged_amount != null) refundedLocalByOrder.set(r.order_id, (refundedLocalByOrder.get(r.order_id) ?? 0) + Number(r.charged_amount))
     }
     if ((data?.length ?? 0) < PAGE) break
   }
@@ -79,7 +83,8 @@ export async function GET(req: Request) {
   const csv = toCsv(orders, [
     { header: 'date', value: o => new Date(o.paid_at ?? o.created_at).toISOString().slice(0, 10) },
     { header: 'invoice_number', value: o => o.invoice_number ?? '' },
-    { header: 'description', value: o => `${o.gb_amount} GB residential proxy bandwidth` },
+    { header: 'description', value: o => `${o.plan_slug && o.plan_slug !== 'custom' ? `${getPlan(o.plan_slug)?.name ?? o.plan_slug} plan — ` : ''}${o.gb_amount} GB residential proxy bandwidth` },
+    { header: 'plan', value: o => o.plan_slug ?? '' },
     { header: 'gb', value: o => o.gb_amount },
     { header: 'amount_usd', value: o => Number(o.amount_usd).toFixed(2) },
     { header: 'refunded_usd', value: o => Number(o.refunded_usd ?? 0).toFixed(2) },
@@ -89,6 +94,8 @@ export async function GET(req: Request) {
     { header: 'payment_method', value: o => o.payment_method ?? '' },
     { header: 'charged_currency', value: o => o.pay_currency ?? 'USD' },
     { header: 'charged_amount', value: o => o.pay_amount != null ? Number(o.pay_amount).toFixed(2) : Number(o.amount_usd).toFixed(2) },
+    { header: 'refunded_charged_amount', value: o => refundedLocalByOrder.has(o.id) ? refundedLocalByOrder.get(o.id)!.toFixed(2) : '' },
+    { header: 'invoice_url', value: o => o.invoice_number ? `${appUrl()}/invoice/${o.id}` : '' },
     { header: 'failure_reason', value: o => o.failure_reason ?? '' },
     { header: 'payment_reference', value: o => o.paystack_reference ?? '' },
   ])

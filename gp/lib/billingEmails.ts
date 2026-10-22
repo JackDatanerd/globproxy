@@ -97,3 +97,58 @@ export async function sendRefundEmail(supabase: Admin, userId: string, p: {
       </div>`),
   })
 }
+
+// The customer asked for a refund from Billing (app/api/dashboard/billing/refund-request).
+export async function sendRefundRequestReceivedEmail(supabase: Admin, userId: string, p: {
+  amountUsd: number; gb: number; invoiceNumber: string | null; withinPolicy: boolean
+}) {
+  const c = await customerEmail(supabase, userId)
+  if (!c) return
+  const what = `your order of <strong>${escapeHtml(p.gb)} GB</strong> (${money(p.amountUsd)}${p.invoiceNumber ? `, invoice ${escapeHtml(p.invoiceNumber)}` : ''})`
+  await sendEmailSafe({
+    to: c.email,
+    subject: 'We received your GlobProxy refund request',
+    html: shell('Refund request received', `
+      <p style="color:#444;text-align:center;">Hi ${escapeHtml(c.first)}, we have your refund request for ${what}.</p>
+      <p style="color:#444;text-align:center;">${p.withinPolicy
+        ? 'It falls inside our refund window, so we will normally approve it. We reply within 2 business days.'
+        : 'It falls outside our standard refund window, so a member of the team will review it. We reply within 2 business days.'}</p>
+      <div style="text-align:center;margin:28px 0;">
+        <a href="${appUrl()}/dashboard/billing" style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">View billing →</a>
+      </div>
+      <p style="color:#666;text-align:center;font-size:13px;">Please avoid using the bandwidth on this order while we review it — a refund can only take back what has not been used.</p>`),
+  })
+}
+
+export async function sendRefundDeclinedEmail(supabase: Admin, userId: string, p: {
+  amountUsd: number; gb: number; note: string | null
+}) {
+  const c = await customerEmail(supabase, userId)
+  if (!c) return
+  await sendEmailSafe({
+    to: c.email,
+    subject: 'Update on your GlobProxy refund request',
+    html: shell('Refund request update', `
+      <p style="color:#444;text-align:center;">Hi ${escapeHtml(c.first)}, we reviewed your refund request for ${escapeHtml(p.gb)} GB (${money(p.amountUsd)}) and are unable to approve it.</p>
+      ${p.note ? `<p style="color:#444;text-align:center;">${escapeHtml(p.note)}</p>` : ''}
+      <p style="color:#666;text-align:center;font-size:13px;">You can read our <a href="${appUrl()}/refunds" style="color:#2563eb;">refund policy</a>, or reply to this email / write to support@globproxy.com if you think we have this wrong.</p>`),
+  })
+}
+
+// The Scale plan is sold self-serve but promises a dedicated account manager,
+// white-label credentials and custom geo allocation — none of which happen by
+// themselves. Sent once, when a Scale order is credited.
+export async function sendScaleWelcomeEmail(supabase: Admin, userId: string, p: { gb: number }) {
+  const c = await customerEmail(supabase, userId)
+  if (!c) return
+  await sendEmailSafe({
+    to: c.email,
+    subject: 'Welcome to GlobProxy Scale — let’s set up your account',
+    html: shell('Welcome to Scale', `
+      <p style="color:#444;text-align:center;">Hi ${escapeHtml(c.first)}, your ${escapeHtml(p.gb)} GB Scale order is live and the bandwidth is already in your account.</p>
+      <p style="color:#444;text-align:center;">Scale includes a dedicated account manager, white-label credentials and custom geo allocation. A member of our team will contact you within one business day to set these up. To get started sooner, reply to this email or write to support@globproxy.com with the countries you target and any branding requirements.</p>
+      <div style="text-align:center;margin:28px 0;">
+        <a href="${appUrl()}/dashboard/proxies" style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">Open your dashboard →</a>
+      </div>`),
+  })
+}

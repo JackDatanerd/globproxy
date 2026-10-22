@@ -4,6 +4,8 @@ import { provisionPendingCredentials } from '@/lib/credentials'
 import { dispatchWebhook } from '@/lib/webhooks'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { processReferralForOrder, REFERRAL_GB_BONUS, REFERRAL_MIN_ORDER_USD } from '@/lib/referrals'
+import { alertAdminPayment } from '@/lib/paymentAlerts'
+import { sendScaleWelcomeEmail } from '@/lib/billingEmails'
 
 export type ActivateResult =
   | { status: 'credited' }
@@ -72,10 +74,18 @@ export async function activateBandwidth(p: {
   // bandwidth_credited webhook: fired exactly once, here — not from
   // postCreditSteps, which the reconcile cron re-runs and would re-send.
   // The synthetic canary charge is never a customer event.
+  //
+  // What was actually credited: claim_and_credit_order() credits only the
+  // un-refunded share of an order that was partly refunded before it was
+  // credited (a refund.processed that beat charge.success). The webhook and the
+  // confirmation e-mail used to announce the full purchase size regardless.
+  const creditedGb = await creditedGbFor(supabase, p)
+  const announced = { ...p, gb_amount: creditedGb }
+
   if (!p.is_canary) {
     try {
       await dispatchWebhook(p.user_id, 'bandwidth_credited', {
-        order_id: p.order_id, gb_credited: p.gb_amount, amount_usd: p.amount_usd, source: 'purchase',
+        order_id: p.order_id, gb_credited: creditedGb, amount_usd: p.amount_usd, source: 'purchase',
       })
     } catch (e) {
       console.error('[bandwidth] bandwidth_credited webhook failed (credit is committed)', p.order_id, e)
@@ -84,12 +94,59 @@ export async function activateBandwidth(p: {
 
   let done = false
   try {
-    done = await postCreditSteps(supabase, p, { sendConfirmation: true })
+    done = await postCreditSteps(supabase, announced, { sendConfirmation: true })
   } catch (e) {
     console.error('[bandwidth] post-credit steps threw (credit itself is committed)', p.order_id, e)
   }
+  if (!p.is_canary) {
+    try {
+      await notifyScaleOnboarding(supabase, p)
+    } catch (e) {
+      console.error('[bandwidth] Scale onboarding notice failed (credit is committed)', p.order_id, e)
+    }
+  }
   if (done || p.is_canary) await markPostCreditDone(supabase, p.order_id)
   return { status: 'credited' }
+}
+
+// GB the claim actually put on the account: the order's GB less the share that
+// had already been refunded when it was claimed. Best-effort — on any lookup
+// problem the full purchase size is reported, as before.
+async function creditedGbFor(
+  supabase: Awaited<ReturnType<typeof createAdminClient>>,
+  p: { order_id: string; gb_amount: number },
+): Promise<number> {
+  try {
+    const { data } = await supabase.from('orders').select('amount_usd, refunded_usd').eq('id', p.order_id).maybeSingle()
+    const amount = Number(data?.amount_usd ?? 0)
+    const refunded = Number(data?.refunded_usd ?? 0)
+    if (amount > 0 && refunded > 0) {
+      return Math.round(p.gb_amount * (Math.max(amount - refunded, 0) / amount) * 1e6) / 1e6
+    }
+  } catch (e) {
+    console.error('[bandwidth] could not read the refunded share of order', p.order_id, e)
+  }
+  return p.gb_amount
+}
+
+// The Scale plan promises a dedicated account manager, white-label credentials
+// and custom geo allocation; nothing delivered them. Once, at the moment a Scale
+// order is credited (this runs from activateBandwidth only — the post-credit
+// retry never calls it): tell the customer a person will be in touch, and tell
+// the admin there is someone to onboard.
+async function notifyScaleOnboarding(
+  supabase: Awaited<ReturnType<typeof createAdminClient>>,
+  p: { order_id: string; user_id: string; gb_amount: number; amount_usd: number },
+) {
+  const { data: order } = await supabase.from('orders').select('plan_slug').eq('id', p.order_id).maybeSingle()
+  if (order?.plan_slug !== 'scale') return
+  const { data: profile } = await supabase.from('profiles').select('email, full_name').eq('id', p.user_id).maybeSingle()
+  await alertAdminPayment('SCALE order — onboard this customer (account manager, white-label, geo allocation)', {
+    order_id: p.order_id, customer: profile?.email ?? p.user_id, name: profile?.full_name ?? '',
+    gb: p.gb_amount, amount_usd: p.amount_usd,
+    note: 'The Scale plan promises a dedicated account manager, white-label credentials and custom geo allocation. The customer has been told to expect contact within one business day.',
+  })
+  await sendScaleWelcomeEmail(supabase, p.user_id, { gb: p.gb_amount })
 }
 
 async function markPostCreditDone(supabase: Awaited<ReturnType<typeof createAdminClient>>, orderId: string) {

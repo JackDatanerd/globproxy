@@ -32,6 +32,7 @@ export default async function AdminPage() {
     { count: flaggedReferrals },
     { count: openReports },
     { count: openDisputes },
+    { count: openRefundRequests },
   ] = await Promise.all([
     supabase.from('profiles').select('*',{count:'exact',head:true}).eq('role','user').eq('is_deleted',false),
     supabase.from('profiles').select('*',{count:'exact',head:true}).eq('role','reseller').eq('is_deleted',false),
@@ -46,6 +47,7 @@ export default async function AdminPage() {
     supabase.from('referrals').select('*',{count:'exact',head:true}).eq('flagged',true).is('flag_confirmed_at',null),
     supabase.from('support_reports').select('*',{count:'exact',head:true}).eq('status','open'),
     supabase.from('orders').select('*',{count:'exact',head:true}).eq('dispute_status','open'),
+    supabase.from('refund_requests').select('*',{count:'exact',head:true}).eq('status','open'),
   ])
 
   const statsOk = !allTime.error && !month.error
@@ -60,6 +62,7 @@ export default async function AdminPage() {
     { label: 'Flagged referrals', n: flaggedReferrals ?? 0, href: '/admin/referrals' },
     { label: 'Open support reports', n: openReports ?? 0, href: '/admin/support' },
     { label: 'Open payment disputes', n: openDisputes ?? 0, href: '/admin/orders?status=disputed' },
+    { label: 'Refund requests', n: openRefundRequests ?? 0, href: '/admin/orders?status=refund_requested' },
   ]
 
   return (
