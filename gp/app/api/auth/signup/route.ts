@@ -2,7 +2,7 @@ import { rejectCrossSite } from '@/lib/apiAuth'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { validateEmail } from '@/lib/email-validation'
 import { rateLimited, rateLimitedTarget } from '@/lib/rateLimit'
-import { recordReferralSignup } from '@/lib/referrals'
+import { recordReferralSignup, recordSignupIp } from '@/lib/referrals'
 import { REF_COOKIE, REF_SUB_COOKIE, readCookie, hashIp } from '@/lib/referralAttribution'
 import { validatePasswordStrict } from '@/lib/passwordPolicy'
 import { verifyTurnstile, captchaOptions } from '@/lib/turnstile'
@@ -136,6 +136,27 @@ export async function POST(req: Request) {
           else if (replaced) {
             await supabase.auth.admin.updateUserById(unconfirmedId as string, { user_metadata: { full_name, intended_role } })
               .catch(e => console.error('[auth/signup] metadata refresh failed:', e?.message))
+            // "Newest signup wins" applies to the referral too. The first person
+            // to type this address (not necessarily its owner) could have
+            // attached their own code to it; the owner re-registering must not
+            // inherit that. Only while unconfirmed and before any reward.
+            try {
+              const { error: resetErr } = await supabase.rpc('reset_unconfirmed_referral', { p_user_id: unconfirmedId as string })
+              if (resetErr) console.error('[auth/signup] reset_unconfirmed_referral failed:', resetErr.message)
+              else {
+                const ipHash = hashIp(req.headers.get('cf-connecting-ip'))
+                await recordSignupIp(supabase, unconfirmedId as string, ipHash)
+                const cookieHeader = req.headers.get('cookie')
+                await recordReferralSignup(
+                  supabase,
+                  referral_code ?? readCookie(cookieHeader, REF_COOKIE),
+                  unconfirmedId as string,
+                  { subId: sub_id ?? readCookie(cookieHeader, REF_SUB_COOKIE), ipHash }
+                )
+              }
+            } catch (e) {
+              console.error('[auth/signup] re-attribution failed (non-fatal):', e)
+            }
           }
         })()
         await holdUntil(startedAt, RESPONSE_FLOOR_MS, work)
@@ -190,13 +211,17 @@ export async function POST(req: Request) {
         // who browsed around before signing up. A non-string is rejected inside
         // the helper instead of throwing after the account already exists.
         const cookieHeader = req.headers.get('cookie')
+        const ipHash = hashIp(req.headers.get('cf-connecting-ip'))
+        // Recorded for EVERY signup (not just referred ones): a referrer's own
+        // address is what their referrals are compared against.
+        await recordSignupIp(supabase, data.user.id, ipHash)
         await recordReferralSignup(
           supabase,
           referral_code ?? readCookie(cookieHeader, REF_COOKIE),
           data.user.id,
           {
             subId: sub_id ?? readCookie(cookieHeader, REF_SUB_COOKIE),
-            ipHash: hashIp(req.headers.get('cf-connecting-ip')),
+            ipHash,
           }
         )
       }

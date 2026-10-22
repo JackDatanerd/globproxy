@@ -67,6 +67,19 @@ export async function recordReferralSignup(
   }
 }
 
+// Record the address an account signed up from. Every account, referred or not:
+// a referrer's OWN address is what a self-referral is compared against.
+// Best-effort — never allowed to affect the signup.
+export async function recordSignupIp(admin: AdminClient, userId: string, ipHash: string | null): Promise<void> {
+  if (!ipHash) return
+  try {
+    const { error } = await admin.rpc('record_signup_ip', { p_user_id: userId, p_ip_hash: ipHash })
+    if (error) console.error('[referrals] record_signup_ip failed — non-fatal', userId, error)
+  } catch (e) {
+    console.error('[referrals] record_signup_ip threw — non-fatal', userId, e)
+  }
+}
+
 // Called from activateBandwidth() *after* the buyer's own GB credit has
 // already landed via claim_and_credit_order — a pure add-on; every error is
 // caught and logged. A broken referral RPC must never turn a successful
@@ -110,10 +123,14 @@ export async function processReferralForOrder(
       // Approved affiliate: every qualifying order earns a commission.
       // record_affiliate_commission checks suspension/deletion and the
       // fraud flag itself and is idempotent per order_id.
+      // The 90-day intro rate is judged at the time the ORDER was paid, not
+      // when this (possibly retried, possibly days late) call runs.
+      const { data: ord } = await admin.from('orders').select('paid_at').eq('id', p.order_id).maybeSingle()
       const { data: rec, error } = await admin.rpc('record_affiliate_commission', {
         p_referral_id: referral.id,
         p_order_id: p.order_id,
         p_gross_amount: p.amount_usd,
+        p_earned_at: ord?.paid_at ?? null,
       })
       if (error) { console.error('[referrals] record_affiliate_commission failed', p.order_id, error); return false }
       // First commission on this referral = the referral just converted. Tell

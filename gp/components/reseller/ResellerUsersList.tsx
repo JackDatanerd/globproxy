@@ -4,6 +4,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import toast from 'react-hot-toast'
 import { formatGb } from '@/lib/format'
+import { fetchWithReauth } from '@/lib/reauthPrompt'
 
 type Client = {
   client_id: string
@@ -34,14 +35,27 @@ function parseGb(raw: string): number | null {
   return Math.round(n * 1000) / 1000
 }
 
-async function postAllocate(email: string, gb: number, note?: string) {
-  const res = await fetch('/api/reseller/allocate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ recipient_email: email, gb_allocated: gb, note: note || undefined }),
-  })
-  const data = await res.json().catch(() => ({}))
-  return { ok: res.ok, status: res.status, data }
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+const newKey = () => (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `k${Date.now()}${Math.random().toString(36).slice(2)}`)
+
+// Goes through fetchWithReauth (accounts without 2FA get the one-time password
+// prompt instead of a dead "403") and carries an Idempotency-Key: a retry after
+// a throttle or a dropped connection returns the first answer and can never
+// move the bandwidth twice.
+async function postAllocate(email: string, gb: number, note: string | undefined, key: string) {
+  let res: Response
+  try {
+    res = await fetchWithReauth('/api/reseller/allocate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
+      body: JSON.stringify({ recipient_email: email, gb_allocated: gb, note: note || undefined }),
+    })
+  } catch {
+    return { ok: false, status: 0, data: { error: 'Network error' } as any, retryAfter: null as number | null }
+  }
+  const data: any = await res.json().catch(() => ({}))
+  const ra = Number(res.headers.get('Retry-After'))
+  return { ok: res.ok, status: res.status, data, retryAfter: Number.isFinite(ra) && ra > 0 ? ra : null }
 }
 
 export default function ResellerUsersList({
@@ -53,6 +67,7 @@ export default function ResellerUsersList({
   const [form, setForm] = useState({ email: '', gb: '1', note: '' })
   const [bulk, setBulk] = useState('')
   const [quickGbs, setQuickGbs] = useState<Record<string, string>>({})
+  const [progress, setProgress] = useState('')
   const [quickLoadings, setQuickLoadings] = useState<Record<string, boolean>>({})
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
@@ -64,7 +79,7 @@ export default function ResellerUsersList({
     if (gb === null) { toast.error(`Enter an amount of at least ${MIN_GB} GB (max 3 decimals)`); return }
     if (gb > availableGb) { toast.error('Not enough bandwidth in your stock'); return }
     setLoading(true)
-    const r = await postAllocate(form.email.trim(), gb, form.note.trim())
+    const r = await postAllocate(form.email.trim(), gb, form.note.trim(), newKey())
     setLoading(false)
     if (!r.ok) { toast.error(r.data.error ?? 'Transfer failed'); return }
     toast.success(r.data.message ?? 'Transferred')
@@ -76,7 +91,7 @@ export default function ResellerUsersList({
     if (gb === null) { toast.error(`Enter an amount of at least ${MIN_GB} GB — nothing was sent`); return }
     if (gb > availableGb) { toast.error('Not enough bandwidth in your stock'); return }
     setQuickLoadings(p => ({ ...p, [c.client_id]: true }))
-    const r = await postAllocate(c.email, gb)
+    const r = await postAllocate(c.email, gb, undefined, newKey())
     setQuickLoadings(p => ({ ...p, [c.client_id]: false }))
     if (!r.ok) { toast.error(r.data.error ?? 'Transfer failed'); return }
     toast.success(r.data.message ?? 'Transferred')
@@ -104,20 +119,41 @@ export default function ResellerUsersList({
     if (!window.confirm(`Send ${formatGb(sum)} GB across ${rows.length} client${rows.length === 1 ? '' : 's'}?`)) return
 
     setLoading(true)
-    let okCount = 0
-    const failures: string[] = []
-    for (const r of rows) {
-      const res = await postAllocate(r.email, r.gb, r.note)
-      if (res.ok) okCount++
-      else {
-        failures.push(`${r.email}: ${res.data.error ?? 'failed'}`)
-        if (res.status === 429) { failures.push('Rate limit reached — remaining lines were not sent. Try again in a minute.'); break }
+    let okCount = 0, invitedCount = 0
+    const failed: { line: string; why: string }[] = []   // definite failures — safe to resend
+    const unknown: string[] = []                          // outcome unknown — check Transfers first
+    for (const [i, r] of rows.entries()) {
+      const key = newKey() // reused across the retries of THIS line only
+      let attempts = 0
+      let res = await postAllocate(r.email, r.gb, r.note, key)
+      // The server allows 30 transfers a minute: wait out the throttle and
+      // resend with the SAME key instead of abandoning the rest of the batch.
+      while ((res.status === 429 || res.status === 0) && attempts < 6) {
+        attempts++
+        const wait = Math.min(res.retryAfter ?? 15, 60)
+        setProgress(`${i} of ${rows.length} sent — ${res.status === 429 ? 'rate limit reached' : 'connection problem'}, retrying in ${wait}s…`)
+        await sleep(wait * 1000)
+        res = await postAllocate(r.email, r.gb, r.note, key)
       }
+      if (res.ok) { okCount++; if (res.data?.status === 'pending_signup') invitedCount++ }
+      else if (res.status === 429 || res.status === 0 || (res.status === 409 && /did not finish|still being processed/.test(res.data?.error ?? ''))) {
+        unknown.push(`${r.email} (${res.data?.error ?? 'no answer'})`)
+      } else {
+        failed.push({ line: [r.email, String(r.gb), r.note].filter(Boolean).join(', '), why: `${r.email}: ${res.data?.error ?? 'failed'}` })
+      }
+      setProgress(`${i + 1} of ${rows.length} processed`)
     }
     setLoading(false)
-    if (failures.length === 0) toast.success(`Sent to all ${okCount} clients`)
-    else toast.error(`${okCount} sent, ${failures.length} problem(s):\n${failures.slice(0, 4).join('\n')}`, { duration: 9000 })
-    setTimeout(() => window.location.reload(), 1200)
+    setProgress('')
+    // Only the lines that definitely did NOT go through stay in the box, so a
+    // resubmit can't send the successful ones a second time.
+    setBulk(failed.map(f => f.line).join('\n'))
+    const parts = [`${okCount} sent${invitedCount ? ` (${invitedCount} reserved for people who haven't signed up yet)` : ''}`]
+    if (failed.length) parts.push(`${failed.length} failed and left in the box:\n${failed.slice(0, 4).map(f => f.why).join('\n')}`)
+    if (unknown.length) parts.push(`${unknown.length} could not be confirmed — check Transfers before resending: ${unknown.slice(0, 3).join('; ')}`)
+    if (!failed.length && !unknown.length) toast.success(`Sent to all ${okCount} clients`)
+    else toast.error(parts.join('\n'), { duration: 12000 })
+    if (okCount > 0) setTimeout(() => window.location.reload(), failed.length || unknown.length ? 6000 : 1200)
   }
 
   const input = 'w-full bg-surface border border-border px-3 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent'
@@ -129,7 +165,7 @@ export default function ResellerUsersList({
           className="w-full flex items-center justify-between p-5 text-left transition-colors hover:bg-zinc-50 rounded-xl">
           <div>
             <div className="font-medium text-ink text-sm">Send bandwidth to a client</div>
-            <div className="text-xs text-muted mt-0.5">Activates immediately. You can reclaim any part they haven&apos;t used from Transfers (within 30 days).</div>
+            <div className="text-xs text-muted mt-0.5">Activates immediately for existing accounts; for an email with no account yet, the bandwidth is reserved and delivered when they sign up. You can reclaim any part they haven&apos;t used from Transfers (within 30 days).</div>
           </div>
           <span className={`text-xl text-muted font-light transition-transform ${open ? 'rotate-45' : ''}`}>+</span>
         </button>
@@ -175,10 +211,10 @@ export default function ResellerUsersList({
                 <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">One per line: email, GB[, note]</label>
                 <textarea rows={6} value={bulk} onChange={e => setBulk(e.target.value)}
                   placeholder={'alice@example.com, 5, invoice 1042\nbob@example.com, 2.5'} className={`${input} font-mono`} />
-                <div className="text-[10px] font-mono text-muted mt-1 mb-4">{formatGb(availableGb)} GB available · up to 200 lines · sent one by one</div>
+                <div className="text-[10px] font-mono text-muted mt-1 mb-4">{formatGb(availableGb)} GB available · up to 200 lines · sent one by one (large batches pause briefly to stay within the rate limit)</div>
                 <button type="submit" disabled={loading}
                   className="bg-accent text-white px-5 py-2.5 rounded-xl text-sm font-medium hover:opacity-90 disabled:opacity-60 transition-opacity">
-                  {loading ? 'Sending...' : 'Send batch →'}
+                  {loading ? (progress || 'Sending...') : 'Send batch →'}
                 </button>
               </form>
             )}
@@ -187,7 +223,9 @@ export default function ResellerUsersList({
       </div>
 
       <div className="flex items-center justify-between mb-3 pl-1 gap-4 flex-wrap">
-        <h3 className="text-sm font-display font-bold text-ink">Your Clients <span className="text-muted font-mono font-normal">({total})</span></h3>
+        <h3 className="text-sm font-display font-bold text-ink">Your Clients <span className="text-muted font-mono font-normal">({total})</span>
+          <a href={`/api/reseller/users-csv${query ? `?q=${encodeURIComponent(query)}` : ''}`} className="ml-3 text-[11px] font-mono font-normal text-accent hover:underline">Export CSV ↓</a>
+        </h3>
         <form action="/reseller/users" method="get" className="flex gap-2">
           <input name="q" defaultValue={query} placeholder="Search email or name" maxLength={100}
             className="bg-white border border-border px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-accent w-56" />

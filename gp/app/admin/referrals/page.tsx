@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { createAdminClient } from '@/lib/supabase/server'
 import AdminClearFlagButton from '@/components/admin/AdminClearFlagButton'
 import AdminConfirmFraudButton from '@/components/admin/AdminConfirmFraudButton'
+import AdminReasonActionButton from '@/components/admin/AdminReasonActionButton'
 import AdminPager, { parsePage } from '@/components/admin/AdminPager'
 
 const PAGE_SIZE = 50
@@ -111,6 +112,8 @@ export default async function AdminReferralsPage({ searchParams }: { searchParam
                     <td className="px-6 py-4 text-right">
                       <div className="flex gap-2 justify-end">
                         {!r.flag_confirmed_at && <AdminConfirmFraudButton referralId={r.id} />}
+                        <AdminReasonActionButton label="Void earnings" endpoint="/api/admin/void-referral-earnings" payload={{ referralId: r.id }}
+                          confirmText="Void everything this referral earned? Unpaid commissions are removed; commissions already paid out become deductions against the affiliate's future payouts." successText="Earnings voided" />
                         <AdminClearFlagButton referralId={r.id} />
                       </div>
                     </td>

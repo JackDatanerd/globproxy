@@ -2,6 +2,7 @@ import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import TransfersTable from '@/components/reseller/TransfersTable'
+import PendingInvitations from '@/components/reseller/PendingInvitations'
 
 const PAGE_SIZE = 25
 
@@ -24,6 +25,15 @@ export default async function TransfersPage({ searchParams }: { searchParams: Pr
     .eq('reseller_id', user.id)
     .order('created_at', { ascending: false })
     .range(from, from + PAGE_SIZE - 1)
+
+  const { data: invites } = await admin
+    .from('reseller_pending_transfers')
+    .select('id, recipient_email, gb_amount, note, created_at, expires_at')
+    .eq('reseller_id', user.id).eq('status', 'pending')
+    .order('created_at', { ascending: false }).limit(100)
+  const pending = (invites ?? []).map((i: any) => ({
+    id: i.id, email: i.recipient_email, gb: Number(i.gb_amount), note: i.note, created_at: i.created_at, expires_at: i.expires_at,
+  }))
 
   const rows = (transfers ?? []).map((t: any) => ({
     id: t.id,
@@ -49,6 +59,7 @@ export default async function TransfersPage({ searchParams }: { searchParams: Pr
           Export CSV ↓
         </a>
       </div>
+      {pending.length > 0 && <PendingInvitations invites={pending} />}
       <div className="bg-white border border-border rounded-xl overflow-x-auto">
         {rows.length > 0 ? (
           <TransfersTable transfers={rows} />

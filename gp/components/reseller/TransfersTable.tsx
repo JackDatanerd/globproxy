@@ -4,6 +4,7 @@ import { useState } from 'react'
 import toast from 'react-hot-toast'
 import { formatGb } from '@/lib/format'
 import { RECLAIM_WINDOW_DAYS } from '@/lib/reseller'
+import { apiJson } from '@/lib/clientApi'
 
 type Transfer = {
   id: string
@@ -27,13 +28,8 @@ export default function TransfersTable({ transfers }: { transfers: Transfer[] })
     )) return
     setBusy(t.id)
     try {
-      const res = await fetch('/api/reseller/reclaim', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ transfer_id: t.id }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error ?? 'Could not reclaim')
+      // apiJson answers the password / 2FA prompt for this sensitive action.
+      const data = await apiJson('POST', '/api/reseller/reclaim', { transfer_id: t.id })
       toast.success(`Reclaimed ${formatGb(data.reclaimed_gb)} GB`)
       setTimeout(() => window.location.reload(), 600)
     } catch (e: any) {

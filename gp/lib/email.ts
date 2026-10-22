@@ -54,7 +54,7 @@ export function securityNoticeHtml(opts: { heading: string; bodyHtml: string }):
       <h2 style="text-align:center;color:#111;">${opts.heading}</h2>
       ${opts.bodyHtml}
       <p style="color:#bbb;font-size:12px;text-align:center;margin-top:32px;">
-        © 2026 GlobProxy · Residential Proxies That Never Expire
+        © ${new Date().getFullYear()} GlobProxy · Residential Proxies That Never Expire
       </p>
     </div>
   `

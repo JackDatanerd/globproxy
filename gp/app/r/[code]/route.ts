@@ -36,7 +36,7 @@ export async function GET(req: Request, context: { params: Promise<{ code: strin
     const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', 'ref-click')
     if (!limited) {
       const admin = await createAdminClient()
-      const { error } = await admin.rpc('record_referral_click', { p_code: code })
+      const { error } = await admin.rpc('record_referral_click', { p_code: code, p_sub_id: sub })
       if (error) console.error('[ref] click record failed', error)
     }
   } catch (e) {

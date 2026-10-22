@@ -1,4 +1,5 @@
 import { createHash } from 'crypto'
+import { normalizeClientIp } from '@/lib/rateLimit'
 
 // Shared by the /r/[code] redirect, the signup page and the signup API.
 export const REF_COOKIE = 'gp_ref'
@@ -36,8 +37,15 @@ export function readCookie(header: string | null | undefined, name: string): str
 
 // One-way hash of the signup IP — enough to notice "the same person signed
 // up five times from one address" without storing the address itself.
+//
+// IPv6 is collapsed to its /64 first (the same rule as the rate limiter): one
+// subscriber owns a whole /64, so hashing the full address let someone rotate
+// through addresses and never match their own earlier signup.
 export function hashIp(ip: string | null | undefined): string | null {
   if (!ip || ip === 'unknown') return null
+  const trimmed = ip.trim()
+  if (!trimmed) return null
+  const key = normalizeClientIp(trimmed)
   const salt = process.env.REFERRAL_IP_SALT || process.env.CRON_SECRET || 'gp-referral'
-  return createHash('sha256').update(`${salt}:${ip}`).digest('hex').slice(0, 32)
+  return createHash('sha256').update(`${salt}:${key}`).digest('hex').slice(0, 32)
 }

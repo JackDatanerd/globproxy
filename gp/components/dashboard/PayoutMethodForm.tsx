@@ -56,12 +56,30 @@ export default function PayoutMethodForm({ currentMethod, currentWalletAddress, 
     }
   }
 
+  async function remove() {
+    if (!window.confirm('Remove your payout method? New payouts can\'t be created until you add one (your earnings keep accruing, and payouts already scheduled keep their destination).')) return
+    setLoading(true)
+    try {
+      await apiJson('POST', '/api/dashboard/update-payout-method', { remove: true })
+      toast.success('Payout method removed')
+      setEditing(true)
+      router.refresh()
+    } catch (err: any) {
+      if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Could not remove your payout method')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   if (!editing) {
     return (
       <div className="bg-white border border-border rounded-xl p-5">
         <div className="flex items-center justify-between mb-1">
           <div className="text-sm font-medium text-ink">Payout method</div>
-          <button onClick={() => setEditing(true)} className="text-xs font-mono text-accent hover:underline">Change</button>
+          <div className="flex gap-3">
+            <button onClick={() => setEditing(true)} disabled={loading} className="text-xs font-mono text-accent hover:underline">Change</button>
+            <button onClick={remove} disabled={loading} className="text-xs font-mono text-red-600 hover:underline disabled:opacity-50">Remove</button>
+          </div>
         </div>
         {currentMethod === 'usdt' && (
           <div className="text-xs text-muted font-mono mt-2">USDT (TRC20) · {currentWalletAddress}</div>

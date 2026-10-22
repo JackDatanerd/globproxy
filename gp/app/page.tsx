@@ -287,7 +287,7 @@ export default async function Home() {
             ))}
           </div>
           <div className="border-t border-white/5 pt-6 flex justify-between items-center">
-            <p className="text-white/25 text-xs">© 2026 GlobProxy · Saltern Studio. All rights reserved.</p>
+            <p className="text-white/25 text-xs">© {new Date().getFullYear()} GlobProxy · Saltern Studio. All rights reserved.</p>
             <p className="text-white/25 text-xs font-mono">globproxy.com</p>
           </div>
         </div>

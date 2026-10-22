@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { authorizeAdmin, readJson, isUuid, badRequest } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
+import { notifyPayoutVoided } from '@/lib/affiliateNotify'
 
 // Cancel a PENDING payout (wrong destination, sent in error, transfer failed).
 // void_affiliate_payout releases the commissions back to the affiliate's
@@ -32,7 +33,12 @@ export async function POST(req: Request) {
       targetRef: body!.payoutId,
       details: { reason, ...(data as object) },
     })
-    return NextResponse.json({ success: true, released: (data as any).commissions_released })
+    const d = data as any
+    if (d.referrer_id) {
+      await notifyPayoutVoided(auth.supabase, d.referrer_id, { amount_usd: Number(d.amount_usd), cycle_start: d.cycle_start, cycle_end: d.cycle_end }, reason)
+        .catch(e => console.error('[admin/void-payout] notify failed (non-fatal)', e))
+    }
+    return NextResponse.json({ success: true, released: d.commissions_released })
   } catch (err: any) {
     console.error('[admin/void-payout] unexpected error', err)
     return NextResponse.json({ error: 'Something went wrong.' }, { status: 500 })

@@ -6,6 +6,7 @@ import { cleanText, cleanNumber } from '@/lib/validation'
 import { isUuid } from '@/lib/adminAuth'
 import { formatGb } from '@/lib/format'
 import { appUrl as getAppUrl } from '@/lib/appUrl'
+import { adminNoticeHtml } from '@/lib/adminEmail'
 
 // The single implementation of reseller → client bandwidth allocation and
 // reclaim. Shared by the dashboard routes (/api/reseller/allocate, /reclaim —
@@ -39,20 +40,43 @@ export function parseAllocationBody(body: any): AllocResult<{ recipientEmail: st
   return { ok: true, data: { recipientEmail, gbAmount: Math.round(gb * 1000) / 1000, note } }
 }
 
+export type AllocateData = {
+  transfer_id: string | null
+  /** 'active' = landed on a registered account; 'pending_signup' = invitation sent, stock reserved. */
+  status: 'active' | 'pending_signup'
+  pending_id: string | null
+  expires_at: string | null
+  gb: number
+  recipient_email: string
+  message: string
+}
+
 export async function allocateBandwidth(
   admin: Admin, reseller: Reseller, input: { recipientEmail: string; gbAmount: number; note: string | null }
-): Promise<AllocResult<{ transfer_id: string | null; gb: number; recipient_email: string; message: string }>> {
+): Promise<AllocResult<AllocateData>> {
   const { recipientEmail, gbAmount, note } = input
 
   // ── 1. Find recipient ───────────────────────────────────────────────────
   const { data: recipientProfile } = await admin
     .from('profiles').select('id, email, full_name, is_deleted, is_suspended').eq('email', recipientEmail).maybeSingle()
 
-  // One answer for missing / deleted / suspended: three distinct messages would
-  // let any reseller learn exactly which emails are registered and which of
-  // those accounts are suspended.
-  if (!recipientProfile || recipientProfile.is_deleted || recipientProfile.is_suspended) {
-    return fail(404, 'not_found', 'No active GlobProxy account found for that email. They must sign up first, and their account must be in good standing.')
+  // No account / closed / suspended all take the SAME path: the stock is
+  // reserved and an invitation is held for that address. The three cases used
+  // to give three distinct answers, which let a reseller learn which emails
+  // are registered and which accounts are suspended; now only "this address is
+  // an active account right now" differs, and a suspended or closed account's
+  // invitation simply never completes.
+  // An account that exists but has never confirmed its address is not credited
+  // either: whoever typed the address first may not own it, and the GB would
+  // follow the account, not the owner. It takes the invitation path, which
+  // completes the moment the address is confirmed.
+  let unconfirmed = false
+  if (recipientProfile && !recipientProfile.is_deleted && !recipientProfile.is_suspended) {
+    const { data: unconfirmedId } = await admin.rpc('auth_unconfirmed_user_id', { check_email: recipientEmail })
+    unconfirmed = !!unconfirmedId
+  }
+  if (!recipientProfile || recipientProfile.is_deleted || recipientProfile.is_suspended || unconfirmed) {
+    return inviteRecipient(admin, reseller, input, !recipientProfile || unconfirmed)
   }
   if (recipientProfile.id === reseller.id) return fail(400, 'invalid_request', 'Cannot allocate bandwidth to yourself.')
 
@@ -112,7 +136,7 @@ export async function allocateBandwidth(
               </a>
             </div>
             <p style="color:#bbb;font-size:12px;text-align:center;margin-top:32px;">
-              © 2026 GlobProxy · Residential Proxies That Never Expire
+              © ${new Date().getFullYear()} GlobProxy · Residential Proxies That Never Expire
             </p>
           </div>
         `,
@@ -140,7 +164,7 @@ export async function allocateBandwidth(
               </a>
             </div>
             <p style="color:#bbb;font-size:12px;text-align:center;margin-top:32px;">
-              © 2026 GlobProxy · Residential Proxies That Never Expire
+              © ${new Date().getFullYear()} GlobProxy · Residential Proxies That Never Expire
             </p>
           </div>
         `,
@@ -150,8 +174,161 @@ export async function allocateBandwidth(
 
   return {
     ok: true,
-    data: { transfer_id: transferId, gb: gbAmount, recipient_email: recipientEmail, message: `Successfully transferred ${formatGb(gbAmount)} to ${recipientEmail}` },
+    data: {
+      transfer_id: transferId, status: 'active', pending_id: null, expires_at: null,
+      gb: gbAmount, recipient_email: recipientEmail, message: `Successfully transferred ${formatGb(gbAmount)} to ${recipientEmail}`,
+    },
   }
+}
+
+// ── Invite-and-claim ──────────────────────────────────────────────────
+// Allocating to an address with no usable account reserves the stock now
+// (create_pending_reseller_transfer — migration 0066) and e-mails an
+// invitation. The GB lands the moment that address is a CONFIRMED account: the
+// database claims it on confirmation, and sendInviteResolutionNotices() tells
+// both sides. Unclaimed invitations expire after 30 days and the stock returns.
+async function inviteRecipient(
+  admin: Admin, reseller: Reseller, input: { recipientEmail: string; gbAmount: number; note: string | null }, canInvite: boolean
+): Promise<AllocResult<AllocateData>> {
+  const { recipientEmail, gbAmount, note } = input
+  const { data, error } = await admin.rpc('create_pending_reseller_transfer', {
+    p_reseller_id: reseller.id, p_email: recipientEmail, p_gb: gbAmount, p_note: note,
+  })
+  if (error) {
+    const msg = error.message ?? ''
+    if (msg.includes('Not enough bandwidth')) return fail(400, 'insufficient_bandwidth', 'Not enough bandwidth in your stock.')
+    if (msg.includes('yourself')) return fail(400, 'invalid_request', 'Cannot allocate bandwidth to yourself.')
+    if (msg.includes('Too many open invitations')) return fail(409, 'conflict', 'You have too many open invitations. Cancel some, or wait for them to be claimed.')
+    if (msg.includes('Minimum allocation') || msg.includes('decimal places') || msg.includes('too large') || msg.includes('valid recipient')) return fail(400, 'invalid_request', msg)
+    console.error('[reseller/allocate] invite RPC failed', error)
+    return fail(500, 'internal_error', 'Failed to complete transfer.')
+  }
+  const row = Array.isArray(data) ? data[0] : data
+  const pendingId: string | null = row?.out_pending_id ?? null
+  const totalGb = Number(row?.out_total_gb ?? gbAmount)
+  const expiresAt: string | null = row?.out_expires_at ?? null
+  const firstInvite = Math.abs(totalGb - gbAmount) < 1e-9 // false when it was added to an invitation already open
+  const appUrl = getAppUrl()
+  const resellerLabel = escapeHtml(reseller.full_name) || escapeHtml(reseller.email) || 'A GlobProxy reseller'
+
+  await Promise.allSettled([
+    // The invitation itself — only the first time, so topping an open invitation
+    // up never re-mails the invitee.
+    canInvite && firstInvite
+      ? sendEmail({
+          to: recipientEmail,
+          subject: `${reseller.full_name || 'A GlobProxy reseller'} has set aside bandwidth for you`,
+          html: adminNoticeHtml({
+            heading: 'Bandwidth is waiting for you',
+            bodyHtml: `${resellerLabel} has reserved <strong>${escapeHtml(formatGb(gbAmount))}</strong> of residential proxy bandwidth on GlobProxy for this email address.
+              Create an account with <strong>${escapeHtml(recipientEmail)}</strong> and confirm it — the bandwidth is added automatically. The offer expires in 30 days.`,
+            cta: { href: `${appUrl}/auth/signup`, label: 'Create your account →' },
+          }),
+        })
+      : Promise.resolve(),
+    reseller.email
+      ? sendEmail({
+          to: reseller.email,
+          subject: `Reserved: ${formatGb(gbAmount)} for ${recipientEmail}`,
+          html: adminNoticeHtml({
+            heading: 'Invitation sent ✓',
+            bodyHtml: `Hi ${escapeHtml(reseller.full_name?.split(' ')[0]) || 'there'}, <strong>${escapeHtml(formatGb(gbAmount))}</strong> is reserved for ${escapeHtml(recipientEmail)} and
+              has been taken out of your available stock. It is added to their account when they sign up with that address and confirm it. If they haven't within 30 days,
+              it returns to your stock — you can also cancel it any time from your transfer history.`,
+            cta: { href: `${appUrl}/reseller/transfers`, label: 'View transfer history →' },
+          }),
+        })
+      : Promise.resolve(),
+  ]).then((results) => results.forEach((r) => { if (r.status === 'rejected') console.error('[reseller/allocate] invite email failed:', r.reason) }))
+
+  return {
+    ok: true,
+    data: {
+      transfer_id: null, status: 'pending_signup', pending_id: pendingId, expires_at: expiresAt,
+      gb: gbAmount, recipient_email: recipientEmail,
+      message: `${formatGb(gbAmount)} reserved for ${recipientEmail}. They'll receive it when they sign up with that address and confirm it.`,
+    },
+  }
+}
+
+export async function cancelInvitation(
+  admin: Admin, reseller: Reseller, pendingId: string
+): Promise<AllocResult<{ returned_gb: number }>> {
+  if (!isUuid(pendingId)) return fail(400, 'invalid_request', 'pending_id is required')
+  const { data, error } = await admin.rpc('cancel_pending_reseller_transfer', { p_id: pendingId, p_reseller_id: reseller.id })
+  if (error) { console.error('[reseller/cancel-invite] RPC failed', error); return fail(500, 'internal_error', 'Could not cancel this invitation.') }
+  if (data === null || data === undefined) return fail(404, 'not_found', 'Invitation not found, or it has already been claimed or cancelled.')
+  return { ok: true, data: { returned_gb: Number(data) } }
+}
+
+// Sweep: tell both sides about invitations the database resolved on its own
+// (claimed at confirmation, or expired). Runs from the 5-minute cron; each row
+// is claimed (notified_at stamped) BEFORE it is sent, so overlapping sweeps can
+// never double-send; the cost is that a crash mid-send loses that one notice.
+export async function sendInviteResolutionNotices(admin: Admin): Promise<{ claimed: number; expired: number }> {
+  const out = { claimed: 0, expired: 0 }
+  const { data: rows, error } = await admin
+    .from('reseller_pending_transfers')
+    .select('id, reseller_id, recipient_email, gb_amount, note, status, claimed_by, transfer_id')
+    .in('status', ['claimed', 'expired']).is('notified_at', null)
+    .order("resolved_at", { ascending: true }).limit(5)
+  if (error) { console.error('[reseller/invites] sweep query failed', error); return out }
+
+  for (const r of rows ?? []) {
+    try {
+      // Claim the row first so two overlapping sweeps can't both send.
+      const { data: won } = await admin.from('reseller_pending_transfers')
+        .update({ notified_at: new Date().toISOString() }).eq('id', r.id).is('notified_at', null).select('id')
+      if (!won?.length) continue
+
+      const { data: reseller } = await admin.from('profiles').select('email, full_name').eq('id', r.reseller_id).maybeSingle()
+      const resellerOk = reseller?.email && !String(reseller.email).startsWith('[')
+      const gbLabel = escapeHtml(formatGb(Number(r.gb_amount)))
+      const appUrl = getAppUrl()
+
+      if (r.status === 'claimed' && r.claimed_by) {
+        out.claimed++
+        await dispatchWebhook(r.claimed_by, 'bandwidth_credited', { gb_credited: Number(r.gb_amount), source: 'reseller_allocation', transfer_id: r.transfer_id })
+        await dispatchWebhook(r.reseller_id, 'bandwidth_allocated', { transfer_id: r.transfer_id, recipient_email: r.recipient_email, gb: Number(r.gb_amount), note: r.note ?? null })
+        await Promise.allSettled([
+          resellerOk ? sendEmail({
+            to: reseller!.email,
+            subject: `Delivered: ${formatGb(Number(r.gb_amount))} to ${r.recipient_email}`,
+            html: adminNoticeHtml({
+              heading: 'Invitation accepted ✓',
+              bodyHtml: `${escapeHtml(r.recipient_email)} created their account, and <strong>${gbLabel}</strong> is now active on it. You can reclaim any part they haven't used from your transfer history.`,
+              cta: { href: `${appUrl}/reseller/transfers`, label: 'View transfer history →' },
+            }),
+          }) : Promise.resolve(),
+          sendEmail({
+            to: r.recipient_email,
+            subject: `${formatGb(Number(r.gb_amount))} of bandwidth was added to your account`,
+            html: adminNoticeHtml({
+              heading: 'Bandwidth added ✓',
+              bodyHtml: `<strong>${gbLabel}</strong> from ${escapeHtml(reseller?.full_name) || 'your reseller'} has been added to your GlobProxy account. It's ready to use now.`,
+              cta: { href: `${appUrl}/dashboard`, label: 'Go to dashboard →' },
+            }),
+          }),
+        ])
+      } else if (r.status === 'expired') {
+        out.expired++
+        if (resellerOk) {
+          await sendEmail({
+            to: reseller!.email,
+            subject: `Invitation expired: ${formatGb(Number(r.gb_amount))} returned to your stock`,
+            html: adminNoticeHtml({
+              heading: 'Invitation expired',
+              bodyHtml: `${escapeHtml(r.recipient_email)} didn't sign up within 30 days, so the <strong>${gbLabel}</strong> reserved for them is back in your available stock.`,
+              cta: { href: `${appUrl}/reseller`, label: 'Open your reseller dashboard →' },
+            }),
+          }).catch((e) => console.error('[reseller/invites] expiry email failed', e))
+        }
+      }
+    } catch (e) {
+      console.error('[reseller/invites] notice failed for', r.id, e)
+    }
+  }
+  return out
 }
 
 // ── Reclaim ───────────────────────────────────────────────────────────

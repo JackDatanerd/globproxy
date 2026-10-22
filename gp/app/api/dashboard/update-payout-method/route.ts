@@ -10,6 +10,7 @@ import { cleanText } from '@/lib/validation'
 import { AFFILIATE_HOLD_HOURS } from '@/lib/referrals'
 import { rejectCrossSite } from '@/lib/apiAuth'
 import { logSecurityEvent } from '@/lib/securityEvents'
+import { adminNoticeHtml, appUrl } from '@/lib/adminEmail'
 
 type BankDetails = { bankName: string; accountName: string; accountNumber: string; country: string; swift: string | null }
 
@@ -19,6 +20,14 @@ type BankDetails = { bankName: string; accountName: string; accountNumber: strin
 // was saved (hold timer started) but the security notification never went
 // out, which let a hijacked session change a destination silently. It also
 // interpolated bankName into the email HTML unescaped.
+// Order-independent comparison of bank details. Postgres returns jsonb keys in
+// its own order (shorter names first), so comparing JSON.stringify of the stored
+// value against the freshly built object never matched — every re-save of
+// identical details restarted the 48h hold.
+function bankKey(b: any): string {
+  return JSON.stringify([b?.bankName ?? '', b?.accountName ?? '', b?.accountNumber ?? '', b?.country ?? '', b?.swift ?? ''])
+}
+
 function maskDestination(method: string, d: { wallet?: string; phone?: string; bank?: BankDetails }): string {
   if (method === 'usdt') {
     const addr = d.wallet ?? ''
@@ -66,6 +75,43 @@ export async function POST(req: Request) {
 
     let body: any
     try { body = await req.json() } catch { body = null }
+
+    // Remove the saved destination altogether. Treated like a change (hold
+    // restarts, security event, e-mail to the owner) — a hijacked session
+    // blanking the method is as much a signal as one redirecting it. Payouts
+    // already created keep the destination they were created with.
+    if (body?.remove === true) {
+      if (!me?.payout_method) return NextResponse.json({ success: true, unchanged: true })
+      const { data: prof, error: rmErr } = await adminSupabase
+        .from('profiles')
+        .update({
+          payout_method: null, payout_wallet_address: null, payout_wallet_network: null,
+          payout_bank_details: null, payout_mpesa_phone: null,
+          payout_method_updated_at: new Date().toISOString(),
+        })
+        .eq('id', user.id)
+        .select('email, full_name')
+        .single()
+      if (rmErr) {
+        console.error('[payout-method] remove failed', user.id, rmErr.message)
+        return NextResponse.json({ error: 'Could not remove your payout method. Please try again.' }, { status: 500 })
+      }
+      await logSecurityEvent({ userId: user.id, event: 'payout_method_changed', req, meta: { from: me.payout_method, to: null } })
+      if (prof?.email) {
+        await sendEmail({
+          to: prof.email,
+          subject: 'Your GlobProxy payout method was removed',
+          html: adminNoticeHtml({
+            heading: 'Payout method removed',
+            bodyHtml: `Hi ${escapeHtml(prof.full_name?.split(' ')[0]) || 'there'}, the payout method on your affiliate account was just removed. Until you add a new one, new payouts can't be created for you
+              (your earnings keep accruing). If this wasn't you, change your password and contact support@globproxy.com straight away.`,
+            cta: { href: `${appUrl()}/dashboard/referrals`, label: 'Open your referrals →' },
+          }),
+        }).catch(e => console.error('[payout-method] removal notice failed', e))
+      }
+      return NextResponse.json({ success: true, removed: true })
+    }
+
     const method = body?.method
 
     if (method !== 'usdt' && method !== 'bank' && method !== 'mpesa') {
@@ -130,7 +176,7 @@ export async function POST(req: Request) {
       me.payout_method === method &&
       ((method === 'usdt' && me.payout_wallet_address === update.payout_wallet_address) ||
         (method === 'mpesa' && me.payout_mpesa_phone === update.payout_mpesa_phone) ||
-        (method === 'bank' && JSON.stringify(me.payout_bank_details ?? null) === JSON.stringify(update.payout_bank_details)))
+        (method === 'bank' && bankKey(me.payout_bank_details) === bankKey(update.payout_bank_details)))
     if (unchanged) {
       return NextResponse.json({ success: true, unchanged: true })
     }
@@ -190,7 +236,7 @@ export async function POST(req: Request) {
               </a>
             </div>
             <p style="color:#bbb;font-size:12px;text-align:center;margin-top:32px;">
-              © 2026 GlobProxy · Residential Proxies That Never Expire
+              © ${new Date().getFullYear()} GlobProxy · Residential Proxies That Never Expire
             </p>
           </div>
         `,

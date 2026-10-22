@@ -2,6 +2,7 @@ import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import ResellerUsersList from '@/components/reseller/ResellerUsersList'
 import { formatGb } from '@/lib/format'
+import ResellerStockAlert from '@/components/reseller/ResellerStockAlert'
 
 const PAGE_SIZE = 25
 
@@ -26,7 +27,7 @@ export default async function ResellerUsersPage({
   // in SQL — the old client-side fold over an unpaginated query silently
   // truncated at 1000 transfers.
   const admin = await createAdminClient()
-  const [{ data: bw }, { data: clients }] = await Promise.all([
+  const [{ data: bw }, { data: clients }, { data: me }] = await Promise.all([
     supabase.from('bandwidth_accounts').select('available_gb').eq('user_id', user.id).maybeSingle(),
     admin.rpc('reseller_client_roster', {
       p_reseller_id: user.id,
@@ -34,6 +35,7 @@ export default async function ResellerUsersPage({
       p_limit: PAGE_SIZE,
       p_offset: (page - 1) * PAGE_SIZE,
     }),
+    admin.from('profiles').select('role, reseller_low_stock_gb').eq('id', user.id).maybeSingle(),
   ])
   const total = Number((clients as any[])?.[0]?.total_count ?? 0)
 
@@ -49,6 +51,7 @@ export default async function ResellerUsersPage({
           <div className="font-display font-bold text-accent">{formatGb(bw?.available_gb)} GB</div>
         </div>
       </div>
+      {me?.role === 'reseller' && <ResellerStockAlert initialGb={me.reseller_low_stock_gb == null ? null : Number(me.reseller_low_stock_gb)} />}
       <ResellerUsersList
         clients={(clients as any[]) ?? []}
         availableGb={Number(bw?.available_gb ?? 0)}

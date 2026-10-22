@@ -1,6 +1,7 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
-import { requireMfaVerified } from '@/lib/mfa'
+import { requireStepUp } from '@/lib/reauth'
+import { rejectCrossSite } from '@/lib/apiAuth'
 import { rateLimited, rateLimitedUser } from '@/lib/rateLimit'
 import { parseReclaimBody, reclaimAllocation } from '@/lib/resellerAllocation'
 import { NextResponse } from 'next/server'
@@ -13,6 +14,8 @@ import { NextResponse } from 'next/server'
 // Logic shared with POST /api/v1/reseller/allocations/:id/reclaim
 // (lib/resellerAllocation.ts).
 export async function POST(req: Request) {
+  const cross = rejectCrossSite(req)
+  if (cross) return cross
   try {
     const supabase = await createClient()
     const { data: { user } } = await supabase.auth.getUser()
@@ -22,7 +25,7 @@ export async function POST(req: Request) {
     if (!['reseller', 'admin'].includes(profile?.role ?? '')) {
       return NextResponse.json({ error: 'Reseller access required' }, { status: 403 })
     }
-    const mfaCheck = await requireMfaVerified(req, user.id)
+    const mfaCheck = await requireStepUp(req, user.id)
     if (mfaCheck) return mfaCheck
     const inactive = await requireActiveUser(user.id)
     if (inactive) return inactive

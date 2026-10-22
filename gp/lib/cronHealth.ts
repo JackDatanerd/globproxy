@@ -25,6 +25,8 @@ export const CRON_MAX_AGE_SECONDS: Record<string, number> = {
   summary: 36 * 60 * 60,
   cleanup: 36 * 60 * 60,
   canary: 36 * 60 * 60,
+  invites: 30 * 60,
+  resellers: 3 * 60 * 60,
 }
 
 // Tasks report failures as `{ error: "…" }` somewhere in a 200 body. Returns the

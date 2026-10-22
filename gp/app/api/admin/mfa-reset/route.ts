@@ -86,7 +86,7 @@ export async function POST(req: Request) {
             <a href="mailto:support@globproxy.com" style="color:#2563eb;">Contact support</a>.
           </p>
           <p style="color:#bbb;font-size:12px;text-align:center;margin-top:32px;">
-            © 2026 GlobProxy · Residential Proxies That Never Expire
+            © ${new Date().getFullYear()} GlobProxy · Residential Proxies That Never Expire
           </p>
         </div>
       `,

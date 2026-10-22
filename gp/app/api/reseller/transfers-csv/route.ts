@@ -38,6 +38,16 @@ export async function GET(req: Request) {
     if (!data || data.length < PAGE) break
   }
 
+  // Open invitations (reserved, not yet delivered) go in the same file so the
+  // export reconciles with the stock figure on the dashboard.
+  const { data: invites } = await admin
+    .from('reseller_pending_transfers')
+    .select('id, recipient_email, gb_amount, note, created_at')
+    .eq('reseller_id', user.id).eq('status', 'pending').order('created_at', { ascending: false }).limit(1000)
+  for (const i of invites ?? []) {
+    rows.push({ id: i.id, gb_amount: i.gb_amount, reclaimed_gb: 0, status: 'invited (awaiting sign-up)', note: i.note, created_at: i.created_at, recipient: { email: i.recipient_email, full_name: '' } })
+  }
+
   const csv = toCsv(rows, [
     { header: 'Date (UTC)', value: r => r.created_at },
     { header: 'Client email', value: r => (r.recipient as any)?.email ?? '' },

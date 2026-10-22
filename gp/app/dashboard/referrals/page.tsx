@@ -36,22 +36,26 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
 
   const status = profile?.affiliate_status ?? null
   const isAffiliate = status === 'approved'
+  // A suspended affiliate still has earnings, payouts and history — hiding them
+  // made the page look like the money had vanished. They can read it all; only
+  // the actions (payout method, new earnings) are paused.
+  const showMoney = isAffiliate || status === 'suspended'
 
   // Aggregates are computed in SQL (my_affiliate_summary / my_referral_funnel,
   // service-role only, called here with the SESSION's own user id) — summing a client-fetched list silently capped
   // at 1000 rows, and "this cycle so far" used to be summed from only the
   // latest 20 commissions.
   const admin = await createAdminClient()
-  const [{ data: summaryRows, error: summaryErr }, { data: funnel, error: funnelErr }, { data: commissions, error: commissionsErr, count: commissionsCount }, { data: payouts, error: payoutsErr }, { count: referredByAnyone }] = await Promise.all([
+  const [{ data: summaryRows, error: summaryErr }, { data: funnel, error: funnelErr }, { data: commissions, error: commissionsErr, count: commissionsCount }, { data: payouts, error: payoutsErr }, { count: referredByAnyone }, { count: purchaseCount }, adjustmentsRes, tagsRes] = await Promise.all([
     admin.rpc('my_affiliate_summary', { p_user_id: user.id, p_cycle_start: accruing.cycleStart, p_cycle_end: accruing.cycleEnd }),
     admin.rpc('my_referral_funnel', { p_user_id: user.id, p_limit: FUNNEL_PAGE, p_offset: (page - 1) * FUNNEL_PAGE }),
-    isAffiliate
+    showMoney
       ? supabase.from('affiliate_commissions')
           .select('id, gross_amount_usd, commission_rate, commission_amount_usd, status, created_at, payout_id', { count: 'exact' })
           .eq('referrer_id', user.id).order('created_at', { ascending: false }).order('id', { ascending: false })
           .range((cpage - 1) * COMMISSION_PAGE, cpage * COMMISSION_PAGE - 1)
       : Promise.resolve({ data: [] as any[], error: null, count: 0 as number | null }),
-    isAffiliate
+    showMoney
       ? supabase.from('affiliate_payouts')
           .select('id, cycle_start, cycle_end, amount_usd, status, payout_method, paid_at, payment_reference')
           .eq('referrer_id', user.id).order('created_at', { ascending: false }).limit(24)
@@ -60,11 +64,22 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
     // (policies are referrer/admin only), so this one existence check uses the
     // service role, scoped to the signed-in user's id.
     admin.from('referrals').select('id', { count: 'exact', head: true }).eq('referred_user_id', user.id),
+    // "Add a referral code" only works before the first purchase (the server
+    // refuses afterwards) — so don't offer it to someone who has already bought.
+    admin.from('orders').select('id', { count: 'exact', head: true })
+      .eq('user_id', user.id).eq('bandwidth_credited', true).eq('is_canary', false),
+    showMoney ? admin.rpc('my_affiliate_adjustments', { p_user_id: user.id }) : Promise.resolve({ data: [] as any[], error: null }),
+    showMoney ? admin.rpc('my_referral_tags', { p_user_id: user.id }) : Promise.resolve({ data: [] as any[], error: null }),
   ])
 
-  const loadFailed = !!(summaryErr || funnelErr || commissionsErr || payoutsErr)
+  const loadFailed = !!(summaryErr || funnelErr || commissionsErr || payoutsErr || adjustmentsRes.error || tagsRes.error)
   const s = (summaryRows as any[])?.[0] ?? {}
-  const payable = Number(s.accruing_usd ?? 0)
+  // Refund deductions not yet netted into a payout (a commission that was paid
+  // and whose order was refunded afterwards). They come off the next payout.
+  const adjustments = ((adjustmentsRes.data as any[]) ?? [])
+  const deductions = -adjustments.filter(a => !a.settled && !a.waived).reduce((sum, a) => sum + Number(a.amount_usd), 0)
+  const tags = ((tagsRes.data as any[]) ?? [])
+  const payable = Number(s.accruing_usd ?? 0) - deductions
   const inPayout = Number(s.in_payout_usd ?? 0)
   const paidTotal = Number(s.paid_usd ?? 0)
   const thisCycle = Number(s.this_cycle_usd ?? 0)
@@ -118,12 +133,12 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
           bonusGb={REFERRAL_GB_BONUS} minOrderUsd={REFERRAL_MIN_ORDER_USD} />
       )}
 
-      <div className={`grid gap-4 mt-4 ${isAffiliate ? 'grid-cols-2 md:grid-cols-4' : 'grid-cols-1 sm:grid-cols-3'}`}>
+      <div className={`grid gap-4 mt-4 ${showMoney ? 'grid-cols-2 md:grid-cols-4' : 'grid-cols-1 sm:grid-cols-3'}`}>
         <Tile label="Link clicks" value={String(clicks)} />
         <Tile label="Signed up" value={String(referralCount)} sub={`${convertedCount} purchased`} />
-        {isAffiliate ? (
+        {showMoney ? (
           <>
-            <Tile label="Payable" value={usd(payable)} accent sub="awaiting the next payout run" />
+            <Tile label="Payable" value={usd(Math.max(payable, 0))} accent sub={deductions > 0 ? `after ${usd(deductions)} of refund deductions` : 'awaiting the next payout run'} />
             <Tile label="Paid to date" value={usd(paidTotal)} sub={inPayout > 0 ? `${usd(inPayout)} scheduled` : undefined} />
           </>
         ) : (
@@ -131,11 +146,11 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
         )}
       </div>
 
-      {isAffiliate && (
+      {showMoney && (
         <div className="bg-white border border-border rounded-xl p-5 mt-4">
           <div className="flex items-center justify-between text-xs mb-2">
             <span className="text-ink font-medium">
-              {belowMin ? `${usd(payable)} of ${usd(AFFILIATE_MIN_PAYOUT_USD)} minimum` : 'Above the payout minimum'}
+              {belowMin ? `${usd(Math.max(payable, 0))} of ${usd(AFFILIATE_MIN_PAYOUT_USD)} minimum` : 'Above the payout minimum'}
             </span>
             <span className="text-muted">Next payout run: {shortDate(nextPayoutDate + 'T00:00:00Z')} · this cycle so far {usd(thisCycle)}</span>
           </div>
@@ -143,7 +158,7 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
             <div className="h-full bg-accent2 rounded-full" style={{ width: `${minProgress}%` }} />
           </div>
           <ul className="text-[11px] text-muted mt-3 space-y-1 list-disc pl-4">
-            <li>If a referred order is refunded, its commission is reduced to match. (If it was already paid out, we&apos;ll be in touch.)</li>
+            <li>If a referred order is refunded, its commission is reduced to match. If that commission was already paid out, the amount is deducted from your next payout{deductions > 0 ? ` (${usd(deductions)} is waiting to be deducted now)` : ''} — you are never billed separately.</li>
             <li>Anything under the {usd(AFFILIATE_MIN_PAYOUT_USD)} minimum, or earned before you add a payout method, stays in your balance and is paid in the first run where it qualifies.</li>
             {flaggedCount > 0 && <li>{flaggedCount} referral{flaggedCount === 1 ? ' is' : 's are'} under manual review and not earning yet.</li>}
           </ul>
@@ -171,11 +186,17 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
         </div>
       )}
 
-      {!referredByAnyone && <ClaimReferralForm />}
+      {!referredByAnyone && !purchaseCount && <ClaimReferralForm />}
 
       <div className="mt-4">
-        {isAffiliate ? (
+        {showMoney ? (
           <div className="flex flex-col gap-4">
+            {status === 'suspended' && (
+              <div className="bg-white border border-red-200 rounded-xl p-5">
+                <div className="text-sm font-medium text-ink mb-1">Affiliate access suspended</div>
+                <div className="text-xs text-muted">New referrals aren&apos;t earning commission and payouts are paused. Your history is below. Contact support@globproxy.com to discuss.</div>
+              </div>
+            )}
             <div className="bg-white border border-border rounded-xl p-5">
               <div className="flex items-center justify-between mb-3">
                 <div className="text-sm font-medium text-ink">Payout history</div>
@@ -203,6 +224,54 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
                 <div className="text-xs text-muted">No payouts yet — your first one is created once your payable balance reaches {usd(AFFILIATE_MIN_PAYOUT_USD)} with a payout method on file.</div>
               )}
             </div>
+
+            {adjustments.length > 0 && (
+              <div className="bg-white border border-border rounded-xl p-5">
+                <div className="text-sm font-medium text-ink mb-1">Refund deductions</div>
+                <div className="text-[11px] text-muted mb-3">When an order behind a commission we already paid is refunded, the commission is recovered by deducting it from your next payout.</div>
+                <div className="flex flex-col gap-2">
+                  {adjustments.map((a: any) => (
+                    <div key={a.id} className="flex items-center justify-between text-xs border-b border-border last:border-0 pb-2 last:pb-0">
+                      <span className="text-muted">
+                        {new Date(a.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
+                        {' · '}{a.reason === 'refund_after_paid' ? 'refund after payout' : 'adjustment'}
+                      </span>
+                      <span className={`font-mono ${a.waived ? 'text-muted line-through' : 'text-ink'}`}>
+                        {usd(Number(a.amount_usd))} · {a.waived ? 'waived' : a.settled ? 'deducted' : 'pending'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {tags.length > 0 && (
+              <div className="bg-white border border-border rounded-xl p-5">
+                <div className="text-sm font-medium text-ink mb-1">Campaign tags</div>
+                <div className="text-[11px] text-muted mb-3">Add <span className="font-mono">?sub=your-tag</span> to your link to see which campaign brings clicks, signups and sales.</div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-left text-[10px] font-mono text-muted uppercase tracking-wider">
+                        <th className="pb-2 pr-3">Tag</th><th className="pb-2 pr-3 text-right">Clicks</th><th className="pb-2 pr-3 text-right">Signups</th>
+                        <th className="pb-2 pr-3 text-right">Purchased</th><th className="pb-2 text-right">Earned</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {tags.map((t: any) => (
+                        <tr key={t.sub_id} className="border-t border-border">
+                          <td className="py-2 pr-3 font-mono text-ink">{t.sub_id}</td>
+                          <td className="py-2 pr-3 text-right font-mono">{Number(t.clicks)}</td>
+                          <td className="py-2 pr-3 text-right font-mono">{Number(t.signups)}</td>
+                          <td className="py-2 pr-3 text-right font-mono">{Number(t.converted)}</td>
+                          <td className="py-2 text-right font-mono text-ink">{usd(Number(t.earned_usd))}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
 
             <div className="bg-white border border-border rounded-xl p-5">
               <div className="flex items-center justify-between mb-3">
@@ -248,11 +317,6 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
           <div className="bg-white border border-border rounded-xl p-5">
             <div className="text-sm font-medium text-ink mb-1">Affiliate application pending</div>
             <div className="text-xs text-muted">We&apos;ll review it and follow up by email.</div>
-          </div>
-        ) : status === 'suspended' ? (
-          <div className="bg-white border border-red-200 rounded-xl p-5">
-            <div className="text-sm font-medium text-ink mb-1">Affiliate access suspended</div>
-            <div className="text-xs text-muted">New referrals aren&apos;t earning commission and payouts are paused. Contact support@globproxy.com to discuss.</div>
           </div>
         ) : status === 'rejected' ? (
           <div className="bg-white border border-border rounded-xl p-5">

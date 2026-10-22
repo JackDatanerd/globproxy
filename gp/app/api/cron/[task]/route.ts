@@ -14,6 +14,7 @@ import { failPendingOrder } from '@/lib/orderFailure'
 import { flushSecurityNotices } from '@/lib/securityEvents'
 import { REFERRAL_GB_BONUS } from '@/lib/referrals'
 import { findReportedError, recordCronRun, checkCronFreshness, claimCronLock, releaseCronLock } from '@/lib/cronHealth'
+import { runInviteNotices, runResellerMaintenance } from '@/lib/resellerCron'
 import { NextResponse } from 'next/server'
 
 // Secured with the CRON_SECRET Worker secret (pushed by .github/workflows/deploy.yml).
@@ -771,6 +772,8 @@ export async function POST(req: Request, context: { params: Promise<{ task: stri
       case 'provision': result = await runProvision();        break
       case 'webhooks':  result = await runWebhooks();         break
       case 'benchmark': result = await runBenchmark();        break
+      case 'invites':   result = await runInviteNotices();    break
+      case 'resellers': result = await runResellerMaintenance(); break
       default: return NextResponse.json({ error: `Unknown task: ${task}` }, { status: 400 })
     }
     // A task that catches its own failure reports `{ error }` inside a 200; the

@@ -2,7 +2,7 @@ import { requireMfaVerified } from '@/lib/mfa'
 import { appUrl } from '@/lib/appUrl'
 import { rateLimitedUser } from '@/lib/rateLimit'
 import { NextResponse } from 'next/server'
-import { requireActiveUser } from '@/lib/apiAuth'
+import { requireActiveUser, rejectCrossSite } from '@/lib/apiAuth'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { sendEmail, escapeHtml } from '@/lib/email'
 
@@ -12,6 +12,8 @@ import { sendEmail, escapeHtml } from '@/lib/email'
 // non-admin caller, see migration 0028), same "authenticate with the
 // session client, write with the admin client" split.
 export async function POST(req: Request) {
+  const cross = rejectCrossSite(req)
+  if (cross) return cross
   try {
     const supabase = await createClient()
     const { data: { user }, error: authError } = await supabase.auth.getUser()
@@ -138,7 +140,7 @@ export async function POST(req: Request) {
               </a>
             </div>
             <p style="color:#bbb;font-size:12px;text-align:center;margin-top:32px;">
-              © 2026 GlobProxy · Residential Proxies That Never Expire
+              © ${new Date().getFullYear()} GlobProxy · Residential Proxies That Never Expire
             </p>
           </div>
         `,

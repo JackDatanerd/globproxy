@@ -23,7 +23,9 @@ export async function GET(req: Request) {
 
 // POST /api/v1/reseller/allocations
 //   { "recipient_email": "client@example.com", "gb_allocated": 25, "note": "March top-up" }
-// Moves GB from your stock to a registered client account. `Idempotency-Key`
+// Moves GB from your stock to a client account. An address with no confirmed account
+// yet gets an invitation instead: the stock is reserved, `status` is "pending_signup"
+// and the GB lands when they sign up and confirm (30 days, then it returns to you). `Idempotency-Key`
 // is REQUIRED: a transfer moves bandwidth between accounts, so a retry after a
 // timeout must never apply it twice. If an earlier attempt with the same key
 // finished with an unknown outcome the call answers 409 — check
@@ -52,7 +54,7 @@ export async function POST(req: Request) {
       // The shared lib answers 400 (the dashboard's long-standing status); over
       // the API a stock shortfall is 402, exactly as for POST /sub-users.
       if (!result.ok) return { kind: 'fail', response: failFrom(result.code === 'insufficient_bandwidth' ? { ...result, status: 402 } : result) }
-      return { kind: 'ok', status: 201, body: { transfer_id: result.data.transfer_id, gb: result.data.gb, recipient_email: result.data.recipient_email } }
+      return { kind: 'ok', status: 201, body: { transfer_id: result.data.transfer_id, status: result.data.status, pending_id: result.data.pending_id, expires_at: result.data.expires_at, gb: result.data.gb, recipient_email: result.data.recipient_email } }
     }, { allowStaleTakeover: false })
   }, { scope: 'allocate' })
 }

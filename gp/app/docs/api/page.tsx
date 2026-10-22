@@ -759,12 +759,18 @@ export default function ApiDocsPage() {
   -d '{ "recipient_email": "client@example.com", "gb_allocated": 25, "note": "October top-up" }'`}</Code>
             <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Body parameters</p>
             <Table rows={[
-              ['recipient_email', 'string', 'Required. The client\'s GlobProxy account e-mail.'],
+              ['recipient_email', 'string', 'Required. The client\'s GlobProxy account e-mail. If that address has no confirmed account yet, an invitation is created instead (see below).'],
               ['gb_allocated', 'number', 'Required. At least 0.1, at most 3 decimal places.'],
               ['note', 'string', 'Optional, up to 200 characters.'],
             ]} />
             <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response (201)</p>
-            <Code>{`{ "transfer_id": "e4a1...", "gb": 25, "recipient_email": "client@example.com" }`}</Code>
+            <Code>{`{ "transfer_id": "e4a1...", "status": "active", "pending_id": null, "expires_at": null, "gb": 25, "recipient_email": "client@example.com" }`}</Code>
+            <p className="text-sm text-ink2 mt-4">
+              For an address with no confirmed account the call still succeeds: the GB is reserved out of your stock, the person is e-mailed an invitation, and you get
+              <span className="font-mono text-ink"> "status": "pending_signup"</span> with a <span className="font-mono text-ink">pending_id</span> and an <span className="font-mono text-ink">expires_at</span> (30 days).
+              When they sign up and confirm that address the bandwidth is added automatically and you receive a <span className="font-mono text-ink">bandwidth_allocated</span> webhook with the new <span className="font-mono text-ink">transfer_id</span>.
+              An unclaimed invitation returns to your stock when it expires; you can also cancel it from your dashboard's Transfers page.
+            </p>
             <p className="text-sm text-ink2 mt-4"><span className="font-mono text-ink">402 insufficient_bandwidth</span> if your stock can't cover it. Shares the dashboard's per-reseller throttle.</p>
           </Endpoint>
 

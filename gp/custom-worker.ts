@@ -88,8 +88,11 @@ const CRON_TASKS: Record<string, string[]> = {
   // failed traffic-limit syncs; webhooks retries failed deliveries and fires
   // bandwidth-threshold events. Both keep per-tick work small because
   // Workers caps subrequests per invocation and the chain shares one.
-  '*/5 * * * *': ['reconcile', 'security', 'usage', 'provision', 'webhooks'],
-  '0 * * * *': ['stock'],
+  '*/5 * * * *': ['reconcile', 'security', 'usage', 'provision', 'webhooks', 'invites'],
+  // resellers first: it never fails the chain, and invitation expiry / low-stock /
+  // payout-day reminders are idempotent, so hourly is safe and doesn't depend on
+  // the daily chain (a failing 'cleanup' must not swallow payout day).
+  '0 * * * *': ['resellers', 'stock'],
   '0 8 * * *': ['alerts', 'summary', 'cleanup'],
   '0 */6 * * *': ['benchmark'],
   '5 8 * * *': ['canary'],

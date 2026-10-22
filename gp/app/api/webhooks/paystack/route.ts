@@ -7,6 +7,7 @@ import { escapeHtml, sendEmail } from '@/lib/email'
 import { alertAdminPayment, alertMismatchOnce } from '@/lib/paymentAlerts'
 import { sendRefundEmail } from '@/lib/billingEmails'
 import { dispatchWebhook } from '@/lib/webhooks'
+import { snapshotCommission, notifyCommissionRefunded } from '@/lib/affiliateNotify'
 import { failPendingOrder } from '@/lib/orderFailure'
 import { applyDisputeLoss } from '@/lib/disputes'
 
@@ -277,6 +278,10 @@ async function handleRefundProcessed(supabase: Admin, data: any) {
       : Math.round((refundMajor / paidMajor) * amountUsd * 100) / 100
   }
 
+  // The affiliate commission behind this order, as it is BEFORE the refund
+  // trigger reshapes it — so the affiliate can be told what changed.
+  const commissionBefore = order.is_canary ? null : await snapshotCommission(supabase, order.id).catch(() => null)
+
   const { data: result, error: rpcErr } = await supabase.rpc('apply_order_refund', {
     p_order_id: order.id,
     p_refund_reference: refundRef,
@@ -293,9 +298,10 @@ async function handleRefundProcessed(supabase: Admin, data: any) {
       gb_clawed_back: result.gb_clawed, gb_not_recoverable: result.gb_shortfall, fully_refunded: result.fully_refunded,
       note: result.credited === false
         ? 'The charge.success had not been processed yet. The order will not be credited in full (a fully refunded order is never credited).'
-        : 'If this order came through a referral/affiliate its commission is reduced automatically; a commission already PAID out is not — see the audit log. GB not recoverable was already allocated to a session.',
+        : 'If this order came through a referral/affiliate its commission is reduced automatically; a commission already PAID out is recorded as a clawback that the next payout cycle nets against the affiliate\'s new commissions (see Admin → Affiliates). GB not recoverable was already allocated to a session.',
     })
     if (!order.is_canary) {
+      await notifyCommissionRefunded(supabase, order.id, commissionBefore)
       await sendRefundEmail(supabase, order.user_id, {
         refundUsd: Number(result.refund_usd), creditNote: result.credit_note ?? null,
         gbClawed: Number(result.gb_clawed ?? 0), credited: result.credited !== false, fullyRefunded: !!result.fully_refunded,

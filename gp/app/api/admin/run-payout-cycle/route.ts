@@ -3,6 +3,7 @@ import { logAdminAction } from '@/lib/adminAudit'
 import { adminNoticeHtml, appUrl } from '@/lib/adminEmail'
 import { sendEmailSafe, escapeHtml } from '@/lib/email'
 import { lastCompletedCycle, formatCycleLabel, currentAccruingCycle, cycleIsPayable } from '@/lib/payoutCycle'
+import { notifyPayoutQueued } from '@/lib/affiliateNotify'
 import { AFFILIATE_MIN_PAYOUT_USD, AFFILIATE_HOLD_HOURS } from '@/lib/referrals'
 import { NextResponse } from 'next/server'
 
@@ -85,7 +86,9 @@ export async function POST(req: Request) {
   // parallel batches (was strictly sequential, which risks a Worker
   // timeout on a big cycle).
   const cycleLabel = formatCycleLabel({ cycle_start: cycleStart, cycle_end: cycleEnd })
-  const allNotify = rows.filter(r => r.out_status === 'held_recent_method' || r.out_status === 'no_payout_method')
+  // A net-negative balance (a clawback bigger than the new commissions) isn't
+  // "earnings ready" — nothing to tell them yet.
+  const allNotify = rows.filter(r => (r.out_status === 'held_recent_method' || r.out_status === 'no_payout_method') && Number(r.out_amount_usd) > 0)
   // One notice per affiliate, cycle and reason: re-running a cycle used to
   // re-send this to everyone still waiting. The primary key on
   // affiliate_rollover_notices decides — only rows that were NEWLY inserted
@@ -131,6 +134,21 @@ export async function POST(req: Request) {
         }),
       })
     })
+    for (let i = 0; i < jobs.length; i += 10) {
+      await Promise.allSettled(jobs.slice(i, i + 10).map(j => j()))
+    }
+  }
+
+  // "Payout queued" — they used to hear nothing until it was SENT, so a
+  // created payout looked like nothing had happened for days.
+  const created = rows.filter(r => r.out_status === 'created' && r.out_payout_id)
+  if (created.length) {
+    const { data: made } = await supabase
+      .from('affiliate_payouts').select('id, referrer_id, amount_usd, cycle_start, cycle_end, payout_method')
+      .in('id', created.map(r => r.out_payout_id as string))
+    const jobs = (made ?? []).map(m => () => notifyPayoutQueued(supabase, m.referrer_id, {
+      amount_usd: Number(m.amount_usd), cycle_start: m.cycle_start, cycle_end: m.cycle_end, method: m.payout_method,
+    }))
     for (let i = 0; i < jobs.length; i += 10) {
       await Promise.allSettled(jobs.slice(i, i + 10).map(j => j()))
     }
