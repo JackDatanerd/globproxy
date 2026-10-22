@@ -287,9 +287,9 @@ export default function ApiDocsPage() {
   "account": { "id": "9c1e...", "email": "you@example.com", "role": "reseller" },
   "api_key": { "id": "b72d...", "key_prefix": "gp_live_a1b2c3", "label": "billing-bot", "scopes": ["read", "write"],
                "allowed_ips": ["203.0.113.0/24"], "expires_at": "2027-01-10T00:00:00.000Z", "created_at": "2026-10-10T09:00:00.000Z" },
-  "features": { "password_rotation": false }
+  "features": { "password_rotation": true }
 }`}</Code>
-            <p className="text-sm text-ink2 mt-3"><span className="font-mono text-ink">features</span> reports optional endpoints that are switched on per deployment — <span className="font-mono text-ink">password_rotation: false</span> means <span className="font-mono text-ink">rotate-password</span> answers 503.</p>
+            <p className="text-sm text-ink2 mt-3"><span className="font-mono text-ink">features</span> reports optional endpoints that are switched on per deployment — <span className="font-mono text-ink">password_rotation: false</span> (an operator kill switch; on by default) means <span className="font-mono text-ink">rotate-password</span> answers 503.</p>
           </Endpoint>
 
           <Endpoint method="GET" path="/api/v1/account/activity" title="API activity log">
@@ -865,6 +865,9 @@ export default function ApiDocsPage() {
             ['auto_topup_failed', 'event', 'Auto-topup could not fully run (sent once until it recovers). reason is insufficient_balance, partial_funding or session_limit. data: credential_id, reason, gb_allocated, gb_used, amount_gb (and gb_added for partial_funding).'],
             ['session_suspended', 'event', 'GlobProxy suspended a sub-user (abuse or policy action). data: credential_id, label.'],
             ['session_resumed', 'event', 'A suspended sub-user was re-enabled. data: credential_id, label.'],
+            ['session_updated', 'event', 'A sub-user\'s settings were edited in place (label, targeting, protocol, session type, sticky lifetime, endpoint count). data: credential_id, label, changed (the fields), protocol, session_type, sticky_duration, country, state, city, asn, endpoint_count, source.'],
+            ['session_password_rotated', 'event', 'A sub-user\'s proxy password was rotated (the new password is never included). data: credential_id, label.'],
+            ['whitelist_changed', 'event', 'IPs were added to or removed from a sub-user\'s whitelist. data: credential_id, action ("added" / "removed"), count, source.'],
             ['bandwidth_threshold_crossed', 'event', 'The share of your account that is COMMITTED (allocated into sub-users) crossed 80% or 95%. data: threshold_pct, allocated_pct (what triggers it), used_pct (GB actually consumed ÷ total), available_gb, total_gb, used_gb, allocated_gb. Checked every 5 minutes. Endpoints that do not also subscribe to bandwidth_exhausted get it once more at 100% (threshold_pct 100). (used_pct used to carry the allocated figure; it now means what it says.)'],
             ['bandwidth_exhausted', 'event', 'Available (unallocated) bandwidth reached zero. data: allocated_pct, used_pct, available_gb, total_gb, used_gb, allocated_gb.'],
             ['bandwidth_credited', 'event', 'Bandwidth was added to the account. data: gb_credited, source ("purchase", "reseller_allocation", "referral_bonus" or "admin_adjustment"), plus order_id and amount_usd for purchases, transfer_id for allocations, role ("referrer" / "referred") for referral bonuses.'],

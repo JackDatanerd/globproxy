@@ -173,24 +173,43 @@ export async function GET(req: Request) {
   const admin = await createAdminClient()
   const { creds, truncated } = await loadScopedCredentials(admin, user.id, credentialId)
 
-  if (creds.length === 0) {
+  const dateTo = new Date()
+  const dateFrom = new Date(dateTo.getTime() - range * 24 * 60 * 60 * 1000)
+  const fromDay = dateFrom.toISOString().slice(0, 10)
+
+  // Account-level daily usage kept locally (usage_daily, migration 0062): complete
+  // for deleted sessions and for accounts with more sessions than this route can
+  // afford to query upstream, and free of the supplier. Only used for the
+  // account-wide view — a single-session drill-down still comes from the supplier.
+  const local = new Map<string, number>()
+  let firstLocalDay: string | null = null
+  if (!credentialId) {
+    const [{ data: rows }, { data: first }] = await Promise.all([
+      admin.from('usage_daily').select('day, gb').eq('user_id', user.id).gte('day', fromDay),
+      admin.from('usage_daily').select('day').eq('user_id', user.id).order('day', { ascending: true }).limit(1),
+    ])
+    for (const r of rows ?? []) local.set(String(r.day), Number(r.gb))
+    firstLocalDay = first?.[0]?.day ? String(first[0].day) : null
+  }
+  // Local data reaches back past the start of the range -> it is the whole answer
+  // and the per-session supplier calls for the series can be skipped entirely.
+  const localCoversRange = !credentialId && firstLocalDay !== null && firstLocalDay <= fromDay
+
+  if (creds.length === 0 && !(local.size > 0)) {
     if (format === 'csv') {
       return csvResponse(toCsv([], [{ header: 'no_data', value: () => '' }]), `globproxy-usage-${dataset}`)
     }
     return NextResponse.json({ range_days: range, series: [], breakdown: [], credentials_truncated: false })
   }
 
-  const dateTo = new Date()
-  const dateFrom = new Date(dateTo.getTime() - range * 24 * 60 * 60 * 1000)
-
   // Per-credential calls, not a single ".all" call — each is independently
   // try/caught (mirrors syncUserUsage's per-credential loop in
   // lib/usageSync.ts) so one credential erroring on Geonode's side (e.g. a
   // sub-user deleted upstream but not yet reconciled locally) doesn't blank
   // out the whole page for every other credential that's fine.
-  const seriesResults = await Promise.allSettled(
-    creds.map(c => getPeriodStats(c.upstream_username!, dateFrom, dateTo, 'day'))
-  )
+  const seriesResults = localCoversRange || creds.length === 0
+    ? []
+    : await Promise.allSettled(creds.map(c => getPeriodStats(c.upstream_username!, dateFrom, dateTo, 'day')))
   const perCredentialSeries: PeriodStat[][] = []
   let anySeriesFailure = false
   for (const r of seriesResults) {
@@ -198,9 +217,11 @@ export async function GET(req: Request) {
     else { anySeriesFailure = true; console.error('getPeriodStats failed for a credential:', r.reason) }
   }
 
-  const breakdownResults = await Promise.allSettled(
-    creds.map(c => getHostCountryStatsWithMeta(c.upstream_username!, dateFrom, dateTo, 'day', 500, HOST_COUNTRY_HARD_CAP))
-  )
+  const breakdownResults = creds.length === 0
+    ? []
+    : await Promise.allSettled(
+        creds.map(c => getHostCountryStatsWithMeta(c.upstream_username!, dateFrom, dateTo, 'day', 500, HOST_COUNTRY_HARD_CAP))
+      )
   const perCredentialBreakdown: { label: string; stats: HostCountryStat[] }[] = []
   let anyBreakdownFailure = false
   let breakdownTruncated = false
@@ -217,13 +238,18 @@ export async function GET(req: Request) {
 
   // Every single credential erroring (not just some) means the upstream
   // call itself is broken, not just spotty data — surface that as an
-  // error rather than a suspiciously-empty chart.
-  if (perCredentialSeries.length === 0 && perCredentialBreakdown.length === 0) {
+  // error rather than a suspiciously-empty chart. With local daily usage the
+  // series is still good, so that case degrades to partial_data instead.
+  if (creds.length > 0 && perCredentialSeries.length === 0 && perCredentialBreakdown.length === 0 && !localCoversRange && local.size === 0) {
     const firstError = seriesResults.find(r => r.status === 'rejected') as PromiseRejectedResult | undefined
     return geonodeStatsErrorResponse(firstError?.reason)
   }
 
+  // Supplier figures (top sessions, older days) and local figures (whole
+  // account, since the ledger began) never add up — they overlap — so each day
+  // takes the larger of the two.
   const series = mergeSeries(perCredentialSeries, dateFrom, dateTo)
+    .map(p => ({ date: p.date, gb: Math.max(p.gb, Math.round((local.get(p.date) ?? 0) * 10000) / 10000) }))
   const breakdown = buildBreakdown(perCredentialBreakdown)
 
   if (format === 'csv') {
@@ -258,6 +284,7 @@ export async function GET(req: Request) {
     breakdown_row_count: breakdown.length,
     breakdown_truncated: breakdownTruncated,
     credentials_truncated: truncated,
+    series_source: localCoversRange ? 'local' : local.size > 0 ? 'merged' : 'upstream',
     partial_data: anySeriesFailure || anyBreakdownFailure,
   })
 }

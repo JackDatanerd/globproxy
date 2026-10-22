@@ -1,6 +1,7 @@
 import { requireMfaVerified } from '@/lib/mfa'
 import { createClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
+import { rateLimitedUser } from '@/lib/rateLimit'
 import { NextResponse } from 'next/server'
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ sessionId: string }> }) {
@@ -13,6 +14,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ sessio
   if (mfaBlock) return mfaBlock
   const suspended = await requireActiveUser(user.id)
   if (suspended) return suspended
+  const throttled = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'proxy-sessions')
+  if (throttled) return throttled
 
   const body = await req.json().catch(() => ({}))
   const update: Record<string, any> = {}
@@ -54,6 +57,8 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ sessi
   if (mfaBlock) return mfaBlock
   const suspended = await requireActiveUser(user.id)
   if (suspended) return suspended
+  const throttled = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'proxy-sessions')
+  if (throttled) return throttled
 
   const { data: deletedRows, error } = await supabase
     .from('proxy_sessions')

@@ -6,7 +6,8 @@ import { rateLimitedUser } from '@/lib/rateLimit'
 import { NextResponse } from 'next/server'
 
 // Replaces a session's proxy password in place (a leaked password no longer
-// means delete + recreate). Gated behind PASSWORD_ROTATION_ENABLED — see
+// means delete + recreate). Every rotation is verified through the proxy
+// itself before it is committed (on unless PASSWORD_ROTATION_ENABLED=false) — see
 // rotateCredentialPassword. The new password is returned ONCE here and is
 // also what the dashboard now shows; the old one stops working.
 export async function POST(

@@ -1,7 +1,7 @@
 import { withApiAuth, readJsonBody } from '@/lib/apiHelpers'
 import { apiError } from '@/lib/apiAuth'
 import { listWhitelistedIps, addWhitelistedIp, removeWhitelistedIp } from '@/lib/geonode'
-import { isValidIp, validateIpForAdd, validateDescription, whitelistErrorResponse } from '@/lib/ipWhitelist'
+import { isValidIp, validateIpForAdd, validateDescription, whitelistErrorResponse, notifyWhitelistChanged } from '@/lib/ipWhitelist'
 import { getOwnedCredential } from '@/lib/credentials'
 import { NextResponse } from 'next/server'
 
@@ -53,7 +53,9 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
       if (!cred) return apiError(404, 'not_found', 'Sub-user not found')
       if (!cred.upstream_sub_user_id) return apiError(409, 'conflict', 'This sub-user is still being provisioned — try again shortly.')
 
-      return NextResponse.json({ ips: await addWhitelistedIp(cred.upstream_sub_user_id, ip, description) }, { status: 201 })
+      const ips = await addWhitelistedIp(cred.upstream_sub_user_id, ip, description)
+      await notifyWhitelistChanged(user.id, id, 'added', 1, 'api')
+      return NextResponse.json({ ips }, { status: 201 })
     } catch (e) {
       return whitelistErrorResponse(e)
     }
@@ -72,7 +74,9 @@ export async function DELETE(req: Request, context: { params: Promise<{ id: stri
       if (!cred) return apiError(404, 'not_found', 'Sub-user not found')
       if (!cred.upstream_sub_user_id) return apiError(409, 'conflict', 'This sub-user is still being provisioned — try again shortly.')
 
-      return NextResponse.json({ ips: await removeWhitelistedIp(cred.upstream_sub_user_id, ip) })
+      const ips = await removeWhitelistedIp(cred.upstream_sub_user_id, ip)
+      await notifyWhitelistChanged(user.id, id, 'removed', 1, 'api')
+      return NextResponse.json({ ips })
     } catch (e) {
       return whitelistErrorResponse(e)
     }

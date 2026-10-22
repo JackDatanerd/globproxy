@@ -167,7 +167,11 @@ export function parseGbAmount(v: unknown, field = 'gb_amount'): Parsed<number> {
   const n = parseFiniteNumber(v)
   if (n === null || n <= 0) return { ok: false, error: `${field} must be a number greater than 0.` }
   if (n > MAX_GB_PER_CREDENTIAL) return { ok: false, error: `${field} must be at most ${MAX_GB_PER_CREDENTIAL}.` }
-  return { ok: true, value: Math.round(n * 10000) / 10000 }
+  const rounded = Math.round(n * 10000) / 10000
+  // 0.00001 passes the > 0 check above but rounds to 0 — which used to reach the
+  // database (and, for a release, the live proxy) as a zero-GB operation.
+  if (rounded <= 0) return { ok: false, error: `${field} must be at least 0.0001.` }
+  return { ok: true, value: rounded }
 }
 
 // ── Auto top-up configuration ─────────────────────────────────────────────

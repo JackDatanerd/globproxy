@@ -61,7 +61,7 @@ export async function PATCH(
   const body = await req.json().catch(() => null)
 
   const admin = await createAdminClient()
-  const result = await updateCredentialSettings(admin, user.id, id, body)
+  const result = await updateCredentialSettings(admin, user.id, id, body, 'dashboard')
   if (!result.ok) {
     return NextResponse.json(
       { error: result.status === 404 ? 'Credential not found' : result.message },

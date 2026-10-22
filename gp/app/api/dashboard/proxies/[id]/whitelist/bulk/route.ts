@@ -3,7 +3,7 @@ import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { rateLimitedUser } from '@/lib/rateLimit'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { bulkAddWhitelistedIps, bulkRemoveWhitelistedIps } from '@/lib/geonode'
-import { isValidIp, validateIpForAdd, validateDescription, whitelistErrorResponse, MAX_BULK_ITEMS } from '@/lib/ipWhitelist'
+import { isValidIp, validateIpForAdd, validateDescription, whitelistErrorResponse, notifyWhitelistChanged, MAX_BULK_ITEMS } from '@/lib/ipWhitelist'
 import { NextResponse } from 'next/server'
 
 async function loadOwnedCredential(_supabase: Awaited<ReturnType<typeof createClient>>, id: string, userId: string) {
@@ -65,6 +65,7 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
 
   try {
     const ips = await bulkAddWhitelistedIps(cred.upstream_sub_user_id, items)
+    await notifyWhitelistChanged(user.id, id, 'added', items.length, 'dashboard')
     return NextResponse.json({ ips }, { status: 201 })
   } catch (e) {
     return whitelistErrorResponse(e)
@@ -115,6 +116,7 @@ export async function DELETE(req: Request, context: { params: Promise<{ id: stri
 
   try {
     const result = await bulkRemoveWhitelistedIps(cred.upstream_sub_user_id, ips)
+    await notifyWhitelistChanged(user.id, id, 'removed', ips.length, 'dashboard')
     return NextResponse.json({ ips: result })
   } catch (e) {
     return whitelistErrorResponse(e)

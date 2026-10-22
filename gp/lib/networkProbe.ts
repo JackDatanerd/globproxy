@@ -133,6 +133,23 @@ async function fetchDirectIp(): Promise<string | null> {
   }
 }
 
+// One lightweight request through the proxy with the given credentials — true
+// when the proxy accepted them and relayed the request. Used to verify a
+// password rotation end to end (new password works / old one refused) instead
+// of trusting the supplier's PATCH response. Plain HTTP on the rotating HTTP
+// port works for ANY credential regardless of its stored protocol: the
+// sub-user (and so the auth) is the same.
+export async function quickProxyCheck(
+  proxyHost: string,
+  proxyPort: number,
+  proxyUsername: string,
+  proxyPassword: string
+): Promise<boolean> {
+  const auth = btoa(`${proxyUsername}:${proxyPassword}`)
+  const { ok } = await probeOnce(proxyHost, proxyPort, auth, PROBE_TARGETS[0], null)
+  return ok
+}
+
 export type BenchmarkTargetResult = {
   label: string
   successRate: number

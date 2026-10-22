@@ -24,7 +24,7 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
     const json = await readJsonBody(req)
     if (!json.ok) return json.response
 
-    const result = await updateCredentialSettings(supabase, user.id, id, json.body)
+    const result = await updateCredentialSettings(supabase, user.id, id, json.body, 'api')
     if (!result.ok) return failFrom(result)
     return NextResponse.json(toApiCredential(result.data.cred))
   })

@@ -94,13 +94,25 @@ export interface CreateSubUserParams {
   sticky_duration?: number // minutes
 }
 
-export async function createSubUser(p: CreateSubUserParams): Promise<GCred> {
-  // Date.now() alone is millisecond-resolution — bulk activation paths
-  // (activateBandwidth looping over several pending credentials/transfers,
-  // or a burst of API calls) can generate this within the same millisecond
-  // and collide. Adding a few random hex bytes keeps it unique under load.
-  const username = `gp_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`
-  const password = genPassword()
+// The upstream identity of a credential, decided BEFORE the supplier is called
+// and persisted on the row (proxy_credentials.provision_username/password,
+// migration 0062). A retry after an ambiguous failure (timeout / 5xx after the
+// sub-user was in fact created) re-uses it and can ADOPT the sub-user that
+// already exists instead of creating a second, orphaned one that holds a full
+// traffic limit out of the reseller pool. The `gp_` prefix is what the orphan
+// sweep keys on.
+export interface UpstreamIdentity { username: string; password: string }
+
+export function newUpstreamIdentity(credentialId: string): UpstreamIdentity {
+  return { username: `gp_${credentialId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 20).toLowerCase()}`, password: genPassword() }
+}
+
+export async function createSubUser(p: CreateSubUserParams, identity?: UpstreamIdentity): Promise<GCred> {
+  // Without a caller-supplied identity (legacy callers / the debug probe):
+  // Date.now() alone is millisecond-resolution and can collide under load, so
+  // a few random hex bytes are added.
+  const username = identity?.username ?? `gp_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`
+  const password = identity?.password ?? genPassword()
   // Previously: p.protocol === 'socks5' ? 7000 : 9000 — wrong on two counts.
   // SOCKS5 isn't 7000 (unverified guess), and neither number accounted for
   // sticky vs rotating at all. See lib/proxyEndpoint.ts for the confirmed values.
@@ -151,6 +163,60 @@ export async function createSubUser(p: CreateSubUserParams): Promise<GCred> {
     host: PROXY_HOST,
     port,
     protocol: p.protocol ?? 'http',
+  }
+}
+
+// 400/409/422 whose text says the username is taken. The provider's wording is
+// not documented, so this is deliberately loose; a false positive only costs one
+// listing, and adoption still requires an exact username match.
+export function isDuplicateSubUserError(e: unknown): boolean {
+  if (!(e instanceof GeonodeApiError)) return false
+  if (e.status === 409) return true
+  if (e.status !== 400 && e.status !== 422) return false
+  const msg = JSON.stringify(e.body ?? '') + ' ' + e.message
+  return /exist|already|taken|duplicate|in use|unique/i.test(msg)
+}
+
+// Finds a sub-user by its exact username in the full listing. `complete: false`
+// means the listing could not be read in full, so "not found" is NOT a verdict.
+export async function findSubUserByUsername(username: string): Promise<{ id: string | null; complete: boolean }> {
+  const { subUsers, complete } = await listAllSubUsers()
+  for (const [id, snap] of subUsers) if (snap.username === username) return { id, complete: true }
+  return { id: null, complete }
+}
+
+function adoptedCred(id: string, identity: UpstreamIdentity, p: CreateSubUserParams, username?: string | null): GCred {
+  return {
+    upstream_sub_user_id: id,
+    username: username ?? identity.username,
+    password: identity.password,
+    host: PROXY_HOST,
+    port: getProxyPort(p.protocol, p.session_type),
+    protocol: p.protocol ?? 'http',
+  }
+}
+
+// Create the sub-user — or adopt the one an earlier ambiguous attempt already
+// made. lookupFirst (retries, attempt > 1) checks the listing BEFORE creating;
+// if the listing is incomplete the attempt is aborted as 'unavailable' rather
+// than risking a second sub-user. A duplicate-name rejection on create also
+// falls back to adoption.
+export async function createOrAdoptSubUser(
+  p: CreateSubUserParams, identity: UpstreamIdentity, opts: { lookupFirst?: boolean } = {}
+): Promise<GCred & { adopted: boolean }> {
+  if (opts.lookupFirst) {
+    const found = await findSubUserByUsername(identity.username)
+    if (found.id) return { ...adoptedCred(found.id, identity, p), adopted: true }
+    if (!found.complete) throw new GeonodeApiError('sub-user listing incomplete — not creating blind', 503, {})
+  }
+  try {
+    return { ...(await createSubUser(p, identity)), adopted: false }
+  } catch (e) {
+    if (isDuplicateSubUserError(e)) {
+      const found = await findSubUserByUsername(identity.username)
+      if (found.id) return { ...adoptedCred(found.id, identity, p), adopted: true }
+    }
+    throw e
   }
 }
 
@@ -539,7 +605,19 @@ export async function getHostCountryStatsWithMeta(
   let offset = 0
   let truncated = false
   while (true) {
-    if (results.length >= hardCap) { truncated = true; break }
+    if (results.length >= hardCap) {
+      // The cap was reached exactly on a full page: only report truncation if a
+      // row really exists beyond it (one tiny probe), not merely because the
+      // last page happened to be full.
+      const probe = new URLSearchParams({
+        granularity, dateFrom: dateFrom.toISOString(), dateTo: dateTo.toISOString(),
+        subUserFilter, limit: '1', offset: String(offset),
+      })
+      const pr = await gfetch(`${MONITOR_BASE}/statistics/${SERVICE_TYPE}/per-subuser-host-country?${probe}`, { headers: monitorHeaders() })
+      const pd = await pr.json().catch(() => ({}))
+      truncated = pr.ok ? (pd.documents ?? []).length > 0 : true
+      break
+    }
     const params = new URLSearchParams({
       granularity,
       dateFrom: dateFrom.toISOString(),
@@ -701,6 +779,10 @@ export async function debugCreateSubUser(): Promise<{
   raw_response: object | null
   http_status: number | null
   parsed_gcred: GCred | null
+  // false means the provider rewrote the username we asked for (a prefix, say):
+  // customers would then see that rewritten name and the orphan sweep (gp_
+  // prefix) would not recognise these sub-users. Check this on first deploy.
+  username_matches_requested: boolean | null
   cleanup_deleted: boolean
   error: string | null
 }> {
@@ -718,6 +800,7 @@ export async function debugCreateSubUser(): Promise<{
   let parsedGcred: GCred | null = null
   let cleanupDeleted = false
   let error: string | null = null
+  let usernameMatches: boolean | null = null
 
   try {
     const res = await gfetch(`${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users`, {
@@ -740,6 +823,7 @@ export async function debugCreateSubUser(): Promise<{
         port: getProxyPort('http', 'rotating'),
         protocol: 'http',
       }
+      usernameMatches = parsedGcred.username === username
 
       // Immediately clean up — don't leave test sub-users in Geonode
       try {
@@ -763,6 +847,7 @@ export async function debugCreateSubUser(): Promise<{
     raw_response: rawResponse,
     http_status: httpStatus,
     parsed_gcred: parsedGcred,
+    username_matches_requested: usernameMatches,
     cleanup_deleted: cleanupDeleted,
     error,
   }

@@ -3,7 +3,7 @@ import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { rateLimitedUser } from '@/lib/rateLimit'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { listWhitelistedIps, addWhitelistedIp, removeWhitelistedIp } from '@/lib/geonode'
-import { isValidIp, validateIpForAdd, validateDescription, whitelistErrorResponse } from '@/lib/ipWhitelist'
+import { isValidIp, validateIpForAdd, validateDescription, whitelistErrorResponse, notifyWhitelistChanged } from '@/lib/ipWhitelist'
 import { NextResponse } from 'next/server'
 
 // Shared ownership + provisioning lookup for every handler below. Not
@@ -86,6 +86,7 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
 
   try {
     const ips = await addWhitelistedIp(cred.upstream_sub_user_id, ip, description)
+    await notifyWhitelistChanged(user.id, id, 'added', 1, 'dashboard')
     return NextResponse.json({ ips }, { status: 201 })
   } catch (e) {
     return whitelistErrorResponse(e)
@@ -120,6 +121,7 @@ export async function DELETE(req: Request, context: { params: Promise<{ id: stri
 
   try {
     const ips = await removeWhitelistedIp(cred.upstream_sub_user_id, ip)
+    await notifyWhitelistChanged(user.id, id, 'removed', 1, 'dashboard')
     return NextResponse.json({ ips })
   } catch (e) {
     return whitelistErrorResponse(e)

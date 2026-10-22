@@ -1,5 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/server'
-import { listAllSubUsers, getSubUserUsage, updateSubUserTrafficLimit, type SubUserSnapshot } from '@/lib/geonode'
+import { listAllSubUsers, getSubUserUsage, updateSubUserTrafficLimit, deleteSubUser, type SubUserSnapshot } from '@/lib/geonode'
 import { runAutoTopups } from '@/lib/autoTopup'
 import { fetchAllRows } from '@/lib/dbPaging'
 import { syncCredentialLimit, expectedLimitMb, suspendedCapMb, loadSuspendedUserIds } from '@/lib/credentials'
@@ -14,7 +14,7 @@ import { appUrl } from '@/lib/appUrl'
 
 type AdminClient = Awaited<ReturnType<typeof createAdminClient>>
 
-type CredRow = { id: string; upstream_sub_user_id: string | null; gb_used: number | null }
+type CredRow = { id: string; user_id?: string | null; upstream_sub_user_id: string | null; gb_used: number | null }
 
 // Per-run ceilings. Cloudflare Workers caps subrequests per invocation and
 // every Geonode PATCH / Supabase write / email counts against it, so each
@@ -32,28 +32,48 @@ const MAX_LOW_NOTICES_PER_RUN = 8
 const MAX_WEBHOOK_EVENTS_PER_RUN = 60
 const UPSTREAM_MISSING_GRACE_MS = 10 * 60_000 // listing may lag a just-created sub-user
 
-function buildChanges(creds: CredRow[], usageMap: Map<string, number>) {
+type UsageChange = { id: string; gb_used: number; user_id: string | null; delta: number }
+
+function buildChanges(creds: CredRow[], usageMap: Map<string, number>): UsageChange[] {
   return creds
     .map(cred => ({
       id: cred.id,
+      user_id: cred.user_id ?? null,
       gb_used: cred.upstream_sub_user_id ? usageMap.get(cred.upstream_sub_user_id) : undefined,
       prevGbUsed: cred.gb_used ?? 0,
     }))
     // Only write rows that actually changed (skip both "Geonode didn't
     // return this sub-user" and "unchanged within float noise").
-    .filter((c): c is { id: string; gb_used: number; prevGbUsed: number } =>
+    .filter((c): c is { id: string; user_id: string | null; gb_used: number; prevGbUsed: number } =>
       c.gb_used !== undefined && Math.abs(c.gb_used - c.prevGbUsed) > 0.0005
     )
-    .map(({ id, gb_used }) => ({ id, gb_used }))
+    .map(({ id, user_id, gb_used, prevGbUsed }) => ({ id, user_id, gb_used, delta: gb_used - prevGbUsed }))
+}
+
+// Credits GB consumed since the last sync to today's (UTC) account-level bucket
+// (usage_daily, migration 0062) — what lets usage history cover deleted sessions
+// and accounts with many sessions without a supplier call per session. Only
+// growth counts (a lower reading is a counter reset, not negative usage). Never throws.
+export async function recordUsageDeltas(supabase: AdminClient, rows: { user_id: string; gb: number }[]) {
+  const byUser = new Map<string, number>()
+  for (const r of rows) if (r.user_id && r.gb > 0) byUser.set(r.user_id, (byUser.get(r.user_id) ?? 0) + r.gb)
+  if (byUser.size === 0) return
+  try {
+    const { error } = await supabase.rpc('record_usage_deltas', {
+      p_rows: [...byUser].map(([user_id, gb]) => ({ user_id, gb: Math.round(gb * 10000) / 10000 })),
+    })
+    if (error) console.error('[usage-sync] record_usage_deltas failed:', error)
+  } catch (e) { console.error('[usage-sync] record_usage_deltas threw:', e) }
 }
 
 async function applyChanges(
   supabase: AdminClient,
-  changes: { id: string; gb_used: number }[]
+  changes: UsageChange[]
 ) {
   if (changes.length > 0) {
-    const { error } = await supabase.rpc('bulk_update_credential_usage', { updates: changes })
+    const { error } = await supabase.rpc('bulk_update_credential_usage', { updates: changes.map(({ id, gb_used }) => ({ id, gb_used })) })
     if (error) console.error('bulk_update_credential_usage failed:', error)
+    else await recordUsageDeltas(supabase, changes.filter(c => c.user_id).map(c => ({ user_id: c.user_id as string, gb: c.delta })))
   }
   // Always recalc, even with zero changes — a previous partial failure
   // should still get corrected on the next call.
@@ -260,20 +280,37 @@ async function trackMissingUpstream(
 
 // Sub-users that exist on Geonode, carry our naming prefix, and have no row
 // in the database under ANY status. They are real, working, untracked
-// proxies (a crash between the upstream create and the DB insert, or a
-// failed cleanup). To avoid flagging one whose DB insert is merely in
-// flight, an id must be seen as an orphan on TWO consecutive runs before it
-// is reported. Results land in platform_settings.geonode_orphans and the
-// admin is emailed once per incident.
+// proxies (a crash between the upstream create and the DB insert, a failed
+// cleanup, or a create whose response we never saw). Each one holds a full
+// traffic limit out of the reseller pool, so they are not just reported:
+//
+//  * one whose username is the saved provisioning identity of a PENDING credential
+//    is not an orphan at all — the next retry adopts it (createOrAdoptSubUser);
+//  * to avoid flagging one whose DB insert is merely in flight, an id must be seen
+//    as an orphan on TWO consecutive runs before it is reported;
+//  * a reported one that has stayed orphaned for ORPHAN_RECLAIM_AFTER_MS with
+//    ZERO traffic is deleted upstream (no customer was ever handed it), a few per
+//    run, which returns its limit to the pool. One with any usage is left for a human.
+//
+// platform_settings.geonode_orphan_candidates is { id: firstSeenISO } (older runs
+// stored a plain id array — still read). Results land in
+// platform_settings.geonode_orphans and the admin is emailed once per incident.
+const ORPHAN_RECLAIM_AFTER_MS = 24 * 3_600_000
+const MAX_ORPHAN_RECLAIMS_PER_RUN = 5
+
 async function sweepOrphans(
   supabase: AdminClient,
   allCreds: any[],
   subUsers: Map<string, SubUserSnapshot>
 ): Promise<number> {
   const knownIds = new Set(allCreds.map(c => String(c.upstream_sub_user_id)))
+  const { data: pendingRows } = await supabase
+    .from('proxy_credentials').select('provision_username').eq('status', 'pending').not('provision_username', 'is', null)
+  const adoptable = new Set((pendingRows ?? []).map((r: any) => r.provision_username as string))
+
   const candidates: string[] = []
   for (const [id, snap] of subUsers) {
-    if (snap.username && snap.username.startsWith('gp_') && !knownIds.has(id)) candidates.push(id)
+    if (snap.username && snap.username.startsWith('gp_') && !knownIds.has(id) && !adoptable.has(snap.username)) candidates.push(id)
   }
 
   const { data: rows } = await supabase
@@ -282,39 +319,69 @@ async function sweepOrphans(
     .in('key', ['geonode_orphan_candidates', 'geonode_orphans_alerted_at'])
   const settings = Object.fromEntries((rows ?? []).map((r: any) => [r.key, r.value]))
 
-  let previous: string[] = []
-  try { previous = JSON.parse(settings.geonode_orphan_candidates ?? '[]') } catch { /* reset */ }
-  const prevSet = new Set(previous)
-  const persistent = candidates.filter(id => prevSet.has(id))
+  const nowMs = Date.now()
+  const nowIso = new Date(nowMs).toISOString()
+  let previous: Record<string, string> = {}
+  try {
+    const parsed = JSON.parse(settings.geonode_orphan_candidates ?? '{}')
+    if (Array.isArray(parsed)) for (const id of parsed) previous[String(id)] = nowIso
+    else if (parsed && typeof parsed === 'object') previous = parsed
+  } catch { /* reset */ }
+
+  const firstSeen: Record<string, string> = {}
+  for (const id of candidates) firstSeen[id] = previous[id] ?? nowIso
+  const persistent = candidates.filter(id => previous[id] !== undefined)
+
+  // Reclaim: long-lived, never-used orphans only.
+  const reclaimed: string[] = []
+  for (const id of persistent) {
+    if (reclaimed.length >= MAX_ORPHAN_RECLAIMS_PER_RUN) break
+    const snap = subUsers.get(id)
+    if (!snap || snap.usedMb !== 0) continue // any traffic (or unknown usage) -> a human decides
+    if (nowMs - Date.parse(firstSeen[id]) < ORPHAN_RECLAIM_AFTER_MS) continue
+    try {
+      await deleteSubUser(id)
+      reclaimed.push(id)
+    } catch (e: any) {
+      if (e?.status === 404) reclaimed.push(id) // already gone
+      else console.error('[usage-sync] could not reclaim orphan sub-user', id, e)
+    }
+  }
+  if (reclaimed.length > 0) console.warn(`[usage-sync] reclaimed ${reclaimed.length} untracked, unused sub-user(s):`, reclaimed)
+  const reclaimedSet = new Set(reclaimed)
+  const remainingCandidates = Object.fromEntries(Object.entries(firstSeen).filter(([id]) => !reclaimedSet.has(id)))
+  const stillPersistent = persistent.filter(id => !reclaimedSet.has(id))
 
   await supabase.from('platform_settings').upsert([
-    { key: 'geonode_orphan_candidates', value: JSON.stringify(candidates.slice(0, 500)) },
-    { key: 'geonode_orphans', value: JSON.stringify({ count: persistent.length, ids: persistent.slice(0, 100), detected_at: new Date().toISOString() }) },
+    { key: 'geonode_orphan_candidates', value: JSON.stringify(Object.fromEntries(Object.entries(remainingCandidates).slice(0, 500))) },
+    { key: 'geonode_orphans', value: JSON.stringify({ count: stillPersistent.length, ids: stillPersistent.slice(0, 100), detected_at: nowIso, reclaimed_last_run: reclaimed.length }) },
   ], { onConflict: 'key' })
 
-  if (persistent.length === 0) {
+  if (stillPersistent.length === 0) {
     if (settings.geonode_orphans_alerted_at) {
       await supabase.from('platform_settings').delete().eq('key', 'geonode_orphans_alerted_at')
     }
     return 0
   }
 
-  console.error(`[usage-sync] ${persistent.length} orphan Geonode sub-user(s) with no local record:`, persistent.slice(0, 20))
+  console.error(`[usage-sync] ${stillPersistent.length} orphan Geonode sub-user(s) with no local record:`, stillPersistent.slice(0, 20))
   if (!settings.geonode_orphans_alerted_at && process.env.ADMIN_EMAIL) {
     await sendEmail({
       to: process.env.ADMIN_EMAIL,
-      subject: `[ORPHAN SUB-USERS] ${persistent.length} Geonode sub-user(s) have no local record`,
-      html: `<p>${persistent.length} sub-user(s) on Geonode carry the <code>gp_</code> prefix but have no
+      subject: `[ORPHAN SUB-USERS] ${stillPersistent.length} Geonode sub-user(s) have no local record`,
+      html: `<p>${stillPersistent.length} sub-user(s) on Geonode carry the <code>gp_</code> prefix but have no
              <code>proxy_credentials</code> row (seen on two consecutive usage syncs). They are live,
-             untracked proxies — usually the result of a crash between the Geonode create and the database insert.</p>
-             <p><strong>Geonode sub-user ids (first 20):</strong> ${escapeHtml(persistent.slice(0, 20).join(', '))}</p>
-             <p>Review and delete them in Geonode, or re-attach them if they belong to a customer. Full list:
-             <code>platform_settings.geonode_orphans</code>.</p>`,
+             untracked proxies — usually the result of a crash between the Geonode create and the database insert,
+             or a create whose response was never received.</p>
+             <p>Ones with zero traffic are deleted automatically after ${ORPHAN_RECLAIM_AFTER_MS / 3_600_000}h (their limit returns to your pool);
+             ones with any usage stay for you to review.</p>
+             <p><strong>Geonode sub-user ids (first 20):</strong> ${escapeHtml(stillPersistent.slice(0, 20).join(', '))}</p>
+             <p>Full list: <code>platform_settings.geonode_orphans</code>.</p>`,
     }).catch((e) => console.error('[usage-sync] orphan alert email failed', e))
     await supabase.from('platform_settings')
-      .upsert({ key: 'geonode_orphans_alerted_at', value: new Date().toISOString() }, { onConflict: 'key' })
+      .upsert({ key: 'geonode_orphans_alerted_at', value: nowIso }, { onConflict: 'key' })
   }
-  return persistent.length
+  return stillPersistent.length
 }
 
 // A credential whose auto-allocate is genuinely going to act. Once the
@@ -379,6 +446,13 @@ async function notifyExhaustion(
   let sent = 0
   for (const [idx, c] of due.slice(0, MAX_WEBHOOK_EVENTS_PER_RUN).entries()) {
     const emailDue = idx < MAX_EXHAUSTION_NOTICES_PER_RUN
+    // Claim BEFORE sending (guarded on the flag still being empty), like the
+    // low-bandwidth notice: the admin "sync all" button runs this outside the cron
+    // lock, so two overlapping runs could otherwise both email and both fire the webhook.
+    const { data: claimed } = await supabase.from('proxy_credentials')
+      .update({ exhausted_alerted_at: new Date().toISOString() })
+      .eq('id', c.id).is('exhausted_alerted_at', null).select('id')
+    if (!claimed?.length) continue
     const { email, name } = emailDue ? await firstName(supabase, c.user_id) : { email: null, name: '' }
     const autoStuck = !!c.auto_topup_enabled // enabled but flagged: it could not top this session up
     if (email) {
@@ -413,9 +487,6 @@ async function notifyExhaustion(
       gb_allocated: Number(c.gb_allocated),
       gb_used: c.used,
     }, { defer: true }).catch((e) => console.error('[webhooks] session_exhausted dispatch threw', c.id, e))
-    await supabase.from('proxy_credentials')
-      .update({ exhausted_alerted_at: new Date().toISOString() })
-      .eq('id', c.id)
     sent++
   }
   return sent
@@ -519,7 +590,7 @@ export async function syncUserUsage(userId: string) {
   const supabase = await createAdminClient()
   const { data: creds } = await supabase
     .from('proxy_credentials')
-    .select('id, upstream_sub_user_id, gb_used')
+    .select('id, user_id, upstream_sub_user_id, gb_used')
     .eq('status', 'active')
     .eq('user_id', userId)
     .not('upstream_sub_user_id', 'is', null)

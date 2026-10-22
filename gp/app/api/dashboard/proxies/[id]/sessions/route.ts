@@ -1,6 +1,7 @@
 import { requireMfaVerified } from '@/lib/mfa'
 import { createClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
+import { rateLimitedUser } from '@/lib/rateLimit'
 import { genSessionId } from '@/lib/proxyEndpoint'
 import { NextResponse } from 'next/server'
 
@@ -16,6 +17,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 
   const mfaBlock = await requireMfaVerified(req, user.id)
   if (mfaBlock) return mfaBlock
+  const throttled = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'proxy-sessions')
+  if (throttled) return throttled
   const { data, error } = await supabase
     .from('proxy_sessions')
     .select('id, session_token, label, pinned, collapsed, terminated_at, created_at')
@@ -48,6 +51,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   // shouldn't be able to create new working endpoints under it either.
   const suspended = await requireActiveUser(user.id)
   if (suspended) return suspended
+  // Creating a session is a row insert; the trigger caps bound the table but not
+  // the churn of create-and-terminate loops. Same per-user limiter as the sibling routes.
+  const throttled = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'proxy-sessions')
+  if (throttled) return throttled
 
   // Confirm the credential belongs to this user and is actually sticky —
   // named sessions only make sense for sticky, rotating has no session concept.

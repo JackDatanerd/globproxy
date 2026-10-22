@@ -1,11 +1,11 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import {
-  createSubUser, deleteSubUser, getSubUserUsage, updateSubUserTrafficLimit, updateSubUserPassword,
-  classifyUpstreamError, GeonodeApiError, type UpstreamReason,
+  createSubUser, createOrAdoptSubUser, newUpstreamIdentity, deleteSubUser, getSubUserUsage, updateSubUserTrafficLimit, updateSubUserPassword,
+  classifyUpstreamError, GeonodeApiError, type UpstreamReason, type UpstreamIdentity, PROXY_HOST,
 } from '@/lib/geonode'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { appUrl } from '@/lib/appUrl'
-import { buildProxyUsername, getProxyPort } from '@/lib/proxyEndpoint'
+import { buildProxyUsername, getProxyPort, deriveSessionId } from '@/lib/proxyEndpoint'
 import { dispatchWebhook } from '@/lib/webhooks'
 import { fetchAllRows } from '@/lib/dbPaging'
 import { parseLabel, parseTargeting, parseSessionOptions, parseFiniteNumber, MAX_ENDPOINT_COUNT, type CreateCredentialInput } from '@/lib/apiValidation'
@@ -62,7 +62,14 @@ export function toApiCredential(c: any) {
     password: c.upstream_password ?? null,
     // The username to put in the proxy connection string — includes the
     // country/state/city/ASN/session targeting suffixes.
-    connection_username: c.upstream_username ? buildProxyUsername(c.upstream_username, c) : null,
+    // Sticky sessions need a STABLE session id: with none, buildProxyUsername mints
+    // a random one per call, so every fetch of the same sub-user returned a
+    // different username (= a different exit IP). Derived from the credential id,
+    // exactly like the dashboard's quick endpoint; named sessions
+    // (/sessions) are the explicit way to get another one.
+    connection_username: c.upstream_username
+      ? buildProxyUsername(c.upstream_username, c, c.session_type === 'sticky' && c.id ? deriveSessionId(String(c.id), 0) : undefined)
+      : null,
     auto_topup: {
       enabled: !!c.auto_topup_enabled,
       threshold_gb: c.auto_topup_threshold_gb ?? null,
@@ -136,6 +143,13 @@ export async function createCredential(
     return fail(500, 'internal_error', 'Could not reserve bandwidth. Please try again.')
   }
 
+  // The upstream identity is fixed up front so an ambiguous failure (timeout /
+  // 5xx after the supplier DID create the sub-user) can be adopted on retry
+  // instead of being orphaned (see createOrAdoptSubUser).
+  const credId = crypto.randomUUID()
+  const identity = newUpstreamIdentity(credId)
+  let upstreamAttempted = false
+
   const release = async (why: string) => {
     const { error } = await admin.rpc('release_credential_bandwidth', { p_user_id: userId, p_gb: gb })
     if (error) console.error(`[credentials] FAILED to release ${gb}GB reservation after ${why} — needs manual reconciliation`, userId, error)
@@ -153,6 +167,7 @@ export async function createCredential(
     let pendingReason: UpstreamReason | null = null
     if (providerConfigured()) {
       try {
+        upstreamAttempted = true
         gcred = await createSubUser({
           label: input.label ?? `gp_${Date.now()}`,
           gb_limit: gb,
@@ -160,7 +175,7 @@ export async function createCredential(
           asn: input.asn ?? undefined,
           protocol: input.protocol, session_type: input.session_type,
           sticky_duration: input.sticky_duration ?? undefined,
-        })
+        }, identity)
         status = 'active'
       } catch (e) {
         provisionError = errMsg(e) // neutral code (see errMsg) — raw detail is logged below
@@ -176,6 +191,7 @@ export async function createCredential(
     const { data: cred, error: insertErr } = await admin
       .from('proxy_credentials')
       .insert({
+        id: credId,
         user_id: userId,
         label: input.label,
         upstream_sub_user_id: gcred?.upstream_sub_user_id ?? null,
@@ -192,9 +208,16 @@ export async function createCredential(
         country: input.country, state: input.state, city: input.city, asn: input.asn,
         status,
         activated_at: status === 'active' ? new Date().toISOString() : null,
-        // A pending credential is retried by the 'provision' cron task with
-        // backoff measured from this first attempt.
-        provisioning_claimed_at: status === 'pending' ? new Date().toISOString() : null,
+        // Left NULL so the first retry (cron tick or the customer's "Retry now")
+        // is eligible immediately. Stamping it here made claim_pending_credentials'
+        // 2-minute in-flight guard refuse a Retry for two minutes with a false
+        // "an attempt is already in progress" — nothing is in flight: this create
+        // attempt has already finished.
+        provisioning_claimed_at: null,
+        // Remembered only when the supplier was really called, so the retry knows
+        // to look for a sub-user an ambiguous failure may already have created.
+        provision_username: status === 'pending' && upstreamAttempted ? identity.username : null,
+        provision_password: status === 'pending' && upstreamAttempted ? identity.password : null,
         provision_attempts: status === 'pending' ? 1 : 0,
         last_provision_error: status === 'pending' ? provisionError : null,
         idempotency_key: idemKey,
@@ -322,8 +345,21 @@ export async function deleteCredential(
 export const LIMIT_SYNC_MARKER = 'LIMIT_SYNC'
 
 export async function markLimitSyncNeeded(admin: Admin, credentialId: string) {
-  try { await admin.from('proxy_credentials').update({ last_provision_error: LIMIT_SYNC_MARKER }).eq('id', credentialId) }
-  catch (e) { console.error('[credentials] could not mark limit sync', credentialId, e) }
+  try {
+    await admin.from('proxy_credentials').update({ last_provision_error: LIMIT_SYNC_MARKER }).eq('id', credentialId)
+    // First failure of this episode only: the clock the stuck-sync alert measures.
+    await admin.from('proxy_credentials').update({ limit_sync_failed_since: new Date().toISOString() })
+      .eq('id', credentialId).is('limit_sync_failed_since', null)
+  } catch (e) { console.error('[credentials] could not mark limit sync', credentialId, e) }
+}
+
+// The live cap now matches the database: end the episode.
+export async function clearLimitSyncState(admin: Admin, credentialId: string) {
+  try {
+    await admin.from('proxy_credentials').update({ limit_sync_failed_since: null, limit_sync_alerted_at: null }).eq('id', credentialId)
+    await admin.from('proxy_credentials').update({ last_provision_error: null })
+      .eq('id', credentialId).eq('last_provision_error', LIMIT_SYNC_MARKER)
+  } catch (e) { console.error('[credentials] could not clear limit sync state', credentialId, e) }
 }
 
 export function expectedLimitMb(gbAllocated: number): number {
@@ -342,7 +378,7 @@ export function expectedLimitMb(gbAllocated: number): number {
 export async function syncCredentialLimit(admin: Admin, credentialId: string): Promise<string | null> {
   for (let round = 0; round < 2; round++) {
     const { data: cred } = await admin
-      .from('proxy_credentials').select('status, upstream_sub_user_id, gb_allocated')
+      .from('proxy_credentials').select('status, upstream_sub_user_id, gb_allocated, limit_sync_failed_since, last_provision_error')
       .eq('id', credentialId).maybeSingle()
     // 'pending' has no sub-user yet; provisioning reads gb_allocated fresh.
     if (!cred || cred.status !== 'active' || !cred.upstream_sub_user_id) return null
@@ -356,6 +392,10 @@ export async function syncCredentialLimit(admin: Admin, credentialId: string): P
       await markLimitSyncNeeded(admin, credentialId)
       return 'Your allocation was updated, but applying it to the live proxy failed. It will be retried automatically; contact support if it doesn\u2019t resolve shortly.'
     }
+
+    // This PATCH landed: any earlier "live cap is behind" episode is over
+    // (a later round re-flags it if a newer value then fails).
+    if (cred.limit_sync_failed_since || cred.last_provision_error === LIMIT_SYNC_MARKER) await clearLimitSyncState(admin, credentialId)
 
     const { data: after } = await admin.from('proxy_credentials').select('gb_allocated').eq('id', credentialId).maybeSingle()
     if (!after || Number(after.gb_allocated) === sent) return null // nothing moved underneath us
@@ -416,14 +456,34 @@ export async function provisionPendingCredentials(
   let failed = 0
   for (const cred of (claimed ?? []) as any[]) {
     try {
-      const gcred = await createSubUser({
+      // The upstream identity is decided and SAVED before the supplier is
+      // called. If this attempt dies ambiguously (timeout / 5xx after the
+      // sub-user was created) the next one re-uses it and adopts that sub-user
+      // instead of creating a second one that nobody tracks.
+      let identity: UpstreamIdentity
+      const hadIdentity = !!(cred.provision_username && cred.provision_password)
+      if (hadIdentity) {
+        identity = { username: cred.provision_username, password: cred.provision_password }
+      } else {
+        const fresh = newUpstreamIdentity(cred.id)
+        await admin.from('proxy_credentials')
+          .update({ provision_username: fresh.username, provision_password: fresh.password })
+          .eq('id', cred.id).eq('status', 'pending').is('provision_username', null)
+        const { data: saved } = await admin.from('proxy_credentials')
+          .select('provision_username, provision_password').eq('id', cred.id).eq('status', 'pending').maybeSingle()
+        if (!saved?.provision_username || !saved?.provision_password) throw new Error('credential changed while claiming')
+        identity = { username: saved.provision_username, password: saved.provision_password }
+      }
+
+      const gcred = await createOrAdoptSubUser({
         label: cred.label ?? `gp_${String(cred.user_id).slice(0, 8)}`,
         gb_limit: cred.gb_allocated,
         country: cred.country ?? undefined, state: cred.state ?? undefined, city: cred.city ?? undefined,
         asn: cred.asn ?? undefined,
         protocol: cred.protocol ?? 'http', session_type: cred.session_type ?? 'rotating',
         sticky_duration: cred.sticky_duration ?? undefined,
-      })
+      }, identity, { lookupFirst: hadIdentity })
+      if (gcred.adopted) console.warn('[provision] adopted an existing sub-user from an earlier ambiguous attempt', cred.id)
 
       // Guarded on status='pending': if the credential was deleted (or
       // activated by a racing run) in the meantime, don't resurrect it —
@@ -438,20 +498,29 @@ export async function provisionPendingCredentials(
         last_provision_error: null,
         pending_reason: null,
         provision_stalled_at: null,
+        provision_username: null,
+        provision_password: null,
       }).eq('id', cred.id).eq('status', 'pending').select('id, gb_allocated')
 
       if (updErr || !updated?.length) {
         if (updErr) console.error('[provision] failed to persist activated credential', cred.id, updErr)
-        await deleteSubUser(gcred.upstream_sub_user_id).catch((e) =>
-          console.error('[provision] FAILED to clean up orphaned sub-user', gcred.upstream_sub_user_id, e))
+        // A (re-used / adopted) sub-user that ANOTHER row already points at is that
+        // row's live proxy — never delete it. Only an unreferenced one is ours to clean up.
+        const { count: referenced } = await admin.from('proxy_credentials')
+          .select('id', { count: 'exact', head: true }).eq('upstream_sub_user_id', gcred.upstream_sub_user_id)
+        if (!referenced) {
+          await deleteSubUser(gcred.upstream_sub_user_id).catch((e) =>
+            console.error('[provision] FAILED to clean up orphaned sub-user', gcred.upstream_sub_user_id, e))
+        }
         failed++
         continue
       }
 
       // A top-up between claim and now raised gb_allocated past the limit we
-      // just created the sub-user with — bring the live cap up to date.
+      // just created the sub-user with — bring the live cap up to date. (An
+      // adopted sub-user may also carry an older limit; the reconciler heals that.)
       const nowAllocated = Number(updated[0].gb_allocated)
-      if (nowAllocated !== Number(cred.gb_allocated)) {
+      if (nowAllocated !== Number(cred.gb_allocated) || gcred.adopted) {
         try { await updateSubUserTrafficLimit(gcred.upstream_sub_user_id, nowAllocated * 1024) }
         catch { await markLimitSyncNeeded(admin, cred.id) }
       }
@@ -485,10 +554,11 @@ export async function reconcileLimitSync(limit = 5): Promise<{ checked: number; 
   let fixed = 0
   for (const r of rows ?? []) {
     try {
-      await updateSubUserTrafficLimit(r.upstream_sub_user_id!, Number(r.gb_allocated) * 1024)
-      await admin.from('proxy_credentials').update({ last_provision_error: null })
-        .eq('id', r.id).eq('last_provision_error', LIMIT_SYNC_MARKER)
-      fixed++
+      // Re-reads gb_allocated immediately before the PATCH (and verifies after), so
+      // a top-up that committed since this select is not overwritten with a stale
+      // number; it also clears / re-arms the stuck-sync clock.
+      const warning = await syncCredentialLimit(admin, r.id)
+      if (!warning) fixed++
     } catch (e) {
       console.error('[provision] limit sync retry failed', r.id, e)
     }
@@ -515,7 +585,7 @@ const normGeo = (v: unknown): string | null => {
 }
 
 export async function updateCredentialSettings(
-  admin: Admin, userId: string, id: string, body: unknown
+  admin: Admin, userId: string, id: string, body: unknown, source: 'api' | 'dashboard' = 'api'
 ): Promise<CredResult<{ cred: any }>> {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return fail(400, 'invalid_request', 'Request body must be a JSON object.')
@@ -582,6 +652,12 @@ export async function updateCredentialSettings(
     return fail(500, 'internal_error', 'Could not update the sub-user.')
   }
   if (!data) return fail(404, 'not_found', 'Sub-user not found')
+  await dispatchWebhook(userId, 'session_updated', {
+    credential_id: id, label: data.label ?? null, changed: Object.keys(patch).filter((k) => k !== 'port'),
+    protocol: data.protocol, session_type: data.session_type, sticky_duration: data.sticky_duration ?? null,
+    country: data.country ?? null, state: data.state ?? null, city: data.city ?? null, asn: data.asn ?? null,
+    endpoint_count: data.endpoint_count, source,
+  })
   return { ok: true, data: { cred: data } }
 }
 
@@ -631,6 +707,9 @@ const round4 = (n: number) => Math.round(n * 10000) / 10000
 export async function releaseCredentialBandwidth(
   admin: Admin, userId: string, id: string, gb: number, source: 'api' | 'dashboard'
 ): Promise<CredResult<{ gb_allocated: number; gb_released: number; max_releasable_gb: number; warning?: string }>> {
+  // Checked before anything touches the provider: an amount that rounds below the
+  // minimum used to lower the live cap first and only then be refused by the database.
+  if (!(gb >= 0.01)) return fail(400, 'invalid_request', 'Release amount must be at least 0.01 GB.')
   const cred = await getOwnedCredential(admin, userId, id, 'id, label, status, gb_allocated, gb_used, upstream_sub_user_id, created_by')
   if (!cred) return fail(404, 'not_found', 'Sub-user not found')
   if (cred.created_by) return fail(403, 'forbidden', 'This allocation was made by your reseller and cannot be changed directly. Contact them.')
@@ -700,25 +779,43 @@ export async function releaseCredentialBandwidth(
 // A leaked proxy password used to mean delete + recreate (new endpoint,
 // refund rounding, archived usage). This swaps the password in place.
 //
-// GATED: PASSWORD_ROTATION_ENABLED must be exactly "true". The provider's
-// PATCH is only documented to accept the fields it takes at creation, and a
-// rotation it silently ignored would leave the dashboard showing a password
-// that no longer works. Flip the flag only after one rotation on a throwaway
-// session has been confirmed end to end (new password connects, old one is
-// refused) — see FIX_PACKAGE_proxy-lifecycle-2.md.
+// VERIFIED, not gated: the provider's PATCH is only documented to accept the
+// fields it takes at creation, so every rotation is confirmed end to end through
+// the proxy itself (verifyRotation below) before the new password is committed.
 //
 // Order: provider first, database second, retried. A database failure after
 // the provider accepted is reported as retryable: running the rotation again
 // mints a fresh password and applies it to both, which converges.
-export const passwordRotationEnabled = () => process.env.PASSWORD_ROTATION_ENABLED === 'true'
+// Rotation is verified END TO END on every call (see verifyRotation) instead of
+// trusting the provider's PATCH response, so it no longer ships dark. It stays on
+// unless PASSWORD_ROTATION_ENABLED is set to exactly "false" (kill switch).
+export const passwordRotationEnabled = () => process.env.PASSWORD_ROTATION_ENABLED !== 'false'
+
+// 'applied'  — the proxy accepts the new password
+// 'ignored'  — the new one is refused while the OLD one still works: the provider
+//              silently dropped the change, so it must NOT be committed
+// 'unknown'  — neither could be confirmed (warm-up, exhausted session, probe
+//              unreachable): the provider echoed the new password, so commit it
+async function verifyRotation(host: string, baseUser: string, oldPass: string, newPass: string): Promise<'applied' | 'ignored' | 'unknown'> {
+  try {
+    const { quickProxyCheck } = await import('@/lib/networkProbe')
+    const port = getProxyPort('http', 'rotating')
+    const user = buildProxyUsername(baseUser, {})
+    if (await quickProxyCheck(host, port, user, newPass)) return 'applied'
+    if (await quickProxyCheck(host, port, user, oldPass)) return 'ignored'
+  } catch (e) {
+    console.error('[credentials] rotate: verification probe failed', e)
+  }
+  return 'unknown'
+}
 
 export async function rotateCredentialPassword(
   admin: Admin, userId: string, id: string
 ): Promise<CredResult<{ password: string }>> {
   if (!passwordRotationEnabled()) {
-    return fail(503, 'upstream_unavailable', 'Password rotation isn\u2019t available yet. Delete and recreate the session in the meantime, or contact support.')
+    return fail(503, 'upstream_unavailable', 'Password rotation isn\u2019t available right now. Delete and recreate the session in the meantime, or contact support.')
   }
-  const cred = await getOwnedCredential(admin, userId, id, 'id, status, upstream_sub_user_id')
+  const cred = await getOwnedCredential(admin, userId, id, 'id, label, status, upstream_sub_user_id, upstream_username, upstream_password, host')
   if (!cred) return fail(404, 'not_found', 'Sub-user not found')
   if (cred.status !== 'active' || !cred.upstream_sub_user_id) {
     return fail(409, 'conflict', 'Only an active session can have its password rotated.')
@@ -736,13 +833,90 @@ export async function rotateCredentialPassword(
     return fail(502, 'upstream_unavailable', 'Could not change the password right now. Nothing was changed \u2014 please retry shortly.')
   }
 
+  if (cred.upstream_username && cred.upstream_password) {
+    const verdict = await verifyRotation(cred.host || PROXY_HOST, cred.upstream_username, cred.upstream_password, newPassword)
+    if (verdict === 'ignored') {
+      console.error('[credentials] rotate: provider ignored the password change — not committing', id)
+      return fail(502, 'upstream_unavailable', 'The proxy network did not apply the new password. Nothing was changed.')
+    }
+    if (verdict === 'unknown') console.warn('[credentials] rotate: could not verify the new password end to end — committing on the provider echo', id)
+  }
+
   for (let attempt = 0; attempt < 3; attempt++) {
     const { error } = await admin.from('proxy_credentials')
       .update({ upstream_password: newPassword }).eq('id', id).eq('user_id', userId)
-    if (!error) return { ok: true, data: { password: newPassword } }
+    if (!error) {
+      await dispatchWebhook(userId, 'session_password_rotated', { credential_id: id, label: cred.label ?? null })
+      return { ok: true, data: { password: newPassword } }
+    }
     console.error('[credentials] rotate: saving the new password failed', id, attempt, error.code)
   }
   return fail(500, 'internal_error', 'The password was changed but could not be saved. Run the rotation again to finish \u2014 the previous password may no longer work.')
+}
+
+// ── Live cap stuck behind the database ────────────────────────────────
+// A committed top-up / auto-allocate / release whose live-cap PATCH keeps
+// failing leaves the dashboard showing the new allocation while the session is
+// still cut off at the old cap. Nothing else notices: the exhaustion notice
+// compares usage to the DATABASE allocation. After STUCK_LIMIT_AFTER_MIN the
+// owner (supplier-neutral wording) and the admin are told once per episode.
+const STUCK_LIMIT_AFTER_MIN = 30
+const MAX_STUCK_NOTICES_PER_RUN = 10
+
+export async function alertStuckLimitSync(admin: Admin): Promise<{ alerted: number }> {
+  const cutoff = new Date(Date.now() - STUCK_LIMIT_AFTER_MIN * 60_000).toISOString()
+  const { data: due } = await admin
+    .from('proxy_credentials').select('id')
+    .eq('status', 'active').not('limit_sync_failed_since', 'is', null)
+    .lt('limit_sync_failed_since', cutoff).is('limit_sync_alerted_at', null)
+    .limit(MAX_STUCK_NOTICES_PER_RUN)
+  if (!due?.length) return { alerted: 0 }
+
+  // Claim by flagging first: a duplicate email is worse than a late one.
+  const { data: claimed } = await admin
+    .from('proxy_credentials').update({ limit_sync_alerted_at: new Date().toISOString() })
+    .in('id', due.map((d: any) => d.id)).is('limit_sync_alerted_at', null)
+    .select('id, user_id, label, gb_allocated')
+  if (!claimed?.length) return { alerted: 0 }
+
+  const suspended = await loadSuspendedUserIds(admin)
+  for (const c of claimed as any[]) {
+    if (suspended.has(c.user_id)) continue
+    const { data: profile } = await admin.from('profiles').select('email, full_name').eq('id', c.user_id).single()
+    if (!profile?.email) continue
+    await sendEmail({
+      to: profile.email,
+      subject: 'A bandwidth change on your proxy session is delayed — GlobProxy',
+      html: `
+        <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px 24px;">
+          <h2 style="text-align:center;color:#111;">Your last bandwidth change is delayed</h2>
+          <p style="color:#444;text-align:center;">
+            Hi ${escapeHtml(profile.full_name?.split(' ')[0]) || 'there'}, the bandwidth change on your session
+            <strong>${escapeHtml(c.label || 'Unnamed')}</strong> (${Number(c.gb_allocated).toFixed(2)} GB) is saved on your
+            account, but applying it to the live proxy is taking longer than expected. Until it applies, the session
+            may stop at its previous limit. We have been alerted and it will apply automatically — no action is needed.
+          </p>
+          <div style="text-align:center;margin:32px 0;">
+            <a href="${appUrl()}/dashboard/proxies"
+               style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">
+              Open my sessions →
+            </a>
+          </div>
+        </div>`,
+    }).catch((e) => console.error('[provision] stuck-limit customer email failed', c.id, e))
+  }
+
+  if (process.env.ADMIN_EMAIL) {
+    await sendEmail({
+      to: process.env.ADMIN_EMAIL,
+      subject: `[LIVE CAP BEHIND] ${claimed.length} session(s) could not be updated upstream for over ${STUCK_LIMIT_AFTER_MIN} min`,
+      html: `<p>${claimed.length} active session(s) have a committed allocation the proxy provider has not accepted for more than
+             ${STUCK_LIMIT_AFTER_MIN} minutes (the limit PATCH keeps failing — usually provider stock too low to raise a cap, or an
+             API outage). Their customers have been told it is delayed; the sessions may be stopped at the OLD cap.</p>
+             <p>Credential ids: ${escapeHtml(claimed.slice(0, 20).map((c: any) => c.id).join(', '))}</p>`,
+    }).catch((e) => console.error('[provision] stuck-limit admin alert failed', e))
+  }
+  return { alerted: claimed.length }
 }
 
 // ── Stalled provisioning ──────────────────────────────────────────────

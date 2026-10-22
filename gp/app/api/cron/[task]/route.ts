@@ -5,7 +5,7 @@ import { computeStockStatus } from '@/lib/stockStatus'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { runWebhookRetries, runBandwidthThresholdWebhooks, runIntegrationHousekeeping } from '@/lib/webhooks'
 import { warnExpiringApiKeys } from '@/lib/apiKeyExpiry'
-import { provisionPendingCredentials, reconcileLimitSync, flagStalledPending } from '@/lib/credentials'
+import { provisionPendingCredentials, reconcileLimitSync, flagStalledPending, alertStuckLimitSync } from '@/lib/credentials'
 import { runConfiguredBenchmark } from '@/lib/networkProbe'
 import { chargeAuthorization, generateReference, verifyTransaction, paymentMismatchReason } from '@/lib/paystack'
 import { activateBandwidth, retryPostCredit } from '@/lib/bandwidth'
@@ -516,7 +516,13 @@ async function runCleanup() {
     .delete().not('terminated_at', 'is', null).lt('terminated_at', sessionCutoff)
   if (sessErr) console.error('terminated proxy_sessions purge failed:', sessErr)
 
-  return { cleaned: stale?.length ?? 0, mfa_sessions_swept: !mfaErr, csp_pruned: !cspErr, sessions_purged: !sessErr }
+  // Daily account usage (usage_daily, migration 0062) older than ~13 months: the
+  // usage page only ever asks for 7/30/90 days.
+  const usageCutoff = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  const { error: usageErr } = await supabase.from('usage_daily').delete().lt('day', usageCutoff)
+  if (usageErr) console.error('usage_daily prune failed:', usageErr)
+
+  return { cleaned: stale?.length ?? 0, mfa_sessions_swept: !mfaErr, csp_pruned: !cspErr, sessions_purged: !sessErr, usage_daily_pruned: !usageErr }
 }
 
 // ── Security notices + audit-log retention (migration 0039) ──────────
@@ -682,7 +688,13 @@ async function runProvision() {
       console.error('[cron provision] stalled-session flagging failed:', e)
       return { flagged: 0 }
     })
-    return { provision, limits, stalled }
+    // A committed allocation the live proxy still hasn't accepted after 30 min: tell
+    // the owner and the admin once (same never-throws rule as the notice above).
+    const stuck = await alertStuckLimitSync(await createAdminClient()).catch((e) => {
+      console.error('[cron provision] stuck-limit alert failed:', e)
+      return { alerted: 0 }
+    })
+    return { provision, limits, stalled, stuck }
   } catch (e: any) {
     console.error('[cron provision] failed:', e)
     return { error: String(e?.message ?? e) }

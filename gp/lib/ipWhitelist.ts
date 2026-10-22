@@ -1,5 +1,14 @@
 import { GeonodeApiError } from '@/lib/geonode'
 import { NextResponse } from 'next/server'
+import { dispatchWebhook } from '@/lib/webhooks'
+
+// whitelist_changed webhook — one place so the dashboard and v1 routes (single and
+// bulk) can't drift. Never throws (dispatchWebhook swallows its own errors).
+export async function notifyWhitelistChanged(
+  userId: string, credentialId: string, action: 'added' | 'removed', count: number, source: 'api' | 'dashboard'
+): Promise<void> {
+  await dispatchWebhook(userId, 'whitelist_changed', { credential_id: credentialId, action, count, source })
+}
 
 // Validates the IP formats Geonode's Whitelisted IPs endpoints accept —
 // individual IPv4 or IPv6 addresses only, no CIDR ranges (confirmed

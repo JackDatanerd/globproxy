@@ -1,7 +1,7 @@
 // Pure constants — no server imports — so the dashboard (client component),
 // the API routes, the delivery engine and the docs all read the same list.
 // Keep in sync with the webhook_endpoints_valid_events CHECK constraint
-// (migrations 0042 + 0046 + 0054 + 0059 + 0062): an event added here must be added there too, or the
+// (migrations 0042 + 0046 + 0054 + 0059 + 0062 + 0064): an event added here must be added there too, or the
 // insert/update is rejected by the database.
 export const WEBHOOK_EVENTS = [
   'session_created',
@@ -13,6 +13,9 @@ export const WEBHOOK_EVENTS = [
   'session_exhausted',
   'session_suspended',
   'session_resumed',
+  'session_updated',
+  'session_password_rotated',
+  'whitelist_changed',
   'auto_topup_triggered',
   'auto_topup_failed',
   'bandwidth_threshold_crossed',
@@ -39,6 +42,9 @@ export const WEBHOOK_EVENT_LABELS: Record<WebhookEvent, string> = {
   session_exhausted: 'Session ran out of bandwidth',
   session_suspended: 'Session suspended by GlobProxy',
   session_resumed: 'Session re-enabled',
+  session_updated: 'Session settings changed (label, targeting, protocol, sticky lifetime)',
+  session_password_rotated: 'Session password rotated',
+  whitelist_changed: 'IP whitelist changed on a session',
   auto_topup_triggered: 'Auto top-up triggered',
   auto_topup_failed: 'Auto top-up failed or only partly funded',
   bandwidth_threshold_crossed: 'Bandwidth crossed 80% / 95%',
@@ -64,6 +70,9 @@ export const WEBHOOK_EVENT_DESCRIPTIONS: Record<WebhookEvent, { description: str
   session_exhausted: { description: 'A single sub-user used its entire allocation and has stopped connecting (once per exhaustion; not sent while auto-topup is able to refill it — it IS sent if auto-topup is on but the balance cannot fund it).', data: ['credential_id', 'label', 'gb_allocated', 'gb_used'] },
   session_suspended: { description: 'GlobProxy suspended a sub-user (abuse or policy action).', data: ['credential_id', 'label'] },
   session_resumed: { description: 'A suspended sub-user was re-enabled.', data: ['credential_id', 'label'] },
+  session_updated: { description: 'A sub-user\'s settings were edited in place (label, targeting, protocol, session type, sticky lifetime, endpoint count). changed lists the fields.', data: ['credential_id', 'label', 'changed', 'protocol', 'session_type', 'sticky_duration', 'country', 'state', 'city', 'asn', 'endpoint_count', 'source'] },
+  session_password_rotated: { description: 'A sub-user\'s proxy password was rotated. The new password is never sent in the event.', data: ['credential_id', 'label'] },
+  whitelist_changed: { description: 'IPs were added to or removed from a sub-user\'s whitelist.', data: ['credential_id', 'action', 'count', 'source'] },
   auto_topup_triggered: { description: 'Auto-topup added bandwidth to a sub-user. partial is true when the balance could only cover part of the configured amount.', data: ['credential_id', 'gb_added', 'gb_allocated', 'partial'] },
   auto_topup_failed: { description: 'Auto-topup could not fully run (once until it recovers). reason is insufficient_balance, partial_funding or session_limit.', data: ['credential_id', 'reason', 'gb_allocated', 'gb_used', 'amount_gb', 'gb_added'] },
   bandwidth_threshold_crossed: { description: 'The share of your account that is committed (allocated into sub-users) crossed 80% or 95%. Checked every 5 minutes. Endpoints that do not also subscribe to bandwidth_exhausted receive it once more at 100% (threshold_pct 100).', data: ['threshold_pct', 'allocated_pct', 'used_pct', 'available_gb', 'total_gb', 'used_gb', 'allocated_gb'] },
