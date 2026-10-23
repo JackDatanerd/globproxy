@@ -1,6 +1,6 @@
-import { withApiAuth, readJsonBody, failFrom } from '@/lib/apiHelpers'
+import { withApiAuth, readJsonBody, failFrom, asApiRateLimited } from '@/lib/apiHelpers'
 import { apiError } from '@/lib/apiAuth'
-import { rateLimited } from '@/lib/rateLimit'
+import { rateLimited, rateLimitedUser } from '@/lib/rateLimit'
 import { parseAllocationBody, allocateBandwidth, listTransfers } from '@/lib/resellerAllocation'
 import { runIdempotent, parseIdempotencyKey } from '@/lib/idempotency'
 import { NextResponse } from 'next/server'
@@ -48,8 +48,10 @@ export async function POST(req: Request) {
       // Same shared throttle as the dashboard (each call can e-mail a registered
       // address, so dust-sized allocations must not become an e-mail cannon).
       // Inside the idempotent section so a replayed request doesn't spend it.
-      const limited = await rateLimited(req, 'RESELLER_RATE_LIMITER', `allocate:${user.id}`)
-      if (limited) return { kind: 'fail', response: limited }
+      // Both limiters, like the dashboard route: per address AND per account (an
+      // allocation key can be used from any address inside its allowlist).
+      const limited = (await rateLimited(req, 'RESELLER_RATE_LIMITER', `allocate:${user.id}`)) ?? (await rateLimitedUser('RESELLER_RATE_LIMITER', user.id, 'allocate'))
+      if (limited) return { kind: 'fail', response: asApiRateLimited(limited) }
       const result = await allocateBandwidth(supabase, { id: user.id, email: profile.email, full_name: profile.full_name }, input.data)
       // The shared lib answers 400 (the dashboard's long-standing status); over
       // the API a stock shortfall is 402, exactly as for POST /sub-users.

@@ -81,22 +81,34 @@ export async function claimIdempotencyKey(
   return { kind: 'in_flight' }
 }
 
-export async function completeIdempotencyKey(admin: Admin, userId: string, key: string, status: number, body: unknown) {
-  try {
-    await admin.from('api_idempotency_keys')
-      .update({ status: 'completed', response_status: status, response_body: body as any })
-      .eq('user_id', userId).eq('key', key)
-  } catch (e) {
-    console.error('[idempotency] failed to store response', e)
+// supabase-js returns { error } instead of throwing, so these used to swallow a
+// failed write without a trace: a completed money operation whose response was
+// never stored then answered 409 "unknown outcome" on every retry, with nothing in
+// the logs to say why. Each write is checked, retried once, and logged.
+async function writeWithOneRetry(label: string, run: () => PromiseLike<{ error: { message: string } | null }>) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const { error } = await run()
+      if (!error) return true
+      console.error(`[idempotency] ${label} failed`, attempt === 0 ? '(retrying)' : '(giving up)', error.message)
+    } catch (e) {
+      console.error(`[idempotency] ${label} threw`, e)
+    }
+    if (attempt === 0) await new Promise((r) => setTimeout(r, 200))
   }
+  return false
+}
+
+export async function completeIdempotencyKey(admin: Admin, userId: string, key: string, status: number, body: unknown) {
+  await writeWithOneRetry('store response', () =>
+    admin.from('api_idempotency_keys')
+      .update({ status: 'completed', response_status: status, response_body: body as any })
+      .eq('user_id', userId).eq('key', key))
 }
 
 export async function releaseIdempotencyKey(admin: Admin, userId: string, key: string) {
-  try {
-    await admin.from('api_idempotency_keys').delete().eq('user_id', userId).eq('key', key)
-  } catch (e) {
-    console.error('[idempotency] failed to release claim', e)
-  }
+  await writeWithOneRetry('release claim', () =>
+    admin.from('api_idempotency_keys').delete().eq('user_id', userId).eq('key', key))
 }
 
 export type IdempotentOutcome =

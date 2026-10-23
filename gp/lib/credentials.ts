@@ -1,4 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/server'
+import { leaksSupplier } from '@/lib/supplierGuard'
 import {
   createSubUser, createOrAdoptSubUser, newUpstreamIdentity, deleteSubUser, getSubUserUsage, updateSubUserTrafficLimit, updateSubUserPassword,
   classifyUpstreamError, GeonodeApiError, type UpstreamReason, type UpstreamIdentity, PROXY_HOST,
@@ -42,6 +43,13 @@ export const CRED_COLS =
 // credential is unusable without it (the dashboard reads the same column
 // directly) — treat API keys with the same care as the passwords they expose.
 export function toApiCredential(c: any) {
+  // Second line of defence behind the check at provisioning (lib/geonode.ts): a
+  // stored username that names the supplier is never handed to a customer. They get
+  // a credential that reads as "not ready" and the operator gets a log line.
+  if (leaksSupplier(c?.upstream_username)) {
+    console.error('[supplier-guard] withheld a proxy username that names the supplier, credential', c?.id)
+    c = { ...c, upstream_username: null, upstream_password: null }
+  }
   const used = Number(c.gb_used ?? 0)
   const allocated = Number(c.gb_allocated ?? 0)
   return {

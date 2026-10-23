@@ -1,8 +1,12 @@
 // Pure constants — no server imports — so the dashboard (client component),
 // the API routes, the delivery engine and the docs all read the same list.
 // Keep in sync with the webhook_endpoints_valid_events CHECK constraint
-// (migrations 0042 + 0046 + 0054 + 0059 + 0062 + 0064): an event added here must be added there too, or the
+// (migrations 0042 + 0046 + 0054 + 0059 + 0062 + 0064 + 0069): an event added here must be added there too, or the
 // insert/update is rejected by the database.
+// Sent as `api_version` in every payload so a receiver can tell which shape it is
+// parsing if the event format ever has to change incompatibly. Additive today.
+export const WEBHOOK_API_VERSION = 'v1'
+
 export const WEBHOOK_EVENTS = [
   'session_created',
   'session_activated',
@@ -18,6 +22,7 @@ export const WEBHOOK_EVENTS = [
   'whitelist_changed',
   'auto_topup_triggered',
   'auto_topup_failed',
+  'auto_topup_updated',
   'bandwidth_threshold_crossed',
   'bandwidth_exhausted',
   'bandwidth_credited',
@@ -40,13 +45,14 @@ export const WEBHOOK_EVENT_LABELS: Record<WebhookEvent, string> = {
   session_released: 'Unused bandwidth released from a session',
   session_low: 'Session below 20% / 5% bandwidth remaining',
   session_exhausted: 'Session ran out of bandwidth',
-  session_suspended: 'Session suspended by GlobProxy',
+  session_suspended: 'Session suspended (paused by you, or by GlobProxy)',
   session_resumed: 'Session re-enabled',
   session_updated: 'Session settings changed (label, targeting, protocol, sticky lifetime)',
   session_password_rotated: 'Session password rotated',
   whitelist_changed: 'IP whitelist changed on a session',
   auto_topup_triggered: 'Auto top-up triggered',
   auto_topup_failed: 'Auto top-up failed or only partly funded',
+  auto_topup_updated: 'Auto top-up settings changed on a session',
   bandwidth_threshold_crossed: 'Bandwidth crossed 80% / 95%',
   bandwidth_exhausted: 'Bandwidth exhausted (100%)',
   bandwidth_credited: 'Bandwidth credited (purchase / allocation / bonus / adjustment)',
@@ -75,6 +81,7 @@ export const WEBHOOK_EVENT_DESCRIPTIONS: Record<WebhookEvent, { description: str
   whitelist_changed: { description: 'IPs were added to or removed from a sub-user\'s whitelist.', data: ['credential_id', 'action', 'count', 'source'] },
   auto_topup_triggered: { description: 'Auto-topup added bandwidth to a sub-user. partial is true when the balance could only cover part of the configured amount.', data: ['credential_id', 'gb_added', 'gb_allocated', 'partial'] },
   auto_topup_failed: { description: 'Auto-topup could not fully run (once until it recovers). reason is insufficient_balance, partial_funding or session_limit.', data: ['credential_id', 'reason', 'gb_allocated', 'gb_used', 'amount_gb', 'gb_added'] },
+  auto_topup_updated: { description: 'Auto-topup settings were turned on, off or changed on a sub-user (API or dashboard). threshold_gb and amount_gb are null when it was turned off.', data: ['credential_id', 'enabled', 'threshold_gb', 'amount_gb', 'source'] },
   bandwidth_threshold_crossed: { description: 'The share of your account that is committed (allocated into sub-users) crossed 80% or 95%. Checked every 5 minutes. Endpoints that do not also subscribe to bandwidth_exhausted receive it once more at 100% (threshold_pct 100).', data: ['threshold_pct', 'allocated_pct', 'used_pct', 'available_gb', 'total_gb', 'used_gb', 'allocated_gb'] },
   bandwidth_exhausted: { description: 'Available (unallocated) bandwidth reached zero.', data: ['allocated_pct', 'used_pct', 'available_gb', 'total_gb', 'used_gb', 'allocated_gb'] },
   bandwidth_credited: { description: 'Bandwidth was added to your account. source is purchase (order_id, amount_usd), reseller_allocation (transfer_id), referral_bonus (role: referrer or referred) or admin_adjustment (a goodwill credit from support).', data: ['gb_credited', 'source', 'order_id', 'amount_usd', 'transfer_id', 'role'] },
@@ -83,7 +90,7 @@ export const WEBHOOK_EVENT_DESCRIPTIONS: Record<WebhookEvent, { description: str
   bandwidth_reclaimed: { description: 'Unused bandwidth was reclaimed from your account by the reseller who allocated it.', data: ['transfer_id', 'gb_reclaimed', 'gb_remaining'] },
   bandwidth_refunded: { description: 'A purchase was refunded and its bandwidth taken back.', data: ['order_id', 'refund_usd', 'gb_clawed_back', 'gb_not_recoverable', 'fully_refunded'] },
   api_key_created: { description: 'An API key was created on your account.', data: ['key_id', 'label', 'key_prefix', 'scopes', 'expires_at', 'rotated_from'] },
-  api_key_revoked: { description: 'An API key was revoked (manually, or immediately on rotation).', data: ['key_id', 'label', 'key_prefix', 'reason', 'replaced_by'] },
+  api_key_revoked: { description: 'An API key was revoked. reason is "manual" (one key revoked), "revoke_all" (the panic button) or "rotated" (an old key revoked immediately by a rotation; replaced_by is the new key id).', data: ['key_id', 'label', 'key_prefix', 'reason', 'replaced_by'] },
   api_key_expiring: { description: 'An API key expires within 7 days.', data: ['key_id', 'label', 'key_prefix', 'expires_at'] },
 }
 

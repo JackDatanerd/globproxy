@@ -3,7 +3,8 @@ import { appUrl } from '@/lib/appUrl'
 import { createAdminClient } from '@/lib/supabase/server'
 import { validateWebhookUrl, validateWebhookPort, checkHostnameResolution } from '@/lib/ssrfGuard'
 import { sendEmail, escapeHtml } from '@/lib/email'
-import type { WebhookEvent } from '@/lib/webhookEvents'
+import { fetchAllRows } from '@/lib/dbPaging'
+import { WEBHOOK_API_VERSION, type WebhookEvent } from '@/lib/webhookEvents'
 
 export type { WebhookEvent } from '@/lib/webhookEvents'
 
@@ -250,10 +251,18 @@ async function attemptDelivery(
     delete patch.next_attempt_at
     delete patch.attempts
   }
-  try {
-    await supabase.from('webhook_deliveries').update(patch).eq('id', d.id)
-  } catch (e) {
-    console.error('[webhooks] failed to record delivery result', d.id, e)
+  // supabase-js reports a failed write as { error }, it does not throw — so a bare
+  // try/catch here recorded nothing and said nothing: a delivery that SUCCEEDED
+  // stayed 'retrying' and was sent again. Checked, retried once, and logged.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const { error: recErr } = await supabase.from('webhook_deliveries').update(patch).eq('id', d.id)
+      if (!recErr) break
+      console.error('[webhooks] failed to record delivery result', d.id, attempt === 0 ? '(retrying)' : '(giving up)', recErr.message)
+    } catch (e) {
+      console.error('[webhooks] failed to record delivery result', d.id, e)
+    }
+    if (attempt === 0) await new Promise((r) => setTimeout(r, 250))
   }
 
   try {
@@ -312,7 +321,7 @@ export async function dispatchWebhook(
     if (!targets.length) return
 
     const eventId = crypto.randomUUID()
-    const payload = JSON.stringify({ id: eventId, event, created_at: new Date().toISOString(), data })
+    const payload = JSON.stringify({ id: eventId, event, api_version: WEBHOOK_API_VERSION, created_at: new Date().toISOString(), data })
 
     const pending: Promise<unknown>[] = []
     await Promise.all(
@@ -347,6 +356,43 @@ export async function dispatchWebhook(
   }
 }
 
+// Many events of ONE type for one user in a single pass (revoke-all, bulk jobs): the
+// endpoints are loaded once and every delivery row goes in with one insert, then the
+// 'webhooks' cron task sends them (defer semantics). Calling dispatchWebhook in a
+// loop costs ~3 subrequests per event, which is what an "all 25 keys" revoke —
+// the panic button — would burn through. Never throws.
+export async function dispatchWebhookBatch(
+  userId: string,
+  event: WebhookEvent,
+  items: Record<string, unknown>[]
+): Promise<void> {
+  if (!items.length) return
+  try {
+    const supabase = await createAdminClient()
+    const { data: endpoints, error } = await supabase
+      .from('webhook_endpoints').select(EP_COLS)
+      .eq('user_id', userId).eq('enabled', true).contains('event_types', [event])
+    if (error) { console.error('[webhooks] batch: failed to load endpoints for', userId, event, error); return }
+    if (!endpoints?.length) return
+
+    const now = new Date().toISOString()
+    const rows = (endpoints as Endpoint[]).flatMap((ep) =>
+      items.map((data) => {
+        const eventId = crypto.randomUUID()
+        return {
+          endpoint_id: ep.id, user_id: userId, event_id: eventId, event_type: event,
+          payload: JSON.stringify({ id: eventId, event, api_version: WEBHOOK_API_VERSION, created_at: now, data }),
+          status: 'retrying', attempts: 0, next_attempt_at: now,
+        }
+      })
+    )
+    const { error: insErr } = await supabase.from('webhook_deliveries').insert(rows)
+    if (insErr) console.error('[webhooks] batch: failed to persist deliveries', userId, event, insErr)
+  } catch (e) {
+    console.error('[webhooks] batch dispatch failed', userId, event, e)
+  }
+}
+
 // Synthetic 'test' event to one endpoint, regardless of its subscriptions.
 // The 10s cooldown is per account and counts only earlier TEST deliveries —
 // it used to key off last_success_at, which real traffic also moves, so a
@@ -363,7 +409,7 @@ export async function sendTestWebhook(
 
   const eventId = crypto.randomUUID()
   const payload = JSON.stringify({
-    id: eventId, event: 'test', created_at: new Date().toISOString(),
+    id: eventId, event: 'test', api_version: WEBHOOK_API_VERSION, created_at: new Date().toISOString(),
     data: { message: 'This is a test event from GlobProxy.' },
   })
   const { data: row, error } = await supabase
@@ -402,6 +448,37 @@ export async function redeliverWebhook(userId: string, deliveryId: string, endpo
     .eq('id', d.endpoint_id).eq('user_id', userId).single()
   if (!ep) return { ok: false, error: 'Webhook not found' }
   return attemptDelivery(supabase, ep as Endpoint, d as Delivery, { retry: false, manual: true })
+}
+
+// Re-sends an endpoint's FAILED deliveries (oldest first, so receivers see events in
+// roughly the order they happened) — the "my receiver was down for an hour, catch me
+// up" action, without redelivering them one call at a time. At most `max` (<= 10) per
+// call, and it stops after two failures in a row: a receiver that is still down would
+// otherwise hold the request for 8 seconds per delivery. Manual redeliveries count
+// towards the endpoint's failure streak exactly like single ones do.
+export async function redeliverFailedWebhooks(
+  userId: string, endpointId: string, max = 5
+): Promise<{ ok: true; attempted: number; succeeded: number; more_failed: boolean; stopped_early: boolean } | { ok: false; error: string }> {
+  const supabase = await createAdminClient()
+  const { data: ep } = await supabase.from('webhook_endpoints').select(EP_COLS).eq('id', endpointId).eq('user_id', userId).maybeSingle()
+  if (!ep) return { ok: false, error: 'Webhook not found' }
+  const cap = Math.min(Math.max(Math.trunc(max) || 5, 1), 10)
+  const { data: rows, error } = await supabase
+    .from('webhook_deliveries')
+    .select(DELIVERY_COLS)
+    .eq('endpoint_id', endpointId).eq('user_id', userId).eq('status', 'failed').neq('event_type', 'test')
+    .order('created_at', { ascending: true })
+    .limit(cap + 1) // one extra: is anything left after this batch?
+  if (error) { console.error('[webhooks] redeliver-failed lookup failed', error); return { ok: false, error: 'Could not load deliveries' } }
+
+  const batch = ((rows ?? []) as Delivery[]).slice(0, cap)
+  let attempted = 0, succeeded = 0, streak = 0, stopped = false
+  for (const d of batch) {
+    const r = await attemptDelivery(supabase, ep as Endpoint, d, { retry: false, manual: true })
+    attempted++
+    if (r.ok) { succeeded++; streak = 0 } else if (++streak >= 2) { stopped = true; break }
+  }
+  return { ok: true, attempted, succeeded, more_failed: (rows?.length ?? 0) > attempted, stopped_early: stopped }
 }
 
 // Cron: retry due deliveries. Each is claimed with a lease first so two
@@ -491,23 +568,42 @@ const round1 = (n: number) => Math.round(n * 10) / 10
 
 export async function runBandwidthThresholdWebhooks() {
   const supabase = await createAdminClient()
-  const { data: eps, error } = await supabase
-    .from('webhook_endpoints').select('user_id')
-    .eq('enabled', true)
-    .overlaps('event_types', ['bandwidth_threshold_crossed', 'bandwidth_exhausted'])
-  if (error) { console.error('[webhooks] threshold scan failed', error); return { fired: 0 } }
-  const userIds = [...new Set((eps ?? []).map((e) => e.user_id as string))]
+  // PostgREST silently caps a plain select at 1000 rows, and ids interpolated into
+  // an `in (...)` filter travel in the URL (~38 bytes each) — a few hundred
+  // subscribed accounts overflow it. Both used to fail without a word: the second
+  // query's error was never read, so every account simply stopped being alerted.
+  // The endpoint scan is paged and the account lookup is chunked.
+  const scan = await fetchAllRows<{ user_id: string }>((from, to) =>
+    supabase
+      .from('webhook_endpoints').select('user_id')
+      .eq('enabled', true)
+      .overlaps('event_types', ['bandwidth_threshold_crossed', 'bandwidth_exhausted'])
+      .order('id', { ascending: true })
+      .range(from, to)
+  )
+  if (scan.error) { console.error('[webhooks] threshold scan failed', scan.error); return { fired: 0 } }
+  const userIds = [...new Set(scan.rows.map((e) => e.user_id))]
   if (!userIds.length) return { fired: 0 }
 
-  const { data: accounts } = await supabase
-    .from('bandwidth_accounts')
-    .select('user_id, total_gb, available_gb, used_gb, allocated_gb, wh_alerted_80_at, wh_alerted_95_at, wh_alerted_100_at')
-    .in('user_id', userIds)
-    .gt('total_gb', 0)
+  type ThresholdAccount = {
+    user_id: string; total_gb: number | string; available_gb: number | string; used_gb: number | string | null
+    allocated_gb: number | string | null; wh_alerted_80_at: string | null; wh_alerted_95_at: string | null; wh_alerted_100_at: string | null
+  }
+  const accounts: ThresholdAccount[] = []
+  const CHUNK = 100
+  for (let i = 0; i < userIds.length; i += CHUNK) {
+    const { data, error: accErr } = await supabase
+      .from('bandwidth_accounts')
+      .select('user_id, total_gb, available_gb, used_gb, allocated_gb, wh_alerted_80_at, wh_alerted_95_at, wh_alerted_100_at')
+      .in('user_id', userIds.slice(i, i + CHUNK))
+      .gt('total_gb', 0)
+    if (accErr) { console.error('[webhooks] threshold account lookup failed', accErr.message); continue }
+    accounts.push(...((data ?? []) as ThresholdAccount[]))
+  }
 
   let fired = 0
   const nowIso = new Date().toISOString()
-  for (const acc of accounts ?? []) {
+  for (const acc of accounts) {
     const total = Number(acc.total_gb)
     const avail = Number(acc.available_gb)
     // The TRIGGER is "how much of the account is committed" (allocated into

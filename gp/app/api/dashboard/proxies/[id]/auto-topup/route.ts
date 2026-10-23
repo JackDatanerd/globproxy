@@ -2,6 +2,8 @@ import { requireMfaVerified } from '@/lib/mfa'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { parseAutoTopup } from '@/lib/apiValidation'
+import { dispatchWebhook } from '@/lib/webhooks'
+import { isUuidString } from '@/lib/cursor'
 import { NextResponse } from 'next/server'
 
 // Configures (or disables) auto-allocate on a credential the user owns.
@@ -24,6 +26,7 @@ export async function PATCH(
   if (suspended) return suspended
 
   const { id } = await context.params
+  if (!isUuidString(id)) return NextResponse.json({ error: 'Session not found' }, { status: 404 })
   const body = await req.json().catch(() => ({}))
   // Same rules as PATCH /api/v1/sub-users/:id/auto-topup (strictly-boolean
   // `enabled`; amount > threshold; sane bounds) — one parser, so the two entry
@@ -58,6 +61,11 @@ export async function PATCH(
     }
     return NextResponse.json({ error: msg }, { status })
   }
+
+  // Integrations hear about a settings change made from the dashboard too.
+  await dispatchWebhook(user.id, 'auto_topup_updated', {
+    credential_id: id, enabled, threshold_gb: thresholdGb, amount_gb: amountGb, source: 'dashboard',
+  })
 
   // set_auto_topup() is deterministic given these inputs — on success the
   // row now holds exactly what was requested, so echo it back directly

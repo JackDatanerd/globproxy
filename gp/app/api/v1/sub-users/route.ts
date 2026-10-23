@@ -5,8 +5,9 @@ import { createCredential, toApiCredential, CRED_COLS } from '@/lib/credentials'
 import { runIdempotent } from '@/lib/idempotency'
 import { NextResponse } from 'next/server'
 
-// GET /api/v1/sub-users?limit=100&offset=0&status=active&label=acme&country=us&created_after=…&created_before=…
+// GET /api/v1/sub-users?limit=100&offset=0&status=active&label=acme&country=us&session_type=sticky&protocol=http&created_after=…&created_before=…
 // `label` is a case-insensitive contains-match; `country` is a 2-letter code;
+// `session_type` is rotating|sticky and `protocol` is http|socks5;
 // the dates are ISO 8601.
 export async function GET(req: Request) {
   return withApiAuth(req, 'GET sub-users', async ({ user, supabase }) => {
@@ -20,6 +21,10 @@ export async function GET(req: Request) {
     const label = url.searchParams.get('label')?.trim().slice(0, 100) || null
     const country = url.searchParams.get('country')?.trim().toLowerCase() || null
     if (country && !/^[a-z]{2}$/.test(country)) return apiError(400, 'invalid_request', 'country must be a 2-letter country code.')
+    const sessionType = url.searchParams.get('session_type')
+    if (sessionType && !['rotating', 'sticky'].includes(sessionType)) return apiError(400, 'invalid_request', 'session_type must be rotating or sticky.')
+    const protocol = url.searchParams.get('protocol')
+    if (protocol && !['http', 'socks5'].includes(protocol)) return apiError(400, 'invalid_request', 'protocol must be http or socks5.')
     const after = parseDateParam(url, 'created_after')
     const before = parseDateParam(url, 'created_before')
     if (after === undefined || before === undefined) return apiError(400, 'invalid_request', 'created_after / created_before must be ISO 8601 timestamps.')
@@ -34,6 +39,8 @@ export async function GET(req: Request) {
     if (status) q = q.eq('status', status)
     if (label) q = q.ilike('label', `%${likeEscape(label)}%`)
     if (country) q = q.eq('country', country)
+    if (sessionType) q = q.eq('session_type', sessionType)
+    if (protocol) q = q.eq('protocol', protocol)
     if (after) q = q.gte('created_at', after)
     if (before) q = q.lt('created_at', before)
 

@@ -1,6 +1,6 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { allowApiRequest, allowApiClient, RATE_LIMIT_WINDOW_SECONDS } from '@/lib/rateLimit'
-import { ipAllowed } from '@/lib/ipAllowlist'
+import { ipAllowed, allocateAllowlistProblem } from '@/lib/ipAllowlist'
 import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { NextResponse } from 'next/server'
 import { isCrossSiteRequest } from '@/lib/appUrl'
@@ -200,12 +200,13 @@ export async function requireApiAccess(req: Request, opts: { scope?: ApiScope } 
     // Allocation keys can move bandwidth between accounts, and API keys skip
     // the 2FA step-up the dashboard enforces — so they must be pinned to the
     // caller's own servers.
+    // ...and the pin must actually be narrow (no /8 "restrictions"): this is also
+    // checked when a key is created or edited, but keys made before that rule
+    // existed are held to it here.
     const keyIps = apiKey.allowed_ips as string[] | null
-    if (needed === 'allocate' && (!keyIps || keyIps.length === 0)) {
-      return {
-        ok: false,
-        response: apiError(403, 'insufficient_scope', 'Keys with the "allocate" scope must be restricted to specific IP addresses (set allowed_ips on the key).'),
-      }
+    if (needed === 'allocate') {
+      const problem = allocateAllowlistProblem(keyIps)
+      if (problem) return { ok: false, response: apiError(403, 'insufficient_scope', problem) }
     }
 
     // Per-key limits, checked after the key is known-valid (cheap, no profile

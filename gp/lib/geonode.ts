@@ -1,4 +1,5 @@
 import { getProxyPort } from '@/lib/proxyEndpoint'
+import { leaksSupplier } from '@/lib/supplierGuard'
 
 const BASE = 'https://app-api.geonode.com/api/reseller/v2'
 const KEY = process.env.GEONODE_API_KEY!
@@ -154,6 +155,19 @@ export async function createSubUser(p: CreateSubUserParams, identity?: UpstreamI
   if (result?.id === undefined || result?.id === null || result?.id === '') {
     console.error('Geonode createSubUser returned no id for', username, JSON.stringify(d))
     throw new Error('Geonode createSubUser returned no sub-user id')
+  }
+
+  // The username we asked for is neutral ("gp_…"). If the provider hands back one that
+  // NAMES it (a prefix it adds on its side), it would be stored and shown to the
+  // customer as their proxy username — so it is refused here. The sub-user that was
+  // just created upstream is deleted first: a retry could not find it by our name
+  // and would otherwise create another one every time.
+  if (leaksSupplier(result.username) && !leaksSupplier(username)) {
+    console.error('[supplier-guard] provider returned a username that names the supplier for upstream sub-user', String(result.id), '— refusing to store it')
+    try { await deleteSubUser(String(result.id)) } catch (e) {
+      console.error('[supplier-guard] could not delete the refused upstream sub-user', String(result.id), '— delete it by hand', e)
+    }
+    throw new GeonodeApiError('provider returned an unusable sub-user identity', 502, {})
   }
 
   return {

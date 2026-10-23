@@ -15,7 +15,7 @@ export async function listApiActivity(
     .select('id, key_id, method, path, status, ip, request_id, created_at, key:key_id(key_prefix, label)')
     .eq('user_id', userId)
     .order('created_at', { ascending: false }).order('id', { ascending: false })
-    .limit(limit)
+    .limit(limit + 1) // one extra row: tells us whether another page really exists
   if (opts.keyId) q = q.eq('key_id', opts.keyId)
   const cur = applyCursor(q, opts.before, opts.beforeId, 'int')
   if (!cur.ok) return { ok: false, status: 400, message: cur.message }
@@ -27,10 +27,11 @@ export async function listApiActivity(
     console.error('[api-activity] query failed', error)
     return { ok: false, status: 500, message: 'Could not load activity.' }
   }
-  const rows = (data ?? []).map((r: any) => ({
+  const fetched = data ?? []
+  const hasMore = fetched.length > limit
+  const rows = fetched.slice(0, limit).map((r: any) => ({
     id: r.id, key_id: r.key_id, key_prefix: r.key?.key_prefix ?? null, key_label: r.key?.label ?? null,
     method: r.method, path: r.path, status: r.status, ip: r.ip, request_id: r.request_id, created_at: r.created_at,
   }))
-  const hasMore = rows.length === limit
   return { ok: true, data: { activity: rows, has_more: hasMore, next_before: hasMore ? rows[rows.length - 1].created_at : null, next_before_id: hasMore ? String(rows[rows.length - 1].id) : null } }
 }

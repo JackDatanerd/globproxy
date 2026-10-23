@@ -408,17 +408,18 @@ export async function listTransfers(
     .select('id, gb_amount, reclaimed_gb, status, note, created_at, recipient:recipient_id(email)')
     .eq('reseller_id', resellerId)
     .order('created_at', { ascending: false }).order('id', { ascending: false })
-    .limit(limit)
+    .limit(limit + 1) // one extra row: tells us whether another page really exists
   const cur = applyCursor(q, opts.before, opts.beforeId, 'uuid')
   if (!cur.ok) return fail(400, 'invalid_request', cur.message)
   q = cur.query
   const { data, error } = await q
   if (error) { console.error('[reseller/transfers] list failed', error); return fail(500, 'internal_error', 'Could not load transfers.') }
-  const transfers = (data ?? []).map((r: any) => ({
+  const fetched = data ?? []
+  const hasMore = fetched.length > limit
+  const transfers = fetched.slice(0, limit).map((r: any) => ({
     id: r.id, recipient_email: r.recipient?.email ?? null,
     gb_amount: Number(r.gb_amount), gb_reclaimed: Number(r.reclaimed_gb ?? 0), gb_net: Number(r.gb_amount) - Number(r.reclaimed_gb ?? 0),
     status: r.status, note: r.note ?? null, created_at: r.created_at,
   }))
-  const hasMore = transfers.length === limit
   return { ok: true, data: { transfers, has_more: hasMore, next_before: hasMore ? transfers[transfers.length - 1].created_at : null, next_before_id: hasMore ? transfers[transfers.length - 1].id : null } }
 }

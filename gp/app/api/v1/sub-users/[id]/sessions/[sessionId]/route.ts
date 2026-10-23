@@ -1,15 +1,22 @@
 import { withApiAuth, readJsonBody } from '@/lib/apiHelpers'
 import { apiError } from '@/lib/apiAuth'
 import { parseLabel } from '@/lib/apiValidation'
+import { isUuidString } from '@/lib/cursor'
 import { NextResponse } from 'next/server'
 
 // PATCH /api/v1/sub-users/:id/sessions/:sessionId  { label?, pinned?, collapsed?, terminate? }
 export async function PATCH(req: Request, context: { params: Promise<{ id: string; sessionId: string }> }) {
   return withApiAuth(req, 'PATCH session', async ({ user, supabase }) => {
     const { id, sessionId } = await context.params
+    // A malformed id would reach Postgres as 22P02 and come back as a 500.
+    if (!isUuidString(id) || !isUuidString(sessionId)) return apiError(404, 'not_found', 'Session not found')
     const json = await readJsonBody(req)
     if (!json.ok) return json.response
-    const body = json.body ?? {}
+    // `'label' in body` throws on a number/string/null body — that was a 500, not a 400.
+    if (!json.body || typeof json.body !== 'object' || Array.isArray(json.body)) {
+      return apiError(400, 'invalid_request', 'Request body must be a JSON object.')
+    }
+    const body = json.body as Record<string, unknown>
 
     const update: Record<string, unknown> = {}
     if ('label' in body) {
@@ -51,6 +58,7 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
 export async function DELETE(req: Request, context: { params: Promise<{ id: string; sessionId: string }> }) {
   return withApiAuth(req, 'DELETE session', async ({ user, supabase }) => {
     const { id, sessionId } = await context.params
+    if (!isUuidString(id) || !isUuidString(sessionId)) return apiError(404, 'not_found', 'Session not found')
     const { data, error } = await supabase
       .from('proxy_sessions').delete()
       .eq('id', sessionId).eq('credential_id', id).eq('user_id', user.id).select('id')

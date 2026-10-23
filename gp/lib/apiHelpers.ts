@@ -35,7 +35,12 @@ export async function withApiAuth(
   const stamp = (res: Response) => {
     try {
       res.headers.set('X-Request-Id', requestId)
-      if (!res.headers.has('X-RateLimit-Limit')) res.headers.set('X-RateLimit-Limit', String(API_RATE_LIMIT_PER_MIN))
+      // The limit that applies to THIS request: 30 for a change, 120 for a read. (It
+      // used to say 120 on every response, including the writes that stop at 30.)
+      if (!res.headers.has('X-RateLimit-Limit')) {
+        const mutating = !['GET', 'HEAD', 'OPTIONS'].includes(req.method)
+        res.headers.set('X-RateLimit-Limit', String(mutating ? API_WRITE_RATE_LIMIT_PER_MIN : API_RATE_LIMIT_PER_MIN))
+      }
     } catch { /* immutable response — leave as is */ }
     return res
   }
@@ -93,6 +98,38 @@ export async function readJsonBody(req: Request): Promise<{ ok: true; body: any 
     }
     return { ok: false, response: apiError(400, 'invalid_request', 'Request body must be valid JSON.') }
   }
+}
+
+// For routes where the body is OPTIONAL (an empty body means "use the defaults")
+// but a body that is present must be a valid JSON object. Treating "unreadable"
+// as "empty" is how a typo'd `{"gb": 5` once became "reclaim everything" — so an
+// absent body is the only thing that yields {}; anything malformed is a 400.
+export async function readOptionalJsonObject(req: Request): Promise<{ ok: true; body: Record<string, unknown> } | { ok: false; response: NextResponse }> {
+  let raw: string
+  try {
+    raw = (await req.text()).trim()
+  } catch {
+    return { ok: false, response: apiError(400, 'invalid_request', 'Could not read the request body.') }
+  }
+  if (!raw) return { ok: true, body: {} }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return { ok: false, response: apiError(400, 'invalid_request', 'Request body must be valid JSON.') }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false, response: apiError(400, 'invalid_request', 'Request body must be a JSON object.') }
+  }
+  return { ok: true, body: parsed as Record<string, unknown> }
+}
+
+// lib/rateLimit.ts helpers answer with a bare `{ error }` body (they serve the
+// dashboard too). Every /api/v1 error must carry a machine-readable `code`, so a
+// v1 route passes such a response through this to get the documented shape.
+export function asApiRateLimited(res: Response) {
+  const retry = res.headers.get('retry-after')
+  return apiError(429, 'rate_limited', 'Too many requests. Retry after the Retry-After interval.', { 'Retry-After': retry && /^\d+$/.test(retry) ? retry : '60' })
 }
 
 export function failFrom(r: { status: number; code: string; message: string }) {

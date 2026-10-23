@@ -120,7 +120,7 @@ export default function ApiDocsPage() {
           <Table rows={[
             ['read', 'scope', 'GET requests only.'],
             ['write', 'scope', 'Everything except allocation: create, change and delete sub-users, top-ups, whitelists, webhooks. Includes read.'],
-            ['allocate', 'scope', 'Resellers only. Move bandwidth between accounts (the /reseller/allocations endpoints). Never implied by write. A key with this scope MUST have an IP allowlist — without one every call is refused with 403 insufficient_scope — because API keys do not go through the 2FA step-up the dashboard applies to the same action.'],
+            ['allocate', 'scope', 'Resellers only. Move bandwidth between accounts (the /reseller/allocations endpoints). Never implied by write. A key with this scope MUST have an IP allowlist of single addresses or blocks no wider than /24 (IPv4) or /48 (IPv6) — without one, or with a broader block such as a /8, every call is refused with 403 insufficient_scope — because API keys do not go through the 2FA step-up the dashboard applies to the same action. It can be granted without write ("Read + allocate only" in the dashboard) for a bot that should only move bandwidth.'],
           ]} />
 
           <p className="text-xs font-mono text-muted uppercase tracking-wider mt-5 mb-1.5">IP allowlist</p>
@@ -177,7 +177,7 @@ export default function ApiDocsPage() {
           <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Error codes</p>
           <Table rows={[
             ['unauthorized', '401', 'Missing, malformed, revoked, or expired key.'],
-            ['insufficient_scope', '403', 'The key lacks the scope the endpoint needs (read-only key used for a write, or no "allocate" scope / no IP allowlist on an allocation call).'],
+            ['insufficient_scope', '403', 'The key lacks the scope the endpoint needs (read-only key used for a write, or no "allocate" scope / no narrow IP allowlist on an allocation call).'],
             ['account_suspended', '403', 'The account is suspended.'],
             ['reseller_required / api_access_disabled', '403', 'The account is not a reseller, or API access has not been approved yet.'],
             ['forbidden', '403', 'Not allowed on this resource (e.g. deleting a reseller-allocated sub-user).'],
@@ -208,7 +208,7 @@ export default function ApiDocsPage() {
             from the provider at most every 30 seconds per sub-user, so polling it faster just returns the same number.
           </p>
           <p className="text-sm text-ink2 leading-relaxed mt-3">
-            Every response includes <span className="font-mono text-ink">X-RateLimit-Limit</span> (120). The limiter cannot report how much of the current window is left, so on a{' '}
+            Every response includes <span className="font-mono text-ink">X-RateLimit-Limit</span>: the per-minute limit that applies to that request (120 for a read, 30 for a change, 10 for <span className="font-mono text-ink">/usage/history</span>). The limiter cannot report how much of the current window is left, so on a{' '}
             <span className="font-mono text-ink">429</span> <span className="font-mono text-ink">Retry-After</span> is the full 60-second window. Each item in a bulk request counts
             as one write. Requests with invalid keys are also limited per source address, so a misconfigured client hammering with a bad key is slowed down.
           </p>
@@ -292,6 +292,18 @@ export default function ApiDocsPage() {
             <p className="text-sm text-ink2 mt-3"><span className="font-mono text-ink">features</span> reports optional endpoints that are switched on per deployment — <span className="font-mono text-ink">password_rotation: false</span> (an operator kill switch; on by default) means <span className="font-mono text-ink">rotate-password</span> answers 503.</p>
           </Endpoint>
 
+          <Endpoint method="GET" path="/api/v1/account/usage" title="Account usage (daily)">
+            <p className="text-sm text-ink2 mb-4">Account-wide data usage per UTC day for the last <span className="font-mono text-ink">days</span> days (1–365, default 30), oldest first, gaps filled with 0. Served from our own ledger, so it is cheap, includes deleted sub-users, and is not subject to the tighter <span className="font-mono text-ink">/usage/history</span> limit. The ledger is updated every few minutes; <span className="font-mono text-ink">first_recorded_day</span> is where it begins (earlier days read 0 because nothing was recorded).</p>
+            <Code>{`curl "https://globproxy.com/api/v1/account/usage?days=7" \\
+  -H "Authorization: Bearer YOUR_KEY"`}</Code>
+            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <Code>{`{
+  "from": "2026-10-17", "to": "2026-10-23", "days": 7, "total_gb": 12.4081,
+  "first_recorded_day": "2026-09-02",
+  "usage": [ { "date": "2026-10-17", "gb": 1.2 }, { "date": "2026-10-18", "gb": 0 } ]
+}`}</Code>
+          </Endpoint>
+
           <Endpoint method="GET" path="/api/v1/account/activity" title="API activity log">
             <p className="text-sm text-ink2 mb-4">Every change (POST / PATCH / DELETE) made with your account's keys in the last 30 days — which key, from which IP, which path, the status and the X-Request-Id. Read-only requests are not logged. Query: <span className="font-mono text-ink">key_id</span>, <span className="font-mono text-ink">limit</span> (max 200), <span className="font-mono text-ink">before</span> (cursor).</p>
             <Code>{`curl "https://globproxy.com/api/v1/account/activity?limit=20" \\
@@ -307,7 +319,7 @@ export default function ApiDocsPage() {
           </Endpoint>
 
           <Endpoint method="GET" path="/api/v1/sub-users" title="List sub-users">
-            <p className="text-sm text-ink2 mb-4">All proxy credentials (sub-users) on your account, newest first. Query parameters: <span className="font-mono text-ink">limit</span>, <span className="font-mono text-ink">offset</span> (see Pagination) and optional filters: <span className="font-mono text-ink">status</span> (<span className="font-mono text-ink">pending</span>, <span className="font-mono text-ink">active</span> or <span className="font-mono text-ink">suspended</span>), <span className="font-mono text-ink">label</span> (case-insensitive contains), <span className="font-mono text-ink">country</span> (2-letter code), <span className="font-mono text-ink">created_after</span> and <span className="font-mono text-ink">created_before</span> (ISO 8601).</p>
+            <p className="text-sm text-ink2 mb-4">All proxy credentials (sub-users) on your account, newest first. Query parameters: <span className="font-mono text-ink">limit</span>, <span className="font-mono text-ink">offset</span> (see Pagination) and optional filters: <span className="font-mono text-ink">status</span> (<span className="font-mono text-ink">pending</span>, <span className="font-mono text-ink">active</span> or <span className="font-mono text-ink">suspended</span>), <span className="font-mono text-ink">label</span> (case-insensitive contains), <span className="font-mono text-ink">country</span> (2-letter code), <span className="font-mono text-ink">session_type</span> (<span className="font-mono text-ink">rotating</span> or <span className="font-mono text-ink">sticky</span>), <span className="font-mono text-ink">protocol</span> (<span className="font-mono text-ink">http</span> or <span className="font-mono text-ink">socks5</span>), <span className="font-mono text-ink">created_after</span> and <span className="font-mono text-ink">created_before</span> (ISO 8601).</p>
             <Code>{`curl https://globproxy.com/api/v1/sub-users \\
   -H "Authorization: Bearer YOUR_KEY"`}</Code>
             <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
@@ -473,6 +485,25 @@ export default function ApiDocsPage() {
               Re-read from the provider at most every 30 seconds per sub-user; <span className="font-mono text-ink">usage_synced_at</span> says
               when the number was last refreshed.
             </p>
+          </Endpoint>
+
+          <Endpoint method="GET" path="/api/v1/sub-users/:id/endpoints" title="Proxy list (endpoints)">
+            <p className="text-sm text-ink2 mb-4">A ready-made proxy list, built the same way as the dashboard's export. A <strong>sticky</strong> sub-user returns <span className="font-mono text-ink">count</span> stable endpoints (default: its <span className="font-mono text-ink">endpoint_count</span>, max 1000), each with its own session id so each keeps its IP for the sub-user's sticky duration. A <strong>rotating</strong> sub-user returns one endpoint — every connection to it already gets a fresh IP. <span className="font-mono text-ink">format=txt</span> returns plain text, one <span className="font-mono text-ink">host:port:username:password</span> line per endpoint. <span className="font-mono text-ink">409</span> while the sub-user is pending or suspended.</p>
+            <Code>{`curl "https://globproxy.com/api/v1/sub-users/SUB_USER_ID/endpoints?count=3" \\
+  -H "Authorization: Bearer YOUR_KEY"`}</Code>
+            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <Code>{`{
+  "sub_user_id": "3f1a...", "protocol": "http", "session_type": "sticky", "rotating": false, "count": 3,
+  "endpoints": [
+    { "host": "proxy.globproxy.com", "port": 10000,
+      "username": "gp_abc123-type-residential-country-us-lifetime-10-session-FVvegZQ7",
+      "password": "…", "session_id": "FVvegZQ7",
+      "url": "http://gp_abc123-type-residential-country-us-lifetime-10-session-FVvegZQ7:…@proxy.globproxy.com:10000" },
+    { "host": "proxy.globproxy.com", "port": 10000,
+      "username": "gp_abc123-type-residential-country-us-lifetime-10-session-bQ2V1sK3",
+      "password": "…", "session_id": "bQ2V1sK3", "url": "…" }
+  ]
+}`}</Code>
           </Endpoint>
 
           <Endpoint method="GET" path="/api/v1/sub-users/:id/usage/history" title="Usage history">
@@ -769,7 +800,7 @@ export default function ApiDocsPage() {
               For an address with no confirmed account the call still succeeds: the GB is reserved out of your stock, the person is e-mailed an invitation, and you get
               <span className="font-mono text-ink"> "status": "pending_signup"</span> with a <span className="font-mono text-ink">pending_id</span> and an <span className="font-mono text-ink">expires_at</span> (30 days).
               When they sign up and confirm that address the bandwidth is added automatically and you receive a <span className="font-mono text-ink">bandwidth_allocated</span> webhook with the new <span className="font-mono text-ink">transfer_id</span>.
-              An unclaimed invitation returns to your stock when it expires; you can also cancel it from your dashboard's Transfers page.
+              An unclaimed invitation returns to your stock when it expires; list your invitations with <span className="font-mono text-ink">GET /reseller/invitations</span> and withdraw one early with <span className="font-mono text-ink">DELETE /reseller/invitations/:id</span> (the <span className="font-mono text-ink">pending_id</span>), or cancel it from your dashboard's Transfers page.
             </p>
             <p className="text-sm text-ink2 mt-4"><span className="font-mono text-ink">402 insufficient_bandwidth</span> if your stock can't cover it. Shares the dashboard's per-reseller throttle.</p>
           </Endpoint>
@@ -777,7 +808,7 @@ export default function ApiDocsPage() {
           <Endpoint method="POST" path="/api/v1/reseller/allocations/:id/reclaim" title="Reclaim an allocation (resellers)">
             <p className="text-sm text-ink2 mb-4">
               Takes back the <em>unused</em> part of a transfer (a typo'd e-mail, a cancelled order). Only bandwidth the client has not used, assigned to a sub-user or since topped up past can move back,
-              and only within the reclaim window — the same rules as the dashboard. <span className="font-mono text-ink">gb</span> is optional (default: everything reclaimable).
+              and only within the reclaim window — the same rules as the dashboard. <span className="font-mono text-ink">gb</span> is optional (default: everything reclaimable): send no body at all to reclaim everything, but a body that is present must be a valid JSON object — a malformed one is a <span className="font-mono text-ink">400</span> and is never read as "reclaim everything".
               Needs the <span className="font-mono text-ink">allocate</span> scope and an <span className="font-mono text-ink">Idempotency-Key</span>; the client receives a <span className="font-mono text-ink">bandwidth_reclaimed</span> webhook and an e-mail.
             </p>
             <Code>{`curl -X POST https://globproxy.com/api/v1/reseller/allocations/TRANSFER_ID/reclaim \\
@@ -787,6 +818,43 @@ export default function ApiDocsPage() {
   -d '{ "gb": 10 }'`}</Code>
             <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{ "transfer_id": "e4a1...", "reclaimed_gb": 10, "remaining_gb": 15 }`}</Code>
+          </Endpoint>
+
+          <Endpoint method="GET" path="/api/v1/reseller/clients" title="Client roster (resellers)">
+            <p className="text-sm text-ink2 mb-4">One row per account you have sent bandwidth to — what they were sent, what you reclaimed, and how much of that they have used. The same data as the dashboard's Sub-users page and its CSV export. Query parameters: <span className="font-mono text-ink">q</span> (contains-match on email or name), <span className="font-mono text-ink">limit</span> (max 200) and <span className="font-mono text-ink">offset</span>. Most recent activity first.</p>
+            <Code>{`curl "https://globproxy.com/api/v1/reseller/clients?q=acme" \\
+  -H "Authorization: Bearer YOUR_KEY"`}</Code>
+            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <Code>{`{
+  "clients": [
+    { "email": "ops@acme.example", "name": "Acme Ops", "account": "active", "transfers": 3,
+      "gb_sent": 75, "gb_reclaimed": 5, "gb_net": 70, "gb_used": 41.2, "gb_unassigned": 28.8,
+      "last_transfer_at": "2026-10-18T09:30:00.000Z", "last_note": "October top-up" }
+  ],
+  "total": 1, "limit": 50, "offset": 0, "has_more": false
+}`}</Code>
+          </Endpoint>
+
+          <Endpoint method="GET" path="/api/v1/reseller/invitations" title="List invitations (resellers)">
+            <p className="text-sm text-ink2 mb-4">Invitations created when you allocated to an address with no confirmed account yet. Optional <span className="font-mono text-ink">status</span> (pending | claimed | cancelled | expired); without it every state from the last 90 days is returned. <span className="font-mono text-ink">id</span> is the <span className="font-mono text-ink">pending_id</span> from the allocation response.</p>
+            <Code>{`curl "https://globproxy.com/api/v1/reseller/invitations?status=pending" \\
+  -H "Authorization: Bearer YOUR_KEY"`}</Code>
+            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <Code>{`{
+  "invitations": [
+    { "id": "9c2e...", "recipient_email": "new.client@example.com", "gb": 25, "note": null, "status": "pending",
+      "created_at": "2026-10-18T09:30:00.000Z", "expires_at": "2026-11-17T09:30:00.000Z", "resolved_at": null }
+  ],
+  "total": 1, "limit": 50, "offset": 0, "has_more": false
+}`}</Code>
+          </Endpoint>
+
+          <Endpoint method="DELETE" path="/api/v1/reseller/invitations/:id" title="Cancel an invitation (resellers)">
+            <p className="text-sm text-ink2 mb-4">Withdraws an invitation nobody has claimed; the reserved stock returns to your available balance immediately. Needs the <span className="font-mono text-ink">allocate</span> scope. Answers <span className="font-mono text-ink">404</span> once the invitation was claimed, cancelled or expired — so repeating a call after a timeout can never return stock twice.</p>
+            <Code>{`curl -X DELETE https://globproxy.com/api/v1/reseller/invitations/PENDING_ID \\
+  -H "Authorization: Bearer YOUR_KEY"`}</Code>
+            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <Code>{`{ "success": true, "returned_gb": 25 }`}</Code>
           </Endpoint>
 
           <Endpoint method="GET" path="/api/v1/sub-users/:id/whitelist" title="List whitelisted IPs">
@@ -871,6 +939,7 @@ export default function ApiDocsPage() {
             ['auto_topup_failed', 'event', 'Auto-topup could not fully run (sent once until it recovers). reason is insufficient_balance, partial_funding or session_limit. data: credential_id, reason, gb_allocated, gb_used, amount_gb (and gb_added for partial_funding).'],
             ['session_suspended', 'event', 'GlobProxy suspended a sub-user (abuse or policy action), the whole account was suspended, or you paused it. data: credential_id, label, source ("admin", "account" or "customer").'],
             ['session_resumed', 'event', 'A suspended sub-user was re-enabled (or the account reinstated). data: credential_id, label, source ("admin", "account" or "customer").'],
+            ['auto_topup_updated', 'event', 'Auto-topup settings were turned on, off or changed on a sub-user. data: credential_id, enabled, threshold_gb, amount_gb (null when turned off), source ("api" or "dashboard").'],
             ['session_updated', 'event', 'A sub-user\'s settings were edited in place (label, targeting, protocol, session type, sticky lifetime, endpoint count). data: credential_id, label, changed (the fields), protocol, session_type, sticky_duration, country, state, city, asn, endpoint_count, source.'],
             ['session_password_rotated', 'event', 'A sub-user\'s proxy password was rotated (the new password is never included). data: credential_id, label.'],
             ['whitelist_changed', 'event', 'IPs were added to or removed from a sub-user\'s whitelist. data: credential_id, action ("added" / "removed"), count, source.'],
@@ -882,7 +951,7 @@ export default function ApiDocsPage() {
             ['bandwidth_reclaimed', 'event', 'Unused bandwidth was reclaimed from your account by the reseller who allocated it. data: transfer_id, gb_reclaimed, gb_remaining.'],
             ['bandwidth_refunded', 'event', 'A purchase was refunded and its bandwidth taken back. data: order_id, refund_usd, gb_clawed_back, gb_not_recoverable, fully_refunded.'],
             ['api_key_created', 'event', 'An API key was created (or rotated). data: key_id, label, key_prefix, scopes, expires_at, plus rotated_from (the replaced key\'s id) when it came from a rotation.'],
-            ['api_key_revoked', 'event', 'An API key was revoked, including an old key revoked immediately by a rotation with no grace window. data: key_id, label, key_prefix, plus reason ("rotated") and replaced_by for rotations.'],
+            ['api_key_revoked', 'event', 'An API key was revoked, including an old key revoked immediately by a rotation with no grace window. data: key_id, label, key_prefix, reason — "manual" (one key revoked), "revoke_all" (the panic button) or "rotated" (plus replaced_by, the new key id).'],
             ['api_key_expiring', 'event', 'An API key expires within 7 days. data: key_id, label, key_prefix, expires_at.'],
           ]} />
           <p className="text-sm text-ink2 leading-relaxed mt-3">The same catalog, with each event's data keys, is machine-readable at <span className="font-mono text-ink">GET /api/v1/webhooks/events</span>.</p>
@@ -901,6 +970,7 @@ X-GlobProxy-Signature-V2-Previous: t=...,v1=...   (only during a secret-rotation
 {
   "id": "6f1c2d84-...",
   "event": "session_created",
+  "api_version": "v1",
   "created_at": "2026-10-18T09:30:00.000Z",
   "data": { "credential_id": "3f1a...", "gb_allocated": 5, "status": "active", "source": "api" }
 }`}</Code>
@@ -949,8 +1019,9 @@ def verify(raw_body: bytes, header: str, secret: str) -> bool:
             ['POST /api/v1/webhooks/:id/test', 'write', 'Sends a signed "test" event now (one per 10 seconds per account).'],
             ['POST /api/v1/webhooks/:id/rotate-secret', 'write', 'Issues a new secret (returned once). Body (optional): grace_minutes 0–4320 — keep the old secret signing the -Previous header for that long. Default: the old secret stops immediately.'],
             ['GET /api/v1/webhooks/events', 'read', 'The event catalog: every subscribable event with its description and data keys.'],
-            ['GET /api/v1/webhooks/:id/deliveries', 'read', 'Delivery log, newest first. Optional limit (max 100), status (succeeded | retrying | failed) and before and before_id (cursor — pass next_before and next_before_id when has_more is true).'],
+            ['GET /api/v1/webhooks/:id/deliveries', 'read', 'Delivery log, newest first. Optional limit (max 100), status (succeeded | retrying | failed), event_type (one event name) and before and before_id (cursor — pass next_before and next_before_id when has_more is true).'],
             ['GET /api/v1/webhooks/:id/deliveries/:deliveryId', 'read', 'One delivery in full: the exact event body (payload) and your endpoint\'s response_body (first 500 characters).'],
+            ['POST /api/v1/webhooks/:id/deliveries/redeliver-failed', 'write', 'Catch-up after an outage: re-sends the endpoint\'s failed deliveries, oldest first (same ids and bodies, fresh signatures). Body (optional): limit (1–10, default 5). Stops after two failures in a row; call again while more_failed is true. Each delivery counts as one write.'],
             ['POST /api/v1/webhooks/:id/deliveries/:deliveryId/redeliver', 'write', 'Re-sends a stored event (same id and body, fresh signature).'],
           ]} />
           <Code>{`curl -X POST https://globproxy.com/api/v1/webhooks \\

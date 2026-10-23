@@ -1,6 +1,6 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { validateWebhookUrlFull } from '@/lib/ssrfGuard'
-import { parseEventTypes } from '@/lib/webhookEvents'
+import { parseEventTypes, isWebhookEvent } from '@/lib/webhookEvents'
 import { applyCursor, isUuidString } from '@/lib/cursor'
 
 // Webhook-endpoint management, shared by /api/dashboard/webhooks/* (session
@@ -159,26 +159,35 @@ const DELIVERY_LIST_COLS =
 // back, so older failures could not be reached at all.
 export async function listDeliveries(
   admin: Admin, userId: string, endpointId: string,
-  opts: { limit?: number; status?: string | null; before?: string | null; beforeId?: string | null } = {}
-): Promise<ServiceResult<any[]>> {
+  opts: { limit?: number; status?: string | null; eventType?: string | null; before?: string | null; beforeId?: string | null } = {}
+): Promise<ServiceResult<{ rows: any[]; has_more: boolean }>> {
   if (!isUuidString(endpointId)) return fail(404, 'not_found', 'Webhook not found')
   const owned = await admin.from('webhook_endpoints').select('id').eq('id', endpointId).eq('user_id', userId).maybeSingle()
   if (!owned.data) return fail(404, 'not_found', 'Webhook not found')
 
   const limit = Math.min(Math.max(Math.trunc(opts.limit ?? 50) || 50, 1), 100)
+  // An unknown filter value used to be ignored, silently returning EVERY delivery.
+  if (opts.status && !['succeeded', 'retrying', 'failed'].includes(opts.status)) {
+    return fail(400, 'invalid_request', 'status must be one of: succeeded, retrying, failed.')
+  }
+  if (opts.eventType && opts.eventType !== 'test' && !isWebhookEvent(opts.eventType)) {
+    return fail(400, 'invalid_request', 'event_type must be one of the event names from GET /api/v1/webhooks/events (or "test").')
+  }
   let q = admin
     .from('webhook_deliveries')
     .select(DELIVERY_LIST_COLS)
     .eq('endpoint_id', endpointId).eq('user_id', userId)
-    .order('created_at', { ascending: false }).order('id', { ascending: false }).limit(limit)
-  if (opts.status && ['succeeded', 'retrying', 'failed'].includes(opts.status)) q = q.eq('status', opts.status)
+    .order('created_at', { ascending: false }).order('id', { ascending: false }).limit(limit + 1) // one extra row: is there another page?
+  if (opts.status) q = q.eq('status', opts.status)
+  if (opts.eventType) q = q.eq('event_type', opts.eventType)
   const cur = applyCursor(q, opts.before, opts.beforeId, 'uuid')
   if (!cur.ok) return fail(400, 'invalid_request', cur.message)
   q = cur.query
 
   const { data, error } = await q
   if (error) { console.error('[webhooks] deliveries failed', error); return fail(500, 'internal_error', 'Could not load deliveries.') }
-  return { ok: true, data: data ?? [] }
+  const fetched = data ?? []
+  return { ok: true, data: { rows: fetched.slice(0, limit), has_more: fetched.length > limit } }
 }
 
 // One delivery in full: the exact signed JSON body that was (or will be) sent,

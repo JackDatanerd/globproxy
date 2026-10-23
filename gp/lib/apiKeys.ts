@@ -1,6 +1,7 @@
 import { createAdminClient } from '@/lib/supabase/server'
-import { parseAllowedIps } from '@/lib/ipAllowlist'
-import { dispatchWebhook } from '@/lib/webhooks'
+import { parseAllowedIps, allocateAllowlistProblem } from '@/lib/ipAllowlist'
+import { dispatchWebhook, dispatchWebhookBatch } from '@/lib/webhooks'
+import { logSecurityEvent, requestMeta } from '@/lib/securityEvents'
 import { isUuidString } from '@/lib/cursor'
 
 // API-key management shared by /api/dashboard/api-keys/* (session auth + step-up).
@@ -69,8 +70,9 @@ export async function createApiKey(
   admin: Admin, userId: string,
   input: { label: string; scopes: string[]; expires_at: string | null; allowed_ips: string[] }
 ): Promise<KeyResult<{ plaintext: string; meta: any }>> {
-  if (input.scopes.includes('allocate') && input.allowed_ips.length === 0) {
-    return fail(400, 'Keys with the "allocate" scope must be restricted to specific IP addresses (allowed_ips).')
+  if (input.scopes.includes('allocate')) {
+    const problem = allocateAllowlistProblem(input.allowed_ips)
+    if (problem) return fail(400, problem)
   }
   const plaintext = generateKey()
   const key_hash = await sha256Hex(plaintext)
@@ -118,7 +120,10 @@ export async function planKeyUpdate(
     // (empty list) from a restricted one, or adding an address that wasn't
     // there. Going from "any IP" to a restricted list, or removing entries, is
     // tightening and needs no step-up.
-    const old = new Set(nextIps)
+    // Compared in canonical form: an entry stored before canonicalisation ("1.2.3.4/32")
+    // must not read as a NEW address when it comes back as "1.2.3.4".
+    const oldCanon = parseAllowedIps(nextIps)
+    const old = new Set(oldCanon.ok ? oldCanon.value : nextIps)
     if (old.size > 0 && (ips.value.length === 0 || ips.value.some((x) => !old.has(x)))) loosens = true
     nextIps = ips.value
     patch.allowed_ips = ips.value
@@ -132,8 +137,9 @@ export async function planKeyUpdate(
     nextScopes = s.value
     patch.scopes = s.value
   }
-  if (nextScopes.includes('allocate') && nextIps.length === 0) {
-    return fail(400, 'Keys with the "allocate" scope must be restricted to specific IP addresses (allowed_ips).')
+  if (nextScopes.includes('allocate')) {
+    const problem = allocateAllowlistProblem(nextIps)
+    if (problem) return fail(400, problem)
   }
 
   if (body?.expires_in_days !== undefined) {
@@ -186,6 +192,13 @@ export async function rotateApiKey(
   const { data: old } = await admin
     .from('api_keys').select('id, label, scopes, allowed_ips, expires_at, created_at, revoked_at, key_prefix').eq('id', id).eq('user_id', userId).maybeSingle()
   if (!old || old.revoked_at) return fail(404, 'Key not found or already revoked')
+  // A key made before the allocate-pin rule may carry a block that is now too wide. The
+  // replacement would be refused (and, with no grace period, the old key revoked and
+  // put back) — say so up front instead, before anything is touched.
+  if ((old.scopes as string[] | null)?.includes('allocate')) {
+    const problem = allocateAllowlistProblem((old.allowed_ips as string[] | null) ?? [])
+    if (problem) return fail(400, `${problem} Narrow this key's allowed IPs first, then rotate it.`)
+  }
 
   // Same lifespan as the old key, measured from now (a rotation is also how
   // you renew an expiring key).
@@ -270,4 +283,37 @@ export async function notifyKeyEvent(
     ...(event === 'api_key_created' ? { scopes: k.scopes ?? null, expires_at: k.expires_at ?? null } : {}),
     ...extra,
   })
+}
+
+// Audit rows + webhooks for keys that were just revoked from the dashboard. A single
+// key keeps the full per-key path; several (the panic button) are written with one
+// insert and one webhook batch so the notices cannot be cut short by the Workers
+// subrequest cap. `reason` tells a receiver which of the two it was.
+export async function notifyKeysRevoked(
+  admin: Admin, userId: string, req: Request,
+  revoked: { id: string; label: string | null; key_prefix: string }[], all: boolean
+) {
+  const reason = all ? 'revoke_all' : 'manual'
+  if (revoked.length <= 2) {
+    for (const k of revoked) {
+      await logSecurityEvent({ userId, event: 'api_key_revoked', req, admin, meta: { key_prefix: k.key_prefix, label: k.label, all } })
+      await notifyKeyEvent(userId, 'api_key_revoked', k, { reason })
+    }
+    return
+  }
+  await logSecurityEventsBulk(admin, userId, req, revoked.map((k) => ({ key_prefix: k.key_prefix, label: k.label, all })))
+  await dispatchWebhookBatch(userId, 'api_key_revoked', revoked.map((k) => ({ key_id: k.id, label: k.label, key_prefix: k.key_prefix, reason })))
+}
+
+async function logSecurityEventsBulk(admin: Admin, userId: string, req: Request, metas: Record<string, unknown>[]) {
+  // Same row shape logSecurityEvent writes, in one statement.
+  try {
+    const { ip, ua } = requestMeta(req)
+    const { error } = await admin.from('security_events').insert(
+      metas.map((meta) => ({ user_id: userId, actor_id: null, event: 'api_key_revoked', ip, user_agent: ua, meta, notify: false }))
+    )
+    if (error) console.error('[api-keys] bulk security_events insert failed', error.message)
+  } catch (e) {
+    console.error('[api-keys] bulk security_events insert threw', e)
+  }
 }

@@ -137,7 +137,33 @@ function canonicalEntry(input: string): string | null {
   const e = parseEntry(input)
   if (!e) return null
   const base = ipString(e.ip)
-  return e.cidr ? `${base}/${e.bits}` : base
+  // "1.2.3.4/32" and "2001:db8::1/128" are just that one host — stored as the bare
+  // address so the same host cannot sit in the list twice under two spellings.
+  const single = e.bits === (e.ip.v === 4 ? 32 : 128)
+  return e.cidr && !single ? `${base}/${e.bits}` : base
+}
+
+// Keys that can MOVE BANDWIDTH ('allocate' scope) skip the dashboard's 2FA step-up,
+// so their IP pin is the only thing standing between a leaked key and a transfer.
+// A pin of 8.0.0.0/8 (16.7 million addresses) is a pin in name only: allocate keys
+// must be tied to a block no wider than a /24 (256 addresses) or an IPv6 /48.
+export const ALLOCATE_MAX_V4_BLOCK_PREFIX = 24
+export const ALLOCATE_MAX_V6_BLOCK_PREFIX = 48
+
+/** null when every entry is narrow enough for an allocate key, else a message saying which is too wide. */
+export function allocateAllowlistProblem(allowed: string[] | null | undefined): string | null {
+  if (!allowed || allowed.length === 0) {
+    return 'Keys with the "allocate" scope must be restricted to specific IP addresses (allowed_ips).'
+  }
+  for (const raw of allowed) {
+    const e = parseEntry(raw)
+    if (!e) continue // unparseable entries never match anything; they cannot widen the key
+    const min = e.ip.v === 4 ? ALLOCATE_MAX_V4_BLOCK_PREFIX : ALLOCATE_MAX_V6_BLOCK_PREFIX
+    if (e.bits < min) {
+      return `"${raw.slice(0, 60)}" is too broad for an "allocate" key: use single addresses or blocks no wider than /${ALLOCATE_MAX_V4_BLOCK_PREFIX} (IPv4) / /${ALLOCATE_MAX_V6_BLOCK_PREFIX} (IPv6).`
+    }
+  }
+  return null
 }
 
 // Returns a cleaned (canonical, de-duplicated) list, or an error message.

@@ -112,12 +112,27 @@ type ApiKeyMeta = {
   allowed_ips?: string[]
 }
 
+// How a key's scopes read in this UI. 'allocate_only' (read + allocate, NO write) is
+// the least-privilege shape for a billing bot that only moves bandwidth — the API has
+// always supported it, but the form could not make one, and a key like that used to be
+// labelled "read-only" here even though it can move bandwidth.
+type AccessLevel = 'full' | 'read' | 'allocate' | 'allocate_only'
+const scopesForLevel = (v: AccessLevel): string[] =>
+  v === 'read' ? ['read'] : v === 'allocate' ? ['read', 'write', 'allocate'] : v === 'allocate_only' ? ['read', 'allocate'] : ['read', 'write']
+const levelOfScopes = (scopes?: string[] | null): AccessLevel =>
+  !scopes ? 'full'
+    : scopes.includes('allocate') ? (scopes.includes('write') ? 'allocate' : 'allocate_only')
+    : scopes.includes('write') ? 'full' : 'read'
+const LEVEL_LABEL: Record<AccessLevel, string> = {
+  full: 'full access', read: 'read-only', allocate: 'full access + allocate', allocate_only: 'read + allocate (no other changes)',
+}
+
 export default function ApiKeysClient({ canAllocate = false }: { canAllocate?: boolean }) {
   const [keys, setKeys] = useState<ApiKeyMeta[]>([])
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
   const [newLabel, setNewLabel] = useState('')
-  const [newScope, setNewScope] = useState<'full' | 'read' | 'allocate'>('full')
+  const [newScope, setNewScope] = useState<AccessLevel>('full')
   const [newExpiry, setNewExpiry] = useState<string>('') // '' = never
   const [newIps, setNewIps] = useState('') // comma/space separated; empty = any IP
   const [justCreated, setJustCreated] = useState<string | null>(null) // plaintext, shown once
@@ -125,7 +140,7 @@ export default function ApiKeysClient({ canAllocate = false }: { canAllocate?: b
   const [editing, setEditing] = useState<string | null>(null) // key id being edited
   const [editLabel, setEditLabel] = useState('')
   const [editIps, setEditIps] = useState('')
-  const [editScope, setEditScope] = useState<'full' | 'read' | 'allocate'>('full')
+  const [editScope, setEditScope] = useState<AccessLevel>('full')
   const [editExpiry, setEditExpiry] = useState<string>('keep') // 'keep' | 'none' | days
   const [rotatingId, setRotatingId] = useState<string | null>(null) // key whose rotate panel is open
   const [rotateGrace, setRotateGrace] = useState<'24' | '0'>('24')
@@ -162,7 +177,7 @@ export default function ApiKeysClient({ canAllocate = false }: { canAllocate?: b
         label: newLabel.trim() || 'Default key',
         // 'allocate' = full access + moving bandwidth between accounts (resellers;
         // the server requires an IP allowlist for it).
-        scopes: newScope === 'read' ? ['read'] : newScope === 'allocate' ? ['read', 'write', 'allocate'] : ['read', 'write'],
+        scopes: scopesForLevel(newScope),
         expires_in_days: newExpiry ? Number(newExpiry) : null,
         allowed_ips: newIps.split(/[\s,]+/).filter(Boolean),
       })
@@ -188,9 +203,8 @@ export default function ApiKeysClient({ canAllocate = false }: { canAllocate?: b
     }
   }
 
-  const scopeOf = (k: ApiKeyMeta): 'full' | 'read' | 'allocate' =>
-    k.scopes && !k.scopes.includes('write') ? 'read' : k.scopes?.includes('allocate') ? 'allocate' : 'full'
-  const scopesFor = (v: 'full' | 'read' | 'allocate') => (v === 'read' ? ['read'] : v === 'allocate' ? ['read', 'write', 'allocate'] : ['read', 'write'])
+  const scopeOf = (k: ApiKeyMeta): AccessLevel => levelOfScopes(k.scopes)
+  const scopesFor = scopesForLevel
 
   function startEdit(k: ApiKeyMeta) {
     setEditing(k.id); setEditLabel(k.label); setEditIps((k.allowed_ips ?? []).join(', '))
@@ -339,7 +353,7 @@ export default function ApiKeysClient({ canAllocate = false }: { canAllocate?: b
                     </div>
                     {!k.revoked_at && (
                       <div className="text-[11px] font-mono text-muted mt-0.5">
-                        {k.scopes && !k.scopes.includes('write') ? 'read-only' : k.scopes?.includes('allocate') ? 'full access + allocate' : 'full access'}
+                        {LEVEL_LABEL[levelOfScopes(k.scopes)]}
                         {k.expires_at ? (new Date(k.expires_at).getTime() <= Date.now()
                           ? ' · expired'
                           : ` · expires ${new Date(k.expires_at).toLocaleDateString()}`) : ' · no expiry'}
@@ -380,11 +394,12 @@ export default function ApiKeysClient({ canAllocate = false }: { canAllocate?: b
                     <input value={editIps} onChange={e => setEditIps(e.target.value)} placeholder="Allowed IPs — empty = any IP"
                       className="bg-surface border border-border px-3 py-2 rounded-lg text-xs font-mono focus:outline-none focus:border-accent" />
                     <div className="flex flex-wrap gap-2">
-                      <select value={editScope} onChange={e => setEditScope(e.target.value as 'full' | 'read' | 'allocate')}
+                      <select value={editScope} onChange={e => setEditScope(e.target.value as AccessLevel)}
                         className="bg-surface border border-border px-3 py-2 rounded-lg text-xs focus:outline-none focus:border-accent">
                         <option value="full">Full access (read + write)</option>
                         <option value="read">Read-only</option>
-                        {(canAllocate || scopeOf(k) === 'allocate') && <option value="allocate">Full access + allocate (requires allowed IPs)</option>}
+                        {(canAllocate || scopeOf(k) === 'allocate') && <option value="allocate">Full access + allocate (requires narrow allowed IPs)</option>}
+                        {(canAllocate || scopeOf(k) === 'allocate_only') && <option value="allocate_only">Read + allocate only (requires narrow allowed IPs)</option>}
                       </select>
                       <select value={editExpiry} onChange={e => setEditExpiry(e.target.value)}
                         className="bg-surface border border-border px-3 py-2 rounded-lg text-xs focus:outline-none focus:border-accent">
@@ -447,11 +462,12 @@ export default function ApiKeysClient({ canAllocate = false }: { canAllocate?: b
         )}
 
         <div className="flex flex-wrap gap-2 mb-2">
-          <select value={newScope} onChange={e => setNewScope(e.target.value as 'full' | 'read' | 'allocate')}
+          <select value={newScope} onChange={e => setNewScope(e.target.value as AccessLevel)}
             className="bg-surface border border-border px-3 py-2 rounded-xl text-xs focus:outline-none focus:border-accent">
             <option value="full">Full access (read + write)</option>
             <option value="read">Read-only</option>
-            {canAllocate && <option value="allocate">Full access + allocate bandwidth (requires allowed IPs)</option>}
+            {canAllocate && <option value="allocate">Full access + allocate bandwidth (requires narrow allowed IPs)</option>}
+            {canAllocate && <option value="allocate_only">Read + allocate only — least privilege (requires narrow allowed IPs)</option>}
           </select>
           <select value={newExpiry} onChange={e => setNewExpiry(e.target.value)}
             className="bg-surface border border-border px-3 py-2 rounded-xl text-xs focus:outline-none focus:border-accent">
@@ -463,7 +479,7 @@ export default function ApiKeysClient({ canAllocate = false }: { canAllocate?: b
           </select>
         </div>
         <input value={newIps} onChange={e => setNewIps(e.target.value)}
-          placeholder="Allowed IPs (optional) — e.g. 203.0.113.4, 198.51.100.0/24"
+          placeholder={newScope === 'allocate' || newScope === 'allocate_only' ? 'Allowed IPs (required) — single addresses or blocks no wider than /24, e.g. 203.0.113.4, 198.51.100.0/24' : 'Allowed IPs (optional) — e.g. 203.0.113.4, 198.51.100.0/24'}
           className="w-full bg-surface border border-border px-4 py-2 rounded-xl text-xs font-mono focus:outline-none focus:border-accent transition-colors mb-2" />
         <div className="flex gap-2">
           <input value={newLabel} onChange={e => setNewLabel(e.target.value)} placeholder="Key label (optional)"

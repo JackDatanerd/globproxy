@@ -66,6 +66,6 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
       id: cred.id, from: from.toISOString(), to: to.toISOString(), granularity,
       total_gb: Math.round(points.reduce((s, p) => s + p.gb, 0) * 1000) / 1000,
       points,
-    })
+    }, { headers: { 'X-RateLimit-Limit': '10' } }) // this route's own limit, not the general 120
   })
 }

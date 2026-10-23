@@ -6,7 +6,7 @@ import { logSecurityEvent, notifySecurityChange } from '@/lib/securityEvents'
 import { parseAllowedIps } from '@/lib/ipAllowlist'
 import {
   KEY_VIEW_COLS, cleanLabel, parseScopes, parseExpiryDays, loadKeyOwner, canUseApi, canAllocate,
-  createApiKey, planKeyUpdate, applyKeyUpdate, revokeApiKeys, notifyKeyEvent,
+  createApiKey, planKeyUpdate, applyKeyUpdate, revokeApiKeys, notifyKeyEvent, notifyKeysRevoked,
 } from '@/lib/apiKeys'
 import { requireActiveUser } from '@/lib/apiAuth'
 
@@ -148,9 +148,11 @@ export async function DELETE(req: Request) {
   const r = await revokeApiKeys(admin, user.id, all ? 'all' : [body.id])
   if (!r.ok) return err(r.message, r.status)
 
-  for (const k of r.data.revoked) {
-    await logSecurityEvent({ userId: user.id, event: 'api_key_revoked', req, admin, meta: { key_prefix: k.key_prefix, label: k.label, all } })
-    await notifyKeyEvent(user.id, 'api_key_revoked', { id: k.id, label: k.label, key_prefix: k.key_prefix })
-  }
+  // The revocation above is already done and atomic. What follows is bookkeeping, and
+  // for the "revoke all" panic button it used to be up to 25 sequential rounds of
+  // security-event + e-mail + webhook lookups — enough to run into the Workers
+  // subrequest cap part-way through, silently dropping the rest of the notices.
+  // The audit rows go in with ONE insert and the webhooks as ONE batch.
+  await notifyKeysRevoked(admin, user.id, req, r.data.revoked, all)
   return NextResponse.json({ success: true, revoked: r.data.revoked.length })
 }
