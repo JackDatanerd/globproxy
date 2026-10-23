@@ -222,24 +222,31 @@ export function canonicalEmail(raw: string): string {
 // (after the body is parsed). The response is identical whether or not an
 // account exists for that address, so it cannot be used to probe for one.
 export async function rateLimitedTarget(scope: string, email: unknown): Promise<NextResponse | null> {
+  if (typeof email !== 'string') return null
+  const target = canonicalEmail(email)
+  if (!target) return null
+
+  // Two independent layers, each in its own try: a failure of the per-location
+  // binding must not also switch off the exact Postgres cap (and vice versa).
   try {
-    if (typeof email !== 'string') return null
-    const target = canonicalEmail(email)
-    if (!target) return null
     const limiter = getLimiter('AUTH_TARGET_RATE_LIMITER')
     if (limiter) {
       const { success } = await limiter.limit({ key: `AUTH_TARGET_RATE_LIMITER:${scope}:${(await sha256Hex(target)).slice(0, 32)}` })
       if (!success) return tooMany('Too many requests for this email address. Please try again in a minute.')
     }
-    // Exact, cross-location second layer (see the note at the top of this file).
-    // throttleHit fails open on a database error, so this can never be the outage.
+  } catch (e) {
+    console.error('[rateLimit] target binding check failed, continuing to the exact check', e)
+  }
+
+  // Exact, cross-location second layer (see the note at the top of this file).
+  // throttleHit fails open on a database error, so this can never be the outage.
+  try {
     const exact = await throttleHit(`target:${scope}`, target, TARGET_EXACT_MAX, TARGET_EXACT_WINDOW_S)
     if (exact !== 'ok') return tooMany('Too many requests for this email address. Please try again in a few minutes.', TARGET_EXACT_WINDOW_S)
-    return null
   } catch (e) {
-    console.error('[rateLimit] target check failed, allowing request through', e)
-    return null
+    console.error('[rateLimit] target exact check failed, allowing request through', e)
   }
+  return null
 }
 
 // Per signed-in user, independent of address (a user hopping between

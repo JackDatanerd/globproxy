@@ -23,7 +23,7 @@
 // Instead this self-invokes the existing, already-tested
 // /api/cron/[task] route via the generated fetch handler — the exact
 // same code path that ran under cron-job.org, completely unchanged,
-// including its process.env-based Supabase/Geonode client construction.
+// including its process.env-based Supabase/upstream-provider client construction.
 // Only WHO calls it changes, not what runs. CRON_SECRET stays as a
 // defense-in-depth check even though nothing external can reach a
 // scheduled() invocation — costs nothing, and means route.ts needed zero
@@ -154,6 +154,18 @@ function appOriginOf(env: any): string | undefined {
   }
 }
 
+// Every /api/* answer is per-caller (session, API key, or a secret in the body or
+// response: rotated passwords, generated credentials, payout details). next.config
+// only marks /api/admin as no-store and just a handful of routes set their own
+// Cache-Control, so a browser or an intermediary was free to keep the rest. A route
+// that sets its own Cache-Control keeps it; everything else gets no-store.
+function withDefaultNoStore(res: Response): Response {
+  if (res.headers.has('cache-control')) return res
+  const out = new Response(res.body, res)
+  out.headers.set('Cache-Control', 'no-store')
+  return out
+}
+
 let warnedNoVersion = false
 
 async function fetchWithEdgeCache(request: Request, env: any, ctx: any): Promise<Response> {
@@ -174,7 +186,10 @@ async function fetchWithEdgeCache(request: Request, env: any, ctx: any): Promise
     request = limited.request
   }
 
-  if (!isEdgeCacheable(request, url)) return handler.fetch(request, env, ctx)
+  if (!isEdgeCacheable(request, url)) {
+    const res: Response = await handler.fetch(request, env, ctx)
+    return url.pathname.startsWith('/api/') ? withDefaultNoStore(res) : res
+  }
 
   // One synthetic key per path AND deployed version: the real request's
   // headers must not split (or poison) the cache, and a new deploy must start
@@ -249,7 +264,7 @@ export default {
     }
 
     // waitUntil so the scheduled invocation doesn't get torn down before
-    // the chain (and everything each step awaits — email sends, Geonode
+    // the chain (and everything each step awaits — email sends, upstream-provider
     // calls, Supabase writes) actually finishes.
     ctx.waitUntil(runTaskChain(base, env.CRON_SECRET ?? '', tasks, handler, env, ctx, INDEPENDENT_CHAINS.has(event.cron)))
   },

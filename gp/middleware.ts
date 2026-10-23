@@ -34,6 +34,32 @@ function clearMfaCookie(res: NextResponse): NextResponse {
   return res
 }
 
+// supabase-js's signOut() only drops the session cookies when the logout call
+// succeeds (or fails with a 401/403/404). On a 5xx or a network failure it returns
+// { error } and leaves the session in place, so a suspended or deleted account
+// could be "signed out" in name only. Expiring every sb-* cookie ourselves makes the
+// browser forget the session whatever the logout call did.
+function expireSupabaseCookies(res: NextResponse, request: NextRequest): NextResponse {
+  for (const { name } of request.cookies.getAll()) {
+    if (!name.startsWith('sb-')) continue
+    res.cookies.set(name, '', { path: '/', maxAge: 0 })
+  }
+  return res
+}
+
+// Forced sign-out for a suspended / deleted account. Never throws and never skips
+// the cookie clearing: a failed or timed-out logout call is logged, and the caller
+// still expires the browser's session and revokes the 2FA proofs.
+async function endSession(supabase: ReturnType<typeof createServerClient>, userId: string): Promise<void> {
+  try {
+    const { error } = await withTimeout(supabase.auth.signOut(), 'auth.signOut')
+    if (error) console.error('[middleware] signOut reported an error — clearing cookies locally', userId, error.message)
+  } catch (e) {
+    console.error('[middleware] signOut threw — clearing cookies locally', userId, e)
+  }
+  await revokeAllMfaSessions(userId)
+}
+
 const UPSTREAM_TIMEOUT_MS = 4000
 
 class UpstreamTimeout extends Error {}
@@ -295,16 +321,14 @@ export async function middleware(request: NextRequest) {
       // role / MFA checks as a second backstop; this is what catches it
       // first, for every protected path at once.
       if (profile?.is_deleted && !path.startsWith('/auth')) {
-        await withTimeout(supabase.auth.signOut(), 'auth.signOut')
-        await revokeAllMfaSessions(user.id)
-        return clearMfaCookie(redirectTo(new URL('/auth/login?deleted=1', request.url)))
+        await endSession(supabase, user.id)
+        return clearMfaCookie(expireSupabaseCookies(redirectTo(new URL('/auth/login?deleted=1', request.url)), request))
       }
 
       // Suspended — sign out and redirect
       if (profile?.is_suspended && !path.startsWith('/auth')) {
-        await withTimeout(supabase.auth.signOut(), 'auth.signOut')
-        await revokeAllMfaSessions(user.id)
-        return clearMfaCookie(redirectTo(new URL('/auth/login?suspended=1', request.url)))
+        await endSession(supabase, user.id)
+        return clearMfaCookie(expireSupabaseCookies(redirectTo(new URL('/auth/login?suspended=1', request.url)), request))
       }
 
       // Non-admin hitting /admin — send to dashboard
