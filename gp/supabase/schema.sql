@@ -3,7 +3,7 @@
 -- Run this entire file in Supabase SQL Editor (fresh project)
 -- ============================================================
 --
--- INCLUDES MIGRATIONS THROUGH: 0067_admin_section8_closeout.sql
+-- INCLUDES MIGRATIONS THROUGH: 0068_ops_section9_closeout.sql
 --
 -- This line is the source of truth `scripts/check-schema-sync.mjs` reads
 -- to compare against supabase/migrations/ — it's what CI checks on every
@@ -4919,8 +4919,263 @@ insert into public.schema_migrations (filename) values
 on conflict do nothing;
 
 -- ============================================================
+-- 0053_auth_mfa_pass3.sql
+-- ============================================================
+-- ─────────────────────────────────────────────────────────────────────
+-- 0053 · Auth & MFA — independent pass 3
+--
+--  1. auth_account_state(): lets signup tell "already has an account" from
+--     "closed account" so the address owner gets an explanatory email
+--     instead of silence (still never revealed to the person typing it).
+--  2. login_sessions: the browser's real IP / user-agent per login session.
+--     auth.sessions only records the Worker's, because sign-in happens
+--     server-side, so the "Where you're signed in" card showed the wrong
+--     device. Keyed by auth.sessions.id (the JWT session_id claim).
+--  3. wipe_mfa / confirm_totp_enrollment_atomic cancel any open 2FA
+--     recovery request: once 2FA is removed or re-established, an older
+--     recovery link must not stay usable.
+--  4. mfa_complete_recovery refuses when there is no confirmed factor.
+--  5. cleanup_old_security_events() also prunes orphaned login_sessions.
+-- ─────────────────────────────────────────────────────────────────────
+
+-- ── 1. account state for signup notices ──────────────────────────────
+create or replace function public.auth_account_state(check_email text)
+returns text
+language plpgsql stable security definer set search_path = public, auth, pg_temp
+as $$
+declare
+  u record;
+  p record;
+begin
+  select id, email_confirmed_at into u
+    from auth.users where lower(email) = lower(check_email) limit 1;
+  if not found then return 'none'; end if;
+  if u.email_confirmed_at is null then return 'unconfirmed'; end if;
+  select is_suspended, is_deleted, deleted_at into p from public.profiles where id = u.id;
+  if found and (coalesce(p.is_deleted, false) or p.deleted_at is not null) then return 'deleted'; end if;
+  if found and coalesce(p.is_suspended, false) then return 'suspended'; end if;
+  return 'active';
+end;
+$$;
+revoke all on function public.auth_account_state(text) from public, anon, authenticated;
+grant execute on function public.auth_account_state(text) to service_role;
+
+-- ── 2. per-login device record ───────────────────────────────────────
+create table if not exists public.login_sessions (
+  session_id uuid primary key,
+  user_id    uuid not null references public.profiles(id) on delete cascade,
+  ip         text,
+  user_agent text,
+  created_at timestamptz not null default now()
+);
+create index if not exists login_sessions_user_idx on public.login_sessions(user_id);
+alter table public.login_sessions enable row level security;
+-- No policies: service role only.
+
+-- ── 3. recovery requests die with the factor they were for ───────────
+create or replace function public.wipe_mfa(p_user_id uuid)
+returns void
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+begin
+  delete from public.mfa_totp_factors where user_id = p_user_id;
+  delete from public.mfa_backup_codes where user_id = p_user_id;
+  delete from public.mfa_verified_sessions where user_id = p_user_id;
+  -- Any still-open recovery request is moot now (completed ones keep their
+  -- completed_at so the audit trail is intact).
+  update public.mfa_recovery_requests
+     set cancelled_at = now()
+   where user_id = p_user_id and completed_at is null and cancelled_at is null;
+  update public.profiles set mfa_enabled = false where id = p_user_id;
+end;
+$$;
+revoke all on function public.wipe_mfa(uuid) from public, anon, authenticated;
+grant execute on function public.wipe_mfa(uuid) to service_role;
+
+create or replace function public.confirm_totp_enrollment_atomic(
+  p_user_id uuid, p_used_counter integer, p_hashes text[]
+)
+returns void language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_confirmed boolean;
+begin
+  select confirmed into v_confirmed from public.mfa_totp_factors where user_id = p_user_id for update;
+  if not found then
+    raise exception 'No pending MFA enrollment found for this account.' using errcode = 'P0002';
+  end if;
+  if v_confirmed then
+    raise exception 'MFA is already enabled for this account.' using errcode = 'P0001';
+  end if;
+
+  update public.mfa_totp_factors
+    set confirmed = true, confirmed_at = now(), failed_attempts = 0, locked_until = null,
+        last_used_at = now(), last_used_counter = p_used_counter
+    where user_id = p_user_id;
+  update public.profiles set mfa_enabled = true where id = p_user_id;
+
+  delete from public.mfa_backup_codes where user_id = p_user_id and used_at is null;
+  insert into public.mfa_backup_codes (user_id, code_hash)
+    select p_user_id, h from unnest(p_hashes) as h;
+
+  -- A recovery link issued for the previous authenticator must not outlive
+  -- the new one.
+  update public.mfa_recovery_requests
+     set cancelled_at = now()
+   where user_id = p_user_id and completed_at is null and cancelled_at is null;
+end;
+$$;
+revoke all on function public.confirm_totp_enrollment_atomic(uuid, integer, text[]) from public, anon, authenticated;
+grant execute on function public.confirm_totp_enrollment_atomic(uuid, integer, text[]) to service_role;
+
+-- ── 4. completion needs a factor to remove ───────────────────────────
+create or replace function public.mfa_complete_recovery(p_request_id uuid, p_user_id uuid, p_window interval)
+returns boolean
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+declare v_id uuid;
+begin
+  if not exists (select 1 from public.mfa_totp_factors where user_id = p_user_id and confirmed) then
+    return false;
+  end if;
+  update public.mfa_recovery_requests
+     set completed_at = now()
+   where id = p_request_id
+     and user_id = p_user_id
+     and completed_at is null
+     and cancelled_at is null
+     and confirmed_at is not null
+     and ready_at <= now()
+     and ready_at + p_window > now()
+  returning id into v_id;
+  if v_id is null then return false; end if;
+  perform public.wipe_mfa(p_user_id);
+  return true;
+end;
+$$;
+revoke all on function public.mfa_complete_recovery(uuid, uuid, interval) from public, anon, authenticated;
+grant execute on function public.mfa_complete_recovery(uuid, uuid, interval) to service_role;
+
+-- ── 5. cleanup ───────────────────────────────────────────────────────
+create or replace function public.cleanup_old_security_events()
+returns integer language plpgsql security definer set search_path = public, auth, pg_temp as $$
+declare v_deleted integer;
+begin
+  delete from public.security_events where created_at < now() - interval '365 days';
+  get diagnostics v_deleted = row_count;
+  delete from public.auth_throttle where window_start < now() - interval '1 day';
+  delete from public.mfa_recovery_requests where created_at < now() - interval '90 days';
+  delete from public.login_sessions ls
+   where ls.created_at < now() - interval '1 day'
+     and not exists (select 1 from auth.sessions s where s.id = ls.session_id);
+  return v_deleted;
+end;
+$$;
+revoke all on function public.cleanup_old_security_events() from public, anon, authenticated;
+grant execute on function public.cleanup_old_security_events() to service_role;
+
+insert into public.schema_migrations (filename) values
+  ('0053_auth_mfa_pass3.sql')
+on conflict do nothing;
+
+-- ============================================================
 -- 0054_api_integrations_closeout.sql
--- =====================================================on conflict do nothing;
+-- ============================================================
+-- ============================================================
+-- 0054 — Public API & integrations close-out (audit section 6, pass 1)
+-- ============================================================
+-- Idempotent. Apply AFTER 0053. Old code keeps working between this
+-- migration and the deploy (everything here is additive, except dropping the
+-- browser-readable webhook-secret policy, which no app code used).
+
+-- ── 1. api_keys: 'allocate' scope, expiry-warning marker, limit counts live keys only ──
+-- 'allocate' is deliberately separate from 'write': it moves bandwidth between
+-- accounts (money-equivalent), so a key that can create sub-users cannot
+-- implicitly move stock. Enforced in lib/apiAuth.ts.
+alter table public.api_keys drop constraint if exists api_keys_valid_scopes;
+alter table public.api_keys
+  add constraint api_keys_valid_scopes
+  check (scopes <@ array['read','write','allocate']::text[] and cardinality(scopes) > 0);
+
+alter table public.api_keys add column if not exists expiry_warned_at timestamptz;
+
+-- The cap used to count expired-but-unrevoked keys, which the UI (and the
+-- authenticator) already treat as dead: a user with 25 lapsed keys could not
+-- create a new one.
+create or replace function public.enforce_api_key_limit()
+returns trigger language plpgsql security definer set search_path = public, pg_temp
+as $$
+begin
+  perform pg_advisory_xact_lock(hashtext('api_keys:' || new.user_id::text));
+  if (select count(*) from public.api_keys
+      where user_id = new.user_id
+        and revoked_at is null
+        and (expires_at is null or expires_at > now())) >= 25 then
+    raise exception 'Maximum of 25 active API keys per account' using errcode = '23514';
+  end if;
+  return new;
+end;
+$$;
+
+-- ── 2. Mutating-request log (what did this key do?) ──────────────────
+create table if not exists public.api_request_log (
+  id          bigserial primary key,
+  user_id     uuid not null references public.profiles(id) on delete cascade,
+  key_id      uuid references public.api_keys(id) on delete set null,
+  method      text not null,
+  path        text not null,
+  status      integer,
+  ip          text,
+  request_id  text,
+  created_at  timestamptz not null default now()
+);
+create index if not exists api_request_log_user_idx on public.api_request_log (user_id, created_at desc);
+create index if not exists api_request_log_key_idx  on public.api_request_log (key_id, created_at desc);
+alter table public.api_request_log enable row level security;
+-- No policies: service role only (read through /api/v1/account/activity and the dashboard route).
+
+-- ── 3. Webhooks ──────────────────────────────────────────────────────
+-- 3a. The signing secret must be "returned once". The 0018 select policy let
+-- ANY logged-in browser session read every column — including `secret` — of
+-- its own rows straight from PostgREST. Every app read goes through the
+-- service role, so dropping the policy changes nothing for the app.
+drop policy if exists "Users can view own webhook endpoints" on public.webhook_endpoints;
+
+-- 3b. Rotation with a grace window: the previous secret keeps signing a second
+-- header until it lapses.
+alter table public.webhook_endpoints add column if not exists previous_secret            text;
+alter table public.webhook_endpoints add column if not exists previous_secret_expires_at timestamptz;
+
+-- 3c. Receiver response snippet for the delivery log.
+alter table public.webhook_deliveries add column if not exists response_body text;
+
+-- 3d. New events.
+alter table public.webhook_endpoints drop constraint if exists webhook_endpoints_valid_events;
+alter table public.webhook_endpoints
+  add constraint webhook_endpoints_valid_events
+  check (event_types <@ array[
+    'session_created', 'session_activated', 'session_deleted', 'session_topped_up',
+    'session_exhausted', 'session_suspended', 'session_resumed',
+    'auto_topup_triggered', 'auto_topup_failed',
+    'bandwidth_threshold_crossed', 'bandwidth_exhausted', 'bandwidth_credited',
+    'bandwidth_allocated', 'bandwidth_reclaimed', 'bandwidth_refunded',
+    'api_key_created', 'api_key_revoked', 'api_key_expiring'
+  ]::text[]);
+
+-- ── 4. Idempotent credential creation (no duplicate sub-users, ever) ─────
+-- The idempotency table alone could not stop a stale-claim takeover from
+-- creating a second credential when the first attempt had actually succeeded
+-- but died before recording its response. A unique (user, key) on the
+-- credential itself makes the create race-free: the loser rolls back its
+-- reservation and upstream sub-user and returns the winner's row.
+alter table public.proxy_credentials add column if not exists idempotency_key text;
+create unique index if not exists proxy_credentials_idem_uidx
+  on public.proxy_credentials (user_id, idempotency_key) where idempotency_key is not null;
+
+-- ── 5. Grants for new objects (same posture as 0042) ───────────────────
+revoke all on function public.enforce_api_key_limit() from public, anon, authenticated;
+
+insert into public.schema_migrations (filename) values
+  ('0054_api_integrations_closeout.sql')
+on conflict do nothing;
 
 -- ============================================================
 -- 0055 — Edge & request pipeline close-out (section 1, audit pass 2)
@@ -7463,4 +7718,32 @@ grant execute on function public.admin_affiliate_earnings(uuid[]) to service_rol
 
 insert into public.schema_migrations (filename) values
   ('0067_admin_section8_closeout.sql')
+on conflict do nothing;
+
+-- ============================================================
+-- 0068_ops_section9_closeout.sql
+-- ============================================================
+-- ============================================================
+-- 0068 — Cron, account deletion & ops: independent audit pass 1
+-- ============================================================
+-- Idempotent: safe to re-run. Apply BEFORE deploying the code that ships with it.
+--
+--  * support_reports: admin_note and resolved_by are staff-internal, but the
+--    row-level policy "User can view own reports" exposes every COLUMN of the
+--    customer's own rows to anyone holding a session token (PostgREST, not just
+--    the dashboard page, which happens to select explicit columns). Table-level
+--    SELECT is replaced with a column list that leaves the internal ones out. The
+--    admin panel and the export read through the service role and are unaffected.
+--  * idx_support_reports_user_created: backs the per-account daily cap on
+--    /api/support/report (a count of the caller's reports in the last 24h).
+
+revoke select on table public.support_reports from anon, authenticated;
+grant select (id, user_id, email, page_url, message, status, created_at, resolved_at)
+  on table public.support_reports to authenticated;
+
+create index if not exists idx_support_reports_user_created
+  on public.support_reports (user_id, created_at desc);
+
+insert into public.schema_migrations (filename) values
+  ('0068_ops_section9_closeout.sql')
 on conflict do nothing;

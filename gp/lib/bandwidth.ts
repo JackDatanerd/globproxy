@@ -4,7 +4,7 @@ import { provisionPendingCredentials } from '@/lib/credentials'
 import { dispatchWebhook } from '@/lib/webhooks'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { processReferralForOrder, REFERRAL_GB_BONUS, REFERRAL_MIN_ORDER_USD } from '@/lib/referrals'
-import { alertAdminPayment } from '@/lib/paymentAlerts'
+import { alertAdminPayment, alertMismatchOnce } from '@/lib/paymentAlerts'
 import { sendScaleWelcomeEmail } from '@/lib/billingEmails'
 
 export type ActivateResult =
@@ -26,6 +26,22 @@ export async function activateBandwidth(p: {
   is_canary?: boolean
 }): Promise<ActivateResult> {
   const supabase = await createAdminClient()
+
+  // A payment that lands after the account was closed (webhook retry, reconcile, a
+  // checkout left open in another tab) must not be credited to a dead account where
+  // nobody can ever use it. Leave the order uncredited, tell the admin ONCE so it can
+  // be refunded by hand, and report "not claimable" so the webhook stops retrying.
+  try {
+    const { data: owner } = await supabase.from('profiles').select('is_deleted').eq('id', p.user_id).maybeSingle()
+    if (owner?.is_deleted) {
+      await alertMismatchOnce(supabase, p.order_id, 'Payment received for a DELETED account — NOT credited, refund it by hand', {
+        order_id: p.order_id, user_id: p.user_id, reference: p.paystack_reference, amount_usd: p.amount_usd, gb: p.gb_amount,
+      })
+      return { status: 'already_credited' }
+    }
+  } catch (e) {
+    console.error('[bandwidth] deleted-account check failed — continuing to credit', p.order_id, e)
+  }
 
   // 1 & 2. Atomically claim the order AND credit the GB in one call — see
   // migration 0015. These used to be two separate statements: claim first

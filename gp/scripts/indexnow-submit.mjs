@@ -29,15 +29,37 @@ const SITEMAP_URL = `https://${HOST}/sitemap.xml`
 const INDEXNOW_ENDPOINT = 'https://api.indexnow.org/indexnow'
 
 // IndexNow accepts up to 10,000 URLs per submission — far more than this
-// site needs, so no batching logic required.
-async function getSitemapUrls() {
-  const res = await fetch(SITEMAP_URL)
+// site needs, so no batching logic required beyond the cap check in main().
+//
+// Every network call has a hard timeout. Without one, a hung connection held the
+// deploy job — and with it the serialised `deploy-production` concurrency group, so
+// every later deploy queued behind it — until GitHub's 6-hour job limit.
+const FETCH_TIMEOUT_MS = 20_000
+
+const decodeXml = (s) => s
+  .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+  .replace(/&amp;/g, '&') // LAST, so "&amp;lt;" decodes to "&lt;"
+
+async function fetchLocs(url, depth = 0) {
+  const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
   if (!res.ok) {
-    throw new Error(`Failed to fetch ${SITEMAP_URL}: ${res.status} ${res.statusText}`)
+    throw new Error(`Failed to fetch ${url}: ${res.status} ${res.statusText}`)
   }
   const xml = await res.text()
-  const matches = [...xml.matchAll(/<loc>(.*?)<\/loc>/g)]
-  return matches.map((m) => m[1].trim())
+  const locs = [...xml.matchAll(/<loc>\s*([\s\S]*?)\s*<\/loc>/g)].map((m) => decodeXml(m[1].trim()))
+  // A sitemap INDEX lists child sitemaps, not pages: follow it (one level) instead of
+  // submitting .xml files as if they were pages.
+  if (/<sitemapindex[\s>]/.test(xml)) {
+    if (depth >= 1) return []
+    const pages = []
+    for (const child of locs) pages.push(...(await fetchLocs(child, depth + 1)))
+    return pages
+  }
+  return locs
+}
+
+async function getSitemapUrls() {
+  return fetchLocs(SITEMAP_URL)
 }
 
 async function submit(urlList) {
@@ -52,6 +74,7 @@ async function submit(urlList) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json; charset=utf-8' },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   })
 
   // IndexNow returns 200 or 202 on success, with no useful response body —
@@ -66,7 +89,17 @@ async function submit(urlList) {
 
 async function main() {
   const argUrls = process.argv.slice(2)
-  const urls = argUrls.length > 0 ? argUrls : await getSitemapUrls()
+  const all = argUrls.length > 0 ? argUrls : await getSitemapUrls()
+  // IndexNow rejects the WHOLE batch (422) if any URL is on another host, so a stray
+  // workers.dev or staging URL in the sitemap would silently cost every submission.
+  const urls = [...new Set(all.filter((u) => {
+    try { return new URL(u).hostname === HOST } catch { return false }
+  }))]
+  if (urls.length < all.length) console.warn(`[indexnow-submit] skipped ${all.length - urls.length} URL(s) not on ${HOST}`)
+  if (urls.length > 10000) {
+    console.error(`[indexnow-submit] ${urls.length} URLs exceeds the 10,000 per-request limit — submit in batches.`)
+    process.exit(1)
+  }
 
   if (urls.length === 0) {
     console.error('[indexnow-submit] No URLs to submit — sitemap fetch returned empty.')

@@ -1,5 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/server'
-import { sendEmail, escapeHtml } from '@/lib/email'
+import { sendEmail, sendEmailSafe, escapeHtml } from '@/lib/email'
 import { adminNoticeHtml, appUrl } from '@/lib/adminEmail'
 import { lastCompletedCycle, formatCycleLabel } from '@/lib/payoutCycle'
 import { formatGb, formatUsd } from '@/lib/format'
@@ -88,10 +88,13 @@ async function sendPayoutReminder(supabase: Awaited<ReturnType<typeof createAdmi
   const deductions = -((adj ?? []).reduce((s: number, a: any) => s + Number(a.amount_usd), 0))
   const { count: pendingPayouts } = await supabase.from('affiliate_payouts').select('id', { count: 'exact', head: true }).eq('status', 'pending')
 
-  // Stamp before sending: one reminder per cycle, even if the send is retried.
-  await supabase.from('platform_settings').upsert({ key: KEY, value: cycle.cycleEnd, updated_at: new Date().toISOString() })
+  // Nothing to stamp (and nothing lost) when there is nobody to tell.
   if (!process.env.ADMIN_EMAIL) return { sent: false, reason: 'no ADMIN_EMAIL' }
-  await sendEmail({
+  // Stamp before sending so two overlapping runs cannot both send, then take the
+  // stamp back if the provider did not accept the message: it used to count as
+  // "sent" regardless, so a provider hiccup on payout day meant no reminder at all.
+  await supabase.from('platform_settings').upsert({ key: KEY, value: cycle.cycleEnd, updated_at: new Date().toISOString() })
+  const delivered = await sendEmailSafe({
     to: process.env.ADMIN_EMAIL,
     subject: `Affiliate payouts are due: ${formatCycleLabel(cycle)}`,
     html: adminNoticeHtml({
@@ -101,6 +104,10 @@ async function sendPayoutReminder(supabase: Awaited<ReturnType<typeof createAdmi
         Run the cycle, then send and mark the payouts paid.`,
       cta: { href: `${appUrl()}/admin/affiliates`, label: 'Open Affiliates →' },
     }),
-  }).catch((e) => console.error('[cron resellers] payout reminder failed', e))
+  })
+  if (!delivered) {
+    await supabase.from('platform_settings').delete().eq('key', KEY)
+    return { sent: false, reason: 'email not delivered — will retry next hour', error: 'payout reminder email was not delivered' }
+  }
   return { sent: true, cycle_end: cycle.cycleEnd, affiliates: people.size }
 }

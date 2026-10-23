@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { anonymisedProfilePatch, rollbackProfilePatch, releaseGeonodeSubUsers, purgeAccountSecrets } from '@/lib/accountDeletion'
+import { anonymisedProfilePatch, rollbackProfilePatch, releaseGeonodeSubUsers, purgeAccountSecrets, listReleasableCredentials } from '@/lib/accountDeletion'
+import { rateLimitedUser } from '@/lib/rateLimit'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { requireStepUp } from '@/lib/reauth'
 import { logSecurityEvent } from '@/lib/securityEvents'
@@ -16,6 +17,11 @@ export async function DELETE(req: Request) {
     if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
+
+    // Each attempt can fan out to the proxy supplier's API and (on success) sends an
+    // email; a stuck or looping client must not be able to hammer either.
+    const throttled = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'delete-account')
+    if (throttled) return throttled
 
     // 2FA step-up — account deletion is irreversible, so an enrolled account
     // needs a verified session, not just a password. See lib/mfa.ts.
@@ -35,15 +41,38 @@ export async function DELETE(req: Request) {
       return NextResponse.json({ error: 'Account already deleted.' }, { status: 400 })
     }
 
+    // A payment that is still in flight would be credited to this account AFTER it is
+    // closed (the webhook / reconcile cannot tell), and nobody would be refunded.
+    // Ask the person to let it settle first. Pending checkouts older than two hours are
+    // abandoned ones; a paid order that never got credited is always a reason to wait.
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
+    const { count: inFlight, error: inFlightErr } = await adminSupabase
+      .from('orders').select('id', { count: 'exact', head: true })
+      .eq('user_id', user.id).eq('bandwidth_credited', false)
+      .or(`and(payment_status.eq.pending,created_at.gt.${twoHoursAgo}),payment_status.eq.paid`)
+    if (inFlightErr) {
+      console.error('delete-account: could not check in-flight payments', inFlightErr)
+      return NextResponse.json({ error: 'Could not verify your account right now. Please try again.' }, { status: 503 })
+    }
+    if ((inFlight ?? 0) > 0) {
+      return NextResponse.json(
+        { error: 'A payment on your account is still being processed. Please wait a few minutes for it to finish, then try again — deleting now would lose it.', code: 'payment_in_flight' },
+        { status: 409 }
+      )
+    }
+
     // Step 3: Clean up live Geonode sub-users before touching local rows —
     // see app/api/admin/delete-user/route.ts for the full rationale (cascade
     // from auth.users would otherwise wipe proxy_credentials with no record
     // of which Geonode sub-users need cleanup).
-    const { data: creds } = await adminSupabase
-      .from('proxy_credentials')
-      .select('id, upstream_sub_user_id')
-      .eq('user_id', user.id)
-      .not('upstream_sub_user_id', 'is', null)
+    // (Includes credentials that only hold a reserved provisioning identity: their
+    // sub-user may exist even though its id was never saved.)
+    let creds
+    try { creds = await listReleasableCredentials(adminSupabase, user.id) }
+    catch (e) {
+      console.error('delete-account: could not list credentials', e)
+      return NextResponse.json({ error: 'Could not verify your account right now. Please try again.' }, { status: 503 })
+    }
 
     // Every sub-user must really be gone before the account is finalised: this
     // used to swallow failures, so an outage left live, usable proxies behind
@@ -51,13 +80,18 @@ export async function DELETE(req: Request) {
     // run), which is fine — so this route is safe to call again. Sub-users that
     // WERE released are tombstoned locally straight away, so an abort halfway
     // through never leaves the database claiming a dead proxy is still live.
-    const { failed: releaseFailed } = await releaseGeonodeSubUsers(adminSupabase, creds ?? [])
+    const { failed: releaseFailed } = await releaseGeonodeSubUsers(adminSupabase, creds)
     if (releaseFailed.length) {
       return NextResponse.json(
         { error: 'We could not remove your proxy sessions right now, so your account was not deleted. Please try again in a few minutes.' },
         { status: 502 }
       )
     }
+
+    // The signed-in browser's own session: needed below to revoke every session of
+    // this account (the admin signOut API is keyed on a JWT of the account's owner,
+    // which THIS route — unlike the admin one — actually holds).
+    const { data: { session: callerSession } } = await supabase.auth.getSession()
 
     // Step 4: Anonymise. Wipes everything personal on the profile — name,
     // email, company, payout destination (wallet / bank / M-Pesa) and the
@@ -84,12 +118,24 @@ export async function DELETE(req: Request) {
     // issued moments before this runs is a stateless JWT — Supabase has no
     // API to revoke one before it naturally expires (only refresh tokens
     // can be revoked, and only via that token owner's own JWT, which
-    // isn't something either this route or admin/delete-user/route.ts
-    // holds for arbitrary calls). middleware.ts's is_deleted check
+    // isn't something admin/delete-user/route.ts holds — this self-service
+    // route does, and revokes with it below). middleware.ts's is_deleted check
     // (migration 0029) is what actually closes that window: it blocks
     // /dashboard, /reseller, /admin, and /invoice for this profile on the
     // very next request regardless of whether the access token itself is
     // technically still "valid".
+    // Revoke every refresh token / session of the account. Done BEFORE the ban (a banned
+    // user's token may no longer be accepted by the sign-out endpoint). The ban blocks
+    // refreshes and middleware blocks the pages; this also ends the sessions themselves,
+    // so no other device keeps a live session on a closed account. Best-effort: if the
+    // ban below fails the person simply has to sign in again.
+    if (callerSession?.access_token) {
+      try {
+        const { error: outErr } = await adminSupabase.auth.admin.signOut(callerSession.access_token, 'global')
+        if (outErr) console.error('[delete-account] global sign-out failed', user.id, outErr.message)
+      } catch (e) { console.error('[delete-account] global sign-out threw', user.id, e) }
+    }
+
     const { error: banError } = await adminSupabase.auth.admin.updateUserById(user.id, {
       ban_duration: '876000h',
     })

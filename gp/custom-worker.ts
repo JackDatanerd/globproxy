@@ -288,7 +288,10 @@ async function taskReportedError(res: Response): Promise<string | null> {
 // nothing alerts or summary produce. As a dependent chain, one Resend timeout in
 // the alerts loop, or a missing mail key making the summary throw, skipped the
 // cleanup for that day. Every task still records its own heartbeat and failure.
-const INDEPENDENT_CHAINS = new Set(['*/5 * * * *', '0 8 * * *'])
+// The hourly chain ('resellers' then 'stock') is independent too: 'stock' carries the
+// stopped-task and usage-sync watchdogs, so a failing 'resellers' task must never be
+// able to switch the watchdogs off (a 400 there did exactly that).
+const INDEPENDENT_CHAINS = new Set(['*/5 * * * *', '0 * * * *', '0 8 * * *'])
 
 // Runs tasks in order. For a dependent chain it stops at the first failure
 // rather than firing blind on top of a known-bad state; for the independent

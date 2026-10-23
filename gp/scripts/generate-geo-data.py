@@ -22,7 +22,18 @@ with open(SRC, "r", encoding="utf-8") as f:
 countries = raw["countries"]
 
 # ---- sanity re-checks before writing anything (cheap insurance) ----
-assert len(countries) == 210, f"expected 210 countries, got {len(countries)}"
+# The supplier's inventory drifts (the header says so), so a hard-coded country count
+# would make this script fail the first time they add or drop one. Sanity-check the
+# SHAPE instead: non-empty, and not a collapse against what is already published.
+assert len(countries) > 0, "no countries in the source file"
+_prev_path = os.path.join(OUT_ROOT, "countries.json")
+if os.path.exists(_prev_path):
+    with open(_prev_path, encoding="utf-8") as _f:
+        _prev = len(json.load(_f))
+    if _prev and len(countries) < _prev * 0.8:
+        sys.exit(f"REFUSING: source has {len(countries)} countries but {_prev} are published (a >20% drop looks like a truncated export). Re-pull upstream-targeting.json.")
+    if len(countries) != _prev:
+        print(f"NOTE: country count changed {_prev} -> {len(countries)}")
 codes = [c["code"] for c in countries]
 assert len(codes) == len(set(codes)), "duplicate country codes!"
 for c in countries:
@@ -87,7 +98,15 @@ print("Wrote", len(countries), "per-country files under", os.path.join(OUT_ROOT,
 # ---- final self-check: re-read everything back and diff counts against source ----
 with open(os.path.join(OUT_ROOT, "countries.json"), encoding="utf-8") as f:
     check_list = json.load(f)
-assert len(check_list) == 210
+assert len(check_list) == len(countries), (len(check_list), len(countries))
+
+# Remove per-country files for countries the supplier no longer lists — they would
+# otherwise stay published forever and keep offering a location that cannot be used.
+_keep = {f"{c['code']}.json" for c in countries}
+for _name in os.listdir(os.path.join(OUT_ROOT, "countries")):
+    if _name.endswith(".json") and _name not in _keep:
+        os.remove(os.path.join(OUT_ROOT, "countries", _name))
+        print("Removed stale", os.path.join(OUT_ROOT, "countries", _name))
 
 total_states_src = sum(len(c.get("states", [])) for c in countries)
 total_cities_src = sum(len(s.get("cities", [])) for c in countries for s in c.get("states", []))

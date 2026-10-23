@@ -41,6 +41,15 @@ for c in countries:
     index[cc] = sorted((r["code"] for r in rows), key=int)
     total += len(rows)
 
+# A country that has lost all its ASNs is skipped above, which used to leave its old
+# file published (and offered in the ISP picker) while the server-side index no longer
+# knew the country. Remove files that are not part of this run.
+_keep = {f"{cc}.json" for cc in index}
+for _name in os.listdir(OUT_DIR):
+    if _name.endswith(".json") and _name not in _keep:
+        os.remove(os.path.join(OUT_DIR, _name))
+        print("Removed stale", os.path.join(OUT_DIR, _name))
+
 with open(INDEX_OUT, "w", encoding="utf-8") as out:
     json.dump(index, out, separators=(",", ":"))
 

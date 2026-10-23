@@ -70,7 +70,7 @@ function htmlToText(html: string): string {
     .trim()
 }
 
-export async function sendEmail(p: { to: string; subject: string; html: string }) {
+export async function sendEmail(p: { to: string; subject: string; html: string; replyTo?: string }) {
   // Enforced here, not just at each call site, so a future caller that
   // interpolates user input into `subject` can't reintroduce this by
   // forgetting to sanitize it themselves.
@@ -85,7 +85,12 @@ export async function sendEmail(p: { to: string; subject: string; html: string }
     headers: { 'Authorization': `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
     // A plain-text alternative alongside the HTML: mail clients that block
     // images/HTML still show something readable, and HTML-only mail scores worse with spam filters.
-    body: JSON.stringify({ from: resolveFromHeader(), to: p.to, subject: safeSubject, html: p.html, text: htmlToText(p.html) }),
+    body: JSON.stringify({
+      from: resolveFromHeader(), to: p.to, subject: safeSubject, html: p.html, text: htmlToText(p.html),
+      // Lets staff answer a customer's report by simply hitting Reply. Header-safe:
+      // CR/LF are stripped like the subject.
+      ...(p.replyTo ? { reply_to: sanitizeHeaderValue(p.replyTo) } : {}),
+    }),
     // Without a bound, one hung provider call would hold every request that
     // awaits an e-mail (2FA confirm, disable, recovery, ...) until the platform kills it.
     signal: AbortSignal.timeout(10_000),
@@ -110,7 +115,7 @@ export async function sendEmail(p: { to: string; subject: string; html: string }
 // awaits, swallows (and logs) any failure — a notice that can't be delivered
 // must never fail or roll back the account change it describes — and reports
 // whether the provider accepted the message.
-export async function sendEmailSafe(p: { to: string; subject: string; html: string }): Promise<boolean> {
+export async function sendEmailSafe(p: { to: string; subject: string; html: string; replyTo?: string }): Promise<boolean> {
   try {
     const res = await sendEmail(p)
     return res.ok

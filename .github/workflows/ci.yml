@@ -1,0 +1,44 @@
+name: CI
+
+# Pull requests used to get exactly one automated check (schema drift, and only when
+# supabase/ changed). Everything else — types, cron wiring — was first exercised by
+# the production deploy. This runs the cheap, deterministic checks on every PR and on
+# demand; deploy.yml still runs them again before shipping.
+#
+# Must live at .github/workflows/ at the repo root, not inside gp/.
+
+on:
+  pull_request:
+    paths:
+      - 'gp/**'
+      - '.github/**'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: gp
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: gp/package-lock.json
+      - run: npm ci
+      - name: schema.sql is a faithful roll-up of the migrations
+        run: npm run check:schema
+      - name: cron schedule / task list / rate-limit bindings agree
+        run: npm run check:cron
+      - name: TypeScript
+        run: npm run typecheck

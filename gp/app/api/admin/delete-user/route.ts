@@ -2,7 +2,7 @@ import { sendEmail, escapeHtml } from '@/lib/email'
 import { authorizeAdmin, readJson, badRequest, isUuid } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
 import { adminNoticeHtml } from '@/lib/adminEmail'
-import { anonymisedProfilePatch, rollbackProfilePatch, releaseGeonodeSubUsers, purgeAccountSecrets } from '@/lib/accountDeletion'
+import { anonymisedProfilePatch, rollbackProfilePatch, releaseGeonodeSubUsers, purgeAccountSecrets, listReleasableCredentials } from '@/lib/accountDeletion'
 import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
@@ -40,13 +40,14 @@ export async function POST(req: Request) {
   // which sub-users existed. Each one released is tombstoned locally the
   // moment it is gone. If any fails, the claim is rolled back and the admin is
   // told exactly what happened: some proxies may already be dead.
-  const { data: creds } = await supabase
-    .from('proxy_credentials')
-    .select('id, upstream_sub_user_id, status')
-    .eq('user_id', user_id)
-    .not('upstream_sub_user_id', 'is', null)
+  let creds
+  try { creds = await listReleasableCredentials(supabase, user_id) }
+  catch (e: any) {
+    await supabase.from('profiles').update(rollbackProfilePatch(tp)).eq('id', user_id)
+    return NextResponse.json({ error: `Could not read the account's proxy sessions (${e?.message ?? e}). Nothing was changed.` }, { status: 503 })
+  }
 
-  const { released, failed } = await releaseGeonodeSubUsers(supabase, creds ?? [])
+  const { released, failed } = await releaseGeonodeSubUsers(supabase, creds)
   if (failed.length) {
     await supabase.from('profiles').update(rollbackProfilePatch(tp)).eq('id', user_id)
     await logAdminAction(supabase, {
@@ -54,7 +55,7 @@ export async function POST(req: Request) {
       details: { released: released.length, failed: failed.length },
     })
     const partial = released.length
-      ? ` ${released.length} of ${(creds ?? []).length} proxy sessions were already released and are now shut down — the account itself was left intact.`
+      ? ` ${released.length} of ${creds.length} proxy sessions were already released and are now shut down — the account itself was left intact.`
       : ' Nothing was changed.'
     return NextResponse.json(
       { error: `Could not release ${failed.length} proxy session${failed.length === 1 ? '' : 's'} upstream.${partial} Try again in a moment.`, failed, released: released.length },

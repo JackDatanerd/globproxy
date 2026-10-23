@@ -1,0 +1,23 @@
+# Dependency and action updates arrive as pull requests (which run ci.yml) instead of
+# going stale silently. Grouped so a week's minor/patch bumps are one PR, not twenty.
+# Majors are left to be taken deliberately.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /gp
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']

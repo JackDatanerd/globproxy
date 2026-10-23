@@ -86,7 +86,10 @@ def main():
             {
                 "code": code,
                 "name": country["name"],
-                "asnCount": len(country["asns"]),
+                # Same rule as generate-asn-data.py (numeric codes, de-duplicated) so the
+                # figure on a /locations page equals what the ISP picker really offers.
+                # .get(): a country with no "asns" key used to crash the whole run.
+                "asnCount": len({str(a.get("code", "")).strip() for a in country.get("asns", []) if str(a.get("code", "")).strip().isdigit()}),
                 "stateCount": len(country.get("states", [])),
                 "cityCount": total_cities,
                 "majorCities": verified,

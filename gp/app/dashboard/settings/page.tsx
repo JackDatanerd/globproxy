@@ -6,7 +6,8 @@ import toast from 'react-hot-toast'
 import TwoFactorSettings from '@/components/dashboard/TwoFactorSettings'
 import { ChangePasswordCard, ChangeEmailCard, SecurityActivityCard, ActiveSessionsCard } from '@/components/dashboard/AccountSecurityCards'
 import { WEBHOOK_EVENTS, WEBHOOK_EVENT_LABELS } from '@/lib/webhookEvents'
-import { apiFetch, apiJson, copyText } from '@/lib/clientApi'
+import { apiFetch, apiJson, copyText, redirectToMfa } from '@/lib/clientApi'
+import { fetchWithReauth } from '@/lib/reauthPrompt'
 import { formatGb } from '@/lib/format'
 
 const COUNTRIES = [
@@ -41,7 +42,8 @@ function SettingsPageInner() {
   // typed confirmation that spells out what is lost.
   const [showDelete, setShowDelete] = useState(false)
   const [deleteText, setDeleteText] = useState('')
-  const [deleteFacts, setDeleteFacts] = useState<{ remainingGb: number; sessions: number } | null>(null)
+  const [deleteFacts, setDeleteFacts] = useState<{ remainingGb: number; sessions: number; unpaidEarningsUsd: number } | null>(null)
+  const [exporting, setExporting] = useState(false)
   const [profileError, setProfileError] = useState<string | null>(null)
 
   // Default auto-allocate
@@ -136,7 +138,12 @@ function SettingsPageInner() {
         })
       }
       const { count } = await sb.from('proxy_credentials').select('id', { count: 'exact', head: true }).eq('user_id', user.id)
-      setDeleteFacts({ remainingGb: Math.max(0, (bw?.total_gb ?? 0) - (bw?.used_gb ?? 0)), sessions: count ?? 0 })
+      // Affiliate earnings not yet paid out are forfeited too (scrub_affiliate_data).
+      // Best-effort: a failed read just hides the line.
+      const { data: unpaid } = await sb.from('affiliate_commissions').select('commission_amount_usd')
+        .eq('referrer_id', user.id).eq('status', 'pending')
+      const unpaidEarningsUsd = (unpaid ?? []).reduce((t: number, r: any) => t + Number(r.commission_amount_usd ?? 0), 0)
+      setDeleteFacts({ remainingGb: Math.max(0, (bw?.total_gb ?? 0) - (bw?.used_gb ?? 0)), sessions: count ?? 0, unpaidEarningsUsd })
 
       // Separate and tolerant: if migration 0063 isn't applied yet this errors,
       // and the page must still load (the toggle then just shows its default).
@@ -202,6 +209,31 @@ function SettingsPageInner() {
       if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Failed to delete account')
       setDeleting(false)
     }
+  }
+
+  // GET /api/user/export — same step-up as deletion (password / authenticator prompt).
+  async function downloadMyData() {
+    setExporting(true)
+    try {
+      const res = await fetchWithReauth('/api/user/export')
+      if (!res.ok) {
+        const data: any = await res.json().catch(() => ({}))
+        if (res.status === 403 && data?.code === 'mfa_required') { redirectToMfa(data); return }
+        if (res.status === 403 && data?.code === 'reauth_required') return
+        throw new Error(data?.error || `Export failed (${res.status})`)
+      }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `globproxy-my-data-${new Date().toISOString().slice(0, 10)}.json`
+      document.body.appendChild(a); a.click(); a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      toast.success('Your data was downloaded')
+    } catch (err: any) {
+      toast.error(err?.message ?? 'Could not export your data')
+    }
+    setExporting(false)
   }
 
   async function saveDefaultAuto(e?: React.FormEvent) {
@@ -825,6 +857,13 @@ function SettingsPageInner() {
           Permanently delete your account. Your proxy credentials stop working immediately and your
           personal data is anonymised. This cannot be undone.
         </p>
+        <p className="text-sm text-ink2 font-light mb-4">
+          Want a copy first?{' '}
+          <button type="button" onClick={downloadMyData} disabled={exporting}
+            className="text-accent underline underline-offset-2 disabled:opacity-50">
+            {exporting ? 'Preparing…' : 'Download my data (JSON)'}
+          </button>
+        </p>
         {!showDelete ? (
           <button onClick={() => setShowDelete(true)}
             className="border border-red-200 text-red-500 px-6 py-2.5 rounded-xl text-sm font-medium hover:bg-red-50 transition-all">
@@ -840,7 +879,11 @@ function SettingsPageInner() {
               <li>
                 Forfeit {deleteFacts ? <strong>{formatGb(deleteFacts.remainingGb)} GB</strong> : 'any'} of unused bandwidth. It is not refunded or transferable.
               </li>
+              {deleteFacts && deleteFacts.unpaidEarningsUsd > 0 && (
+                <li>Forfeit <strong>${deleteFacts.unpaidEarningsUsd.toFixed(2)}</strong> of affiliate earnings that have not been paid out yet, and cancel any payout still waiting to be sent.</li>
+              )}
               <li>Remove your name, email, payout details, webhooks and revoke your API keys.</li>
+              <li>Keep only what accounting requires: records of past payments and invoices.</li>
             </ul>
             <label className="block text-xs text-red-700 mb-1.5">Type <span className="font-mono font-bold">DELETE</span> to confirm</label>
             <input value={deleteText} onChange={e => setDeleteText(e.target.value)} autoComplete="off"

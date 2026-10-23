@@ -12,6 +12,10 @@
 // production for an unknown period — nothing before this script could
 // have caught it; check-schema-sync.mjs was green the whole time.
 //
+// Wired into .github/workflows/deploy.yml as a gate before the build (and runnable by
+// hand as `npm run check:migrations`): code that calls an RPC or column from a
+// migration must not reach production before that migration has been applied.
+//
 // Usage: node scripts/check-migrations-applied.mjs
 // Requires env vars (same ones the app itself uses):
 //   NEXT_PUBLIC_SUPABASE_URL
@@ -38,7 +42,7 @@ if (!url || !key) {
 }
 
 const onDisk = readdirSync(migrationsDir)
-  .filter((f) => f.endsWith('.sql'))
+  .filter((f) => /^\d{4}_[\w-]+\.sql$/.test(f))
   .sort()
 
 const supabase = createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } })

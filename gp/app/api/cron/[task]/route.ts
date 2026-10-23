@@ -2,7 +2,7 @@ import { appUrl } from '@/lib/appUrl'
 import { createAdminClient } from '@/lib/supabase/server'
 import { syncAllUsage } from '@/lib/usageSync'
 import { computeStockStatus } from '@/lib/stockStatus'
-import { sendEmail, escapeHtml } from '@/lib/email'
+import { sendEmail, sendEmailSafe, escapeHtml } from '@/lib/email'
 import { runWebhookRetries, runBandwidthThresholdWebhooks, runIntegrationHousekeeping } from '@/lib/webhooks'
 import { warnExpiringApiKeys } from '@/lib/apiKeyExpiry'
 import { provisionPendingCredentials, reconcileLimitSync, flagStalledPending, alertStuckLimitSync } from '@/lib/credentials'
@@ -14,7 +14,7 @@ import { failPendingOrder } from '@/lib/orderFailure'
 import { flushSecurityNotices } from '@/lib/securityEvents'
 import { REFERRAL_GB_BONUS } from '@/lib/referrals'
 import { fetchAllRows } from '@/lib/dbPaging'
-import { findReportedError, recordCronRun, checkCronFreshness, claimCronLock, releaseCronLock } from '@/lib/cronHealth'
+import { findReportedError, recordCronRun, checkCronFreshness, checkStockWatchdog, checkUsageSyncFreshness, claimCronLock, releaseCronLock } from '@/lib/cronHealth'
 import { runInviteNotices, runResellerMaintenance } from '@/lib/resellerCron'
 import { NextResponse } from 'next/server'
 
@@ -32,57 +32,8 @@ function validateCron(req: Request): boolean {
   return crypto.timingSafeEqual(a, b)
 }
 
-// Usage-sync freshness watchdog. Deliberately called from the 'stock'
-// task rather than living inside the 'usage' task itself — cron-job.org
-// schedules each task as its own separate job, and the whole point is to
-// notice if the 'usage' job specifically stops firing (or starts failing)
-// without anyone watching it directly. This already happened once (see
-// migration 0010's history): cron-job.org auto-disabled the usage job
-// after 26 consecutive failures, and gb_used silently went stale
-// platform-wide with nothing in-app to surface it. A NULL timestamp
-// (never synced yet — e.g. right after a fresh deploy/migration) is
-// treated as "unknown" and skipped rather than alerted, to avoid a false
-// alarm before the first sync has had a chance to run.
-const USAGE_SYNC_STALE_THRESHOLD_MS = 20 * 60 * 1000 // 20 min — ~4x the ~5 min cadence
-
-async function checkUsageSyncFreshness(supabase: Awaited<ReturnType<typeof createAdminClient>>) {
-  const { data: rows } = await supabase
-    .from('platform_settings')
-    .select('key, value')
-    .in('key', ['usage_last_synced_at', 'usage_sync_stale_alerted_at'])
-  const settings = Object.fromEntries((rows ?? []).map(r => [r.key, r.value]))
-
-  if (!settings.usage_last_synced_at) return { stale: false, reason: 'never_synced' }
-
-  const ageMs = Date.now() - new Date(settings.usage_last_synced_at).getTime()
-  const stale = ageMs > USAGE_SYNC_STALE_THRESHOLD_MS
-
-  if (!stale) {
-    // Recovered — clear any prior alert flag so a future staleness re-alerts.
-    if (settings.usage_sync_stale_alerted_at) {
-      await supabase.from('platform_settings').delete().eq('key', 'usage_sync_stale_alerted_at')
-    }
-    return { stale: false }
-  }
-
-  // Already alerted for this ongoing incident — don't spam on every
-  // 'stock' tick until it recovers.
-  if (settings.usage_sync_stale_alerted_at) return { stale: true, already_alerted: true }
-
-  await sendEmail({
-    to: process.env.ADMIN_EMAIL!,
-    subject: `[USAGE SYNC STALE] Last successful sync was ${Math.round(ageMs / 60000)} min ago`,
-    html: `<p>Usage-sync (the 'usage' cron task) hasn't completed successfully in over
-           ${Math.round(USAGE_SYNC_STALE_THRESHOLD_MS / 60000)} minutes.</p>
-           <p><strong>Last known good sync:</strong> ${settings.usage_last_synced_at}</p>
-           <p>gb_used and account balances are going stale until this recovers — check
-           whether the external cron trigger for the 'usage' task is still firing.</p>`,
-  })
-  await supabase.from('platform_settings')
-    .upsert({ key: 'usage_sync_stale_alerted_at', value: new Date().toISOString() }, { onConflict: 'key' })
-
-  return { stale: true, already_alerted: false }
-}
+// Usage-sync freshness watchdog: lib/cronHealth.ts (checkUsageSyncFreshness). It runs from
+// the hourly 'stock' task AND the */5 'security' task, so one dead chain cannot silence it.
 
 // ── Stock check ──────────────────────────────────────────────────
 async function runStockCheck() {
@@ -110,18 +61,19 @@ async function runStockCheck() {
       .from('platform_settings').select('value').eq('key', 'upstream_api_alert_at').maybeSingle()
     const last = row?.value ? new Date(row.value).getTime() : 0
     if (!last || Date.now() - last > 24 * 60 * 60 * 1000) {
-      if (process.env.ADMIN_EMAIL) {
-        await sendEmail({
+      // Stamp the 24h reminder window only when the provider accepted the mail.
+      const delivered = process.env.ADMIN_EMAIL ? await sendEmailSafe({
           to: process.env.ADMIN_EMAIL,
           subject: '[UPSTREAM API FAILING] Could not read proxy provider stock',
           html: `<p>The hourly stock check could not read the proxy provider's account balance, so stock and
                  exposure are unknown. Usage sync and provisioning depend on the same API — check the provider
                  status page and that the reseller API key is still valid.</p>
                  <p style="color:#666">Error (also in the worker logs): <code>${escapeHtml(String((e as any)?.message ?? e).slice(0, 300))}</code></p>`,
-        }).catch((err) => console.error('[stock] failure alert email failed', err))
+        }) : false
+      if (delivered) {
+        await supabase.from('platform_settings')
+          .upsert({ key: 'upstream_api_alert_at', value: new Date().toISOString() }, { onConflict: 'key' })
       }
-      await supabase.from('platform_settings')
-        .upsert({ key: 'upstream_api_alert_at', value: new Date().toISOString() }, { onConflict: 'key' })
     }
     // `error` makes the cron heartbeat (lib/cronHealth) record this run as failed, so it
     // also shows on the admin cron-health panel — not only in the alert email.
@@ -154,9 +106,12 @@ async function runStockCheck() {
     .in('key', ['auto_reload_enabled', 'auto_reload_threshold_gb'])
   const settings = Object.fromEntries((settingsRows ?? []).map(r => [r.key, r.value]))
   const autoReloadEnabled = settings.auto_reload_enabled === 'true'
-  const threshold = autoReloadEnabled && settings.auto_reload_threshold_gb
-    ? Number(settings.auto_reload_threshold_gb)
-    : Number(process.env.STOCK_ALERT_THRESHOLD ?? 10)
+  // A non-numeric value (typed into the admin box, or a bad env var) used to make the
+  // threshold NaN, and `available_gb <= NaN` is always false — the low-stock alert
+  // silently switched itself off. Fall back to the next valid source instead.
+  const finite = (v: unknown) => { const n = Number(v); return v != null && v !== '' && Number.isFinite(n) && n >= 0 ? n : null }
+  const threshold = (autoReloadEnabled ? finite(settings.auto_reload_threshold_gb) : null)
+    ?? finite(process.env.STOCK_ALERT_THRESHOLD) ?? 10
   const exposureBreach = !stock.covered
   const floorBreach = stock.available_gb <= threshold
 
@@ -185,9 +140,9 @@ async function runStockCheck() {
 
   const subject = exposureBreach
     ? `[EXPOSURE ALERT] Stock (${stock.available_gb.toFixed(1)}GB) can't cover unallocated + pending customer GB (${stock.exposure_gb.toFixed(1)}GB)`
-    : `[LOW STOCK] Geonode bandwidth: ${stock.available_gb.toFixed(1)}GB remaining`
-  await sendEmail({
-    to: process.env.ADMIN_EMAIL!,
+    : `[LOW STOCK] Proxy bandwidth stock: ${stock.available_gb.toFixed(1)}GB remaining`
+  const delivered = process.env.ADMIN_EMAIL ? await sendEmailSafe({
+    to: process.env.ADMIN_EMAIL,
     subject,
     html: `<p><strong>Available to allocate:</strong> ${stock.available_gb.toFixed(1)}GB of ${stock.total_gb.toFixed(1)}GB total</p>
            <p><strong>Customer balances not yet allocated to a session:</strong> ${stock.unallocated_balances_gb.toFixed(1)}GB</p>
@@ -196,7 +151,10 @@ async function runStockCheck() {
            <p style="color:#666">Already inside live sessions: ${stock.committed_unused_gb.toFixed(1)}GB unused of ${stock.total_allocated_gb.toFixed(1)}GB allocated — already deducted from Geonode's available figure, so not counted as exposure.</p>
            ${exposureBreach ? '<p style="color:#e24b4a"><strong>If customers turned all their unallocated balance into sessions right now, you would run short.</strong></p>' : ''}
            <p><a href="${appUrl()}/admin/settings">Go to Admin Panel →</a></p>`,
-  })
+  }) : false
+  // Only a delivered alert starts the 24h suppression window; otherwise the next
+  // hourly run tries again. `error` also puts the failed delivery on the heartbeat.
+  if (!delivered) return { action: 'alert_not_delivered', error: 'stock alert email was not delivered', ...stock, usage_sync: syncHealth }
   await supabase.from('platform_settings')
     .upsert({ key: 'stock_alert_state', value: JSON.stringify({ kind: breachKind, at: new Date().toISOString() }) }, { onConflict: 'key' })
   return { action: 'alert_sent', ...stock, usage_sync: syncHealth }
@@ -283,7 +241,8 @@ async function runBandwidthAlerts() {
 
     const { data: profile } = await supabase
       .from('profiles').select('email, full_name, referral_code, affiliate_status').eq('id', acc.user_id).single()
-    if (!profile?.email) continue
+    // Deleted accounts keep their balance row with the email scrubbed to '[deleted]'.
+    if (!profile?.email || profile.email.startsWith('[')) continue
 
     const firstName = escapeHtml(profile.full_name?.split(' ')[0]) || 'there'
     const avail = acc.available_gb
@@ -360,6 +319,7 @@ async function runDailySummary() {
   const { count: newUsers } = await supabase.from('profiles')
     .select('*', { count: 'exact', head: true })
     .gte('created_at', `${yesterday}T00:00:00Z`)
+    .lt('created_at', `${today}T00:00:00Z`) // yesterday only, like the revenue figures above
 
   await sendEmail({
     to: process.env.ADMIN_EMAIL!,
@@ -427,6 +387,7 @@ async function runReconcile() {
     let recovered = 0, mismatched = 0, errors = 0, failed = 0
     for (const o of candidates ?? []) {
       let settled = true // whether to push the next look out by an hour
+      let backoff = false // a persistent error: retry soon, but behind everything not yet looked at
       try {
         const txn = await verifyTransaction(o.paystack_reference!)
         if (txn.status === 'success') {
@@ -451,6 +412,7 @@ async function runReconcile() {
             } else if (result.status === 'error') {
               errors++
               settled = false // retry on the next run
+              backoff = true
             }
           }
         } else if (txn.status === 'failed' && o.payment_status === 'pending') {
@@ -471,10 +433,20 @@ async function runReconcile() {
         // A reference Paystack has never seen is a normal, permanent answer
         // for an abandoned checkout; anything else (outage, network) is
         // retried next run rather than deferred an hour.
-        if (!/not found/i.test(String(e?.message))) { errors++; settled = false }
+        if (!/not found/i.test(String(e?.message))) { errors++; settled = false; backoff = true }
       }
       if (settled) {
         await supabase.from('orders').update({ reconcile_checked_at: new Date().toISOString() }).eq('id', o.id)
+      } else if (backoff) {
+        // An order that errors every time (a bad row, a refused credit) used to keep
+        // reconcile_checked_at NULL/old and so stayed at the FRONT of the queue
+        // forever: ten of them would have starved every other uncredited order for
+        // days. Stamp it so it is looked at again in ~10 minutes but sorts behind
+        // orders that have not had a look yet.
+        const isAged = Date.parse(o.created_at) <= now - 3 * 24 * 60 * 60 * 1000
+        const window = isAged ? 24 * 60 * 60 * 1000 : 60 * 60 * 1000
+        await supabase.from('orders')
+          .update({ reconcile_checked_at: new Date(Date.now() - (window - 10 * 60 * 1000)).toISOString() }).eq('id', o.id)
       }
     }
     return { checked: candidates.length, aged_checked: aged?.length ?? 0, recovered, mismatched, errors, failed }
@@ -599,7 +571,14 @@ async function runSecurity() {
   } catch (e) {
     console.error('[cron security] cleanup threw', e)
   }
-  return { notices_sent: noticesSent, events_purged: purged }
+  // Cross-watchdogs: the hourly 'stock' task watches every other task, so something
+  // other than 'stock' must notice when 'stock' (or the usage sync it also checks) goes
+  // quiet. Both de-duplicate per incident and never throw.
+  const stockWatchdog = await checkStockWatchdog()
+  let usageFreshness: unknown = null
+  try { usageFreshness = await checkUsageSyncFreshness(await createAdminClient()) }
+  catch (e) { console.error('[cron security] usage freshness check failed', e); usageFreshness = { error: 'freshness_check_failed' } }
+  return { notices_sent: noticesSent, events_purged: purged, stock_watchdog: stockWatchdog, usage_freshness: usageFreshness }
 }
 
 // ── Canary payment (continuous end-to-end payment test) ────────────

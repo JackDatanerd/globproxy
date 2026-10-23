@@ -74,6 +74,18 @@ for (const [cron, tasks] of cronMap) {
 }
 for (const t of known) if (!scheduled.has(t)) warnings.push(`task "${t}" is in the cron route but no schedule runs it (fine only if it is manual-only)`)
 
+// ── heartbeat windows ──────────────────────────────────────────────
+// lib/cronHealth.ts CRON_MAX_AGE_SECONDS names tasks that must run within a window.
+// A name that is not a scheduled task would be reported "stopped" forever; a
+// scheduled task missing from it is never noticed when it stops (stock and usage
+// are watched by their own dedicated checks).
+const healthSrc = read('lib/cronHealth.ts')
+const ageBlock = healthSrc.match(/export const CRON_MAX_AGE_SECONDS[^=]*=\s*\{([\s\S]*?)\n\}/)
+if (!ageBlock) errors.push('could not find CRON_MAX_AGE_SECONDS in lib/cronHealth.ts')
+const watched = new Set([...(ageBlock?.[1] ?? '').matchAll(/^\s*(\w+)\s*:/gm)].map((x) => x[1]))
+for (const t of watched) if (!scheduled.has(t)) errors.push(`lib/cronHealth.ts CRON_MAX_AGE_SECONDS watches "${t}", which no schedule runs — it would be reported stopped forever`)
+for (const t of scheduled) if (!watched.has(t) && t !== 'stock' && t !== 'usage') warnings.push(`scheduled task "${t}" has no CRON_MAX_AGE_SECONDS entry, so nothing notices if it stops`)
+
 // ── independent chains ─────────────────────────────────────────────
 const indep = worker.match(/const INDEPENDENT_CHAINS\s*=\s*new Set\(\[([^\]]*)\]\)/)
 if (!indep) errors.push('could not find INDEPENDENT_CHAINS in custom-worker.ts')

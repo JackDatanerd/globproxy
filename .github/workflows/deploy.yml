@@ -29,7 +29,18 @@ on:
     branches: [main]
     paths:
       - 'gp/**'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      skip_migration_gate:
+        description: 'Emergency only: deploy even if the live database is missing migrations'
+        type: boolean
+        default: false
+
+# The jobs below only read the repo; every secret they use is passed explicitly per
+# step. Without this block the GITHUB_TOKEN gets the repository's default
+# permissions, which may be read-write.
+permissions:
+  contents: read
 
 # Two overlapping pushes used to run two deploys at once, and whichever
 # finished last won regardless of commit order. Serialise them, and never
@@ -48,32 +59,53 @@ jobs:
   # step someone has to remember to wire up in repo settings.
   check-schema:
     runs-on: ubuntu-latest
+    # No job may run for the 6-hour default: deploys are serialised through the
+    # concurrency group below, so one hung step would block every later deploy.
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: gp
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
       - name: Check schema.sql is in sync with migrations
         run: node scripts/check-schema-sync.mjs
 
+      - name: Check cron schedule, task list and rate-limit bindings agree
+        run: node scripts/check-cron-sync.mjs
+
   deploy:
     needs: check-schema
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: gp
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
 
       - name: Install dependencies
         run: npm ci
+
+      # Code that calls an RPC or column from a migration must not go live before
+      # that migration has been applied (0022 once sat unapplied in production while
+      # every other check was green). Reads public.schema_migrations from the live
+      # database and fails the deploy if any migration on disk is not recorded.
+      # Apply the migration first (Supabase SQL editor), then push. For a genuine
+      # emergency, run the workflow by hand with `skip_migration_gate` ticked.
+      - name: Check the live database has every migration applied
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.skip_migration_gate) }}
+        run: node scripts/check-migrations-applied.mjs
+        timeout-minutes: 5
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
       - name: Build (Next.js + OpenNext Cloudflare adapter)
         run: npm run build:cf
@@ -103,6 +135,7 @@ jobs:
       # nothing.
       - name: Record the currently live version
         working-directory: gp
+        timeout-minutes: 5
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -125,7 +158,8 @@ jobs:
           fi
 
       - name: Deploy to Cloudflare Workers
-        uses: cloudflare/wrangler-action@v3
+        timeout-minutes: 15
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.15.0
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -194,6 +228,7 @@ jobs:
       # same deploy.
       - name: Push optional Worker secrets
         working-directory: gp
+        timeout-minutes: 5
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -208,14 +243,23 @@ jobs:
           REFERRAL_IP_SALT: ${{ secrets.REFERRAL_IP_SALT }}
           PASSWORD_BREACH_CHECK: ${{ secrets.PASSWORD_BREACH_CHECK }}
         run: |
-          for name in TURNSTILE_SECRET_KEY MFA_ENCRYPTION_KEY MFA_ENCRYPTION_KEY_PREVIOUS INVOICE_SELLER_NAME INVOICE_SELLER_ADDRESS INVOICE_SELLER_TAX_ID SUPABASE_CAPTCHA_ENABLED REFERRAL_IP_SALT PASSWORD_BREACH_CHECK; do
-            value="${!name}"
-            if [ -n "$value" ]; then
-              printf '%s' "$value" | npx wrangler secret put "$name"
-            else
-              echo "::notice::$name is not set in GitHub secrets — leaving the Worker's current value untouched"
-            fi
+          names="TURNSTILE_SECRET_KEY MFA_ENCRYPTION_KEY MFA_ENCRYPTION_KEY_PREVIOUS INVOICE_SELLER_NAME INVOICE_SELLER_ADDRESS INVOICE_SELLER_TAX_ID SUPABASE_CAPTCHA_ENABLED REFERRAL_IP_SALT PASSWORD_BREACH_CHECK"
+          for name in $names; do
+            [ -z "${!name}" ] && echo "::notice::$name is not set in GitHub secrets — leaving the Worker's current value untouched"
           done
+          # ONE `wrangler secret bulk` call, not one `secret put` per name. Every `put`
+          # creates and immediately deploys a new Worker version, so during a key
+          # rotation MFA_ENCRYPTION_KEY was live for a few seconds WITHOUT
+          # MFA_ENCRYPTION_KEY_PREVIOUS — every stored TOTP secret undecryptable, which
+          # locks out step-up (including account deletion). One call = one version.
+          payload=$(node -e '
+            const out = {}
+            for (const n of process.argv.slice(1)) if (process.env[n]) out[n] = process.env[n]
+            process.stdout.write(JSON.stringify(out))
+          ' $names)
+          if [ "$payload" != "{}" ]; then
+            printf '%s' "$payload" | npx wrangler secret bulk
+          fi
           if [ -z "$MFA_ENCRYPTION_KEY" ]; then
             echo "::warning::MFA_ENCRYPTION_KEY is not set in GitHub secrets. If it is not set on the Worker either, TOTP secrets are stored in plaintext. Generate one with: openssl rand -base64 32"
           fi
@@ -239,6 +283,7 @@ jobs:
       # blocked the CI runner would undo every deploy.
       - name: Smoke test (roll back on a broken deploy)
         working-directory: gp
+        timeout-minutes: 12
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -306,3 +351,6 @@ jobs:
         # still logs its own pass/fail in the Actions run either way.
         run: npm run indexnow
         continue-on-error: true
+        # continue-on-error does not stop a HANG: the step used to run up to the job
+        # limit and hold the deploy queue. The script also times out its own requests.
+        timeout-minutes: 5
