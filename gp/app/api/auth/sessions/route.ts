@@ -3,7 +3,7 @@ import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { rateLimited } from '@/lib/rateLimit'
 import { logSecurityEvent } from '@/lib/securityEvents'
 import { sessionIdFromJwt, sessionDevices } from '@/lib/sessionDevices'
-import { requireMfaVerified } from '@/lib/mfa'
+import { requireMfaVerified, revokeVerifiedSessionsForAuthSession } from '@/lib/mfa'
 import { NextResponse } from 'next/server'
 
 // Signed-in devices. GoTrue keeps one row per login in auth.sessions; two
@@ -76,6 +76,9 @@ export async function DELETE(req: Request) {
     console.error('[auth/sessions] revoke failed', user.id, error.message)
     return NextResponse.json({ error: 'Could not sign that device out. Please try again.' }, { status: 500 })
   }
+  // Signing a device out must also end the 2FA trust that device's browser holds
+  // (a trusted browser would otherwise skip the code on its next password sign-in).
+  await revokeVerifiedSessionsForAuthSession(user.id, id)
   if (removed) await logSecurityEvent({ userId: user.id, event: 'session_revoked', req, admin })
   return NextResponse.json({ success: true })
 }

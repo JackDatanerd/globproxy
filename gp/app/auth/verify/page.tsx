@@ -10,6 +10,7 @@ const COOLDOWN_S = 60
 function VerifyForm() {
   const params = useSearchParams()
   const [email, setEmail] = useState(params.get('email') ?? '')
+  const [password, setPassword] = useState('')
   const [sending, setSending] = useState(false)
   const [cooldown, setCooldown] = useState(0)
   const [captcha, setCaptcha] = useState<string | null>(null)
@@ -29,7 +30,7 @@ function VerifyForm() {
       const res = await fetch('/api/auth/resend-confirmation', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, emailRedirectTo: `${location.origin}/auth/callback`, turnstileToken: captcha }),
+        body: JSON.stringify({ email, password: password || undefined, emailRedirectTo: `${location.origin}/auth/callback`, turnstileToken: captcha }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {
@@ -37,6 +38,7 @@ function VerifyForm() {
       } else {
         toast.success('If that address is waiting for confirmation, we’ve sent a new link.')
         setCooldown(COOLDOWN_S)
+        setPassword('')
       }
     } catch {
       toast.error('Network error. Please try again.')
@@ -58,6 +60,10 @@ function VerifyForm() {
           <label className="block text-[10px] font-mono text-muted uppercase tracking-wider">Didn’t get it? Resend to</label>
           <input type="email" required value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" autoComplete="email"
             className="w-full bg-surface border border-border text-ink placeholder-muted px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-accent transition-colors" />
+          <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mt-1">Your password <span className="normal-case tracking-normal">(recommended)</span></label>
+          <input type="password" minLength={8} maxLength={72} value={password} onChange={e => setPassword(e.target.value)} placeholder="Re-enter the password you chose" autoComplete="new-password"
+            className="w-full bg-surface border border-border text-ink placeholder-muted px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-accent transition-colors" />
+          <p className="text-xs text-muted -mt-1">Re-enter it and the new link will keep it, so you can sign in straight away. Leave it blank and the link still confirms your email, but you’ll then need “Forgot password” to sign in the first time.</p>
           <Turnstile onToken={setCaptcha} resetSignal={captchaReset} />
           <button type="submit" disabled={sending || cooldown > 0 || !email}
             className="w-full bg-accent text-white py-3 rounded-xl font-medium text-sm hover:opacity-90 disabled:opacity-60 transition-opacity">

@@ -94,7 +94,7 @@ export async function logSecurityEvent(p: {
  * account hasn't used in the last 180 days. The very first sign-in ever
  * recorded for an account is never "new" (nothing to compare against).
  */
-export async function recordLogin(userId: string, req: Request): Promise<{ newDevice: boolean; ip: string | null; ua: string | null }> {
+export async function recordLogin(userId: string, req: Request, extraMeta: Record<string, unknown> = {}): Promise<{ newDevice: boolean; ip: string | null; ua: string | null }> {
   const { ip, ua } = requestMeta(req)
   try {
     const admin = await createAdminClient()
@@ -107,7 +107,7 @@ export async function recordLogin(userId: string, req: Request): Promise<{ newDe
       .from('security_events').select('id').eq('user_id', userId).eq('event', 'login')
       .eq('meta->>ua_hash', hash).gte('created_at', since).limit(1)
 
-    await logSecurityEvent({ userId, event: 'login', req, meta: { ua_hash: hash }, admin })
+    await logSecurityEvent({ userId, event: 'login', req, meta: { ua_hash: hash, ...extraMeta }, admin })
     return { newDevice: (anyPrior?.length ?? 0) > 0 && (sameDevice?.length ?? 0) === 0, ip, ua }
   } catch (e) {
     console.error('[security_events] recordLogin failed', e)

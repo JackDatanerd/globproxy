@@ -2,7 +2,9 @@ import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { safeNextPath } from '@/lib/safeNext'
 import { RECOVERY_COOKIE_NAME, RECOVERY_TTL_S, makeRecoveryCookieValue } from '@/lib/recoveryCookie'
-import { recordSessionDevice } from '@/lib/sessionDevices'
+import { recordSessionDevice, sessionIdFromJwt } from '@/lib/sessionDevices'
+import { bindVerifiedSessionToAuthSession, getMfaCookieFromRequest } from '@/lib/mfa'
+import { recordLogin, sendNewDeviceNotice } from '@/lib/securityEvents'
 
 // Marks THIS session as having just arrived via an emailed recovery link, so /api/auth/password lets it set a new password without the
 // current one. See lib/recoveryCookie.ts.
@@ -26,6 +28,7 @@ export async function GET(request: Request) {
   const next = safeNextPath(searchParams.get('next'))
 
   let recoveryUserId: string | null = null
+  let emailChangePending = false
 
   if (code) {
     const s = await createClient()
@@ -85,9 +88,27 @@ export async function GET(request: Request) {
       }
     }
 
+    if (data.user && type === 'email_change') emailChangePending = !!(data.user as { new_email?: string | null }).new_email
+
     // The visitor's real IP / user-agent for the "Where you're signed in" card
     // (auth.sessions only has this server's).
-    if (data.user) await recordSessionDevice(data.user.id, data.session?.access_token, request)
+    if (data.user) {
+      await recordSessionDevice(data.user.id, data.session?.access_token, request)
+      await bindVerifiedSessionToAuthSession(data.user.id, getMfaCookieFromRequest(request), sessionIdFromJwt(data.session?.access_token))
+      // Signing in through an e-mailed link is a sign-in like any other: it belongs
+      // in the owner's activity list, and a device the account hasn't used before
+      // gets the same notice a password sign-in would.
+      try {
+        const via = type === 'recovery' ? 'recovery_link' : type === 'email_change' ? 'email_change_link' : 'email_link'
+        const { newDevice, ip, ua } = await recordLogin(data.user.id, request, { via })
+        if (newDevice && data.user.email) {
+          const fullName = typeof data.user.user_metadata?.full_name === 'string' ? data.user.user_metadata.full_name : null
+          await sendNewDeviceNotice(data.user.email, fullName, ip, ua)
+        }
+      } catch (e) {
+        console.error('[auth/callback] login audit failed (non-fatal)', e)
+      }
+    }
 
     // signup/route.ts stores intended_role: 'reseller' in auth user_metadata
     // for the "Apply to resell" signup variant. The working application flow
@@ -119,7 +140,10 @@ export async function GET(request: Request) {
   }
 
   if (type === 'email_change') {
-    return NextResponse.redirect(`${origin}/dashboard/settings?success=email_updated`)
+    // With double confirmation the first link only confirms one side; GoTrue keeps
+    // `new_email` set until both addresses have confirmed. Don't announce a change
+    // that hasn't happened yet.
+    return NextResponse.redirect(`${origin}/dashboard/settings?success=${emailChangePending ? 'email_pending' : 'email_updated'}`)
   }
 
   if (type === 'invite') {

@@ -7,9 +7,10 @@ import { validatePasswordStrict } from '@/lib/passwordPolicy'
 import { verifyCurrentPassword, PASSWORD_THROTTLED_MSG } from '@/lib/passwordCheck'
 import { requireActiveUser } from '@/lib/apiAuth'
 import {
-  isMfaEnrolled, getMfaCookieFromRequest, checkVerifiedSession, issueVerifiedSession,
+  isMfaEnrolled, getMfaCookieFromRequest, checkVerifiedSession, issueVerifiedSession, sessionIdFromJwt,
 } from '@/lib/mfa'
 import { flushSecurityNotices } from '@/lib/securityEvents'
+import { throttleClear } from '@/lib/authThrottle'
 import { RECOVERY_COOKIE_NAME, verifyRecoveryCookieValue } from '@/lib/recoveryCookie'
 import { withMfaCookie } from '../mfa/_cookie'
 import { clearSudoCookie } from '@/lib/reauth'
@@ -68,7 +69,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Enter your current password.' }, { status: 400 })
     }
     if (enrolled) {
-      verifiedBefore = await checkVerifiedSession(getMfaCookieFromRequest(req), user.id)
+      try {
+        verifiedBefore = await checkVerifiedSession(getMfaCookieFromRequest(req), user.id, { throwOnError: true })
+      } catch {
+        return NextResponse.json({ error: 'Could not verify your account right now. Please try again in a moment.' }, { status: 503 })
+      }
       if (!verifiedBefore) {
         return NextResponse.json(
           { error: 'Two-factor verification required. Please verify your code, then retry.', code: 'mfa_required', redirect: '/auth/mfa-verify' },
@@ -77,7 +82,7 @@ export async function POST(req: Request) {
       }
     }
     // Verified in SQL (lib/passwordCheck.ts) — no GoTrue sign-in involved.
-    const pw = await verifyCurrentPassword(user.id, user.email, current_password)
+    const pw = await verifyCurrentPassword(user.id, user.email, current_password, req)
     if (pw === 'throttled') return NextResponse.json({ error: PASSWORD_THROTTLED_MSG }, { status: 429 })
     if (pw !== 'ok') return NextResponse.json({ error: 'Your current password is incorrect.' }, { status: 400 })
     if (current_password === password) {
@@ -105,6 +110,12 @@ export async function POST(req: Request) {
   // an attacker may have been using to hammer the 2FA prompt — so it also lifts
   // any lockout on the authenticator (otherwise the owner could be kept out of
   // their own account by someone who only knows the old password).
+  // The same proof lifts the account-wide sign-in pause (lib/authThrottle.ts), so
+  // someone hammering the login form can't keep the owner out of new locations.
+  if (isRecovery) {
+    await throttleClear('loginacct', user.email)
+    await throttleClear('pwcheckacct', user.id)
+  }
   if (isRecovery && enrolled) {
     const { error: unlockErr } = await admin.rpc('mfa_clear_failures', { p_user_id: user.id })
     if (unlockErr) console.error('[auth/password] could not lift mfa lock', user.id, unlockErr.message)
@@ -119,7 +130,8 @@ export async function POST(req: Request) {
   // working; a recovery caller (email proof only) must pass 2FA again.
   const res = NextResponse.json({ ok: true, needs_mfa: enrolled && !verifiedBefore })
   if (enrolled && verifiedBefore) {
-    const { token, ttlS } = await issueVerifiedSession(user.id)
+    const { data: { session } } = await supabase.auth.getSession()
+    const { token, ttlS } = await issueVerifiedSession(user.id, undefined, req, sessionIdFromJwt(session?.access_token))
     withMfaCookie(res, token, ttlS)
   }
   clearSudoCookie(res)

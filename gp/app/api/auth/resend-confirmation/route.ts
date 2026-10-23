@@ -5,6 +5,7 @@ import { rateLimited, rateLimitedTarget } from '@/lib/rateLimit'
 import { verifyTurnstile, captchaOptions } from '@/lib/turnstile'
 import { holdUntil } from '@/lib/constantTime'
 import { sameOriginUrl } from '@/lib/appUrl'
+import { validatePasswordStrict } from '@/lib/passwordPolicy'
 import { NextResponse } from 'next/server'
 
 // Until now a signup that never got its confirmation email (spam folder,
@@ -15,6 +16,18 @@ import { NextResponse } from 'next/server'
 //
 // Same enumeration discipline as signup/reset: one fixed response whichever
 // branch ran, with the slow (email-sending) branch capped at the same floor.
+//
+// TWO MODES.
+//  - With `password`: the same flow as submitting the signup form again. signUp()
+//    on an unconfirmed address re-sends the link AND starts a PKCE flow, so the
+//    link can sign the visitor in from this browser and /auth/callback hands the
+//    quarantined password back (migration 0060). The password is replaced with the
+//    one typed now ("newest signup wins"), only after the mail provider accepted
+//    the new link.
+//  - Without it: resend() — a link with no PKCE challenge. It still confirms the
+//    address, but the account's password stays quarantined, so the first sign-in
+//    needs "Forgot password". The verify page says so.
+
 const RESPONSE_FLOOR_MS = 1800
 
 function respond() {
@@ -30,7 +43,7 @@ export async function POST(req: Request) {
     const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', 'resend')
     if (limited) return limited
 
-    const { email, emailRedirectTo, turnstileToken } = await req.json().catch(() => ({}))
+    const { email, emailRedirectTo, turnstileToken, password } = await req.json().catch(() => ({}))
     if (typeof email !== 'string' || !email) return NextResponse.json({ error: 'Email required' }, { status: 400 })
     const { valid, error: emailError } = validateEmail(email)
     if (!valid) return NextResponse.json({ error: emailError }, { status: 400 })
@@ -45,6 +58,13 @@ export async function POST(req: Request) {
 
     const safeRedirect = sameOriginUrl(emailRedirectTo)
 
+    // Only judged on the password itself, so a rejection says nothing about the address.
+    const withPassword = typeof password === 'string' && password.length > 0
+    if (withPassword) {
+      const policy = await validatePasswordStrict(password, email)
+      if (!policy.ok) return NextResponse.json({ error: policy.error }, { status: 400 })
+    }
+
     const admin = await createAdminClient()
     const lower = email.trim().toLowerCase()
 
@@ -55,6 +75,30 @@ export async function POST(req: Request) {
     if (!unconfirmed) { await holdUntil(startedAt, RESPONSE_FLOOR_MS); return respond() }
 
     const ssr = await createClient()
+
+    if (withPassword) {
+      const { data: unconfirmedId } = await admin.rpc('auth_unconfirmed_user_id', { check_email: lower })
+      if (!unconfirmedId) { await holdUntil(startedAt, RESPONSE_FLOOR_MS); return respond() }
+      const work = (async () => {
+        // signUp() would otherwise overwrite the metadata with nothing: carry over
+        // what the first signup stored.
+        let meta: Record<string, unknown> = {}
+        try {
+          const { data: u } = await admin.auth.admin.getUserById(unconfirmedId as string)
+          const m = (u?.user?.user_metadata ?? {}) as Record<string, unknown>
+          meta = { full_name: m.full_name, intended_role: m.intended_role }
+        } catch { /* fall through with no metadata */ }
+        const { error: signErr } = await ssr.auth.signUp({
+          email: lower, password,
+          options: { data: meta, emailRedirectTo: safeRedirect, ...captchaOptions(turnstileToken) },
+        })
+        if (signErr) { console.error('[auth/resend-confirmation] re-signup failed:', signErr.status, signErr.message); return }
+        const { error: pwErr } = await admin.rpc('auth_replace_unconfirmed_password', { p_user_id: unconfirmedId as string, p_password: password })
+        if (pwErr) console.error('[auth/resend-confirmation] could not replace unconfirmed password:', pwErr.message)
+      })().catch(e => console.error('[auth/resend-confirmation] re-signup threw', e))
+      await holdUntil(startedAt, RESPONSE_FLOOR_MS, work)
+      return respond()
+    }
     const work = ssr.auth
       .resend({ type: 'signup', email: lower, options: { emailRedirectTo: safeRedirect, ...captchaOptions(turnstileToken) } })
       .then(({ error }) => { if (error) console.error('[auth/resend-confirmation] resend failed:', error.message) })

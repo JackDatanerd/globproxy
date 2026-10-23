@@ -4,7 +4,8 @@ import { rateLimited, clientKey } from '@/lib/rateLimit'
 import { verifyTurnstile, captchaOptions } from '@/lib/turnstile'
 import { throttleHit, throttleClear, THROTTLE_MSG, THROTTLE_ACCOUNT_MSG } from '@/lib/authThrottle'
 import { recordLogin, sendNewDeviceNotice, sendLoginThrottleNotice, logSecurityEvent, isKnownLoginIp, requestMeta } from '@/lib/securityEvents'
-import { recordSessionDevice } from '@/lib/sessionDevices'
+import { recordSessionDevice, sessionIdFromJwt } from '@/lib/sessionDevices'
+import { bindVerifiedSessionToAuthSession, getMfaCookieFromRequest } from '@/lib/mfa'
 import { NextResponse } from 'next/server'
 
 // Server-side sign-in. The login page used to call
@@ -111,6 +112,10 @@ export async function POST(req: Request) {
   }
 
   await recordSessionDevice(data.user.id, data.session?.access_token, req)
+  // A browser that already holds a verified/trusted 2FA cookie keeps using it under
+  // this new login session — remember that, so signing this device out from
+  // Settings later also ends its 2FA trust.
+  await bindVerifiedSessionToAuthSession(data.user.id, getMfaCookieFromRequest(req), sessionIdFromJwt(data.session?.access_token))
   const { newDevice, ip, ua } = await recordLogin(data.user.id, req)
   if (newDevice && data.user.email) {
     await sendNewDeviceNotice(data.user.email, profile?.full_name, ip, ua)

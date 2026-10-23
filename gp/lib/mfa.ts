@@ -236,9 +236,16 @@ async function checkCode(
     return parsed.kind
   } catch (e) {
     if (e instanceof WrongCode) {
+      if (replayed) {
+        // A CORRECT code that was already spent in this 30-second step (sign in,
+        // then straight into a step-up with the same code) is not a wrong guess:
+        // give the slot back so it can't walk the owner into a lockout, and don't
+        // log it as a failure. It still can't succeed — the counter is spent.
+        await refundAttempt(supabase, userId, gate)
+        throw new Error('That code was already used. Wait for the next one to appear in your authenticator and try again.')
+      }
       await logSecurityEvent({ userId, event: 'mfa_failed', req: ctx?.req, admin: supabase, meta: { kind: parsed.kind } })
       if (gate === 'ok_last') await announceLockout(supabase, userId, ctx?.req)
-      if (replayed) throw new Error('That code was already used. Wait for the next one to appear in your authenticator and try again.')
       throw new Error(parsed.kind === 'backup' ? wrongMsg.backup : wrongMsg.totp)
     }
     // Infrastructure failure, not the user's fault — don't let it eat budget.
@@ -327,7 +334,7 @@ export interface ConfirmResult {
   session_ttl_s: number
 }
 
-export async function confirmEnrollment(userId: string, email: string, code: string, req?: Request): Promise<ConfirmResult> {
+export async function confirmEnrollment(userId: string, email: string, code: string, req?: Request, authSessionId?: string | null): Promise<ConfirmResult> {
   const supabase = await createAdminClient()
   const factor = await getFactor(supabase, userId)
   if (!factor) throw new Error('No pending MFA setup found — start setup again.')
@@ -373,7 +380,7 @@ export async function confirmEnrollment(userId: string, email: string, code: str
   // user must STILL receive their backup codes (they're shown exactly once);
   // they simply verify once on the next page.
   try {
-    const { token, ttlS } = await createVerifiedSession(supabase, userId, MFA_SESSION_TTL_MS, { req })
+    const { token, ttlS } = await createVerifiedSession(supabase, userId, MFA_SESSION_TTL_MS, { req, authSessionId })
     return { backup_codes: codes, session_token: token, session_ttl_s: ttlS }
   } catch (e) {
     console.error('[mfa] enrollment committed but verified session could not be created', userId, e)
@@ -393,7 +400,7 @@ export async function verifyFactor(
   userId: string,
   email: string,
   code: string,
-  opts: { remember?: boolean; req?: Request } = {},
+  opts: { remember?: boolean; req?: Request; authSessionId?: string | null } = {},
 ): Promise<VerifyResult> {
   const supabase = await createAdminClient()
   const factor = await getFactor(supabase, userId)
@@ -414,7 +421,7 @@ export async function verifyFactor(
   }
 
   const remembered = ttl === MFA_REMEMBER_TTL_MS
-  const { token, ttlS } = await createVerifiedSessionAfterConsume(supabase, userId, ttl, { req: opts.req, remembered })
+  const { token, ttlS } = await createVerifiedSessionAfterConsume(supabase, userId, ttl, { req: opts.req, remembered, authSessionId: opts.authSessionId })
   if (remembered) await logSecurityEvent({ userId, event: 'mfa_browser_trusted', req: opts.req, admin: supabase })
 
   await logSecurityEvent({ userId, event: 'mfa_verified', req: opts.req, admin: supabase, meta: { kind, remembered } })
@@ -454,7 +461,7 @@ async function createVerifiedSessionAfterConsume(
   supabase: AdminClient,
   userId: string,
   ttlMs: number,
-  opts: { req?: Request; remembered?: boolean },
+  opts: { req?: Request; remembered?: boolean; authSessionId?: string | null },
 ) {
   let lastErr: unknown
   for (let i = 0; i < 3; i++) {
@@ -645,7 +652,18 @@ export async function mfaGate(req: Request, userId: string): Promise<{ response:
   }
   if (!enrolled) return { response: null, enrolled: false }
 
-  const verified = await checkVerifiedSession(getMfaCookieFromRequest(req), userId)
+  let verified: boolean
+  try {
+    verified = await checkVerifiedSession(getMfaCookieFromRequest(req), userId, { throwOnError: true })
+  } catch {
+    return {
+      enrolled: true,
+      response: NextResponse.json(
+        { error: 'Could not verify your account right now. Please try again in a moment.' },
+        { status: 503 }
+      ),
+    }
+  }
   if (!verified) {
     return {
       enrolled: true,
@@ -678,7 +696,7 @@ async function createVerifiedSession(
   supabase: AdminClient,
   userId: string,
   ttlMs: number,
-  meta: { req?: Request; remembered?: boolean } = {},
+  meta: { req?: Request; remembered?: boolean; authSessionId?: string | null } = {},
 ): Promise<{ token: string; ttlS: number }> {
   // A browser that already holds a verified token for THIS account and is
   // verifying again replaces it, instead of leaving the old row behind (it
@@ -691,26 +709,33 @@ async function createVerifiedSession(
   const token = randomHexToken()
   const tokenHash = await sha256Hex(token)
   const expiresAt = new Date(Date.now() + ttlMs).toISOString()
-  const { error } = await supabase
-    .from('mfa_verified_sessions')
-    .insert({
-      token_hash: tokenHash,
-      user_id: userId,
-      expires_at: expiresAt,
-      remembered: !!meta.remembered,
-      user_agent: meta.req?.headers.get('user-agent')?.slice(0, 300) ?? null,
-      ip: meta.req?.headers.get('cf-connecting-ip') ?? null,
-    })
+  const row = {
+    token_hash: tokenHash,
+    user_id: userId,
+    expires_at: expiresAt,
+    remembered: !!meta.remembered,
+    user_agent: meta.req?.headers.get('user-agent')?.slice(0, 300) ?? null,
+    ip: meta.req?.headers.get('cf-connecting-ip') ?? null,
+  }
+  // auth_session_id (migration 0071) ties this proof to the login session it was
+  // earned in, so signing that device out also ends its 2FA trust. If the
+  // migration has not been applied yet, fall back to the old row shape rather
+  // than breaking every verification.
+  let { error } = await supabase.from('mfa_verified_sessions').insert({ ...row, auth_session_id: meta.authSessionId ?? null })
+  if (error && /auth_session_id/i.test(error.message ?? '')) {
+    console.error('[mfa] mfa_verified_sessions.auth_session_id missing — apply migration 0071', error.message)
+    ;({ error } = await supabase.from('mfa_verified_sessions').insert(row))
+  }
   if (error) throw new Error('Could not complete verification. Please try again.')
   return { token, ttlS: Math.floor(ttlMs / 1000) }
 }
 
 /** Mint a fresh verified session for a caller who just re-proved the factor (or just changed their password while verified). */
-export async function issueVerifiedSession(userId: string, ttlMs = MFA_SESSION_TTL_MS, req?: Request): Promise<{ token: string; ttlS: number }> {
-  return createVerifiedSession(await createAdminClient(), userId, ttlMs, { req })
+export async function issueVerifiedSession(userId: string, ttlMs = MFA_SESSION_TTL_MS, req?: Request, authSessionId?: string | null): Promise<{ token: string; ttlS: number }> {
+  return createVerifiedSession(await createAdminClient(), userId, ttlMs, { req, authSessionId })
 }
 
-export async function checkVerifiedSession(token: string | undefined, userId: string): Promise<boolean> {
+export async function checkVerifiedSession(token: string | undefined, userId: string, opts: { throwOnError?: boolean } = {}): Promise<boolean> {
   if (!token) return false
   const supabase = await createAdminClient()
   const tokenHash = await sha256Hex(token)
@@ -724,6 +749,9 @@ export async function checkVerifiedSession(token: string | undefined, userId: st
   // failure here is otherwise indistinguishable from "session expired".
   if (error) {
     console.error('[mfa] checkVerifiedSession query failed — treating as unverified, check this reason before assuming the session actually expired', userId, error)
+    // API gates (mfaGate) ask for the error so an outage is answered 503, not as
+    // "2FA required" (which sends the user to a verify page that cannot work either).
+    if (opts.throwOnError) throw new Error('mfa_verified_sessions lookup failed')
     return false
   }
   if (!data || data.user_id !== userId) return false
@@ -735,6 +763,37 @@ export async function revokeVerifiedSession(token: string | undefined): Promise<
   const supabase = await createAdminClient()
   const tokenHash = await sha256Hex(token)
   await supabase.from('mfa_verified_sessions').delete().eq('token_hash', tokenHash)
+}
+
+/**
+ * Remember which login session a verified/trusted browser is currently using.
+ * Called at every sign-in from a browser that already holds a gp_mfa cookie, so
+ * a later "sign this device out" can end that browser's 2FA trust as well (a
+ * trusted browser survives sign-out by design, but not a revoke from Settings).
+ * Best-effort: never allowed to break a sign-in.
+ */
+export async function bindVerifiedSessionToAuthSession(userId: string, token: string | undefined, authSessionId: string | null): Promise<void> {
+  if (!token || !authSessionId) return
+  try {
+    const supabase = await createAdminClient()
+    const { error } = await supabase.from('mfa_verified_sessions')
+      .update({ auth_session_id: authSessionId })
+      .eq('token_hash', await sha256Hex(token)).eq('user_id', userId)
+    if (error) console.error('[mfa] bindVerifiedSessionToAuthSession failed', userId, error.message)
+  } catch (e) {
+    console.error('[mfa] bindVerifiedSessionToAuthSession threw', userId, e)
+  }
+}
+
+/** Ends the 2FA trust of every browser last seen under this login session (device sign-out). */
+export async function revokeVerifiedSessionsForAuthSession(userId: string, authSessionId: string): Promise<void> {
+  try {
+    const supabase = await createAdminClient()
+    const { error } = await supabase.from('mfa_verified_sessions').delete().eq('user_id', userId).eq('auth_session_id', authSessionId)
+    if (error) console.error('[mfa] revokeVerifiedSessionsForAuthSession failed', userId, error.message)
+  } catch (e) {
+    console.error('[mfa] revokeVerifiedSessionsForAuthSession threw', userId, e)
+  }
 }
 
 /** Revoke every verified browser for the user except (optionally) the one holding `keepToken`. */

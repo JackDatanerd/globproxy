@@ -159,8 +159,10 @@ function SettingsPageInner() {
     if (searchParams.get('apply_reseller') === '1') setShowForm(true)
     // /auth/callback sends a completed e-mail change here. Say so once, then
     // drop the param so a refresh doesn't repeat it.
-    if (searchParams.get('success') === 'email_updated') {
-      toast.success('Your sign-in email was updated.')
+    const emailResult = searchParams.get('success')
+    if (emailResult === 'email_updated' || emailResult === 'email_pending') {
+      if (emailResult === 'email_updated') toast.success('Your sign-in email was updated.')
+      else toast('Link confirmed. The change applies once the other address confirms too — check both inboxes.', { icon: '✉️', duration: 7000 })
       try {
         const u = new URL(window.location.href)
         u.searchParams.delete('success')

@@ -50,7 +50,7 @@ export async function POST(req: Request) {
     if (typeof body.password !== 'string' || !body.password) {
       return NextResponse.json({ error: 'Enter your password to continue.' }, { status: 400 })
     }
-    const pw = await verifyCurrentPassword(user.id, user.email, body.password)
+    const pw = await verifyCurrentPassword(user.id, user.email, body.password, req)
     if (pw === 'throttled') return NextResponse.json({ error: PASSWORD_THROTTLED_MSG }, { status: 429 })
     if (pw !== 'ok') return NextResponse.json({ error: 'That password is incorrect.' }, { status: 400 })
     kind = 'pw'

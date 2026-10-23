@@ -1,5 +1,7 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { throttleHit, throttleClear } from '@/lib/authThrottle'
+import { isKnownLoginIp, requestMeta } from '@/lib/securityEvents'
+import { clientKey } from '@/lib/rateLimit'
 
 export type PasswordCheck = 'ok' | 'wrong' | 'throttled'
 
@@ -14,13 +16,27 @@ export type PasswordCheck = 'ok' | 'wrong' | 'throttled'
  * session per check, and (c) counts against GoTrue's per-IP sign-in limit,
  * which for server-side calls is shared by every customer.
  *
- * Attempts are counted per account (8 per 15 minutes), so a stolen session
- * can't use these endpoints to brute-force the password. A database error is
- * treated as 'wrong' (fail closed): this gate protects sensitive actions.
+ * Throttling (two layers, same idea as the login form):
+ *  1. account + connection: 8 attempts / 15 min. Only the connection that kept
+ *     guessing is paused, so a stolen session on another network cannot use up
+ *     the owner's budget.
+ *  2. account-wide ceiling: 40 / 15 min across every connection. Past it only
+ *     connections this account has signed in from before may keep trying.
+ * Both fail CLOSED: this gate protects sensitive actions, so a throttle outage
+ * must not turn it into an unlimited password oracle. A database error in the
+ * comparison itself is likewise treated as 'wrong'.
  */
-export async function verifyCurrentPassword(userId: string, _email: string, password: string): Promise<PasswordCheck> {
-  const gate = await throttleHit('pwcheck', userId, 8, 15 * 60)
+export async function verifyCurrentPassword(userId: string, email: string, password: string, req?: Request): Promise<PasswordCheck> {
+  const conn = (req ? clientKey(req) : null) ?? 'noip'
+  const gate = await throttleHit('pwcheck', `${userId}|${conn}`, 8, 15 * 60, { failClosed: true })
   if (gate !== 'ok') return 'throttled'
+
+  const acct = await throttleHit('pwcheckacct', userId, 40, 15 * 60, { failClosed: true })
+  if (acct !== 'ok') {
+    const ip = req ? requestMeta(req).ip : null
+    if (!(await isKnownLoginIp(email, ip))) return 'throttled'
+  }
+
   if (typeof password !== 'string' || !password || new TextEncoder().encode(password).length > 72) return 'wrong'
 
   try {
@@ -32,7 +48,7 @@ export async function verifyCurrentPassword(userId: string, _email: string, pass
     console.error('[passwordCheck] auth_verify_password failed', e)
     return 'wrong'
   }
-  await throttleClear('pwcheck', userId)
+  await throttleClear('pwcheck', `${userId}|${conn}`)
   return 'ok'
 }
 

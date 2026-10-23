@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import { SECURITY_EVENT_LABELS } from '@/lib/securityEventLabels'
 import toast from 'react-hot-toast'
 import { shortUa } from '@/lib/userAgent'
+import { fetchWithReauth } from '@/lib/reauthPrompt'
 
 const inputCls = 'w-full bg-surface border border-border px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-accent transition-colors'
 const labelCls = 'block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5'
@@ -84,7 +85,8 @@ export function ChangeEmailCard({ currentEmail, className = 'mb-5' }: { currentE
     setLoading(true)
     setMessage('')
     try {
-      const res = await fetch('/api/auth/change-email', {
+      // Accounts with 2FA are asked for a fresh authenticator code (403 reauth_required).
+      const res = await fetchWithReauth('/api/auth/change-email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ new_email: f.email, current_password: f.password }),

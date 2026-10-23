@@ -1,6 +1,6 @@
 import { rejectCrossSite } from '@/lib/apiAuth'
 import { createClient } from '@/lib/supabase/server'
-import { verifyFactor, publicMfaError } from '@/lib/mfa'
+import { verifyFactor, publicMfaError, sessionIdFromJwt } from '@/lib/mfa'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { rateLimited } from '@/lib/rateLimit'
 import { withMfaCookie } from '../_cookie'
@@ -25,9 +25,10 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Enter your 6-digit code or a backup code.' }, { status: 400 })
   }
 
+  const { data: { session } } = await supabase.auth.getSession()
   try {
     const { session_token, session_ttl_s, used_backup_code, backup_codes_remaining } =
-      await verifyFactor(user.id, user.email, code, { remember: remember === true, req })
+      await verifyFactor(user.id, user.email, code, { remember: remember === true, req, authSessionId: sessionIdFromJwt(session?.access_token) })
     const res = NextResponse.json({ used_backup_code, backup_codes_remaining, remembered: session_ttl_s > 12 * 60 * 60 })
     return withMfaCookie(res, session_token, session_ttl_s)
   } catch (e: any) {

@@ -1,6 +1,6 @@
 import { rejectCrossSite } from '@/lib/apiAuth'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { confirmEnrollment, publicMfaError } from '@/lib/mfa'
+import { confirmEnrollment, publicMfaError, sessionIdFromJwt } from '@/lib/mfa'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { rateLimited } from '@/lib/rateLimit'
 import { withMfaCookie } from '../_cookie'
@@ -27,8 +27,9 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Enter the 6-digit code from your authenticator app.' }, { status: 400 })
   }
 
+  const { data: { session } } = await supabase.auth.getSession()
   try {
-    const { backup_codes, session_token, session_ttl_s } = await confirmEnrollment(user.id, user.email, code, req)
+    const { backup_codes, session_token, session_ttl_s } = await confirmEnrollment(user.id, user.email, code, req, sessionIdFromJwt(session?.access_token))
 
     await logSecurityEvent({ userId: user.id, event: 'mfa_enabled', req })
 

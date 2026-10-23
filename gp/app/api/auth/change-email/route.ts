@@ -4,7 +4,8 @@ import { NextResponse } from 'next/server'
 import { validateEmail } from '@/lib/email-validation'
 import { rateLimited } from '@/lib/rateLimit'
 import { requireActiveUser } from '@/lib/apiAuth'
-import { requireMfaVerified } from '@/lib/mfa'
+import { mfaGate } from '@/lib/mfa'
+import { readCookie, verifySudoCookieValue, SUDO_COOKIE_NAME } from '@/lib/reauth'
 import { verifyCurrentPassword, PASSWORD_THROTTLED_MSG } from '@/lib/passwordCheck'
 import { appUrl } from '@/lib/appUrl'
 import { logSecurityEvent, sendEmailChangeNotice, maskEmail } from '@/lib/securityEvents'
@@ -27,8 +28,18 @@ export async function POST(req: Request) {
 
   const inactive = await requireActiveUser(user.id)
   if (inactive) return inactive
-  const mfa = await requireMfaVerified(req, user.id)
+  // Changing the sign-in email is an account-takeover primitive, so an account with
+  // 2FA needs a FRESH authenticator/backup code (same step-up as payout, API keys,
+  // webhooks and deletion), not just the 12 h / 30 d verified-browser cookie. Accounts
+  // without 2FA already prove themselves with the current password in this request.
+  const { response: mfa, enrolled } = await mfaGate(req, user.id)
   if (mfa) return mfa
+  if (enrolled && !(await verifySudoCookieValue(readCookie(req, SUDO_COOKIE_NAME), user.id, 'totp'))) {
+    return NextResponse.json(
+      { error: 'Enter a fresh code from your authenticator app to continue.', code: 'reauth_required', method: 'totp' },
+      { status: 403 }
+    )
+  }
 
   const { new_email, current_password } = await req.json().catch(() => ({}))
   if (typeof new_email !== 'string' || typeof current_password !== 'string' || !new_email || !current_password) {
@@ -42,7 +53,7 @@ export async function POST(req: Request) {
   }
 
   // Throwaway-client check, discarded with scope 'local' (see lib/passwordCheck.ts).
-  const pw = await verifyCurrentPassword(user.id, user.email, current_password)
+  const pw = await verifyCurrentPassword(user.id, user.email, current_password, req)
   if (pw === 'throttled') return NextResponse.json({ error: PASSWORD_THROTTLED_MSG }, { status: 429 })
   if (pw !== 'ok') return NextResponse.json({ error: 'Your current password is incorrect.' }, { status: 400 })
 
