@@ -30,12 +30,21 @@ export async function POST(req: Request) {
     .maybeSingle()
   if (!order) return NextResponse.json({ error: 'Order not found' }, { status: 404 })
   if (!order.dispute_status) return NextResponse.json({ error: 'This order has no dispute.' }, { status: 409 })
+  if (order.dispute_status === 'won' && body.outcome === 'won') return NextResponse.json({ error: 'This dispute is already recorded as won.' }, { status: 409 })
   if (order.dispute_status === 'lost') return NextResponse.json({ error: 'This dispute is already recorded as lost.' }, { status: 409 })
 
   if (body.outcome === 'won') {
-    const { error } = await supabase.from('orders')
-      .update({ dispute_status: 'won', dispute_resolution: reason }).eq('id', order.id)
+    // Conditional on the status we just read: a concurrent 'lost' (admin or
+    // webhook) must never be overwritten by 'won'.
+    const { data: updated, error } = await supabase.from('orders')
+      .update({ dispute_status: 'won', dispute_resolution: reason })
+      .eq('id', order.id)
+      .eq('dispute_status', order.dispute_status)
+      .select('id')
     if (error) return NextResponse.json({ error: 'Could not record the outcome. Please try again.' }, { status: 500 })
+    if (!updated || updated.length === 0) {
+      return NextResponse.json({ error: 'This dispute changed while you were working (it may have just been settled). Reload and check its current status.' }, { status: 409 })
+    }
     await logAdminAction(supabase, { adminId, action: 'order.dispute_won', targetUserId: order.user_id, targetRef: order.id, details: { reason } })
     return NextResponse.json({ success: true, outcome: 'won' })
   }

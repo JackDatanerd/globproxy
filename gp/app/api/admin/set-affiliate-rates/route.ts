@@ -1,6 +1,7 @@
 import { authorizeAdmin, readJson, badRequest, isUuid } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
 import { NextResponse } from 'next/server'
+import { validateAffiliateRates } from '@/lib/rates'
 
 // Edit the commission rates of an affiliate who's already approved.
 // Previously the only post-approval lever was the Verified Operator
@@ -14,8 +15,8 @@ export async function POST(req: Request) {
   const body = await readJson<{ userId?: string; introRate?: unknown; lifetimeRate?: unknown }>(req)
   if (!body || !isUuid(body.userId)) return badRequest('User ID missing or invalid')
   const { introRate, lifetimeRate } = body
-  const ok = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 1
-  if (!ok(introRate) || !ok(lifetimeRate)) return badRequest('Commission rates must be numbers between 0 and 1')
+  const rateErr = validateAffiliateRates(introRate, lifetimeRate)
+  if (rateErr) return badRequest(rateErr)
 
   const { data: existing } = await supabase
     .from('profiles')
@@ -35,7 +36,7 @@ export async function POST(req: Request) {
 
   const { error } = await supabase
     .from('profiles')
-    .update({ affiliate_commission_rate: introRate, affiliate_commission_rate_lifetime: lifetimeRate })
+    .update({ affiliate_commission_rate: introRate as number, affiliate_commission_rate_lifetime: lifetimeRate as number })
     .eq('id', body.userId)
     .eq('is_verified_operator', false)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })

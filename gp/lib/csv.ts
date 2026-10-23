@@ -50,6 +50,8 @@ export function csvResponse(csv: string, filenameBase: string): NextResponse {
     status: 200,
     headers: {
       'Content-Type': 'text/csv; charset=utf-8',
+      // Exports hold personal / financial data: never let a shared cache or the browser's back button keep them.
+      'Cache-Control': 'no-store',
       'Content-Disposition': `attachment; filename="${filenameBase}-${date}.csv"`,
     },
   })

@@ -62,6 +62,11 @@ const nextConfig: NextConfig = {
         source: '/((?!dashboard|reseller|admin|invoice).*)',
         headers: [{ key: CSP_HEADER_NAME, value: CSP_POLICY }],
       },
+      // Admin API answers (user lists, payout destinations, exports) are never cacheable.
+      {
+        source: '/api/admin/:path*',
+        headers: [{ key: 'Cache-Control', value: 'no-store' }],
+      },
       // The Worker is also reachable at its *.workers.dev address (see the
       // note in wrangler.jsonc). Keep that copy of the site out of search
       // results so it cannot compete with, or duplicate, the real domain.

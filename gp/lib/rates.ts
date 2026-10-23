@@ -8,6 +8,21 @@ export const DEFAULT_AFFILIATE_LIFETIME_RATE = 0.15
 export const VERIFIED_OPERATOR_INTRO_RATE = 0.4
 export const VERIFIED_OPERATOR_LIFETIME_RATE = 0.2
 
+// Ceiling for a hand-set affiliate rate: the Verified Operator rates are the most
+// this product's margins were designed around, so no manual approval or edit may
+// exceed them (a typo such as 1 instead of 0.1 used to pay out 100%).
+export const MAX_AFFILIATE_INTRO_RATE = VERIFIED_OPERATOR_INTRO_RATE
+export const MAX_AFFILIATE_LIFETIME_RATE = VERIFIED_OPERATOR_LIFETIME_RATE
+
+// null when valid, otherwise a message fit to show the admin.
+export function validateAffiliateRates(intro: unknown, lifetime: unknown): string | null {
+  const num = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 1
+  if (!num(intro) || !num(lifetime)) return 'Commission rates must be numbers between 0 and 1'
+  if (intro > MAX_AFFILIATE_INTRO_RATE + 1e-9) return `The first-90-days rate cannot exceed ${MAX_AFFILIATE_INTRO_RATE * 100}%`
+  if (lifetime > MAX_AFFILIATE_LIFETIME_RATE + 1e-9) return `The lifetime rate cannot exceed ${MAX_AFFILIATE_LIFETIME_RATE * 100}%`
+  return null
+}
+
 // 30% → "30%", 12.5% → "12.5%" (Math.round(rate*100) used to print 13%).
 export function formatRatePct(rate: number | null | undefined): string {
   const pct = Number(rate ?? 0) * 100

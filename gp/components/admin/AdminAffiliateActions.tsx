@@ -2,7 +2,7 @@
 import { useState } from 'react'
 import toast from 'react-hot-toast'
 import { adminPost } from '@/lib/adminFetch'
-import { formatRatePct, ratePctValue, VERIFIED_OPERATOR_INTRO_RATE, VERIFIED_OPERATOR_LIFETIME_RATE, DEFAULT_AFFILIATE_INTRO_RATE, DEFAULT_AFFILIATE_LIFETIME_RATE } from '@/lib/rates'
+import { formatRatePct, ratePctValue, VERIFIED_OPERATOR_INTRO_RATE, VERIFIED_OPERATOR_LIFETIME_RATE, DEFAULT_AFFILIATE_INTRO_RATE, DEFAULT_AFFILIATE_LIFETIME_RATE, MAX_AFFILIATE_INTRO_RATE, MAX_AFFILIATE_LIFETIME_RATE } from '@/lib/rates'
 
 // One component, one discriminated prop shape, for every affiliate-side
 // admin button. 'markPaid' takes a payoutId — a whole cycle's payout to one
@@ -15,12 +15,22 @@ type Props =
 // Prompts take whole percentages ("30"), the API takes fractions (0.30).
 // `def` is pre-filled EXACTLY (ratePctValue) — it used to be Math.round()ed, so
 // accepting the default on a 12.5% rate silently rewrote it to 13%.
-function askPercent(label: string, def: string): number | null {
-  const raw = window.prompt(label, def)
+// `max` is the ceiling as a fraction (the API enforces the same one).
+function askPercent(label: string, def: string, max: number): number | null {
+  const maxPct = Math.round(max * 10000) / 100
+  const raw = window.prompt(`${label} (max ${maxPct}%)`, def)
   if (raw === null) return null
   const n = Number(raw.replace('%', '').trim())
-  if (!Number.isFinite(n) || n < 0 || n > 100) { toast.error('Enter a percentage between 0 and 100'); return null }
+  if (raw.trim() === '' || !Number.isFinite(n) || n < 0 || n > maxPct) { toast.error(`Enter a percentage between 0 and ${maxPct}`); return null }
   return n / 100
+}
+
+// Required free-text reason for a decision that changes what an affiliate earns.
+function askReason(label: string): string | null {
+  const reason = window.prompt(label, '')
+  if (reason === null) return null
+  if (reason.trim().length < 3) { toast.error('A reason (at least 3 characters) is required'); return null }
+  return reason.trim()
 }
 
 export default function AdminAffiliateActions(props: Props) {
@@ -33,9 +43,9 @@ export default function AdminAffiliateActions(props: Props) {
 
     switch (props.action) {
       case 'approve': {
-        const intro = askPercent(`Commission % for the first 90 days of each referral (default ${formatRatePct(DEFAULT_AFFILIATE_INTRO_RATE)}):`, ratePctValue(DEFAULT_AFFILIATE_INTRO_RATE))
+        const intro = askPercent(`Commission % for the first 90 days of each referral (default ${formatRatePct(DEFAULT_AFFILIATE_INTRO_RATE)}):`, ratePctValue(DEFAULT_AFFILIATE_INTRO_RATE), MAX_AFFILIATE_INTRO_RATE)
         if (intro === null) return
-        const lifetime = askPercent(`Commission % after the first 90 days (default ${formatRatePct(DEFAULT_AFFILIATE_LIFETIME_RATE)}):`, ratePctValue(DEFAULT_AFFILIATE_LIFETIME_RATE))
+        const lifetime = askPercent(`Commission % after the first 90 days (default ${formatRatePct(DEFAULT_AFFILIATE_LIFETIME_RATE)}):`, ratePctValue(DEFAULT_AFFILIATE_LIFETIME_RATE), MAX_AFFILIATE_LIFETIME_RATE)
         if (lifetime === null) return
         path = '/api/admin/approve-affiliate'; body = { userId: props.userId, introRate: intro, lifetimeRate: lifetime }; success = 'Affiliate approved'
         break
@@ -63,14 +73,20 @@ export default function AdminAffiliateActions(props: Props) {
         path = '/api/admin/void-payout'; body = { payoutId: props.payoutId, reason }; success = 'Payout voided'
         break
       }
-      case 'grantVerifiedOperator':
+      case 'grantVerifiedOperator': {
         if (!confirm(`Make this affiliate a Verified Operator? Their rates rise to ${formatRatePct(VERIFIED_OPERATOR_INTRO_RATE)} / ${formatRatePct(VERIFIED_OPERATOR_LIFETIME_RATE)} (a higher existing rate is kept).`)) return
-        path = '/api/admin/grant-verified-operator'; body = { userId: props.userId }; success = 'Granted Verified Operator'
+        const reason = askReason('Why is this affiliate being made a Verified Operator? (required — recorded in the audit log)')
+        if (reason === null) return
+        path = '/api/admin/grant-verified-operator'; body = { userId: props.userId, reason }; success = 'Granted Verified Operator'
         break
-      case 'revokeVerifiedOperator':
+      }
+      case 'revokeVerifiedOperator': {
         if (!confirm('Revoke Verified Operator? Their rates go back to what they had before the upgrade.')) return
-        path = '/api/admin/grant-verified-operator'; body = { userId: props.userId, revoke: true }; success = 'Verified Operator revoked'
+        const reason = askReason('Why is Verified Operator being revoked? (required — recorded in the audit log)')
+        if (reason === null) return
+        path = '/api/admin/grant-verified-operator'; body = { userId: props.userId, revoke: true, reason }; success = 'Verified Operator revoked'
         break
+      }
       case 'suspendAffiliate': {
         if (!confirm('Suspend this affiliate? New referrals stop earning commission and payouts are skipped until reinstated. Earned commissions are kept.')) return
         const reason = window.prompt('Reason (optional — included in the email to the affiliate):', '')
@@ -82,9 +98,9 @@ export default function AdminAffiliateActions(props: Props) {
         path = '/api/admin/suspend-affiliate'; body = { userId: props.userId, action: 'reinstate' }; success = 'Affiliate reinstated'
         break
       case 'editRates': {
-        const intro = askPercent('New commission % for the first 90 days:', ratePctValue(props.currentIntro))
+        const intro = askPercent('New commission % for the first 90 days:', ratePctValue(props.currentIntro), MAX_AFFILIATE_INTRO_RATE)
         if (intro === null) return
-        const lifetime = askPercent('New commission % after the first 90 days:', ratePctValue(props.currentLifetime))
+        const lifetime = askPercent('New commission % after the first 90 days:', ratePctValue(props.currentLifetime), MAX_AFFILIATE_LIFETIME_RATE)
         if (lifetime === null) return
         path = '/api/admin/set-affiliate-rates'; body = { userId: props.userId, introRate: intro, lifetimeRate: lifetime }; success = 'Rates updated'
         break

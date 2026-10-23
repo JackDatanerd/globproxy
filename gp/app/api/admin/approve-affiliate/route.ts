@@ -1,5 +1,5 @@
 import { authorizeAdmin, readJson, badRequest, isUuid } from '@/lib/adminAuth'
-import { DEFAULT_AFFILIATE_INTRO_RATE, DEFAULT_AFFILIATE_LIFETIME_RATE } from '@/lib/rates'
+import { DEFAULT_AFFILIATE_INTRO_RATE, DEFAULT_AFFILIATE_LIFETIME_RATE, validateAffiliateRates } from '@/lib/rates'
 import { resolvePendingApplication } from '@/lib/adminApplications'
 import { appUrl } from '@/lib/adminEmail'
 import { NextResponse } from 'next/server'
@@ -17,20 +17,18 @@ export async function POST(req: Request) {
   // validated here too so bad admin input fails with a clear message.
   const rate1 = body.introRate ?? DEFAULT_AFFILIATE_INTRO_RATE
   const rate2 = body.lifetimeRate ?? DEFAULT_AFFILIATE_LIFETIME_RATE
-  if (typeof rate1 !== 'number' || !Number.isFinite(rate1) || rate1 < 0 || rate1 > 1 ||
-      typeof rate2 !== 'number' || !Number.isFinite(rate2) || rate2 < 0 || rate2 > 1) {
-    return badRequest('Commission rates must be between 0 and 1')
-  }
+  const rateErr = validateAffiliateRates(rate1, rate2)
+  if (rateErr) return badRequest(rateErr)
 
   const result = await resolvePendingApplication({
     supabase: auth.supabase, adminId: auth.adminId, userId: body.userId,
     statusColumn: 'affiliate_status',
-    updates: { affiliate_status: 'approved', affiliate_commission_rate: rate1, affiliate_commission_rate_lifetime: rate2 },
+    updates: { affiliate_status: 'approved', affiliate_commission_rate: rate1 as number, affiliate_commission_rate_lifetime: rate2 as number },
     audit: { action: 'affiliate.approve', details: { intro_rate: rate1, lifetime_rate: rate2 } },
     email: {
       subject: 'Your GlobProxy affiliate application was approved',
       heading: 'Affiliate application approved ✓',
-      body: (n) => `Hi ${n}, your affiliate application has been approved. You'll earn ${formatRatePct(rate1)} on your referrals' orders for their first 90 days, then ${formatRatePct(rate2)} on all their later orders.`,
+      body: (n) => `Hi ${n}, your affiliate application has been approved. You'll earn ${formatRatePct(rate1 as number)} on your referrals' orders for their first 90 days, then ${formatRatePct(rate2 as number)} on all their later orders.`,
       cta: { href: `${appUrl()}/dashboard/referrals`, label: 'Get your referral link →' },
     },
   })

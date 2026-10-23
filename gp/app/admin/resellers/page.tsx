@@ -1,17 +1,31 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import AdminResellerActions from '@/components/admin/AdminResellerActions'
 import AdminApiAccessActions from '@/components/admin/AdminApiAccessActions'
+import AdminPager, { parsePage, cleanSearch } from '@/components/admin/AdminPager'
 import { formatGb } from '@/lib/format'
 
-export default async function AdminResellersPage() {
+const PAGE_SIZE = 50
+const LIST_CAP = 100 // pending applications shown at once
+
+export default async function AdminResellersPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+  const sp = await searchParams
+  const page = parsePage(sp.page)
+  const q = cleanSearch(sp.q)
+  const from = (page - 1) * PAGE_SIZE
   const supabase = await createAdminClient()
-  const [{ data: resellers }, { data: applicants }, { data: apiApplicants }] = await Promise.all([
-    // Deleted accounts keep role = 'reseller' on their '[deleted]' tombstone
-    // row, so every list here excludes is_deleted — they used to show up as
-    // "active resellers" (and as pending applicants).
-    supabase.from('profiles').select('*').eq('role', 'reseller').eq('is_deleted', false).order('created_at', { ascending: false }),
-    supabase.from('profiles').select('*').eq('role', 'user').eq('reseller_status', 'pending').eq('is_deleted', false).order('created_at', { ascending: false }),
-    supabase.from('profiles').select('*').eq('role', 'reseller').eq('api_access_status', 'pending').eq('is_deleted', false).order('created_at', { ascending: false }),
+  // Deleted accounts keep role = 'reseller' on their '[deleted]' tombstone
+  // row, so every list here excludes is_deleted — they used to show up as
+  // "active resellers" (and as pending applicants). The active list is paged and
+  // searchable (it used to be unbounded, silently cut off at 1000 rows) and the
+  // pending lists are capped with their real totals shown.
+  let resellerQuery = supabase.from('profiles')
+    .select('id, full_name, email, is_suspended, created_at', { count: 'exact' })
+    .eq('role', 'reseller').eq('is_deleted', false)
+  if (q) resellerQuery = resellerQuery.or(`email.ilike.%${q}%,full_name.ilike.%${q}%`)
+  const [{ data: resellers, count: resellerCount }, { data: applicants, count: applicantCount }, { data: apiApplicants, count: apiApplicantCount }] = await Promise.all([
+    resellerQuery.order('created_at', { ascending: false }).range(from, from + PAGE_SIZE - 1),
+    supabase.from('profiles').select('id, full_name, email, reseller_application', { count: 'exact' }).eq('role', 'user').eq('reseller_status', 'pending').eq('is_deleted', false).order('created_at', { ascending: false }).limit(LIST_CAP),
+    supabase.from('profiles').select('id, full_name, email, api_access_application', { count: 'exact' }).eq('role', 'reseller').eq('api_access_status', 'pending').eq('is_deleted', false).order('created_at', { ascending: false }).limit(LIST_CAP),
   ])
 
   const resellerIds = resellers?.map(r => r.id) ?? []
@@ -33,7 +47,7 @@ export default async function AdminResellersPage() {
           <h2 className="font-display font-bold text-base text-ink mb-3">
             Pending applications
             <span className="ml-2 text-xs font-mono bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full">
-              {applicants.length}
+              {applicantCount ?? applicants.length}
             </span>
           </h2>
           <div className="flex flex-col gap-3">
@@ -95,7 +109,7 @@ export default async function AdminResellersPage() {
           <h2 className="font-display font-bold text-base text-ink mb-3">
             Pending API access requests
             <span className="ml-2 text-xs font-mono bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full">
-              {apiApplicants.length}
+              {apiApplicantCount ?? apiApplicants.length}
             </span>
           </h2>
           <div className="flex flex-col gap-3">
@@ -148,8 +162,13 @@ export default async function AdminResellersPage() {
 
       {/* Active resellers */}
       <div className="bg-white border border-border rounded-xl overflow-hidden">
-        <div className="px-6 py-4 border-b border-border">
-          <h2 className="font-display font-bold text-base text-ink">Resellers ({resellers?.length ?? 0})</h2>
+        <div className="px-6 py-4 border-b border-border flex flex-wrap items-center justify-between gap-3">
+          <h2 className="font-display font-bold text-base text-ink">Resellers ({(resellerCount ?? 0).toLocaleString()}{q ? ' matching' : ''})</h2>
+          <form method="get" className="flex items-center gap-2">
+            <input name="q" defaultValue={q} placeholder="Search email or name…"
+              className="w-56 bg-white border border-border px-3 py-1.5 rounded-lg text-xs focus:outline-none focus:border-accent" />
+            <button className="text-xs font-mono px-3 py-1.5 rounded-lg border border-border text-ink2 hover:border-ink2">Search</button>
+          </form>
         </div>
         {resellers && resellers.length > 0 ? (
           <table className="w-full">
@@ -192,9 +211,10 @@ export default async function AdminResellersPage() {
             </tbody>
           </table>
         ) : (
-          <div className="text-center py-14 text-muted text-sm font-light">No active resellers yet.</div>
+          <div className="text-center py-14 text-muted text-sm font-light">{q ? 'No resellers match.' : 'No active resellers yet.'}</div>
         )}
       </div>
+      <AdminPager basePath="/admin/resellers" page={page} pageSize={PAGE_SIZE} total={resellerCount ?? 0} params={{ q }} />
     </div>
   )
 }

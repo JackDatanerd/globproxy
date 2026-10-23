@@ -4,24 +4,58 @@ import AdminAffiliateActions from '@/components/admin/AdminAffiliateActions'
 import RunPayoutCycleButton from '@/components/admin/RunPayoutCycleButton'
 import ExportPayoutsButton from '@/components/admin/ExportPayoutsButton'
 import AdminPendingPayouts, { type PendingPayoutRow } from '@/components/admin/AdminPendingPayouts'
+import AdminPager, { parsePage, cleanSearch } from '@/components/admin/AdminPager'
 import { formatCycleLabel } from '@/lib/payoutCycle'
 import { formatRatePct, DEFAULT_AFFILIATE_INTRO_RATE, DEFAULT_AFFILIATE_LIFETIME_RATE } from '@/lib/rates'
 
-export default async function AdminAffiliatesPage() {
+const PAGE_SIZE = 50
+const LIST_CAP = 100      // pending applications / suspended affiliates shown at once
+const PAYOUT_CAP = 500    // pending payouts shown at once
+
+export default async function AdminAffiliatesPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+  const sp = await searchParams
+  const page = parsePage(sp.page)
+  const q = cleanSearch(sp.q)
+  const voOnly = sp.vo === '1'
+
   const supabase = await createAdminClient()
   // Deleted accounts keep their affiliate_status on the '[deleted]' tombstone,
   // so every list excludes is_deleted. 'suspended' affiliates get their own
   // section (status can now be set by /api/admin/suspend-affiliate).
-  const [{ data: applicants }, { data: affiliates }, { data: suspendedAffiliates }, { data: pendingPayouts }, { data: paidPayouts }, earningsRes] = await Promise.all([
-    supabase.from('profiles').select('*').eq('affiliate_status', 'pending').eq('is_deleted', false).order('created_at', { ascending: false }),
-    supabase.from('profiles').select('*').eq('affiliate_status', 'approved').eq('is_deleted', false).order('created_at', { ascending: false }),
-    supabase.from('profiles').select('*').eq('affiliate_status', 'suspended').eq('is_deleted', false).order('created_at', { ascending: false }),
-    supabase.from('affiliate_payouts').select('*, referrer:referrer_id(email, full_name, is_deleted, is_suspended, affiliate_status)').eq('status', 'pending').order('cycle_start', { ascending: false }),
+  // Active affiliates are paged / searchable / filterable: this list used to be
+  // one unbounded fetch (silently cut off at PostgREST's 1000 rows) of every
+  // column on the profile.
+  const from = (page - 1) * PAGE_SIZE
+  let activeQuery = supabase.from('profiles')
+    .select('id, full_name, email, created_at, is_verified_operator, verified_operator_since, affiliate_commission_rate, affiliate_commission_rate_lifetime', { count: 'exact' })
+    .eq('affiliate_status', 'approved').eq('is_deleted', false)
+  if (voOnly) activeQuery = activeQuery.eq('is_verified_operator', true)
+  if (q) activeQuery = activeQuery.or(`email.ilike.%${q}%,full_name.ilike.%${q}%`)
+
+  const [
+    { data: applicants, count: applicantCount },
+    { data: affiliates, count: activeCount, error: activeErr },
+    { data: suspendedAffiliates, count: suspendedCount },
+    { data: pendingPayouts, count: pendingPayoutCount, error: payoutsErr },
+    { data: paidPayouts },
+    { count: totalActive },
+    { count: totalVo },
+  ] = await Promise.all([
+    supabase.from('profiles').select('id, full_name, email, affiliate_application, created_at', { count: 'exact' }).eq('affiliate_status', 'pending').eq('is_deleted', false).order('created_at', { ascending: false }).limit(LIST_CAP),
+    activeQuery.order('created_at', { ascending: false }).range(from, from + PAGE_SIZE - 1),
+    supabase.from('profiles').select('id, full_name, email, is_verified_operator', { count: 'exact' }).eq('affiliate_status', 'suspended').eq('is_deleted', false).order('created_at', { ascending: false }).limit(LIST_CAP),
+    supabase.from('affiliate_payouts').select('*, referrer:referrer_id(email, full_name, is_deleted, is_suspended, affiliate_status)', { count: 'exact' }).eq('status', 'pending').order('cycle_start', { ascending: false }).limit(PAYOUT_CAP),
     supabase.from('affiliate_payouts').select('id, amount_usd, cycle_start, cycle_end, payout_method, paid_at, payment_reference, referrer:referrer_id(email, full_name), payer:paid_by(email)').eq('status', 'paid').order('paid_at', { ascending: false }).limit(15),
-    // Per-affiliate totals computed in SQL (migration 0043) — not by pulling
-    // every commission row through a giant `.in()` filter.
-    supabase.rpc('admin_affiliate_earnings'),
+    supabase.from('profiles').select('id', { count: 'exact', head: true }).eq('affiliate_status', 'approved').eq('is_deleted', false),
+    supabase.from('profiles').select('id', { count: 'exact', head: true }).eq('affiliate_status', 'approved').eq('is_deleted', false).eq('is_verified_operator', true),
   ])
+  // Per-affiliate totals computed in SQL (migrations 0043 / 0067) — only for the
+  // affiliates on screen, not by pulling every commission row through a giant
+  // `.in()` filter.
+  const shownIds = [...(affiliates ?? []), ...(suspendedAffiliates ?? [])].map(a => a.id)
+  const earningsRes = shownIds.length > 0
+    ? await supabase.rpc('admin_affiliate_earnings', { p_referrer_ids: shownIds })
+    : { data: [] as unknown[] }
 
   const earningsByAffiliate: Record<string, { accruing: number; awaiting: number; paid: number }> = {}
   for (const e of (earningsRes.data ?? []) as { referrer_id: string; accruing_usd: number; awaiting_usd: number; paid_usd: number }[]) {
@@ -61,15 +95,38 @@ export default async function AdminAffiliatesPage() {
         </div>
       </div>
 
+      {(activeErr || payoutsErr) && (
+        <div className="mb-6 text-xs bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-2">
+          Some of this page could not be loaded ({[activeErr && 'affiliates', payoutsErr && 'pending payouts'].filter(Boolean).join(', ')}). What is empty below may not really be empty — reload before acting on it.
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+        {([
+          ['Active affiliates', totalActive ?? 0],
+          ['Verified Operators', totalVo ?? 0],
+          ['Pending applications', applicantCount ?? 0],
+          ['Suspended', suspendedCount ?? 0],
+        ] as [string, number][]).map(([l, v]) => (
+          <div key={l} className="bg-white border border-border rounded-xl p-4">
+            <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-1">{l}</div>
+            <div className="font-display text-xl font-bold text-ink">{v.toLocaleString()}</div>
+          </div>
+        ))}
+      </div>
+
       {/* Pending applications */}
       {applicants && applicants.length > 0 && (
         <div className="mb-8">
           <h2 className="font-display font-bold text-base text-ink mb-3">
             Pending applications
             <span className="ml-2 text-xs font-mono bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full">
-              {applicants.length}
+              {applicantCount ?? applicants.length}
             </span>
           </h2>
+          {(applicantCount ?? 0) > applicants.length && (
+            <p className="text-xs text-muted mb-2">Showing the newest {applicants.length} — approve or reject some to see the rest.</p>
+          )}
           <div className="flex flex-col gap-3">
             {applicants.map(a => {
               const app = a.affiliate_application as any
@@ -119,7 +176,7 @@ export default async function AdminAffiliatesPage() {
             Pending payouts
             {pendingPayouts && pendingPayouts.length > 0 && (
               <span className="ml-2 text-xs font-mono bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full">
-                {pendingPayouts.length}
+                {pendingPayoutCount ?? pendingPayouts.length}
               </span>
             )}
           </h2>
@@ -128,6 +185,11 @@ export default async function AdminAffiliatesPage() {
             <RunPayoutCycleButton />
           </div>
         </div>
+        {(pendingPayoutCount ?? 0) > payoutRows.length && (
+          <div className="mb-3 text-xs bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-4 py-2">
+            Showing the newest {payoutRows.length} of {(pendingPayoutCount ?? 0).toLocaleString()} pending payouts — mark some paid to see the rest.
+          </div>
+        )}
         {payoutRows.length > 0 ? (
           <AdminPendingPayouts rows={payoutRows} />
         ) : (
@@ -139,8 +201,19 @@ export default async function AdminAffiliatesPage() {
 
       {/* Active affiliates */}
       <div className="bg-white border border-border rounded-xl overflow-hidden">
-        <div className="px-6 py-4 border-b border-border">
-          <h2 className="font-display font-bold text-base text-ink">Active affiliates ({affiliates?.length ?? 0})</h2>
+        <div className="px-6 py-4 border-b border-border flex flex-wrap items-center justify-between gap-3">
+          <h2 className="font-display font-bold text-base text-ink">
+            Active affiliates ({(activeCount ?? 0).toLocaleString()}{q || voOnly ? ' matching' : ''})
+          </h2>
+          <form method="get" className="flex flex-wrap items-center gap-2">
+            <input name="q" defaultValue={q} placeholder="Search email or name…"
+              className="w-56 bg-white border border-border px-3 py-1.5 rounded-lg text-xs focus:outline-none focus:border-accent" />
+            <label className="flex items-center gap-1.5 text-xs font-mono text-ink2">
+              <input type="checkbox" name="vo" value="1" defaultChecked={voOnly} /> Verified Operators only
+            </label>
+            <button className="text-xs font-mono px-3 py-1.5 rounded-lg border border-border text-ink2 hover:border-ink2">Filter</button>
+            {(q || voOnly) && <Link href="/admin/affiliates" className="text-xs font-mono px-2 py-1.5 text-muted hover:text-ink">Clear</Link>}
+          </form>
         </div>
         {affiliates && affiliates.length > 0 ? (
           <table className="w-full">
@@ -192,16 +265,17 @@ export default async function AdminAffiliatesPage() {
             </tbody>
           </table>
         ) : (
-          <div className="text-center py-14 text-muted text-sm font-light">No approved affiliates yet.</div>
+          <div className="text-center py-14 text-muted text-sm font-light">{q || voOnly ? 'No affiliates match.' : 'No approved affiliates yet.'}</div>
         )}
       </div>
+      <AdminPager basePath="/admin/affiliates" page={page} pageSize={PAGE_SIZE} total={activeCount ?? 0} params={{ q, vo: voOnly ? '1' : '' }} />
 
       {/* Suspended affiliates */}
       {suspendedAffiliates && suspendedAffiliates.length > 0 && (
         <div className="bg-white border border-border rounded-xl overflow-hidden mt-8">
           <div className="px-6 py-4 border-b border-border">
-            <h2 className="font-display font-bold text-base text-ink">Suspended affiliates ({suspendedAffiliates.length})</h2>
-            <p className="text-xs text-muted mt-1">New referrals don't earn and payouts are skipped. Commissions already earned are kept.</p>
+            <h2 className="font-display font-bold text-base text-ink">Suspended affiliates ({(suspendedCount ?? suspendedAffiliates.length).toLocaleString()})</h2>
+            <p className="text-xs text-muted mt-1">New referrals don't earn and payouts are skipped. Commissions already earned are kept.{(suspendedCount ?? 0) > suspendedAffiliates.length ? ` Showing the newest ${suspendedAffiliates.length}.` : ''}</p>
           </div>
           <table className="w-full">
             <tbody>

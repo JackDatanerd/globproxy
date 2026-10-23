@@ -167,6 +167,10 @@ export function generateReference(): string {
 // single place that decides what a refund does. Omit `amount_major` for the
 // full remaining amount. `amount_major` is in the transaction's OWN currency
 // (USD for card orders, KES for M-Pesa orders), in major units.
+export class RefundOutcomeUnknownError extends Error {
+  constructor(message: string) { super(message); this.name = 'RefundOutcomeUnknownError' }
+}
+
 export async function createRefund(params: { reference: string; amount_major?: number; currency?: string; merchant_note?: string }) {
   const body: Record<string, unknown> = { transaction: params.reference }
   if (params.amount_major != null) {
@@ -175,13 +179,26 @@ export async function createRefund(params: { reference: string; amount_major?: n
   }
   if (params.merchant_note) body.merchant_note = params.merchant_note.slice(0, 200)
 
-  const res = await fetch(`${BASE}/refund`, {
-    signal: AbortSignal.timeout(20000),
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${SECRET}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  const data = await res.json().catch(() => ({}))
+  // A timeout, a dropped connection or a 5xx does NOT tell us whether Paystack
+  // accepted the refund — it may have, and only the response was lost. Those are
+  // reported as RefundOutcomeUnknownError so the caller leaves the in-flight claim
+  // in place (a retry could otherwise refund the customer twice). Only a clear
+  // 4xx rejection from Paystack is a definite "nothing was started".
+  let res: Response
+  try {
+    res = await fetch(`${BASE}/refund`, {
+      signal: AbortSignal.timeout(20000),
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${SECRET}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  } catch (e: any) {
+    throw new RefundOutcomeUnknownError(`No answer from Paystack (${e?.name ?? 'network error'}); the refund may or may not have started.`)
+  }
+  const data = await res.json().catch(() => null)
+  if (res.status >= 500 || data == null) {
+    throw new RefundOutcomeUnknownError(`Paystack returned an unusable answer (HTTP ${res.status}); the refund may or may not have started.`)
+  }
   if (!data?.status) throw new Error(data?.message ?? 'Paystack refund request failed')
   return data.data as { status?: string; amount?: number; transaction?: { reference?: string } }
 }

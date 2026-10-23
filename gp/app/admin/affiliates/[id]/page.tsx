@@ -1,11 +1,13 @@
 import Link from 'next/link'
 import type { ReactNode } from 'react'
 import AdminReasonActionButton from '@/components/admin/AdminReasonActionButton'
+import AdminAffiliateActions from '@/components/admin/AdminAffiliateActions'
 import { notFound } from 'next/navigation'
 import { createAdminClient } from '@/lib/supabase/server'
 import { isUuid } from '@/lib/adminAuth'
 import { formatCycleLabel } from '@/lib/payoutCycle'
-import { AFFILIATE_HOLD_HOURS, formatRatePct } from '@/lib/referrals'
+import { AFFILIATE_HOLD_HOURS } from '@/lib/referrals'
+import { formatRatePct, DEFAULT_AFFILIATE_INTRO_RATE, DEFAULT_AFFILIATE_LIFETIME_RATE } from '@/lib/rates'
 
 const usd = (n: unknown) => `$${Number(n ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 const day = (s: string | null) => s ? new Date(s).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' }) : '—'
@@ -36,7 +38,7 @@ export default async function AdminAffiliateDetailPage({ params }: { params: Pro
     supabase.from('affiliate_payouts')
       .select('id, cycle_start, cycle_end, amount_usd, status, payout_method, paid_at, payment_reference')
       .eq('referrer_id', id).order('cycle_start', { ascending: false }).limit(50),
-    supabase.rpc('admin_affiliate_earnings'),
+    supabase.rpc('admin_affiliate_earnings', { p_referrer_ids: [id] }),
     supabase.from('referrals').select('*', { count: 'exact', head: true }).eq('referrer_id', id),
     supabase.from('affiliate_adjustments')
       .select('id, created_at, amount_usd, reason, payout_id, waived_at')
@@ -48,7 +50,7 @@ export default async function AdminAffiliateDetailPage({ params }: { params: Pro
   // audit log — so a rate on this page can be traced to the decision behind it.
   const { data: voHistory } = await supabase
     .from('admin_audit_log')
-    .select('created_at, action, details, admin:admin_id(email)')
+    .select('id, created_at, action, details, admin:admin_id(email)')
     .eq('target_user_id', id)
     .like('action', 'verified_operator.%')
     .order('created_at', { ascending: false })
@@ -87,6 +89,29 @@ export default async function AdminAffiliateDetailPage({ params }: { params: Pro
         <Link href="/admin/affiliates" className="text-xs font-mono text-accent hover:underline whitespace-nowrap mt-1">← Affiliates</Link>
       </div>
 
+      {!p.is_deleted && (
+        <div className="flex flex-wrap gap-2 mb-6">
+          {p.affiliate_status === 'pending' && (<>
+            <AdminAffiliateActions userId={p.id} action="approve" />
+            <AdminAffiliateActions userId={p.id} action="reject" />
+          </>)}
+          {p.affiliate_status === 'approved' && (<>
+            {(p.is_verified_operator || !p.is_suspended) && (
+              <AdminAffiliateActions userId={p.id} action={p.is_verified_operator ? 'revokeVerifiedOperator' : 'grantVerifiedOperator'} />
+            )}
+            {!p.is_verified_operator && (
+              <AdminAffiliateActions userId={p.id} action="editRates"
+                currentIntro={Number(p.affiliate_commission_rate ?? DEFAULT_AFFILIATE_INTRO_RATE)} currentLifetime={Number(p.affiliate_commission_rate_lifetime ?? DEFAULT_AFFILIATE_LIFETIME_RATE)} />
+            )}
+            <AdminAffiliateActions userId={p.id} action="suspendAffiliate" />
+          </>)}
+          {p.affiliate_status === 'suspended' && (<>
+            {p.is_verified_operator && <AdminAffiliateActions userId={p.id} action="revokeVerifiedOperator" />}
+            <AdminAffiliateActions userId={p.id} action="reinstateAffiliate" />
+          </>)}
+        </div>
+      )}
+
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
         {tiles.map(([l, v]) => (
           <div key={l} className="bg-white border border-border rounded-xl p-5">
@@ -118,14 +143,15 @@ export default async function AdminAffiliateDetailPage({ params }: { params: Pro
       </div>
 
       {(voHistory?.length ?? 0) > 0 && (
-        <Section title="Verified Operator history" empty="" rows={voHistory ?? []} heads={['When', 'Action', 'By', 'Rates (intro / lifetime)']}
+        <Section title="Verified Operator history" empty="" rows={voHistory ?? []} heads={['When', 'Action', 'By', 'Rates (intro / lifetime)', 'Reason']}
           cell={(r: any) => {
             const d = r.details ?? {}
             const grant = r.action === 'verified_operator.grant'
             const a = grant ? d.intro_rate : d.restored_intro_rate
             const b = grant ? d.lifetime_rate : d.restored_lifetime_rate
             return [day(r.created_at), grant ? 'Granted' : 'Revoked', (r.admin as any)?.email ?? 'system',
-              a != null && b != null ? `${formatRatePct(a)} / ${formatRatePct(b)}` : '—']
+              a != null && b != null ? `${formatRatePct(a)} / ${formatRatePct(b)}` : '—',
+              d.reason ?? '—']
           }} />
       )}
 
@@ -181,7 +207,7 @@ function Section({ title, empty, rows, heads, cell }: { title: string; empty: st
             </thead>
             <tbody>
               {rows.map((r, i) => (
-                <tr key={r.id} className={i < rows.length - 1 ? 'border-b border-border' : ''}>
+                <tr key={r.id ?? i} className={i < rows.length - 1 ? 'border-b border-border' : ''}>
                   {cell(r).map((c, j) => <td key={j} className="px-6 py-3 text-xs font-mono text-ink">{c}</td>)}
                 </tr>
               ))}

@@ -1,3 +1,4 @@
+import { suspendedReasonLabel } from '@/lib/suspendReason'
 import Link from 'next/link'
 import { createAdminClient } from '@/lib/supabase/server'
 import AdminPager, { parsePage, cleanSearch } from '@/components/admin/AdminPager'
@@ -114,14 +115,14 @@ export default async function AdminCredentialsPage({ searchParams }: { searchPar
                   }`}>{c.status}</span>
                   {c.status === 'suspended' && c.suspended_reason && (
                     <div className="text-[10px] font-mono text-muted mt-1">
-                      {c.suspended_reason === 'admin' ? 'disabled individually' : c.suspended_reason === 'account' ? 'with the account' : 'account deleted'}
+                      {suspendedReasonLabel(c.suspended_reason)}
                     </div>
                   )}
                 </td>
                 <td className="px-5 py-3 text-xs font-mono text-muted">
                   {new Date(c.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}
                 </td>
-                <td className="px-5 py-3">{c.suspended_reason !== 'deleted' && <AdminCredentialAction credentialId={c.id} status={c.status} />}</td>
+                <td className="px-5 py-3">{c.suspended_reason === 'deleted' ? null : c.suspended_reason === 'customer' ? <span className="text-[10px] font-mono text-muted">only the customer can resume</span> : <AdminCredentialAction credentialId={c.id} status={c.status} />}</td>
               </tr>
             ))}
           </tbody>

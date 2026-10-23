@@ -1,6 +1,7 @@
 import type { AdminSupabase } from '@/lib/adminAuth'
 import { getSubUserUsage, updateSubUserTrafficLimit } from '@/lib/geonode'
 import { syncUserUsage } from '@/lib/usageSync'
+import { dispatchWebhook } from '@/lib/webhooks'
 
 // Suspending an account used to block the dashboard and the API but leave
 // every live Geonode sub-user working — a suspended abuser kept proxying
@@ -13,7 +14,7 @@ import { syncUserUsage } from '@/lib/usageSync'
 // NOTE: the cap is applied to the sub-user's cumulative counter. It never
 // touches activeUntil (that would reset usage — see geonode.ts).
 
-type CredRow = { id: string; upstream_sub_user_id: string | null; gb_allocated: number | string | null; status: string }
+type CredRow = { id: string; upstream_sub_user_id: string | null; gb_allocated: number | string | null; status: string; label?: string | null }
 
 export type ProxyToggleResult = { changed: number; failed: { id: string; error: string }[]; kept_disabled?: number }
 
@@ -51,7 +52,7 @@ export async function disableUserCredentials(supabase: AdminSupabase, userId: st
 
   const { data: creds } = await supabase
     .from('proxy_credentials')
-    .select('id, upstream_sub_user_id, gb_allocated, status')
+    .select('id, upstream_sub_user_id, gb_allocated, status, label')
     .eq('user_id', userId)
     .eq('status', 'active')
 
@@ -60,6 +61,9 @@ export async function disableUserCredentials(supabase: AdminSupabase, userId: st
     try {
       await disableCredential(supabase, cred, 'account')
       result.changed++
+      // The owner's integrations hear about it (deferred: one first-attempt per
+      // credential inline could stall the admin request on a slow endpoint).
+      await dispatchWebhook(userId, 'session_suspended', { credential_id: cred.id, label: cred.label ?? null, source: 'account' }, { defer: true })
     } catch (e: any) {
       console.error('[admin-proxy] failed to disable credential', cred.id, e)
       result.failed.push({ id: cred.id, error: e?.message ?? 'unknown error' })
@@ -71,7 +75,7 @@ export async function disableUserCredentials(supabase: AdminSupabase, userId: st
 export async function enableUserCredentials(supabase: AdminSupabase, userId: string): Promise<ProxyToggleResult> {
   const { data: creds } = await supabase
     .from('proxy_credentials')
-    .select('id, upstream_sub_user_id, gb_allocated, status')
+    .select('id, upstream_sub_user_id, gb_allocated, status, label')
     .eq('user_id', userId)
     .eq('status', 'suspended')
     .or('suspended_reason.is.null,suspended_reason.eq.account')
@@ -90,6 +94,7 @@ export async function enableUserCredentials(supabase: AdminSupabase, userId: str
     try {
       await enableCredential(supabase, cred)
       result.changed++
+      await dispatchWebhook(userId, 'session_resumed', { credential_id: cred.id, label: cred.label ?? null, source: 'account' }, { defer: true })
     } catch (e: any) {
       console.error('[admin-proxy] failed to re-enable credential', cred.id, e)
       result.failed.push({ id: cred.id, error: e?.message ?? 'unknown error' })

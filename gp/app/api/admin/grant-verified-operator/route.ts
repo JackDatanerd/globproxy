@@ -20,10 +20,14 @@ export async function POST(req: Request) {
   if (!auth.ok) return auth.response
   const { supabase, adminId } = auth
 
-  const body = await readJson<{ userId?: string; revoke?: boolean }>(req)
+  const body = await readJson<{ userId?: string; revoke?: boolean; reason?: unknown }>(req)
   if (!body || !isUuid(body.userId)) return badRequest('User ID missing or invalid')
   const userId = body.userId
   const revoke = body.revoke === true
+  // Granting or revoking changes what the affiliate earns, so the decision is
+  // always recorded with a reason (audit log + the history on the affiliate page).
+  if (typeof body.reason !== 'string' || body.reason.trim().length < 3) return badRequest('A reason (at least 3 characters) is required')
+  const reason = body.reason.trim().slice(0, 300)
 
   const { data: existing } = await supabase
     .from('profiles')
@@ -59,7 +63,7 @@ export async function POST(req: Request) {
     if (revokeErr) return NextResponse.json({ error: revokeErr.message }, { status: 500 })
     if (!revoked) return NextResponse.json({ error: 'This affiliate is not a Verified Operator.' }, { status: 409 })
 
-    await logAdminAction(supabase, { adminId, action: 'verified_operator.revoke', targetUserId: userId, details: { restored_intro_rate: restoreIntro, restored_lifetime_rate: restoreLifetime } })
+    await logAdminAction(supabase, { adminId, action: 'verified_operator.revoke', targetUserId: userId, details: { reason, restored_intro_rate: restoreIntro, restored_lifetime_rate: restoreLifetime } })
 
     if (revoked.email && revoked.email !== '[deleted]') {
       await sendEmailSafe({
@@ -112,7 +116,7 @@ export async function POST(req: Request) {
   if (updateErr) return NextResponse.json({ error: updateErr.message }, { status: 500 })
   if (!operator) return NextResponse.json({ error: 'This affiliate can no longer be upgraded (status changed).' }, { status: 409 })
 
-  await logAdminAction(supabase, { adminId, action: 'verified_operator.grant', targetUserId: userId, details: { intro_rate: newIntro, lifetime_rate: newLifetime, prev_intro_rate: prevIntro, prev_lifetime_rate: prevLifetime } })
+  await logAdminAction(supabase, { adminId, action: 'verified_operator.grant', targetUserId: userId, details: { reason, intro_rate: newIntro, lifetime_rate: newLifetime, prev_intro_rate: prevIntro, prev_lifetime_rate: prevLifetime } })
 
   if (operator.email && operator.email !== '[deleted]') {
     await sendEmailSafe({

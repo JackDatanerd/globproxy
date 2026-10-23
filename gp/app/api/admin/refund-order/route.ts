@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { authorizeAdmin, readJson, isUuid, badRequest } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
-import { createRefund } from '@/lib/paystack'
+import { createRefund, RefundOutcomeUnknownError } from '@/lib/paystack'
 
 // POST { orderId, amountUsd?, reason } — starts a refund with Paystack.
 // Nothing local changes here: Paystack answers "pending", and the
@@ -93,7 +93,19 @@ export async function POST(req: Request) {
     })
     return NextResponse.json({ success: true, amount_usd: amount, status: result?.status ?? 'pending' })
   } catch (err: any) {
-    // Paystack refused the request: nothing is in flight, so allow a retry.
+    if (err instanceof RefundOutcomeUnknownError) {
+      // We cannot tell whether Paystack started the refund. Keep the in-flight
+      // claim (it clears on the refund.processed/failed webhook or after 24h) so a
+      // retry cannot pay the customer twice, and make the admin check Paystack.
+      await logAdminAction(supabase, {
+        adminId, action: 'order.refund_unconfirmed', targetUserId: order.user_id, targetRef: order.id,
+        details: { amount_usd: amount, reason, error: String(err.message) },
+      })
+      return NextResponse.json({
+        error: 'Paystack did not confirm the refund, so it may still have started. The order is locked against a second request — check the Paystack dashboard; the lock clears automatically when Paystack reports the refund processed or failed, or after 24 hours.',
+      }, { status: 502 })
+    }
+    // Paystack refused the request outright: nothing is in flight, so allow a retry.
     await releaseClaim()
     await logAdminAction(supabase, {
       adminId, action: 'order.refund_failed', targetUserId: order.user_id, targetRef: order.id,

@@ -21,7 +21,7 @@ export async function POST(req: Request) {
 
   const { data: cred } = await supabase
     .from('proxy_credentials')
-    .select('id, user_id, label, upstream_sub_user_id, gb_allocated, status, owner:user_id(is_suspended, is_deleted)')
+    .select('id, user_id, label, upstream_sub_user_id, gb_allocated, status, suspended_reason, owner:user_id(is_suspended, is_deleted)')
     .eq('id', body.credentialId)
     .single()
   if (!cred) return NextResponse.json({ error: 'Credential not found' }, { status: 404 })
@@ -47,6 +47,9 @@ export async function POST(req: Request) {
       await disableCredential(supabase, fresh, 'admin')
     } else {
       if (cred.status !== 'suspended') return NextResponse.json({ error: `Only a suspended credential can be re-enabled (status: ${cred.status})` }, { status: 409 })
+      // A customer's own pause is theirs to lift (POST /api/v1/sub-users/:id/pause);
+      // an admin enabling it would silently override a deliberate choice.
+      if ((cred as any).suspended_reason === 'customer') return NextResponse.json({ error: 'The customer paused this credential themselves — only they can resume it.' }, { status: 409 })
       if (owner?.is_suspended) return NextResponse.json({ error: 'The owner account is suspended — reinstate the account instead.' }, { status: 409 })
       await enableCredential(supabase, cred)
     }
@@ -58,7 +61,7 @@ export async function POST(req: Request) {
   // The owner's integrations hear about it (a suspended sub-user otherwise just
   // starts failing to connect with no explanation). Awaited, never throws.
   await dispatchWebhook(cred.user_id, body.action === 'disable' ? 'session_suspended' : 'session_resumed', {
-    credential_id: cred.id, label: (cred as any).label ?? null,
+    credential_id: cred.id, label: (cred as any).label ?? null, source: 'admin',
   })
   return NextResponse.json({ success: true })
 }
