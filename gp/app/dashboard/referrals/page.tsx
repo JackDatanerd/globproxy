@@ -16,6 +16,7 @@ import {
 
 const FUNNEL_PAGE = 25
 const COMMISSION_PAGE = 15
+const PAYOUT_PAGE = 24
 const usd = formatUsd
 const shortDate = (s: string) => new Date(s).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: 'UTC' })
 
@@ -46,7 +47,7 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
   // at 1000 rows, and "this cycle so far" used to be summed from only the
   // latest 20 commissions.
   const admin = await createAdminClient()
-  const [{ data: summaryRows, error: summaryErr }, { data: funnel, error: funnelErr }, { data: commissions, error: commissionsErr, count: commissionsCount }, { data: payouts, error: payoutsErr }, { count: referredByAnyone }, { count: purchaseCount }, adjustmentsRes, tagsRes] = await Promise.all([
+  const [{ data: summaryRows, error: summaryErr }, { data: funnel, error: funnelErr }, { data: commissions, error: commissionsErr, count: commissionsCount }, { data: payouts, error: payoutsErr, count: payoutsCount }, { count: referredByAnyone }, { count: purchaseCount }, adjustmentsRes, tagsRes, deductionsRes] = await Promise.all([
     admin.rpc('my_affiliate_summary', { p_user_id: user.id, p_cycle_start: accruing.cycleStart, p_cycle_end: accruing.cycleEnd }),
     admin.rpc('my_referral_funnel', { p_user_id: user.id, p_limit: FUNNEL_PAGE, p_offset: (page - 1) * FUNNEL_PAGE }),
     showMoney
@@ -55,11 +56,14 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
           .eq('referrer_id', user.id).order('created_at', { ascending: false }).order('id', { ascending: false })
           .range((cpage - 1) * COMMISSION_PAGE, cpage * COMMISSION_PAGE - 1)
       : Promise.resolve({ data: [] as any[], error: null, count: 0 as number | null }),
+    // Through the service role, scoped to the signed-in user: the table also holds
+    // a snapshot of the payout destination, which the browser-side session can no
+    // longer read (migration 0070).
     showMoney
-      ? supabase.from('affiliate_payouts')
-          .select('id, cycle_start, cycle_end, amount_usd, status, payout_method, paid_at, payment_reference')
-          .eq('referrer_id', user.id).order('created_at', { ascending: false }).limit(24)
-      : Promise.resolve({ data: [] as any[], error: null }),
+      ? admin.from('affiliate_payouts')
+          .select('id, cycle_start, cycle_end, amount_usd, status, payout_method, paid_at, payment_reference', { count: 'exact' })
+          .eq('referrer_id', user.id).order('created_at', { ascending: false }).limit(PAYOUT_PAGE)
+      : Promise.resolve({ data: [] as any[], error: null, count: 0 as number | null }),
     // The referred user can't read their own `referrals` row through RLS
     // (policies are referrer/admin only), so this one existence check uses the
     // service role, scoped to the signed-in user's id.
@@ -70,14 +74,16 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
       .eq('user_id', user.id).eq('bandwidth_credited', true).eq('is_canary', false),
     showMoney ? admin.rpc('my_affiliate_adjustments', { p_user_id: user.id }) : Promise.resolve({ data: [] as any[], error: null }),
     showMoney ? admin.rpc('my_referral_tags', { p_user_id: user.id }) : Promise.resolve({ data: [] as any[], error: null }),
+    showMoney ? admin.rpc('my_affiliate_open_deductions', { p_user_id: user.id }) : Promise.resolve({ data: 0, error: null }),
   ])
 
-  const loadFailed = !!(summaryErr || funnelErr || commissionsErr || payoutsErr || adjustmentsRes.error || tagsRes.error)
+  const loadFailed = !!(summaryErr || funnelErr || commissionsErr || payoutsErr || adjustmentsRes.error || tagsRes.error || deductionsRes.error)
   const s = (summaryRows as any[])?.[0] ?? {}
   // Refund deductions not yet netted into a payout (a commission that was paid
   // and whose order was refunded afterwards). They come off the next payout.
   const adjustments = ((adjustmentsRes.data as any[]) ?? [])
-  const deductions = -adjustments.filter(a => !a.settled && !a.waived).reduce((sum, a) => sum + Number(a.amount_usd), 0)
+  // From SQL, not from the (50-row) list above, which could understate it.
+  const deductions = Number(deductionsRes.data ?? 0)
   const tags = ((tagsRes.data as any[]) ?? [])
   const payable = Number(s.accruing_usd ?? 0) - deductions
   const inPayout = Number(s.in_payout_usd ?? 0)
@@ -160,7 +166,7 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
           <ul className="text-[11px] text-muted mt-3 space-y-1 list-disc pl-4">
             <li>If a referred order is refunded, its commission is reduced to match. If that commission was already paid out, the amount is deducted from your next payout{deductions > 0 ? ` (${usd(deductions)} is waiting to be deducted now)` : ''} — you are never billed separately.</li>
             <li>Anything under the {usd(AFFILIATE_MIN_PAYOUT_USD)} minimum, or earned before you add a payout method, stays in your balance and is paid in the first run where it qualifies.</li>
-            {flaggedCount > 0 && <li>{flaggedCount} referral{flaggedCount === 1 ? ' is' : 's are'} under manual review and not earning yet.</li>}
+            {flaggedCount > 0 && <li>Some referrals are still being verified and aren&apos;t earning yet.</li>}
           </ul>
         </div>
       )}
@@ -219,6 +225,9 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
                       )}
                     </div>
                   ))}
+                  {Number(payoutsCount ?? 0) > PAYOUT_PAGE && (
+                    <div className="text-[10px] text-muted pt-1">Showing your latest {PAYOUT_PAGE} of {payoutsCount}. The full history is in the Payouts CSV below.</div>
+                  )}
                 </div>
               ) : (
                 <div className="text-xs text-muted">No payouts yet — your first one is created once your payable balance reaches {usd(AFFILIATE_MIN_PAYOUT_USD)} with a payout method on file.</div>
@@ -352,7 +361,7 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
               <tbody>
                 {funnelRows.map((r: any, i: number) => (
                   <tr key={i} className="border-t border-border">
-                    <td className="py-2 pr-3 font-mono text-ink">{r.referred_label}{r.flagged && <span className="ml-1.5 text-[10px] text-yellow-600">· review</span>}</td>
+                    <td className="py-2 pr-3 font-mono text-ink">{r.referred_label}</td>
                     <td className="py-2 pr-3 text-muted whitespace-nowrap">{shortDate(r.joined_at)}</td>
                     {isAffiliate && <td className="py-2 pr-3 font-mono text-muted">{r.sub_id ?? '—'}</td>}
                     <td className="py-2 pr-3 text-muted whitespace-nowrap">{r.first_purchase_at ? shortDate(r.first_purchase_at) : '—'}</td>

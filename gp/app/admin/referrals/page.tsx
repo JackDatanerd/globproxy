@@ -9,6 +9,8 @@ const PAGE_SIZE = 50
 
 const REASONS: Record<string, string> = {
   shared_signup_ip: 'Another referral on this code signed up from the same IP address',
+  same_ip_as_referrer: 'Signed up from the same IP address as the affiliate themselves',
+  admin_flagged: 'Flagged by an admin',
 }
 
 // Referrals the system flagged for review. A flagged referral earns nothing
@@ -47,6 +49,15 @@ export default async function AdminReferralsPage({ searchParams }: { searchParam
       e.total++
       e.sameReferrer[c.referrer_id] = (e.sameReferrer[c.referrer_id] ?? 0) + 1
     }
+  }
+
+  // Evidence for the same-address-as-the-affiliate reason: the referrer's OWN signup
+  // address (the cluster query above only looks at other referrals).
+  const referrerIds = Array.from(new Set((flagged ?? []).map((r: any) => r.referrer_id).filter(Boolean)))
+  const referrerHash: Record<string, string> = {}
+  if (referrerIds.length) {
+    const { data: own } = await supabase.from('signup_ip_hashes').select('user_id, ip_hash').in('user_id', referrerIds).limit(5000)
+    for (const o of own ?? []) referrerHash[o.user_id] = o.ip_hash
   }
 
   const chip = (on: boolean) => `text-xs font-mono px-3 py-1.5 rounded-full border transition-all ${on ? 'bg-ink text-white border-ink' : 'border-border text-ink2 hover:border-ink2'}`
@@ -103,6 +114,9 @@ export default async function AdminReferralsPage({ searchParams }: { searchParam
                         <div className="text-[11px] font-mono mt-1 text-amber-700">
                           {c.total} referrals from this IP · {c.sameReferrer[r.referrer_id] ?? 0} on this affiliate&apos;s code
                         </div>
+                      )}
+                      {r.signup_ip_hash && referrerHash[r.referrer_id] === r.signup_ip_hash && (
+                        <div className="text-[11px] font-mono mt-1 text-amber-700">same signup address as the affiliate&apos;s own account</div>
                       )}
                       {r.flag_confirmed_at && <div className="text-[11px] font-mono mt-1 text-red-600">confirmed {new Date(r.flag_confirmed_at).toLocaleDateString('en-GB')}</div>}
                     </td>

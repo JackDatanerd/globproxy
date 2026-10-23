@@ -16,7 +16,7 @@ export async function DELETE(req: Request, context: { params: Promise<{ id: stri
     if (limited) return asApiRateLimited(limited)
 
     const { data: profile } = await supabase.from('profiles').select('email, full_name').eq('id', user.id).maybeSingle()
-    const r = await cancelInvitation(supabase, { id: user.id, email: profile?.email, full_name: profile?.full_name }, id)
+    const r = await cancelInvitation(supabase, { id: user.id, email: profile?.email, full_name: profile?.full_name }, id, 'api')
     if (!r.ok) return r.status === 400 ? apiError(404, 'not_found', 'Invitation not found') : failFrom(r)
     return NextResponse.json({ success: true, returned_gb: r.data.returned_gb })
   }, { scope: 'allocate' })

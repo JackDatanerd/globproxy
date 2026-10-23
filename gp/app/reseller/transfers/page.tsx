@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import TransfersTable from '@/components/reseller/TransfersTable'
 import PendingInvitations from '@/components/reseller/PendingInvitations'
+import ExportButton from '@/components/dashboard/ExportButton'
 
 const PAGE_SIZE = 25
 
@@ -54,10 +55,10 @@ export default async function TransfersPage({ searchParams }: { searchParams: Pr
           <h1 className="font-display font-bold text-2xl text-ink">Transfers</h1>
           <p className="text-muted text-sm mt-1">All bandwidth allocations to your clients</p>
         </div>
-        <a href="/api/reseller/transfers-csv"
+        <ExportButton url="/api/reseller/transfers-csv" filename="globproxy-transfers.csv"
           className="text-xs font-mono px-3 py-2 rounded-lg border border-border text-muted hover:bg-surface whitespace-nowrap">
           Export CSV ↓
-        </a>
+        </ExportButton>
       </div>
       {pending.length > 0 && <PendingInvitations invites={pending} />}
       <div className="bg-white border border-border rounded-xl overflow-x-auto">

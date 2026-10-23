@@ -13,7 +13,7 @@ export default async function EarningsPage() {
   // "active clients" and showed a "pending payment" tile that nothing could
   // ever populate (every transfer is inserted 'active').
   const admin = await createAdminClient()
-  const [{ data: bw }, { data: summaryRows }, { data: recent }] = await Promise.all([
+  const [{ data: bw }, { data: summaryRows }, { data: recent }, { data: openInvites }] = await Promise.all([
     supabase.from('bandwidth_accounts').select('available_gb, total_gb, allocated_gb').eq('user_id', user.id).maybeSingle(),
     admin.rpc('reseller_summary', { p_reseller_id: user.id }),
     admin
@@ -22,6 +22,9 @@ export default async function EarningsPage() {
       .eq('reseller_id', user.id)
       .order('created_at', { ascending: false })
       .limit(10),
+    // Stock reserved for invitations nobody has claimed yet: it is out of "available" but not
+    // yet with a client, so without this line the tiles do not add up.
+    admin.from('reseller_pending_transfers').select('gb_amount').eq('reseller_id', user.id).eq('status', 'pending').limit(1000),
   ])
   const s = (summaryRows as any[])?.[0] ?? {}
   const gross = Number(s.total_allocated_gb ?? 0)
@@ -29,11 +32,13 @@ export default async function EarningsPage() {
   const net = gross - reclaimed
   const used = Number(s.clients_used_gb ?? 0)
 
+  const reserved = (openInvites ?? []).reduce((a: number, r: any) => a + Number(r.gb_amount), 0)
   const tiles: [string, string, string][] = [
     ['Stock available', `${formatGb(bw?.available_gb)} GB`, 'text-accent'],
     ['Net allocated to clients', `${formatGb(net)} GB`, 'text-ink'],
     ['Clients', String(s.client_count ?? 0), 'text-accent2'],
     ['Consumed by clients', `${formatGb(used)} GB`, 'text-ink'],
+    ...(reserved > 0 ? [['Reserved in invitations', `${formatGb(reserved)} GB`, 'text-ink'] as [string, string, string]] : []),
   ]
 
   return (

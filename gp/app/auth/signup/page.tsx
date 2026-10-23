@@ -25,15 +25,28 @@ function SignupForm() {
   const planParam = params.get('plan')
   const chosenPlan = !isReseller && planParam && PLANS.some(pl => pl.slug === planParam && !pl.custom) ? planParam : null
   const [referralCode, setReferralCode] = useState(urlRef ?? '')
+  // The campaign tag must come from the SAME place as the code it belongs to: a tag from
+  // the URL next to a code from the cookie (or the reverse) would credit one affiliate's
+  // code with another's tag.
+  const [cookieSub, setCookieSub] = useState('')
   const [refInfo, setRefInfo] = useState<{ valid: boolean; bonus?: boolean; bonusGb?: number; minOrderUsd?: number } | null>(null)
 
-  // First-party cookie set by /r/[code] and <RefCapture/> — covers visitors
-  // who browsed around before reaching signup without ?ref= on this URL.
+  // First-party cookie set by /r/[code] and <RefCapture/>. First touch wins
+  // (that is how the cookie is written), so when one exists it takes precedence over
+  // a later ?ref= on this URL; with no cookie the URL code is used. The tag follows
+  // whichever source supplied the code.
+  const [cookieCode, setCookieCode] = useState('')
   useEffect(() => {
-    if (urlRef) return
     const m = document.cookie.match(/(?:^|; )gp_ref=([^;]+)/)
-    if (m) { try { setReferralCode(decodeURIComponent(m[1])) } catch { /* ignore */ } }
-  }, [urlRef])
+    if (!m) return
+    try { const c = decodeURIComponent(m[1]); setReferralCode(c); setCookieCode(c.toUpperCase()) } catch { return }
+    const sm = document.cookie.match(/(?:^|; )gp_sub=([^;]+)/)
+    if (sm) { try { setCookieSub(decodeURIComponent(sm[1])) } catch { /* ignore */ } }
+  }, [])
+
+  // A tag is only sent with the code it arrived with (editing the code drops it).
+  const typed = referralCode.trim().toUpperCase()
+  const subForCode = cookieCode && typed === cookieCode ? cookieSub : !cookieCode && urlRef && typed === urlRef.trim().toUpperCase() ? (params.get('sub') ?? '') : ''
 
   // Tell the visitor something TRUE about the code (valid? is there a bonus?).
   useEffect(() => {
@@ -73,7 +86,7 @@ function SignupForm() {
           ? `${location.origin}/auth/callback?next=${encodeURIComponent(`/dashboard/buy?plan=${chosenPlan}`)}`
           : `${location.origin}/auth/callback`,
         referral_code: referralCode.trim() || undefined,
-        sub_id: params.get('sub') || undefined,
+        sub_id: subForCode || undefined,
         turnstileToken: captcha,
       }),
     })

@@ -30,6 +30,12 @@ export async function runResellerMaintenance() {
   try {
     const supabase = await createAdminClient()
 
+    // Invitations whose address was already a confirmed account (the signup
+    // triggers only fire at the moment of confirmation).
+    const { data: swept, error: sweepErr } = await supabase.rpc('claim_all_due_pending_transfers')
+    if (sweepErr) console.error('[cron resellers] claim sweep failed', sweepErr)
+    out.invitations_claimed = Number(swept ?? 0)
+
     const { data: expired, error: expErr } = await supabase.rpc('expire_pending_reseller_transfers')
     if (expErr) console.error('[cron resellers] expire failed', expErr)
     out.invitations_expired = (expired as unknown[] | null)?.length ?? 0
@@ -70,22 +76,22 @@ export async function runResellerMaintenance() {
 async function sendPayoutReminder(supabase: Awaited<ReturnType<typeof createAdminClient>>) {
   const today = new Date().toISOString().slice(0, 10)
   const cycle = lastCompletedCycle()
-  if (today !== cycle.payableFrom) return { sent: false, reason: 'not a payout day' }
+  // On or after payable day (not only ON it): a missed day no longer means no reminder;
+  // the stamp below keeps it to one per cycle.
+  if (today < cycle.payableFrom) return { sent: false, reason: 'not a payout day' }
   if (new Date().getUTCHours() < 6) return { sent: false, reason: 'too early in the day' } // hourly task; send at working hours
 
   const KEY = 'payout_reminder_sent_for'
   const { data: prev } = await supabase.from('platform_settings').select('value').eq('key', KEY).maybeSingle()
   if (prev?.value === cycle.cycleEnd) return { sent: false, reason: 'already sent' }
 
-  // Unbatched commissions that this cycle run would pick up, and the open deductions.
-  const { data: comms } = await supabase.from('affiliate_commissions')
-    .select('referrer_id, commission_amount_usd')
-    .is('payout_id', null).eq('status', 'pending').lte('created_at', `${cycle.cycleEnd}T23:59:59.999Z`).limit(20000)
-  const people = new Set((comms ?? []).map((c: any) => c.referrer_id))
-  const total = (comms ?? []).reduce((s: number, c: any) => s + Number(c.commission_amount_usd), 0)
-  const { data: adj } = await supabase.from('affiliate_adjustments')
-    .select('amount_usd').is('payout_id', null).is('waived_at', null).limit(20000)
-  const deductions = -((adj ?? []).reduce((s: number, a: any) => s + Number(a.amount_usd), 0))
+  // Totals computed in SQL (a fetched list was capped by PostgREST and by a limit).
+  const { data: totals, error: totalsErr } = await supabase.rpc('affiliate_payout_reminder_totals', { p_cycle_end: cycle.cycleEnd })
+  if (totalsErr) { console.error('[cron resellers] reminder totals failed', totalsErr); return { sent: false, reason: 'totals query failed', error: String(totalsErr.message ?? totalsErr) } }
+  const t = (Array.isArray(totals) ? totals[0] : totals) as { out_affiliates?: number; out_total_usd?: number; out_deductions_usd?: number } | null
+  const people = { size: Number(t?.out_affiliates ?? 0) }
+  const total = Number(t?.out_total_usd ?? 0)
+  const deductions = Number(t?.out_deductions_usd ?? 0)
   const { count: pendingPayouts } = await supabase.from('affiliate_payouts').select('id', { count: 'exact', head: true }).eq('status', 'pending')
 
   // Nothing to stamp (and nothing lost) when there is nobody to tell.

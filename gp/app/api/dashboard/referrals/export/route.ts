@@ -1,5 +1,5 @@
 import { requireMfaVerified } from '@/lib/mfa'
-import { createClient } from '@/lib/supabase/server'
+import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { rateLimitedUser } from '@/lib/rateLimit'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { toCsv, csvResponse } from '@/lib/csv'
@@ -13,7 +13,7 @@ import { NextResponse } from 'next/server'
 const PAGE = 1000
 const MAX_ROWS = 50_000
 
-async function fetchAll(supabase: Awaited<ReturnType<typeof createClient>>, table: string, cols: string, userId: string) {
+async function fetchAll(supabase: Awaited<ReturnType<typeof createClient>> | Awaited<ReturnType<typeof createAdminClient>>, table: string, cols: string, userId: string) {
   const rows: any[] = []
   for (let from = 0; from < MAX_ROWS; from += PAGE) {
     const { data, error } = await supabase
@@ -47,7 +47,8 @@ export async function GET(req: Request) {
 
   try {
     if (dataset === 'payouts') {
-      const rows = await fetchAll(supabase, 'affiliate_payouts', 'id, created_at, cycle_start, cycle_end, amount_usd, status, payout_method, paid_at, payment_reference', user.id)
+      // Service role scoped to the caller: affiliate_payouts is not readable from the session (0070).
+      const rows = await fetchAll(await createAdminClient(), 'affiliate_payouts', 'id, created_at, cycle_start, cycle_end, amount_usd, status, payout_method, paid_at, payment_reference', user.id)
       return csvResponse(toCsv(rows, [
         { header: 'Created', value: r => r.created_at },
         { header: 'Cycle start', value: r => r.cycle_start },

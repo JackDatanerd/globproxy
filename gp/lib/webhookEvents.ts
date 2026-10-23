@@ -1,7 +1,7 @@
 // Pure constants — no server imports — so the dashboard (client component),
 // the API routes, the delivery engine and the docs all read the same list.
 // Keep in sync with the webhook_endpoints_valid_events CHECK constraint
-// (migrations 0042 + 0046 + 0054 + 0059 + 0062 + 0064 + 0069): an event added here must be added there too, or the
+// (migrations 0042 + 0046 + 0054 + 0059 + 0062 + 0064 + 0069 + 0070): an event added here must be added there too, or the
 // insert/update is rejected by the database.
 // Sent as `api_version` in every payload so a receiver can tell which shape it is
 // parsing if the event format ever has to change incompatibly. Additive today.
@@ -28,6 +28,9 @@ export const WEBHOOK_EVENTS = [
   'bandwidth_credited',
   'bandwidth_debited',
   'bandwidth_allocated',
+  'reseller_invitation_created',
+  'reseller_invitation_expired',
+  'reseller_invitation_cancelled',
   'bandwidth_reclaimed',
   'bandwidth_refunded',
   'api_key_created',
@@ -58,6 +61,9 @@ export const WEBHOOK_EVENT_LABELS: Record<WebhookEvent, string> = {
   bandwidth_credited: 'Bandwidth credited (purchase / allocation / bonus / adjustment)',
   bandwidth_debited: 'Bandwidth debited (support adjustment)',
   bandwidth_allocated: 'Bandwidth allocated to a client (reseller)',
+  reseller_invitation_created: 'Invitation created for a client without an account (reseller)',
+  reseller_invitation_expired: 'Invitation expired unclaimed (reseller)',
+  reseller_invitation_cancelled: 'Invitation cancelled (reseller)',
   bandwidth_reclaimed: 'Bandwidth reclaimed by your reseller',
   bandwidth_refunded: 'Purchase refunded (bandwidth clawed back)',
   api_key_created: 'API key created',
@@ -87,6 +93,9 @@ export const WEBHOOK_EVENT_DESCRIPTIONS: Record<WebhookEvent, { description: str
   bandwidth_credited: { description: 'Bandwidth was added to your account. source is purchase (order_id, amount_usd), reseller_allocation (transfer_id), referral_bonus (role: referrer or referred) or admin_adjustment (a goodwill credit from support).', data: ['gb_credited', 'source', 'order_id', 'amount_usd', 'transfer_id', 'role'] },
   bandwidth_debited: { description: 'Unallocated bandwidth was removed from your account by a support adjustment. Allocated bandwidth is never taken back this way. (Refund clawbacks arrive as bandwidth_refunded; reseller reclaims as bandwidth_reclaimed.)', data: ['gb_debited', 'source', 'total_gb', 'available_gb'] },
   bandwidth_allocated: { description: 'You allocated bandwidth to a client (resellers).', data: ['transfer_id', 'recipient_email', 'gb', 'note'] },
+  reseller_invitation_created: { description: 'You allocated to an address with no confirmed account yet (resellers): the stock is reserved. topped_up is true when it was added to an invitation already open for that address.', data: ['pending_id', 'recipient_email', 'gb', 'total_gb', 'expires_at', 'topped_up'] },
+  reseller_invitation_expired: { description: 'An invitation was not claimed within 30 days and its stock returned to you (resellers).', data: ['pending_id', 'recipient_email', 'gb'] },
+  reseller_invitation_cancelled: { description: 'An invitation was cancelled (by you, the API or support) and its stock returned to you (resellers).', data: ['pending_id', 'recipient_email', 'gb', 'source'] },
   bandwidth_reclaimed: { description: 'Unused bandwidth was reclaimed from your account by the reseller who allocated it.', data: ['transfer_id', 'gb_reclaimed', 'gb_remaining'] },
   bandwidth_refunded: { description: 'A purchase was refunded and its bandwidth taken back.', data: ['order_id', 'refund_usd', 'gb_clawed_back', 'gb_not_recoverable', 'fully_refunded'] },
   api_key_created: { description: 'An API key was created on your account.', data: ['key_id', 'label', 'key_prefix', 'scopes', 'expires_at', 'rotated_from'] },

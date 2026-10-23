@@ -820,6 +820,14 @@ export default function ApiDocsPage() {
             <Code>{`{ "transfer_id": "e4a1...", "reclaimed_gb": 10, "remaining_gb": 15 }`}</Code>
           </Endpoint>
 
+          <Endpoint method="GET" path="/api/v1/reseller/settings" title="Stock and low-stock alert (resellers)">
+            <p className="text-sm text-ink2 mb-4">Your stock position and the level that triggers your low-stock e-mail. <span className="font-mono text-ink">reserved_in_invitations_gb</span> is stock held for invitations nobody has claimed yet — it is already out of <span className="font-mono text-ink">available_gb</span>. Change the alert level with <span className="font-mono text-ink">PATCH /api/v1/reseller/settings</span> and a body of <span className="font-mono text-ink">{`{ "low_stock_gb": 50 }`}</span> (<span className="font-mono text-ink">null</span> or <span className="font-mono text-ink">0</span> turns it off; needs a key with the write scope).</p>
+            <Code>{`curl https://globproxy.com/api/v1/reseller/settings \\
+  -H "Authorization: Bearer YOUR_KEY"`}</Code>
+            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <Code>{`{ "total_gb": 500, "allocated_gb": 120, "available_gb": 380, "reserved_in_invitations_gb": 20, "low_stock_gb": 50 }`}</Code>
+          </Endpoint>
+
           <Endpoint method="GET" path="/api/v1/reseller/clients" title="Client roster (resellers)">
             <p className="text-sm text-ink2 mb-4">One row per account you have sent bandwidth to — what they were sent, what you reclaimed, and how much of that they have used. The same data as the dashboard's Sub-users page and its CSV export. Query parameters: <span className="font-mono text-ink">q</span> (contains-match on email or name), <span className="font-mono text-ink">limit</span> (max 200) and <span className="font-mono text-ink">offset</span>. Most recent activity first.</p>
             <Code>{`curl "https://globproxy.com/api/v1/reseller/clients?q=acme" \\
@@ -948,6 +956,9 @@ export default function ApiDocsPage() {
             ['bandwidth_credited', 'event', 'Bandwidth was added to the account. data: gb_credited, source ("purchase", "reseller_allocation", "referral_bonus" or "admin_adjustment"), plus order_id and amount_usd for purchases, transfer_id for allocations, role ("referrer" / "referred") for referral bonuses.'],
             ['bandwidth_debited', 'event', 'Unallocated bandwidth was removed from the account by a support adjustment. data: gb_debited, source ("admin_adjustment"), total_gb, available_gb. Refund clawbacks arrive as bandwidth_refunded and reseller reclaims as bandwidth_reclaimed.'],
             ['bandwidth_allocated', 'event', 'You allocated bandwidth to a client (resellers). data: transfer_id, recipient_email, gb, note.'],
+            ['reseller_invitation_created', 'event', 'You allocated to an address with no confirmed account yet (resellers); the stock is reserved. data: pending_id, recipient_email, gb, total_gb, expires_at, topped_up (true when added to an invitation already open for that address).'],
+            ['reseller_invitation_expired', 'event', 'An invitation was not claimed within 30 days and its stock returned to you (resellers). data: pending_id, recipient_email, gb.'],
+            ['reseller_invitation_cancelled', 'event', 'An invitation was cancelled and its stock returned to you (resellers). data: pending_id, recipient_email, gb, source ("dashboard", "api" or "support").'],
             ['bandwidth_reclaimed', 'event', 'Unused bandwidth was reclaimed from your account by the reseller who allocated it. data: transfer_id, gb_reclaimed, gb_remaining.'],
             ['bandwidth_refunded', 'event', 'A purchase was refunded and its bandwidth taken back. data: order_id, refund_usd, gb_clawed_back, gb_not_recoverable, fully_refunded.'],
             ['api_key_created', 'event', 'An API key was created (or rotated). data: key_id, label, key_prefix, scopes, expires_at, plus rotated_from (the replaced key\'s id) when it came from a rotation.'],

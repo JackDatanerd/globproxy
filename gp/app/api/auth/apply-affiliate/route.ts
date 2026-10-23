@@ -5,6 +5,7 @@ import { NextResponse } from 'next/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { sendEmail, escapeHtml } from '@/lib/email'
+import { adminNoticeHtml } from '@/lib/adminEmail'
 import { rateLimited, rateLimitedUser } from '@/lib/rateLimit'
 
 function cleanStr(v: unknown, max: number): string {
@@ -137,6 +138,20 @@ export async function POST(req: Request) {
           </div>
         `,
       }).catch(() => {})
+    }
+
+    // Acknowledge the applicant: the form used to end in a toast and silence until
+    // a decision. Best-effort; the application is already saved.
+    if (user.email) {
+      await sendEmail({
+        to: user.email,
+        subject: 'We received your affiliate application',
+        html: adminNoticeHtml({
+          heading: 'Application received ✓',
+          bodyHtml: 'Thanks for applying to the GlobProxy affiliate programme. Our team reviews applications by hand and you will get an email as soon as there is a decision. There is nothing more you need to do.',
+          cta: { href: `${appUrl()}/dashboard`, label: 'Open your dashboard →' },
+        }),
+      }).catch((e) => console.error('[auth/apply-affiliate] acknowledgement email failed', e))
     }
 
     return NextResponse.json({ success: true, message: 'Application submitted successfully' })

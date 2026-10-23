@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import toast from 'react-hot-toast'
+import ExportButton from '@/components/dashboard/ExportButton'
 import { formatGb } from '@/lib/format'
 import { fetchWithReauth } from '@/lib/reauthPrompt'
 
@@ -224,7 +225,7 @@ export default function ResellerUsersList({
 
       <div className="flex items-center justify-between mb-3 pl-1 gap-4 flex-wrap">
         <h3 className="text-sm font-display font-bold text-ink">Your Clients <span className="text-muted font-mono font-normal">({total})</span>
-          <a href={`/api/reseller/users-csv${query ? `?q=${encodeURIComponent(query)}` : ''}`} className="ml-3 text-[11px] font-mono font-normal text-accent hover:underline">Export CSV ↓</a>
+          <ExportButton url={`/api/reseller/users-csv${query ? `?q=${encodeURIComponent(query)}` : ''}`} filename="globproxy-clients.csv" className="ml-3 text-[11px] font-mono font-normal text-accent hover:underline">Export CSV ↓</ExportButton>
         </h3>
         <form action="/reseller/users" method="get" className="flex gap-2">
           <input name="q" defaultValue={query} placeholder="Search email or name" maxLength={100}

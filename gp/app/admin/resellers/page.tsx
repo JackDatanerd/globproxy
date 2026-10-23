@@ -3,6 +3,7 @@ import AdminResellerActions from '@/components/admin/AdminResellerActions'
 import AdminApiAccessActions from '@/components/admin/AdminApiAccessActions'
 import AdminPager, { parsePage, cleanSearch } from '@/components/admin/AdminPager'
 import { formatGb } from '@/lib/format'
+import Link from 'next/link'
 
 const PAGE_SIZE = 50
 const LIST_CAP = 100 // pending applications shown at once
@@ -192,7 +193,7 @@ export default async function AdminResellersPage({ searchParams }: { searchParam
                   <tr key={r.id} className={`${i < (resellers?.length ?? 0) - 1 ? 'border-b border-border' : ''} hover:bg-surface`}>
                     <td className="px-6 py-4">
                       <div className="text-sm font-medium text-ink">
-                        {r.full_name || '—'}
+                        <Link href={`/admin/resellers/${r.id}`} className="hover:text-accent hover:underline">{r.full_name || '—'}</Link>
                         {r.is_suspended && <span className="ml-2 text-[10px] font-mono bg-red-50 text-red-500 px-2 py-0.5 rounded-full">Suspended</span>}
                       </div>
                       <div className="text-xs font-mono text-muted">{r.email}</div>

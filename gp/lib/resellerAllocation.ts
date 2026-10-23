@@ -18,8 +18,11 @@ import { adminNoticeHtml } from '@/lib/adminEmail'
 type Admin = Awaited<ReturnType<typeof createAdminClient>>
 
 export const MIN_ALLOCATION_GB = 0.1
+// Keep in step with the 50-per-24h check inside create_pending_reseller_transfer (migration 0070).
+const NEW_RECIPIENTS_PER_DAY = 50
+const NEW_RECIPIENTS_MESSAGE = 'You have reached today\'s limit of 50 new recipients. Existing clients are not affected — try again tomorrow.'
 
-export type AllocFail = { ok: false; status: number; code: 'invalid_request' | 'not_found' | 'conflict' | 'insufficient_bandwidth' | 'internal_error'; message: string }
+export type AllocFail = { ok: false; status: number; code: 'invalid_request' | 'not_found' | 'conflict' | 'insufficient_bandwidth' | 'rate_limited' | 'internal_error'; message: string }
 export type AllocResult<T> = { ok: true; data: T } | AllocFail
 const fail = (status: number, code: AllocFail['code'], message: string): AllocFail => ({ ok: false, status, code, message })
 
@@ -79,6 +82,15 @@ export async function allocateBandwidth(
     return inviteRecipient(admin, reseller, input, !recipientProfile || unconfirmed)
   }
   if (recipientProfile.id === reseller.id) return fail(400, 'invalid_request', 'Cannot allocate bandwidth to yourself.')
+
+  // A NEW client (never sent to before) draws on a daily budget, so the allocate
+  // endpoint cannot be used to probe or e-mail a long list of addresses.
+  const { count: prior } = await admin.from('reseller_transfers').select('id', { count: 'exact', head: true })
+    .eq('reseller_id', reseller.id).eq('recipient_id', recipientProfile.id)
+  if (!prior) {
+    const { data: newToday } = await admin.rpc('reseller_new_recipients_24h', { p_reseller_id: reseller.id })
+    if (Number(newToday ?? 0) >= NEW_RECIPIENTS_PER_DAY) return fail(429, 'rate_limited', NEW_RECIPIENTS_MESSAGE)
+  }
 
   // ── 2. Atomically check stock, move it, and write the history row ───────
   // allocate_reseller_bandwidth_tx (migration 0039) does all three in ONE
@@ -198,6 +210,7 @@ async function inviteRecipient(
     const msg = error.message ?? ''
     if (msg.includes('Not enough bandwidth')) return fail(400, 'insufficient_bandwidth', 'Not enough bandwidth in your stock.')
     if (msg.includes('yourself')) return fail(400, 'invalid_request', 'Cannot allocate bandwidth to yourself.')
+    if (msg.includes('Too many new recipients')) return fail(429, 'rate_limited', NEW_RECIPIENTS_MESSAGE)
     if (msg.includes('Too many open invitations')) return fail(409, 'conflict', 'You have too many open invitations. Cancel some, or wait for them to be claimed.')
     if (msg.includes('Minimum allocation') || msg.includes('decimal places') || msg.includes('too large') || msg.includes('valid recipient')) return fail(400, 'invalid_request', msg)
     console.error('[reseller/allocate] invite RPC failed', error)
@@ -208,6 +221,9 @@ async function inviteRecipient(
   const totalGb = Number(row?.out_total_gb ?? gbAmount)
   const expiresAt: string | null = row?.out_expires_at ?? null
   const firstInvite = Math.abs(totalGb - gbAmount) < 1e-9 // false when it was added to an invitation already open
+  await dispatchWebhook(reseller.id, 'reseller_invitation_created', {
+    pending_id: pendingId, recipient_email: recipientEmail, gb: gbAmount, total_gb: totalGb, expires_at: expiresAt, topped_up: !firstInvite,
+  })
   const appUrl = getAppUrl()
   const resellerLabel = escapeHtml(reseller.full_name) || escapeHtml(reseller.email) || 'A GlobProxy reseller'
 
@@ -252,12 +268,17 @@ async function inviteRecipient(
 }
 
 export async function cancelInvitation(
-  admin: Admin, reseller: Reseller, pendingId: string
+  admin: Admin, reseller: Reseller, pendingId: string, source: 'dashboard' | 'api' | 'support' = 'dashboard'
 ): Promise<AllocResult<{ returned_gb: number }>> {
   if (!isUuid(pendingId)) return fail(400, 'invalid_request', 'pending_id is required')
+  const { data: before } = await admin.from('reseller_pending_transfers')
+    .select('recipient_email').eq('id', pendingId).eq('reseller_id', reseller.id).maybeSingle()
   const { data, error } = await admin.rpc('cancel_pending_reseller_transfer', { p_id: pendingId, p_reseller_id: reseller.id })
   if (error) { console.error('[reseller/cancel-invite] RPC failed', error); return fail(500, 'internal_error', 'Could not cancel this invitation.') }
   if (data === null || data === undefined) return fail(404, 'not_found', 'Invitation not found, or it has already been claimed or cancelled.')
+  await dispatchWebhook(reseller.id, 'reseller_invitation_cancelled', {
+    pending_id: pendingId, recipient_email: before?.recipient_email ?? null, gb: Number(data), source,
+  })
   return { ok: true, data: { returned_gb: Number(data) } }
 }
 
@@ -271,7 +292,7 @@ export async function sendInviteResolutionNotices(admin: Admin): Promise<{ claim
     .from('reseller_pending_transfers')
     .select('id, reseller_id, recipient_email, gb_amount, note, status, claimed_by, transfer_id')
     .in('status', ['claimed', 'expired']).is('notified_at', null)
-    .order("resolved_at", { ascending: true }).limit(5)
+    .order("resolved_at", { ascending: true }).limit(50)
   if (error) { console.error('[reseller/invites] sweep query failed', error); return out }
 
   for (const r of rows ?? []) {
@@ -312,6 +333,7 @@ export async function sendInviteResolutionNotices(admin: Admin): Promise<{ claim
         ])
       } else if (r.status === 'expired') {
         out.expired++
+        await dispatchWebhook(r.reseller_id, 'reseller_invitation_expired', { pending_id: r.id, recipient_email: r.recipient_email, gb: Number(r.gb_amount) })
         if (resellerOk) {
           await sendEmail({
             to: reseller!.email,
