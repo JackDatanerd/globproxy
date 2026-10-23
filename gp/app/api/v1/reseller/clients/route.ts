@@ -1,21 +1,26 @@
 import { withApiAuth, parsePage } from '@/lib/apiHelpers'
 import { apiError } from '@/lib/apiAuth'
 import { NextResponse } from 'next/server'
+import { ROSTER_MAX_PAGE, parseRosterFilter, parseRosterSort } from '@/lib/reseller'
 
-// GET /api/v1/reseller/clients?q=acme&limit=50&offset=0
+// GET /api/v1/reseller/clients?q=acme&filter=unused&sort=used&limit=50&offset=0
 // Your client roster — one row per account you have sent bandwidth to, with what
 // they were sent, what was reclaimed and how much of that they have used. The same
 // data as the dashboard's Sub-users page and its CSV export, so an integration can
 // reconcile balances without scraping. `q` is a case-insensitive contains-match on
-// email or name. Newest activity first.
+// email or name. `filter` is all | unused | exhausted | idle and `sort` is recent |
+// sent | used | remaining | name (default: newest activity first). `limit` is
+// capped at 100 — the most the roster query returns in one call.
 export async function GET(req: Request) {
   return withApiAuth(req, 'GET reseller clients', async ({ user, supabase }) => {
     const url = new URL(req.url)
-    const { limit, offset } = parsePage(url, { limit: 50, max: 200 })
+    const { limit, offset } = parsePage(url, { limit: 50, max: ROSTER_MAX_PAGE })
     const q = (url.searchParams.get('q') ?? '').trim().slice(0, 100)
+    const filter = parseRosterFilter(url.searchParams.get('filter'))
+    const sort = parseRosterSort(url.searchParams.get('sort'))
 
     const { data, error } = await supabase.rpc('reseller_client_roster', {
-      p_reseller_id: user.id, p_search: q || null, p_limit: limit, p_offset: offset,
+      p_reseller_id: user.id, p_search: q || null, p_limit: limit, p_offset: offset, p_filter: filter, p_sort: sort,
     })
     if (error) {
       console.error('[v1 GET reseller clients] roster failed', error)

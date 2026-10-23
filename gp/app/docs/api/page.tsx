@@ -829,7 +829,7 @@ export default function ApiDocsPage() {
           </Endpoint>
 
           <Endpoint method="GET" path="/api/v1/reseller/clients" title="Client roster (resellers)">
-            <p className="text-sm text-ink2 mb-4">One row per account you have sent bandwidth to — what they were sent, what you reclaimed, and how much of that they have used. The same data as the dashboard's Sub-users page and its CSV export. Query parameters: <span className="font-mono text-ink">q</span> (contains-match on email or name), <span className="font-mono text-ink">limit</span> (max 200) and <span className="font-mono text-ink">offset</span>. Most recent activity first.</p>
+            <p className="text-sm text-ink2 mb-4">One row per account you have sent bandwidth to — what they were sent, what you reclaimed, and how much of that they have used. The same data as the dashboard's Sub-users page and its CSV export. Query parameters: <span className="font-mono text-ink">q</span> (contains-match on email or name), <span className="font-mono text-ink">filter</span> (<span className="font-mono text-ink">all</span>, <span className="font-mono text-ink">unused</span> — nothing used yet, <span className="font-mono text-ink">exhausted</span> — everything you sent is used, or <span className="font-mono text-ink">idle</span> — no transfer in 30 days), <span className="font-mono text-ink">sort</span> (<span className="font-mono text-ink">recent</span>, <span className="font-mono text-ink">sent</span>, <span className="font-mono text-ink">used</span>, <span className="font-mono text-ink">remaining</span> or <span className="font-mono text-ink">name</span>), <span className="font-mono text-ink">limit</span> (max 100) and <span className="font-mono text-ink">offset</span>. Most recent activity first by default.</p>
             <Code>{`curl "https://globproxy.com/api/v1/reseller/clients?q=acme" \\
   -H "Authorization: Bearer YOUR_KEY"`}</Code>
             <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
@@ -863,6 +863,14 @@ export default function ApiDocsPage() {
   -H "Authorization: Bearer YOUR_KEY"`}</Code>
             <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{ "success": true, "returned_gb": 25 }`}</Code>
+          </Endpoint>
+
+          <Endpoint method="POST" path="/api/v1/reseller/invitations/:id/remind" title="Remind an invitee (resellers)">
+            <p className="text-sm text-ink2 mb-4">E-mails the invitee again about an invitation nobody has claimed. One reminder every 24 hours (<span className="font-mono text-ink">429</span> until then) and at most three per invitation (<span className="font-mono text-ink">409</span> after that). Only addresses without a usable account are mailed. Needs the <span className="font-mono text-ink">allocate</span> scope.</p>
+            <Code>{`curl -X POST https://globproxy.com/api/v1/reseller/invitations/PENDING_ID/remind \\
+  -H "Authorization: Bearer YOUR_KEY"`}</Code>
+            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <Code>{`{ "success": true, "reminders_left": 2, "expires_at": "2026-11-20T09:30:00.000Z" }`}</Code>
           </Endpoint>
 
           <Endpoint method="GET" path="/api/v1/sub-users/:id/whitelist" title="List whitelisted IPs">

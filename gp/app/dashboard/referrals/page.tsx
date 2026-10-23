@@ -31,7 +31,7 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
   const accruing = currentAccruingCycle()
 
   const { data: profile } = await supabase.from('profiles')
-    .select('referral_code, affiliate_status, affiliate_commission_rate, affiliate_commission_rate_lifetime, is_verified_operator, payout_method, payout_wallet_address, payout_bank_details, payout_mpesa_phone, payout_method_updated_at')
+    .select('referral_code, affiliate_status, affiliate_commission_rate, affiliate_commission_rate_lifetime, is_verified_operator, payout_method, payout_wallet_address, payout_bank_details, payout_mpesa_phone, payout_method_updated_at, payout_hold_reason')
     .eq('id', user.id)
     .single()
 
@@ -173,7 +173,12 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
 
       {isAffiliate && holdActive && (
         <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 text-xs rounded-xl p-4 mt-4">
-          Your payout details changed recently, so payouts are on a {AFFILIATE_HOLD_HOURS}-hour security hold until{' '}
+          {profile?.payout_hold_reason === 'security_event'
+            ? 'A recent change to your account security (password, email address or two-step verification)'
+            : profile?.payout_hold_reason === 'method_changed'
+              ? 'Your payout details changed recently, so payouts'
+              : 'Your payout details or account security settings changed recently, so payouts'}
+          {profile?.payout_hold_reason === 'security_event' ? ' put payouts on a ' : ' are on a '}{AFFILIATE_HOLD_HOURS}-hour security hold until{' '}
           <strong>{holdEndsAt!.toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })} UTC</strong>.
           If you didn&apos;t make that change, contact support now.
         </div>
@@ -186,7 +191,8 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
             currentWalletAddress={maskWallet(profile?.payout_wallet_address)}
             currentBankDetails={maskBank(profile?.payout_bank_details)}
             currentMpesaPhone={maskPhone(profile?.payout_mpesa_phone)}
-            updatedAt={profile?.payout_method_updated_at ?? null}
+            // "Last changed" is about the payout method itself; an account-security hold is explained by the banner above.
+            updatedAt={profile?.payout_hold_reason === 'security_event' ? null : profile?.payout_method_updated_at ?? null}
             holdHours={AFFILIATE_HOLD_HOURS}
           />
         </div>

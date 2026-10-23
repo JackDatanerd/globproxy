@@ -3,8 +3,12 @@ import { requireActiveUser } from '@/lib/apiAuth'
 import { requireMfaVerified } from '@/lib/mfa'
 import { toCsv, csvResponse } from '@/lib/csv'
 import { NextResponse } from 'next/server'
+import { ROSTER_MAX_PAGE, parseRosterFilter, parseRosterSort } from '@/lib/reseller'
 
-const PAGE = 500
+// The roster RPC never returns more than ROSTER_MAX_PAGE rows per call. Paging in
+// bigger steps made the first short page look like the last one, so exports
+// stopped after 100 clients.
+const PAGE = ROSTER_MAX_PAGE
 const MAX_ROWS = 20_000
 
 // Client roster export for the signed-in reseller: one row per client with what
@@ -24,12 +28,15 @@ export async function GET(req: Request) {
   const inactive = await requireActiveUser(user.id)
   if (inactive) return inactive
 
-  const q = (new URL(req.url).searchParams.get('q') ?? '').trim().slice(0, 100)
+  const sp = new URL(req.url).searchParams
+  const q = (sp.get('q') ?? '').trim().slice(0, 100)
+  const filter = parseRosterFilter(sp.get('filter'))
+  const sort = parseRosterSort(sp.get('sort'))
   const admin = await createAdminClient()
   const rows: any[] = []
   for (let off = 0; off < MAX_ROWS; off += PAGE) {
     const { data, error } = await admin.rpc('reseller_client_roster', {
-      p_reseller_id: user.id, p_search: q || null, p_limit: PAGE, p_offset: off,
+      p_reseller_id: user.id, p_search: q || null, p_limit: PAGE, p_offset: off, p_filter: filter, p_sort: sort,
     })
     if (error) return NextResponse.json({ error: 'Export failed' }, { status: 500 })
     rows.push(...((data as any[]) ?? []))

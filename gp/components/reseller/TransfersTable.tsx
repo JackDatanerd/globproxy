@@ -20,16 +20,35 @@ type Transfer = {
 export default function TransfersTable({ transfers }: { transfers: Transfer[] }) {
   const [busy, setBusy] = useState<string | null>(null)
 
+  // Reclaim all of the unused part, or just some of it: a blank answer takes
+  // back everything that can be, a number takes back at most that many GB (the
+  // server still caps it at what the client hasn't used or committed).
   async function reclaim(t: Transfer) {
     const remaining = t.gb_amount - t.reclaimed_gb
-    if (!window.confirm(
-      `Reclaim the UNUSED part of this ${formatGb(remaining)} GB transfer from ${t.email ?? 'this client'}?\n\n` +
-      `Only bandwidth they have not used, assigned to a proxy, or topped up past can come back (within ${RECLAIM_WINDOW_DAYS} days of the transfer). They will be emailed.`
-    )) return
+    const answer = window.prompt(
+      `Reclaim from ${t.email ?? 'this client'} (${formatGb(remaining)} GB of this transfer is still with them).\n\n` +
+      `How many GB? Leave blank to take back everything unused.\n\n` +
+      `Only bandwidth they have not used, assigned to a proxy, or topped up past can come back (within ${RECLAIM_WINDOW_DAYS} days of the transfer). They will be emailed.`,
+      ''
+    )
+    if (answer === null) return
+    let gb: number | undefined
+    if (answer.trim() !== '') {
+      const n = Number(answer.trim())
+      if (!Number.isFinite(n) || n <= 0 || Math.abs(n * 1000 - Math.round(n * 1000)) > 1e-6) {
+        toast.error('Enter a positive amount with at most 3 decimal places — nothing was reclaimed')
+        return
+      }
+      if (n > remaining + 1e-9) {
+        toast.error(`That is more than the ${formatGb(remaining)} GB left on this transfer — nothing was reclaimed`)
+        return
+      }
+      gb = n
+    }
     setBusy(t.id)
     try {
       // apiJson answers the password / 2FA prompt for this sensitive action.
-      const data = await apiJson('POST', '/api/reseller/reclaim', { transfer_id: t.id })
+      const data = await apiJson('POST', '/api/reseller/reclaim', { transfer_id: t.id, ...(gb !== undefined ? { gb } : {}) })
       toast.success(`Reclaimed ${formatGb(data.reclaimed_gb)} GB`)
       setTimeout(() => window.location.reload(), 600)
     } catch (e: any) {
@@ -72,7 +91,7 @@ export default function TransfersTable({ transfers }: { transfers: Transfer[] })
                 {t.status === 'active' && remaining > 0 && !t.deleted && Date.now() - new Date(t.created_at).getTime() < RECLAIM_WINDOW_DAYS * 86_400_000 && (
                   <button onClick={() => reclaim(t)} disabled={busy === t.id}
                     className="text-xs font-mono text-accent hover:underline disabled:opacity-50">
-                    {busy === t.id ? 'Reclaiming…' : 'Reclaim unused'}
+                    {busy === t.id ? 'Reclaiming…' : 'Reclaim…'}
                   </button>
                 )}
               </td>

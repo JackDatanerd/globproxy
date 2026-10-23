@@ -28,6 +28,7 @@ export function anonymisedProfilePatch(): Record<string, any> {
     payout_bank_details: null,
     payout_mpesa_phone: null,
     payout_method_updated_at: null,
+    payout_hold_reason: null,
     mfa_enabled: false,
     // A deleted account must not keep the Verified Operator badge (it still
     // counted in operator lists and stats). The flag and its rate bookkeeping.

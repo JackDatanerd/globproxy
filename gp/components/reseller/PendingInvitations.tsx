@@ -4,22 +4,37 @@ import { useState } from 'react'
 import toast from 'react-hot-toast'
 import { formatGb } from '@/lib/format'
 import { apiJson } from '@/lib/clientApi'
+import { INVITE_REMINDER_MAX } from '@/lib/reseller'
 
-export type PendingInvite = { id: string; email: string; gb: number; created_at: string; expires_at: string; note: string | null }
+export type PendingInvite = { id: string; email: string; gb: number; created_at: string; expires_at: string; note: string | null; reminder_count?: number }
 
 // Bandwidth reserved for addresses that haven't signed up yet. It leaves your
 // available stock the moment you send it and lands when they confirm an account;
 // cancelling (or the 30-day expiry) puts it straight back.
 export default function PendingInvitations({ invites }: { invites: PendingInvite[] }) {
   const [busy, setBusy] = useState<string | null>(null)
+  const [reminded, setReminded] = useState<Record<string, number>>({})
 
   async function cancel(i: PendingInvite) {
     if (!window.confirm(`Cancel the invitation for ${i.email}? The ${formatGb(i.gb)} GB goes back to your available stock.`)) return
-    setBusy(i.id)
+    setBusy(`cancel:${i.id}`)
     try {
       const d = await apiJson('POST', '/api/reseller/invitations/cancel', { pending_id: i.id })
       toast.success(`${formatGb(d.returned_gb)} GB returned to your stock`)
       setTimeout(() => window.location.reload(), 600)
+    } catch (e: any) {
+      toast.error(e.message)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function remind(i: PendingInvite) {
+    setBusy(`remind:${i.id}`)
+    try {
+      const d = await apiJson('POST', '/api/reseller/invitations/resend', { pending_id: i.id })
+      setReminded(p => ({ ...p, [i.id]: INVITE_REMINDER_MAX - Number(d.reminders_left ?? 0) }))
+      toast.success(`Reminder sent to ${i.email}`)
     } catch (e: any) {
       toast.error(e.message)
     } finally {
@@ -43,9 +58,14 @@ export default function PendingInvitations({ invites }: { invites: PendingInvite
               <td className="px-5 py-3 font-mono text-sm font-medium text-ink whitespace-nowrap">{formatGb(i.gb)} GB</td>
               <td className="px-5 py-3 text-xs text-muted whitespace-nowrap">sent {date(i.created_at)} · expires {date(i.expires_at)}</td>
               <td className="px-5 py-3 text-xs text-muted max-w-[160px] truncate">{i.note ?? ''}</td>
-              <td className="px-5 py-3 text-right">
-                <button onClick={() => cancel(i)} disabled={busy === i.id} className="text-xs font-mono text-accent hover:underline disabled:opacity-50">
-                  {busy === i.id ? 'Cancelling…' : 'Cancel'}
+              <td className="px-5 py-3 text-right whitespace-nowrap">
+                {(reminded[i.id] ?? i.reminder_count ?? 0) < INVITE_REMINDER_MAX && (
+                  <button onClick={() => remind(i)} disabled={busy !== null && busy.endsWith(i.id)} className="text-xs font-mono text-accent hover:underline disabled:opacity-50 mr-4">
+                    {busy === `remind:${i.id}` ? 'Sending…' : 'Resend'}
+                  </button>
+                )}
+                <button onClick={() => cancel(i)} disabled={busy !== null && busy.endsWith(i.id)} className="text-xs font-mono text-accent hover:underline disabled:opacity-50">
+                  {busy === `cancel:${i.id}` ? 'Cancelling…' : 'Cancel'}
                 </button>
               </td>
             </tr>

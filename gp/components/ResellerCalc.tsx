@@ -17,16 +17,45 @@ import { getPlan } from '@/lib/plans'
 // customers would expect to pay. Margin then correctly widens as the
 // wholesale price drops at higher volume, which is the actual mechanic
 // this calculator exists to demonstrate.
-const STARTER_PRICE = getPlan('starter')!.price
-const GROWTH_PRICE  = getPlan('growth')!.price
-const SCALE_PRICE   = getPlan('scale')!.price
+const STARTER = getPlan('starter')!
+const GROWTH  = getPlan('growth')!
+const SCALE   = getPlan('scale')!
 const RETAIL_PRICE  = getPlan('micro')!.price
+
+// What buying "at least `gb`" really costs. Plans are fixed packs, not a
+// per-GB rate that follows the slider: the old `gb >= 500 ? Scale : gb >= 100 ?
+// Growth : Starter` quoted 490 GB at the Growth rate, which is not something you
+// can buy (4 Growth + 9 Starter packs come to $1,435 — and a single 500 GB Scale
+// pack, $1,000, is cheaper AND bigger). So this tries every pack mix that covers
+// the target and takes the cheapest; the reseller then owns (and sells) every GB
+// they bought, which can be slightly more than they asked for.
+function cheapestBundle(gb: number) {
+  let best = { cost: Infinity, bought: 0, scale: 0, growth: 0, starter: 0 }
+  for (let sc = 0; sc <= Math.ceil(gb / SCALE.gb); sc++) {
+    for (let gr = 0; gr <= Math.ceil(gb / GROWTH.gb); gr++) {
+      const left = Math.max(0, gb - sc * SCALE.gb - gr * GROWTH.gb)
+      const st = Math.ceil(left / STARTER.gb)
+      const cost = sc * SCALE.total + gr * GROWTH.total + st * STARTER.total
+      const bought = sc * SCALE.gb + gr * GROWTH.gb + st * STARTER.gb
+      if (cost < best.cost - 1e-9 || (Math.abs(cost - best.cost) < 1e-9 && bought < best.bought)) {
+        best = { cost, bought, scale: sc, growth: gr, starter: st }
+      }
+    }
+  }
+  return best
+}
 
 export default function ResellerCalc() {
   const [gb, setGb] = useState(100)
-  const buy = gb >= 500 ? SCALE_PRICE : gb >= 100 ? GROWTH_PRICE : STARTER_PRICE
+  const bundle = cheapestBundle(gb)
+  const buy = bundle.cost / bundle.bought
   const sell = RETAIL_PRICE
-  const profit = (sell - buy) * gb
+  const profit = sell * bundle.bought - bundle.cost
+  const packs = [
+    bundle.scale ? `${bundle.scale} × ${SCALE.gb} GB` : '',
+    bundle.growth ? `${bundle.growth} × ${GROWTH.gb} GB` : '',
+    bundle.starter ? `${bundle.starter} × ${STARTER.gb} GB` : '',
+  ].filter(Boolean).join(' + ')
 
   return (
     <div className="bg-white border border-border rounded-2xl p-8 shadow-sm">
@@ -37,7 +66,8 @@ export default function ResellerCalc() {
         <div className="flex justify-between text-[10px] font-mono text-muted mt-1"><span>10 GB</span><span>1,000 GB</span></div>
       </div>
       {[
-        ['You buy at', `$${buy.toFixed(2)}/GB`, 'text-ink'],
+        ['You buy', `${bundle.bought} GB · ${packs}`, 'text-ink'],
+        ['Cost (average)', `$${bundle.cost.toLocaleString()} · $${buy.toFixed(2)}/GB`, 'text-ink'],
         ['You sell at', `$${sell.toFixed(2)}/GB`, 'text-ink'],
         ['Margin per GB', `$${(sell-buy).toFixed(2)}/GB`, 'text-accent2'],
         ['Bandwidth expiry', 'Never', 'text-accent2'],
@@ -48,7 +78,7 @@ export default function ResellerCalc() {
         </div>
       ))}
       <div className="bg-accent2-light rounded-xl p-4 mt-5 flex justify-between items-center">
-        <span className="text-sm text-accent2 font-medium">Your profit on {gb} GB</span>
+        <span className="text-sm text-accent2 font-medium">Your profit on {bundle.bought} GB</span>
         <span className="font-display text-2xl font-bold text-accent2">${Math.round(profit).toLocaleString()}</span>
       </div>
     </div>

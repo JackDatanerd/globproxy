@@ -88,6 +88,7 @@ export async function POST(req: Request) {
           payout_method: null, payout_wallet_address: null, payout_wallet_network: null,
           payout_bank_details: null, payout_mpesa_phone: null,
           payout_method_updated_at: new Date().toISOString(),
+          payout_hold_reason: 'method_changed',
         })
         .eq('id', user.id)
         .select('email, full_name')
@@ -185,6 +186,7 @@ export async function POST(req: Request) {
     // never accepted from the request body. It's what the hold in
     // run_affiliate_payout_cycle checks against.
     update.payout_method_updated_at = new Date().toISOString()
+    update.payout_hold_reason = 'method_changed' // why the hold is running (migration 0072)
 
     const { data: profile, error: updateError } = await adminSupabase
       .from('profiles')

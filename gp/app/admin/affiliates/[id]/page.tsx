@@ -28,7 +28,7 @@ export default async function AdminAffiliateDetailPage({ params }: { params: Pro
   const supabase = await createAdminClient()
 
   const [{ data: p }, { data: referrals }, { data: commissions }, { data: payouts }, earningsRes, { count: refCount }, { data: adjustments }] = await Promise.all([
-    supabase.from('profiles').select('id, email, full_name, is_deleted, is_suspended, affiliate_status, affiliate_application, affiliate_commission_rate, affiliate_commission_rate_lifetime, is_verified_operator, payout_method, payout_wallet_address, payout_mpesa_phone, payout_bank_details, payout_method_updated_at, referral_code, created_at').eq('id', id).maybeSingle(),
+    supabase.from('profiles').select('id, email, full_name, is_deleted, is_suspended, affiliate_status, affiliate_application, affiliate_commission_rate, affiliate_commission_rate_lifetime, is_verified_operator, payout_method, payout_wallet_address, payout_mpesa_phone, payout_bank_details, payout_method_updated_at, payout_hold_reason, referral_code, created_at').eq('id', id).maybeSingle(),
     supabase.from('referrals')
       .select('id, created_at, flagged, flag_reason, sub_id, gb_bonus_credited_at, gb_bonus_reversed_at, referred:referred_user_id(email, is_deleted)')
       .eq('referrer_id', id).order('created_at', { ascending: false }).limit(50),
@@ -135,7 +135,7 @@ export default async function AdminAffiliateDetailPage({ params }: { params: Pro
           <div className="font-mono">{p.is_deleted ? 'Removed with the account' : maskedDestination(p)}</div>
           {p.payout_method_updated_at && !p.is_deleted && (
             <div className={inHold ? 'text-amber-700' : 'text-muted'}>
-              Changed {day(p.payout_method_updated_at)}{inHold ? ` — security hold until ${holdUntil!.toISOString().slice(0, 16).replace('T', ' ')} UTC` : ' — hold cleared'}
+              {p.payout_hold_reason === 'security_event' ? 'Account security change' : 'Changed'} {day(p.payout_method_updated_at)}{inHold ? ` — security hold until ${holdUntil!.toISOString().slice(0, 16).replace('T', ' ')} UTC` : ' — hold cleared'}
             </div>
           )}
           <div className="text-[10px] text-muted mt-1">Full details appear on the payout row when you are about to send it.</div>

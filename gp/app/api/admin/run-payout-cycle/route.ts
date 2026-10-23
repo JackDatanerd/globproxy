@@ -114,15 +114,19 @@ export async function POST(req: Request) {
   if (notify.length) {
     const { data: profiles } = await supabase
       .from('profiles')
-      .select('id, email, full_name')
+      .select('id, email, full_name, payout_hold_reason')
       .in('id', notify.map(r => r.out_referrer_id))
     const byId = new Map((profiles ?? []).map(p => [p.id, p]))
 
     const jobs = notify.map(row => async () => {
       const referrer = byId.get(row.out_referrer_id)
       if (!referrer?.email || referrer.email === '[deleted]') return
+      // The hold also runs after a password / email / 2-step change (migration 0072
+      // records which), so don't tell someone their payout method changed when it didn't.
       const reason = row.out_status === 'held_recent_method'
-        ? `your payout method was added or changed too recently to clear our ${holdHours}-hour security hold in time for this cycle`
+        ? ((referrer as any).payout_hold_reason === 'security_event'
+            ? `a recent change to your account security (password, email or two-step verification) is still inside our ${holdHours}-hour payout security hold for this cycle`
+            : `your payout method was added or changed too recently to clear our ${holdHours}-hour security hold in time for this cycle`)
         : `you don't have a payout method on file yet`
       await sendEmailSafe({
         to: referrer.email,

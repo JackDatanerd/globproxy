@@ -6,6 +6,7 @@ import toast from 'react-hot-toast'
 import ExportButton from '@/components/dashboard/ExportButton'
 import { formatGb } from '@/lib/format'
 import { fetchWithReauth } from '@/lib/reauthPrompt'
+import type { RosterFilter, RosterSort } from '@/lib/reseller'
 
 type Client = {
   client_id: string
@@ -60,8 +61,8 @@ async function postAllocate(email: string, gb: number, note: string | undefined,
 }
 
 export default function ResellerUsersList({
-  clients, availableGb, total, page, pageSize, query,
-}: { clients: Client[]; availableGb: number; total: number; page: number; pageSize: number; query: string }) {
+  clients, availableGb, total, page, pageSize, query, filter, sort,
+}: { clients: Client[]; availableGb: number; total: number; page: number; pageSize: number; query: string; filter: RosterFilter; sort: RosterSort }) {
   const [open, setOpen] = useState(false)
   const [mode, setMode] = useState<'single' | 'bulk'>('single')
   const [loading, setLoading] = useState(false)
@@ -72,7 +73,11 @@ export default function ResellerUsersList({
   const [quickLoadings, setQuickLoadings] = useState<Record<string, boolean>>({})
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
-  const href = (p: number) => `/reseller/users?${new URLSearchParams({ ...(query ? { q: query } : {}), page: String(p) })}`
+  // Every control keeps the others: paging, searching, filtering and sorting
+  // all carry the full view in the URL (and into the CSV export).
+  const viewParams = { ...(query ? { q: query } : {}), ...(filter !== 'all' ? { filter } : {}), ...(sort !== 'recent' ? { sort } : {}) }
+  const href = (p: number) => `/reseller/users?${new URLSearchParams({ ...viewParams, page: String(p) })}`
+  const exportQs = new URLSearchParams(viewParams).toString()
 
   async function sendSingle(e: React.FormEvent) {
     e.preventDefault()
@@ -225,12 +230,27 @@ export default function ResellerUsersList({
 
       <div className="flex items-center justify-between mb-3 pl-1 gap-4 flex-wrap">
         <h3 className="text-sm font-display font-bold text-ink">Your Clients <span className="text-muted font-mono font-normal">({total})</span>
-          <ExportButton url={`/api/reseller/users-csv${query ? `?q=${encodeURIComponent(query)}` : ''}`} filename="globproxy-clients.csv" className="ml-3 text-[11px] font-mono font-normal text-accent hover:underline">Export CSV ↓</ExportButton>
+          <ExportButton url={`/api/reseller/users-csv${exportQs ? `?${exportQs}` : ''}`} filename="globproxy-clients.csv" className="ml-3 text-[11px] font-mono font-normal text-accent hover:underline">Export CSV ↓</ExportButton>
         </h3>
-        <form action="/reseller/users" method="get" className="flex gap-2">
+        <form action="/reseller/users" method="get" className="flex gap-2 flex-wrap">
           <input name="q" defaultValue={query} placeholder="Search email or name" maxLength={100}
             className="bg-white border border-border px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-accent w-56" />
-          <button className="text-xs font-mono px-3 py-2 rounded-lg border border-border text-muted hover:bg-surface">Search</button>
+          <select name="filter" defaultValue={filter} aria-label="Filter clients"
+            className="bg-white border border-border px-2 py-2 rounded-lg text-xs font-mono text-muted focus:outline-none focus:border-accent">
+            <option value="all">All clients</option>
+            <option value="unused">Haven&apos;t used it yet</option>
+            <option value="exhausted">Used everything sent</option>
+            <option value="idle">No transfer in 30 days</option>
+          </select>
+          <select name="sort" defaultValue={sort} aria-label="Sort clients"
+            className="bg-white border border-border px-2 py-2 rounded-lg text-xs font-mono text-muted focus:outline-none focus:border-accent">
+            <option value="recent">Latest activity</option>
+            <option value="sent">Most sent</option>
+            <option value="used">Most used</option>
+            <option value="remaining">Least remaining</option>
+            <option value="name">Email A–Z</option>
+          </select>
+          <button className="text-xs font-mono px-3 py-2 rounded-lg border border-border text-muted hover:bg-surface">Apply</button>
         </form>
       </div>
 
@@ -261,6 +281,7 @@ export default function ResellerUsersList({
                   {c.last_note && <div className="text-[11px] text-muted mt-0.5 italic truncate">Last note: {c.last_note}</div>}
                   <div className="text-[10px] text-muted tracking-wide mt-1 uppercase">
                     Last activity: {new Date(c.last_transfer_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
+                    {' · '}<Link href={`/reseller/transfers?client=${c.client_id}`} className="text-accent hover:underline normal-case">View history →</Link>
                   </div>
                 </div>
 
@@ -282,7 +303,7 @@ export default function ResellerUsersList({
         </div>
       ) : (
         <div className="bg-white border border-border rounded-xl p-14 text-center shadow-sm">
-          <p className="text-muted text-sm font-light">{query ? 'No clients match that search.' : 'No clients yet. Transfer bandwidth above to build your roster.'}</p>
+          <p className="text-muted text-sm font-light">{query || filter !== 'all' ? 'No clients match that search or filter.' : 'No clients yet. Transfer bandwidth above to build your roster.'}</p>
         </div>
       )}
 

@@ -3,13 +3,14 @@ import { redirect } from 'next/navigation'
 import ResellerUsersList from '@/components/reseller/ResellerUsersList'
 import { formatGb } from '@/lib/format'
 import ResellerStockAlert from '@/components/reseller/ResellerStockAlert'
+import { parseRosterFilter, parseRosterSort } from '@/lib/reseller'
 
 const PAGE_SIZE = 25
 
 export default async function ResellerUsersPage({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: string; page?: string }>
+  searchParams: Promise<{ q?: string; page?: string; filter?: string; sort?: string }>
 }) {
   const sp = await searchParams
   const supabase = await createClient()
@@ -17,6 +18,8 @@ export default async function ResellerUsersPage({
   if (!user) redirect('/auth/login')
 
   const q = (sp.q ?? '').trim().slice(0, 100)
+  const filter = parseRosterFilter(sp.filter)
+  const sort = parseRosterSort(sp.sort)
   const page = Math.max(1, Math.min(10_000, parseInt(sp.page ?? '1', 10) || 1))
 
   // The roster comes from a narrow SECURITY DEFINER RPC (id, email, name,
@@ -34,6 +37,8 @@ export default async function ResellerUsersPage({
       p_search: q || null,
       p_limit: PAGE_SIZE,
       p_offset: (page - 1) * PAGE_SIZE,
+      p_filter: filter,
+      p_sort: sort,
     }),
     admin.from('profiles').select('role, reseller_low_stock_gb').eq('id', user.id).maybeSingle(),
   ])
@@ -59,6 +64,8 @@ export default async function ResellerUsersPage({
         page={page}
         pageSize={PAGE_SIZE}
         query={q}
+        filter={filter}
+        sort={sort}
       />
     </div>
   )

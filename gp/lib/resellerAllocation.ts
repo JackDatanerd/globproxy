@@ -7,6 +7,7 @@ import { isUuid } from '@/lib/adminAuth'
 import { formatGb } from '@/lib/format'
 import { appUrl as getAppUrl } from '@/lib/appUrl'
 import { adminNoticeHtml } from '@/lib/adminEmail'
+import { INVITE_REMINDER_MAX } from '@/lib/reseller'
 
 // The single implementation of reseller → client bandwidth allocation and
 // reclaim. Shared by the dashboard routes (/api/reseller/allocate, /reclaim —
@@ -282,6 +283,60 @@ export async function cancelInvitation(
   return { ok: true, data: { returned_gb: Number(data) } }
 }
 
+// Re-send the invitation e-mail for an invitation nobody has claimed yet. The
+// database decides whether a reminder may go out (remind_pending_reseller_transfer:
+// 24 h after the invitation or the last reminder, at most INVITE_REMINDER_MAX in
+// total) and stamps it under a row lock, so a double click or a click plus an API
+// call can never send two. Only an address with NO usable account is mailed — the
+// same rule as the first invitation, so this can't be used to e-mail the owner of
+// an existing account.
+export async function remindInvitation(
+  admin: Admin, reseller: Reseller, pendingId: string
+): Promise<AllocResult<{ reminders_left: number; expires_at: string | null }>> {
+  if (!isUuid(pendingId)) return fail(400, 'invalid_request', 'pending_id is required')
+  const { data: pending } = await admin.from('reseller_pending_transfers')
+    .select('recipient_email').eq('id', pendingId).eq('reseller_id', reseller.id).eq('status', 'pending').maybeSingle()
+  if (!pending) return fail(404, 'not_found', 'Invitation not found, or it has already been claimed, cancelled or expired.')
+
+  const { data: profile } = await admin.from('profiles').select('id, is_deleted, is_suspended').eq('email', pending.recipient_email).maybeSingle()
+  let mailable = !profile
+  if (profile && !profile.is_deleted && !profile.is_suspended) {
+    const { data: unconfirmedId } = await admin.rpc('auth_unconfirmed_user_id', { check_email: pending.recipient_email })
+    mailable = !!unconfirmedId
+  }
+  if (!mailable) return fail(409, 'conflict', 'This address already has an account, so there is nobody to remind — the bandwidth is delivered as soon as the invitation is processed.')
+
+  const { data, error } = await admin.rpc('remind_pending_reseller_transfer', { p_id: pendingId, p_reseller_id: reseller.id })
+  if (error) { console.error('[reseller/remind] RPC failed', error); return fail(500, 'internal_error', 'Could not send the reminder.') }
+  const row: any = Array.isArray(data) ? data[0] : data
+  if (!row || row.out_result === 'not_found') return fail(404, 'not_found', 'Invitation not found, or it has already been claimed, cancelled or expired.')
+  if (row.out_result === 'limit') return fail(409, 'conflict', `This invitation has already been re-sent ${INVITE_REMINDER_MAX} times. Cancel it and send a new one if they still haven't seen it.`)
+  if (row.out_result === 'cooldown') {
+    const when = row.out_retry_at ? new Date(row.out_retry_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + ' UTC' : 'later'
+    return fail(429, 'rate_limited', `A reminder can be sent once every 24 hours. Try again after ${when}.`)
+  }
+
+  const gb = Number(row.out_gb)
+  const daysLeft = Math.max(1, Math.ceil((new Date(row.out_expires_at).getTime() - Date.now()) / 86_400_000))
+  const resellerLabel = escapeHtml(reseller.full_name) || escapeHtml(reseller.email) || 'A GlobProxy reseller'
+  try {
+    await sendEmail({
+      to: row.out_email,
+      subject: `Reminder: ${reseller.full_name || 'a GlobProxy reseller'} has bandwidth waiting for you`,
+      html: adminNoticeHtml({
+        heading: 'Your bandwidth is still waiting',
+        bodyHtml: `${resellerLabel} reserved <strong>${escapeHtml(formatGb(gb))}</strong> of residential proxy bandwidth on GlobProxy for this email address.
+          Create an account with <strong>${escapeHtml(row.out_email)}</strong> and confirm it — the bandwidth is added automatically. The offer expires in ${daysLeft} day${daysLeft === 1 ? '' : 's'}.`,
+        cta: { href: `${getAppUrl()}/auth/signup`, label: 'Create your account →' },
+      }),
+    })
+  } catch (e) {
+    console.error('[reseller/remind] reminder email failed (reminder already counted)', pendingId, e)
+  }
+  const { data: after } = await admin.from('reseller_pending_transfers').select('reminder_count').eq('id', pendingId).maybeSingle()
+  return { ok: true, data: { reminders_left: Math.max(0, INVITE_REMINDER_MAX - Number(after?.reminder_count ?? 0)), expires_at: row.out_expires_at ?? null } }
+}
+
 // Sweep: tell both sides about invitations the database resolved on its own
 // (claimed at confirmation, or expired). Runs from the 5-minute cron; each row
 // is claimed (notified_at stamped) BEFORE it is sent, so overlapping sweeps can
@@ -409,6 +464,19 @@ export async function reclaimAllocation(
           </div>`,
     }).catch((e) => console.error('[reseller/reclaim] notify failed', e))
   }
+  // The reseller gets a record too: a reclaim made from the API or by a second
+  // person with access to the account otherwise leaves nothing in their inbox.
+  if (reseller.email && !String(reseller.email).startsWith('[')) {
+    await sendEmail({
+      to: reseller.email,
+      subject: `Reclaimed: ${formatGb(reclaimed)} back in your stock`,
+      html: adminNoticeHtml({
+        heading: 'Bandwidth reclaimed ✓',
+        bodyHtml: `<strong>${escapeHtml(formatGb(reclaimed))}</strong> was taken back from ${escapeHtml(recipient?.email && !String(recipient.email).startsWith('[') ? recipient.email : 'a client')} and is back in your available stock${remaining > 0 ? ` (${escapeHtml(formatGb(remaining))} of that transfer remains with them)` : ''}.`,
+        cta: { href: `${getAppUrl()}/reseller/transfers`, label: 'View transfer history →' },
+      }),
+    }).catch((e) => console.error('[reseller/reclaim] reseller notice failed', e))
+  }
   // The client's side of the ledger shrank — an automation holding their
   // account should hear about it, not infer it.
   const recipientId = (transfer as any)?.recipient_id as string | undefined
@@ -422,7 +490,7 @@ export async function reclaimAllocation(
 // pages back. Read through the service role scoped to reseller_id (resellers
 // have no RLS access to client profile rows — migration 0039).
 export async function listTransfers(
-  admin: Admin, resellerId: string, opts: { limit?: number; before?: string | null; beforeId?: string | null }
+  admin: Admin, resellerId: string, opts: { limit?: number; before?: string | null; beforeId?: string | null; recipientId?: string | null }
 ): Promise<AllocResult<{ transfers: any[]; has_more: boolean; next_before: string | null; next_before_id: string | null }>> {
   const limit = Math.min(Math.max(Math.trunc(opts.limit ?? 50) || 50, 1), 200)
   let q = admin
@@ -431,6 +499,10 @@ export async function listTransfers(
     .eq('reseller_id', resellerId)
     .order('created_at', { ascending: false }).order('id', { ascending: false })
     .limit(limit + 1) // one extra row: tells us whether another page really exists
+  if (opts.recipientId) {
+    if (!isUuid(opts.recipientId)) return fail(400, 'invalid_request', 'client_id must be a valid id')
+    q = q.eq('recipient_id', opts.recipientId)
+  }
   const cur = applyCursor(q, opts.before, opts.beforeId, 'uuid')
   if (!cur.ok) return fail(400, 'invalid_request', cur.message)
   q = cur.query
