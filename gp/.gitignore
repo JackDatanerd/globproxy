@@ -52,3 +52,14 @@ geonode-*.json
 # Supplier targeting export used by scripts/generate-*.py — never commit
 upstream-*.json
 geonode-*.json
+
+# Local secrets / env — never commit
+.dev.vars
+.env.production
+.env.development
+.env.local
+.env*.local
+
+# Python bytecode
+__pycache__/
+*.pyc

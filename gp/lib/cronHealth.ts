@@ -27,20 +27,12 @@ export const CRON_MAX_AGE_SECONDS: Record<string, number> = {
   canary: 36 * 60 * 60,
   invites: 30 * 60,
   resellers: 3 * 60 * 60,
+  // Hourly: executes due account deletions (after the cool-off), sends the reminder and
+  // retries deletions that finished with leftovers.
+  deletions: 3 * 60 * 60,
 }
 
-// Tasks report failures as `{ error: "…" }` somewhere in a 200 body. Returns the
-// first one found in the first few levels, or null.
-export function findReportedError(value: unknown, depth = 0): string | null {
-  if (!value || typeof value !== 'object' || depth > 4) return null
-  const v = value as Record<string, unknown>
-  if (typeof v.error === 'string' && v.error) return v.error
-  for (const k of Object.keys(v)) {
-    const hit = findReportedError(v[k], depth + 1)
-    if (hit) return hit
-  }
-  return null
-}
+export { findReportedError } from '@/lib/cronReport'
 
 export async function recordCronRun(task: string, error: string | null): Promise<void> {
   try {

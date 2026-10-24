@@ -11,7 +11,7 @@ import {
   type PayoutCycle,
 } from '@/lib/payoutCycle'
 import { isIsoDate } from '@/lib/adminAuth'
-import { GEONODE_COST_PER_GB_USD } from '@/lib/constants'
+import { upstreamCostPerGbUsd } from '@/lib/constants'
 import { formatGb } from '@/lib/format'
 
 type PayoutMethodKey = 'usdt' | 'mpesa' | 'bank' | 'unset'
@@ -97,7 +97,9 @@ export default async function AdminCyclesPage({
   const totalSales = Number(stats?.revenue_usd ?? 0)
   const totalGbSold = Number(stats?.gb_sold ?? 0)
   const orderCount = Number(stats?.order_count ?? 0)
-  const geonodeCost = totalGbSold * GEONODE_COST_PER_GB_USD
+  const costPerGb = upstreamCostPerGbUsd()
+  // null = UPSTREAM_COST_PER_GB_USD not configured: show "not set" rather than a $0 cost and an inflated profit.
+  const upstreamCost = costPerGb == null ? null : totalGbSold * costPerGb
 
   // Affiliate cost = EVERY non-void commission earned on this window's
   // sales. It used to be only the payouts batched for the cycle once any
@@ -134,7 +136,7 @@ export default async function AdminCyclesPage({
     }
   }
 
-  const grossProfit = totalSales - geonodeCost - totalCommissionCost
+  const grossProfit = upstreamCost == null ? null : totalSales - upstreamCost - totalCommissionCost
 
   const cycleHref = (c: PayoutCycle) => `/admin/cycles?start=${c.cycleStart}`
 
@@ -176,13 +178,13 @@ export default async function AdminCyclesPage({
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         {[
           { label: 'Total sales', value: money(totalSales), sub: `${orderCount} paid order${orderCount === 1 ? '' : 's'} · net of refunds` },
-          { label: 'Geonode cost', value: money(geonodeCost), sub: `${formatGb(totalGbSold)} GB × $${GEONODE_COST_PER_GB_USD}` },
+          { label: 'Upstream cost', value: upstreamCost == null ? 'not set' : money(upstreamCost), sub: costPerGb == null ? 'Set UPSTREAM_COST_PER_GB_USD' : `${formatGb(totalGbSold)} GB × $${costPerGb}` },
           {
             label: 'Affiliate cost',
             value: money(totalCommissionCost),
             sub: `${money(batchedCost)} batched · ${money(unbatchedCost)} not yet batched${cycleHasBeenRun ? '' : ' (cycle not run)'}`,
           },
-          { label: 'Gross profit', value: money(grossProfit), sub: 'Before processor fees & opex' },
+          { label: 'Gross profit', value: grossProfit == null ? '—' : money(grossProfit), sub: grossProfit == null ? 'Needs the upstream cost' : 'Before processor fees & opex' },
         ].map(m => (
           <div key={m.label} className="bg-white border border-border rounded-xl p-5">
             <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-2">{m.label}</div>

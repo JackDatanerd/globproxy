@@ -5,16 +5,23 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build --webpack",
-    "build:cf": "node scripts/check-cron-sync.mjs && node scripts/check-api-docs-sync.mjs && opennextjs-cloudflare build",
+    "build:cf": "node scripts/check-cron-sync.mjs && node scripts/check-api-docs-sync.mjs && node scripts/check-supplier-leak.mjs && opennextjs-cloudflare build",
     "check:cron": "node scripts/check-cron-sync.mjs",
     "check:api-docs": "node scripts/check-api-docs-sync.mjs",
+    "check:supplier": "node scripts/check-supplier-leak.mjs",
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test \"tests/*.test.mjs\"",
+    "check:fast": "npm run check:schema && npm run check:cron && npm run check:api-docs && npm run check:supplier && npm test",
+    "check": "npm run check:fast && npm run typecheck",
     "check:migrations": "node scripts/check-migrations-applied.mjs",
     "typecheck": "tsc --noEmit",
     "start": "next start",
     "preview": "opennextjs-cloudflare preview",
     "deploy:manual-DANGER": "opennextjs-cloudflare build && npx wrangler deploy",
     "check:schema": "node scripts/check-schema-sync.mjs",
-    "indexnow": "node scripts/indexnow-submit.mjs"
+    "indexnow": "node scripts/indexnow-submit.mjs",
+    "fold:migration": "node scripts/fold-migration.mjs",
+    "pull:targeting": "node scripts/pull-targeting.mjs",
+    "hooks:install": "node scripts/install-hooks.mjs"
   },
   "dependencies": {
     "@paystack/inline-js": "^2.24.0",

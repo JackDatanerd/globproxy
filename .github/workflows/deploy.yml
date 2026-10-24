@@ -61,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     # No job may run for the 6-hour default: deploys are serialised through the
     # concurrency group below, so one hung step would block every later deploy.
-    timeout-minutes: 10
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: gp
@@ -70,11 +70,15 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
-      - name: Check schema.sql is in sync with migrations
-        run: node scripts/check-schema-sync.mjs
-
-      - name: Check cron schedule, task list and rate-limit bindings agree
-        run: node scripts/check-cron-sync.mjs
+          cache: npm
+          cache-dependency-path: gp/package-lock.json
+      # Everything ci.yml runs on a pull request, here too: a push straight to main (no PR)
+      # used to reach production having only had the two cheap checks below. `npm run check`
+      # = schema.sql roll-up, cron / rate-limit wiring, API docs, supplier-name ratchet,
+      # unit tests and the TypeScript check. The deploy job is `needs:`-gated on this.
+      - run: npm ci
+      - name: Checks (schema, cron wiring, API docs, supplier ratchet, tests, types)
+        run: npm run check
 
   deploy:
     needs: check-schema
@@ -221,6 +225,10 @@ jobs:
       #   REFERRAL_IP_SALT            salt for the hashed IPs kept for referral
       #                               fraud checks (falls back to CRON_SECRET).
       #   PASSWORD_BREACH_CHECK       `off` disables the breached-password lookup.
+      #   UPSTREAM_COST_PER_GB_USD    what a GB costs us wholesale, for the profit figures on
+      #                               /admin and /admin/cycles. Kept out of the source on
+      #                               purpose; unset, those pages say "not set" instead of
+      #                               showing a cost of $0.
       #
       # CAUTION: setting MFA_ENCRYPTION_KEY here to a value DIFFERENT from the
       # one already live makes existing encrypted TOTP secrets undecryptable
@@ -242,8 +250,9 @@ jobs:
           SUPABASE_CAPTCHA_ENABLED: ${{ secrets.SUPABASE_CAPTCHA_ENABLED }}
           REFERRAL_IP_SALT: ${{ secrets.REFERRAL_IP_SALT }}
           PASSWORD_BREACH_CHECK: ${{ secrets.PASSWORD_BREACH_CHECK }}
+          UPSTREAM_COST_PER_GB_USD: ${{ secrets.UPSTREAM_COST_PER_GB_USD }}
         run: |
-          names="TURNSTILE_SECRET_KEY MFA_ENCRYPTION_KEY MFA_ENCRYPTION_KEY_PREVIOUS INVOICE_SELLER_NAME INVOICE_SELLER_ADDRESS INVOICE_SELLER_TAX_ID SUPABASE_CAPTCHA_ENABLED REFERRAL_IP_SALT PASSWORD_BREACH_CHECK"
+          names="TURNSTILE_SECRET_KEY MFA_ENCRYPTION_KEY MFA_ENCRYPTION_KEY_PREVIOUS INVOICE_SELLER_NAME INVOICE_SELLER_ADDRESS INVOICE_SELLER_TAX_ID SUPABASE_CAPTCHA_ENABLED REFERRAL_IP_SALT PASSWORD_BREACH_CHECK UPSTREAM_COST_PER_GB_USD"
           for name in $names; do
             [ -z "${!name}" ] && echo "::notice::$name is not set in GitHub secrets — leaving the Worker's current value untouched"
           done
@@ -349,6 +358,8 @@ jobs:
         # transient IndexNow outage on their end shouldn't mark an otherwise
         # successful deploy as a failed CI run and page anyone. The step
         # still logs its own pass/fail in the Actions run either way.
+        # Only pages whose sitemap <lastmod> changed recently are sent (scripts/indexnow-submit.mjs);
+        # `npm run indexnow -- --all` re-sends everything by hand.
         run: npm run indexnow
         continue-on-error: true
         # continue-on-error does not stop a HANG: the step used to run up to the job

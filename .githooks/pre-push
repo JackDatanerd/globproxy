@@ -1,0 +1,8 @@
+#!/bin/sh
+# Installed by `npm run hooks:install` (gp/scripts/install-hooks.mjs).
+# Runs the fast offline checks CI runs: schema.sql in sync with the migrations, cron /
+# rate-limit wiring, API docs, supplier-name ratchet, unit tests. Typecheck stays in CI
+# (`npm run check` runs it too if you want it locally). Skip once: git push --no-verify
+cd "$(git rev-parse --show-toplevel)/gp" || exit 1
+echo "pre-push: running npm run check:fast ..."
+npm run --silent check:fast || { echo "pre-push: checks failed — fix them, or push anyway with --no-verify"; exit 1; }

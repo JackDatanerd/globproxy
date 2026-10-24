@@ -95,7 +95,10 @@ const CRON_TASKS: Record<string, string[]> = {
   // resellers first: it never fails the chain, and invitation expiry / low-stock /
   // payout-day reminders are idempotent, so hourly is safe and doesn't depend on
   // the daily chain (a failing 'cleanup' must not swallow payout day).
-  '0 * * * *': ['resellers', 'stock'],
+  // deletions: executes due account deletions (after the cool-off) and retries ones that
+  // finished with leftovers. It never fails the chain either, and sits before 'stock' so
+  // the watchdogs always run.
+  '0 * * * *': ['resellers', 'deletions', 'stock'],
   '0 8 * * *': ['alerts', 'summary', 'cleanup'],
   '0 */6 * * *': ['benchmark'],
   '5 8 * * *': ['canary'],
@@ -303,7 +306,7 @@ async function taskReportedError(res: Response): Promise<string | null> {
 // nothing alerts or summary produce. As a dependent chain, one Resend timeout in
 // the alerts loop, or a missing mail key making the summary throw, skipped the
 // cleanup for that day. Every task still records its own heartbeat and failure.
-// The hourly chain ('resellers' then 'stock') is independent too: 'stock' carries the
+// The hourly chain ('resellers', 'deletions' then 'stock') is independent too: 'stock' carries the
 // stopped-task and usage-sync watchdogs, so a failing 'resellers' task must never be
 // able to switch the watchdogs off (a 400 there did exactly that).
 const INDEPENDENT_CHAINS = new Set(['*/5 * * * *', '0 * * * *', '0 8 * * *'])

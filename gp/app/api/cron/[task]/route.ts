@@ -11,11 +11,12 @@ import { chargeAuthorization, generateReference, verifyTransaction, paymentMisma
 import { activateBandwidth, retryPostCredit } from '@/lib/bandwidth'
 import { alertAdminPayment, alertMismatchOnce } from '@/lib/paymentAlerts'
 import { failPendingOrder } from '@/lib/orderFailure'
-import { flushSecurityNotices } from '@/lib/securityEvents'
+import { flushSecurityNoticesDetailed } from '@/lib/securityEvents'
 import { REFERRAL_GB_BONUS } from '@/lib/referrals'
 import { fetchAllRows } from '@/lib/dbPaging'
 import { findReportedError, recordCronRun, checkCronFreshness, checkStockWatchdog, checkUsageSyncFreshness, claimCronLock, releaseCronLock } from '@/lib/cronHealth'
 import { runInviteNotices, runResellerMaintenance } from '@/lib/resellerCron'
+import { runAccountDeletions } from '@/lib/accountDeletionCron'
 import { NextResponse } from 'next/server'
 
 // Secured with the CRON_SECRET Worker secret (pushed by .github/workflows/deploy.yml).
@@ -239,10 +240,28 @@ async function runBandwidthAlerts() {
       continue
     }
 
-    const { data: profile } = await supabase
-      .from('profiles').select('email, full_name, referral_code, affiliate_status').eq('id', acc.user_id).single()
+    // Is anything actually due? Almost every account on a run is already alerted (or
+    // under 80%), so decide that from the row we already hold BEFORE paying for a
+    // profile read — it used to read a profile for each of them, every day.
+    const due95 = pct >= 95 && !acc.alerted_95_at
+    const due80 = pct >= 80 && pct < 95 && !acc.alerted_80_at
+    if (!due95 && !due80) continue
+
+    // low_bandwidth_emails is the customer's opt-out for these advisory warnings
+    // (Settings → "E-mail me when a session is running low"); only this once-a-day
+    // account-level alert ignored it, so opting out still produced the e-mails.
+    // If the column isn't migrated yet the first select errors — fall back to the
+    // columns that have always existed (same approach as usageSync's firstName()).
+    let { data: profile, error: profErr } = await supabase
+      .from('profiles').select('email, full_name, referral_code, affiliate_status, low_bandwidth_emails').eq('id', acc.user_id).maybeSingle()
+    if (profErr) {
+      ;({ data: profile, error: profErr } = await supabase
+        .from('profiles').select('email, full_name, referral_code, affiliate_status').eq('id', acc.user_id).maybeSingle() as any)
+    }
+    if (profErr) throw profErr
     // Deleted accounts keep their balance row with the email scrubbed to '[deleted]'.
     if (!profile?.email || profile.email.startsWith('[')) continue
+    if ((profile as any).low_bandwidth_emails === false) continue
 
     const firstName = escapeHtml(profile.full_name?.split(' ')[0]) || 'there'
     const avail = acc.available_gb
@@ -253,7 +272,7 @@ async function runBandwidthAlerts() {
            <a href="${appUrl()}/r/${profile.referral_code}">your link</a>.</p>`
       : ''
 
-    if (pct >= 95 && !acc.alerted_95_at) {
+    if (due95) {
       await sendAlertEmail({
         to: profile.email,
         subject: `🚨 Only ${avail.toFixed(1)}GB remaining — GlobProxy`,
@@ -268,7 +287,7 @@ async function runBandwidthAlerts() {
         .update({ alerted_95_at: new Date().toISOString() })
         .eq('user_id', acc.user_id)
       sent++
-    } else if (pct >= 80 && pct < 95 && !acc.alerted_80_at) {
+    } else if (due80) {
       await sendAlertEmail({
         to: profile.email,
         subject: `Heads up: ${avail.toFixed(1)}GB bandwidth remaining`,
@@ -294,46 +313,53 @@ async function runBandwidthAlerts() {
 }
 
 // ── Daily summary ─────────────────────────────────────────────────
+// Figures come from admin_order_stats — the same net-of-refunds basis the admin
+// Overview and Cycles pages use, computed in the database. The task used to pull
+// every order row (PostgREST caps that at 1000, so a busy day silently
+// under-reported), ignored whether the e-mail was accepted, and e-mailed again on
+// every re-run of the same day.
 async function runDailySummary() {
   const supabase = await createAdminClient()
   const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0]
   const today = new Date().toISOString().split('T')[0]
+  const MARKER = 'daily_summary_sent_for'
 
-  const { data: orders } = await supabase.from('orders')
-    .select('amount_usd, gb_amount, refunded_usd')
-    .eq('payment_status', 'paid')
-    .eq('is_canary', false) // canary's daily $0.50 test charge isn't real revenue
-    .gte('paid_at', `${yesterday}T00:00:00Z`)
-    .lt('paid_at', `${today}T00:00:00Z`)
+  const adminTo = process.env.ADMIN_EMAIL
+  if (!adminTo) return { error: 'ADMIN_EMAIL is not set — the daily summary has nowhere to go' }
 
-  // Net of refunds issued so far (partial refunds keep status 'paid'), the same
-  // basis as the admin Overview/Orders pages, so the email and the dashboard
-  // agree.
-  const keptShare = (o: { amount_usd: number; refunded_usd: number | null }) => {
-    const amt = Number(o.amount_usd)
-    return amt > 0 ? Math.max(amt - Number(o.refunded_usd ?? 0), 0) / amt : 1
-  }
-  const rev = orders?.reduce((s, o) => s + Number(o.amount_usd) * keptShare(o), 0) ?? 0
-  const gb = orders?.reduce((s, o) => s + Number(o.gb_amount) * keptShare(o), 0) ?? 0
+  const { data: marker } = await supabase.from('platform_settings').select('value').eq('key', MARKER).maybeSingle()
+  if (marker?.value === yesterday) return { skipped: true, reason: 'already_sent', day: yesterday }
 
-  const { count: newUsers } = await supabase.from('profiles')
+  const { data: statRows, error: statErr } = await supabase.rpc('admin_order_stats', {
+    p_start: `${yesterday}T00:00:00Z`, p_end: `${today}T00:00:00Z`,
+  })
+  if (statErr) return { error: `daily summary could not read order stats: ${statErr.message}` }
+  const st = (statRows?.[0] ?? null) as { revenue_usd: number; gb_sold: number; order_count: number } | null
+  const rev = Number(st?.revenue_usd ?? 0)
+  const gb = Number(st?.gb_sold ?? 0)
+  const orderCount = Number(st?.order_count ?? 0)
+
+  const { count: newUsers, error: usersErr } = await supabase.from('profiles')
     .select('*', { count: 'exact', head: true })
     .gte('created_at', `${yesterday}T00:00:00Z`)
     .lt('created_at', `${today}T00:00:00Z`) // yesterday only, like the revenue figures above
+  if (usersErr) return { error: `daily summary could not count new users: ${usersErr.message}` }
 
-  await sendEmail({
-    to: process.env.ADMIN_EMAIL!,
+  const delivered = await sendEmailSafe({
+    to: adminTo,
     subject: `GlobProxy Daily Summary — ${yesterday}`,
     html: `<div style="font-family:sans-serif">
       <h2 style="color:#0057ff">Daily Summary — ${yesterday}</h2>
       <p><strong>Revenue (net of refunds):</strong> $${rev.toFixed(2)}</p>
       <p><strong>GB sold:</strong> ${gb.toFixed(1)} GB</p>
-      <p><strong>Orders:</strong> ${orders?.length ?? 0}</p>
+      <p><strong>Orders:</strong> ${orderCount}</p>
       <p><strong>New users:</strong> ${newUsers ?? 0}</p>
       <a href="${appUrl()}/admin">Open admin panel →</a>
     </div>`,
   })
-  return { revenue: rev, gb_sold: gb, new_users: newUsers }
+  if (!delivered) return { error: 'daily summary e-mail was not accepted by the mail provider', revenue: rev }
+  await supabase.from('platform_settings').upsert({ key: MARKER, value: yesterday, updated_at: new Date().toISOString() }, { onConflict: 'key' })
+  return { revenue: rev, gb_sold: gb, orders: orderCount, new_users: newUsers }
 }
 
 // ── Reconcile uncredited orders against Paystack ──────────────────
@@ -500,19 +526,17 @@ async function runPostCreditRetry() {
 async function runCleanup() {
   const supabase = await createAdminClient()
   const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
-  const { data: stale } = await supabase.from('orders')
-    .select('id').eq('payment_status', 'pending').lt('created_at', cutoff)
-
-  for (const o of stale ?? []) {
-    // Conditional on the order STILL being pending and uncredited: this loop
-    // runs for a while after the select above, and an order paid in that gap
-    // (webhook / verify-payment) must never be overwritten with 'failed'.
-    await supabase.from('orders').update({
-      payment_status: 'failed',
-      failure_reason: 'Abandoned — not paid within 24h',
-      failed_at: new Date().toISOString(),
-    }).eq('id', o.id).eq('payment_status', 'pending').eq('bandwidth_credited', false)
-  }
+  // One conditional UPDATE instead of select-then-update-each: the old loop made a
+  // round trip per abandoned order (a few thousand would exhaust the Worker's
+  // subrequest budget and throw away the MFA / CSP / session purges below), and its
+  // errors were never looked at. The filter keeps the original guarantee — an order
+  // paid in the meantime (webhook / verify-payment) is never overwritten with 'failed'.
+  const { data: abandoned, error: abandonErr } = await supabase.from('orders').update({
+    payment_status: 'failed',
+    failure_reason: 'Abandoned — not paid within 24h',
+    failed_at: new Date().toISOString(),
+  }).eq('payment_status', 'pending').eq('bandwidth_credited', false).lt('created_at', cutoff).select('id')
+  if (abandonErr) console.error('[cleanup] abandoned-order sweep failed:', abandonErr)
 
   // Expired MFA "verified this browser" tokens (migration 0020). Already
   // functionally inert everywhere they're checked (every lookup filters
@@ -544,7 +568,16 @@ async function runCleanup() {
   const { error: usageErr } = await supabase.from('usage_daily').delete().lt('day', usageCutoff)
   if (usageErr) console.error('usage_daily prune failed:', usageErr)
 
-  return { cleaned: stale?.length ?? 0, mfa_sessions_swept: !mfaErr, csp_pruned: !cspErr, sessions_purged: !sessErr, usage_daily_pruned: !usageErr }
+  // Any failed step is reported as `error`, which is what the cron heartbeat records
+  // (lib/cronHealth.findReportedError) — they used to be logged and flagged as booleans
+  // nothing ever read, so a table that stopped being pruned never showed as failing.
+  const failedSteps = [
+    abandonErr && 'abandoned orders', mfaErr && 'MFA sessions', cspErr && 'CSP reports', sessErr && 'proxy sessions', usageErr && 'daily usage',
+  ].filter(Boolean) as string[]
+  return {
+    cleaned: abandoned?.length ?? 0, mfa_sessions_swept: !mfaErr, csp_pruned: !cspErr, sessions_purged: !sessErr, usage_daily_pruned: !usageErr,
+    ...(failedSteps.length ? { error: `cleanup step(s) failed: ${failedSteps.join(', ')}` } : {}),
+  }
 }
 
 // ── Security notices + audit-log retention (migration 0039) ──────────
@@ -558,18 +591,26 @@ async function runCleanup() {
 async function runSecurity() {
   let noticesSent = 0
   let purged: number | null = null
+  // Failures are collected and returned as `error` (the heartbeat only sees errors it
+  // is handed) instead of being swallowed: the sweep that tells customers their
+  // password or login e-mail changed could fail for days with the task showing green.
+  const problems: string[] = []
   try {
-    noticesSent = await flushSecurityNotices(undefined, 2 * 60 * 1000)
+    const flush = await flushSecurityNoticesDetailed(undefined, 2 * 60 * 1000)
+    noticesSent = flush.sent
+    if (flush.error) problems.push(flush.error)
   } catch (e) {
     console.error('[cron security] notice flush failed', e)
+    problems.push(`notice flush threw: ${String((e as any)?.message ?? e)}`)
   }
   try {
     const supabase = await createAdminClient()
     const { data, error } = await supabase.rpc('cleanup_old_security_events')
-    if (error) console.error('[cron security] cleanup_old_security_events failed', error)
+    if (error) { console.error('[cron security] cleanup_old_security_events failed', error); problems.push(`audit-log retention failed: ${error.message}`) }
     else purged = typeof data === 'number' ? data : null
   } catch (e) {
     console.error('[cron security] cleanup threw', e)
+    problems.push(`audit-log retention threw: ${String((e as any)?.message ?? e)}`)
   }
   // Cross-watchdogs: the hourly 'stock' task watches every other task, so something
   // other than 'stock' must notice when 'stock' (or the usage sync it also checks) goes
@@ -578,7 +619,10 @@ async function runSecurity() {
   let usageFreshness: unknown = null
   try { usageFreshness = await checkUsageSyncFreshness(await createAdminClient()) }
   catch (e) { console.error('[cron security] usage freshness check failed', e); usageFreshness = { error: 'freshness_check_failed' } }
-  return { notices_sent: noticesSent, events_purged: purged, stock_watchdog: stockWatchdog, usage_freshness: usageFreshness }
+  return {
+    notices_sent: noticesSent, events_purged: purged, stock_watchdog: stockWatchdog, usage_freshness: usageFreshness,
+    ...(problems.length ? { error: problems.join('; ') } : {}),
+  }
 }
 
 // ── Canary payment (continuous end-to-end payment test) ────────────
@@ -617,6 +661,15 @@ async function runCanary() {
   const { data: profile } = await supabase
     .from('profiles').select('email').eq('id', cfg.canary_user_id).single()
   if (!profile?.email) return { skipped: true, reason: 'canary_user_not_found' }
+
+  // Once a day means once a day: a re-fired trigger or a manual GET used to charge the
+  // test card again. 20h (not 24h) so tomorrow's scheduled run is never blocked by
+  // today's having started a little late.
+  const { count: recentCanaries, error: recentErr } = await supabase.from('orders')
+    .select('id', { count: 'exact', head: true })
+    .eq('is_canary', true).gte('created_at', new Date(Date.now() - 20 * 3600_000).toISOString())
+  if (recentErr) return { error: `canary could not check for a recent run: ${recentErr.message}` }
+  if ((recentCanaries ?? 0) > 0) return { skipped: true, reason: 'already_ran_today' }
 
   const reference = generateReference()
   const { data: order, error: orderErr } = await supabase.from('orders').insert({
@@ -663,8 +716,8 @@ async function runCanary() {
       failure_reason: `canary charge call failed: ${err.message}`,
       failed_at: new Date().toISOString(),
     }).eq('id', order.id)
-    await sendEmail({
-      to: process.env.ADMIN_EMAIL!,
+    const canaryMailed = await sendEmailSafe({
+      to: process.env.ADMIN_EMAIL ?? '',
       subject: `[CANARY PAYMENT FAILED] charge_authorization call errored`,
       html: `<p>The daily canary payment test couldn't even reach Paystack — this is
              separate from a normal card decline and usually means the saved
@@ -672,8 +725,8 @@ async function runCanary() {
              <p><strong>Error:</strong> ${escapeHtml(err.message)}</p>
              <p>Re-run a real checkout on the canary account to refresh the saved
              authorization_code, or check Paystack's status page.</p>`,
-    }).catch((e) => console.error('[canary] alert email threw', e))
-    return { initiated: false, error: err.message }
+    })
+    return { initiated: false, error: canaryMailed ? err.message : `${err.message} (and the alert e-mail was NOT delivered)` }
   }
 }
 
@@ -760,7 +813,7 @@ export async function POST(req: Request, context: { params: Promise<{ task: stri
   // answers 400 on every tick and silently never runs ('invites' and 'resellers' were
   // scheduled and handled in the switch below but missing from this list).
   // scripts/check-cron-sync.mjs fails the build when the two drift.
-  const KNOWN = ['stock', 'usage', 'alerts', 'summary', 'cleanup', 'canary', 'reconcile', 'security', 'provision', 'webhooks', 'benchmark', 'invites', 'resellers']
+  const KNOWN = ['stock', 'usage', 'alerts', 'summary', 'cleanup', 'canary', 'reconcile', 'security', 'provision', 'webhooks', 'benchmark', 'invites', 'resellers', 'deletions']
   if (!KNOWN.includes(task)) return NextResponse.json({ error: `Unknown task: ${task}` }, { status: 400 })
 
   // One copy of a task at a time (migration 0056). A skipped run reports ok
@@ -793,6 +846,7 @@ export async function POST(req: Request, context: { params: Promise<{ task: stri
       case 'benchmark': result = await runBenchmark();        break
       case 'invites':   result = await runInviteNotices();    break
       case 'resellers': result = await runResellerMaintenance(); break
+      case 'deletions': result = await runAccountDeletions(); break
       default: return NextResponse.json({ error: `Unknown task: ${task}` }, { status: 400 })
     }
     // A task that catches its own failure reports `{ error }` inside a 200; the

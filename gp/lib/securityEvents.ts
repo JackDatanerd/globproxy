@@ -32,6 +32,8 @@ export type SecurityEventType =
   | 'webhook_deleted'
   | 'webhook_secret_rotated'
   | 'account_deleted'
+  | 'account_delete_scheduled'
+  | 'account_delete_cancelled'
   | 'mfa_recovery_requested'
   | 'mfa_recovery_confirmed'
   | 'mfa_recovery_cancelled'
@@ -335,6 +337,14 @@ export function maskEmail(email: string): string {
 // change (flushSecurityNotices(userId)) and sweep the rest from the
 // 'security' cron task (flushSecurityNotices(undefined, minAgeMs)).
 export async function flushSecurityNotices(userId?: string, minAgeMs = 0): Promise<number> {
+  return (await flushSecurityNoticesDetailed(userId, minAgeMs)).sent
+}
+
+// Same sweep, but says what went wrong. The 'security' cron task needs this: a failed
+// select or an undeliverable notice used to look exactly like "nothing to send", so the
+// task's heartbeat stayed green while customers were not being told their password or
+// login e-mail had changed.
+export async function flushSecurityNoticesDetailed(userId?: string, minAgeMs = 0): Promise<{ sent: number; failed: number; error: string | null }> {
   const admin = await createAdminClient()
   let q = admin
     .from('security_events')
@@ -347,9 +357,10 @@ export async function flushSecurityNotices(userId?: string, minAgeMs = 0): Promi
   if (minAgeMs > 0) q = q.lt('created_at', new Date(Date.now() - minAgeMs).toISOString())
 
   const { data: pending, error } = await q
-  if (error) { console.error('[security_events] flush select failed', error.message); return 0 }
+  if (error) { console.error('[security_events] flush select failed', error.message); return { sent: 0, failed: 0, error: `security notice read failed: ${error.message}` } }
 
   let sent = 0
+  let failed = 0
   for (const ev of pending ?? []) {
     // Claim first so two concurrent flushers can't both email.
     const { data: claimed } = await admin
@@ -389,10 +400,11 @@ export async function flushSecurityNotices(userId?: string, minAgeMs = 0): Promi
       if (!stale) sent++
     } else {
       // Give the next sweep another try.
+      failed++
       await admin.from('security_events').update({ notified_at: null }).eq('id', ev.id)
     }
   }
-  return sent
+  return { sent, failed, error: failed > 0 ? `${failed} security notice(s) could not be delivered (will retry for 24h)` : null }
 }
 
 // ── Signup against an address that already has an account ───────────────

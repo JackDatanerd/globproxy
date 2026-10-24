@@ -42,6 +42,10 @@ function SettingsPageInner() {
   // typed confirmation that spells out what is lost.
   const [showDelete, setShowDelete] = useState(false)
   const [deleteText, setDeleteText] = useState('')
+  // Cool-off: when set, the account is scheduled for deletion (migration 0075) and can be cancelled.
+  const [deletionScheduledAt, setDeletionScheduledAt] = useState<string | null>(null)
+  const [deleteImmediately, setDeleteImmediately] = useState(false)
+  const [cancellingDeletion, setCancellingDeletion] = useState(false)
   const [deleteFacts, setDeleteFacts] = useState<{ remainingGb: number; sessions: number; unpaidEarningsUsd: number } | null>(null)
   const [exporting, setExporting] = useState(false)
   const [profileError, setProfileError] = useState<string | null>(null)
@@ -149,6 +153,9 @@ function SettingsPageInner() {
       // and the page must still load (the toggle then just shows its default).
       const { data: prefs } = await sb.from('profiles').select('low_bandwidth_emails').eq('id', user.id).maybeSingle()
       if (prefs && typeof (prefs as any).low_bandwidth_emails === 'boolean') setLowEmails((prefs as any).low_bandwidth_emails)
+      // Tolerant for the same reason (migration 0075).
+      const { data: sched } = await sb.from('profiles').select('deletion_scheduled_at').eq('id', user.id).maybeSingle()
+      if (sched && (sched as any).deletion_scheduled_at) setDeletionScheduledAt((sched as any).deletion_scheduled_at)
     }).catch(() => setProfileError('Couldn\u2019t load your profile. Refresh the page to try again.'))
 
     loadWebhooks()
@@ -201,7 +208,15 @@ function SettingsPageInner() {
     if (deleteText.trim().toUpperCase() !== 'DELETE') return
     setDeleting(true)
     try {
-      await apiJson('DELETE', '/api/user/delete-account')
+      // Default: schedule it (7-day cool-off, cancellable). "Delete immediately" skips the wait.
+      const res: any = await apiJson('DELETE', '/api/user/delete-account', deleteImmediately ? { immediate: true } : {})
+      if (res?.scheduled) {
+        setDeletionScheduledAt(res.scheduled_at ?? null)
+        setShowDelete(false); setDeleteText(''); setDeleteImmediately(false)
+        toast.success('Deletion scheduled — we have emailed you how to cancel it')
+        setDeleting(false)
+        return
+      }
       await fetch('/api/auth/mfa/logout', { method: 'POST' }).catch(() => {})
       await createClient().auth.signOut()
       toast.success('Account deleted')
@@ -211,6 +226,18 @@ function SettingsPageInner() {
       if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Failed to delete account')
       setDeleting(false)
     }
+  }
+
+  async function cancelDeletion() {
+    setCancellingDeletion(true)
+    try {
+      await apiJson('POST', '/api/user/delete-account/cancel')
+      setDeletionScheduledAt(null)
+      toast.success('Deletion cancelled — your account stays as it is')
+    } catch (err: any) {
+      toast.error(err?.message ?? 'Could not cancel the deletion')
+    }
+    setCancellingDeletion(false)
   }
 
   // GET /api/user/export — same step-up as deletion (password / authenticator prompt).
@@ -485,9 +512,9 @@ function SettingsPageInner() {
           <input type="checkbox" checked={lowEmails} disabled={savingLowEmails || !profile}
             onChange={e => toggleLowEmails(e.target.checked)} className="mt-1" />
           <span>
-            <span className="block text-sm text-ink">E-mail me when a session is running low</span>
+            <span className="block text-sm text-ink">E-mail me when my bandwidth is running low</span>
             <span className="block text-xs text-muted mt-0.5">
-              A heads-up at 80% and 95% of a session&apos;s allocation. We&apos;ll always e-mail you when a session runs out, and
+              A heads-up when your account balance or a session reaches 80% and 95%. We&apos;ll always e-mail you when a session runs out, and
               for security events and receipts. Webhooks are set up per endpoint and aren&apos;t affected by this.
             </span>
           </span>
@@ -888,11 +915,11 @@ function SettingsPageInner() {
           (app/api/user/delete-account) with no button anywhere to reach
           it. Kept visually separate (border color, position at the very
           end) from every reversible action above it. */}
-      <div className="bg-white border border-red-200 rounded-xl p-6 mt-5">
+      <div id="delete-account" className="bg-white border border-red-200 rounded-xl p-6 mt-5">
         <h2 className="font-display font-bold text-base text-red-600 mb-2">Danger zone</h2>
         <p className="text-sm text-ink2 font-light mb-4">
-          Permanently delete your account. Your proxy credentials stop working immediately and your
-          personal data is anonymised. This cannot be undone.
+          Permanently delete your account. Deletion is scheduled for 7 days after you ask, so you can change your mind;
+          then your proxy credentials stop working and your personal data is anonymised. That cannot be undone.
         </p>
         <p className="text-sm text-ink2 font-light mb-4">
           Want a copy first?{' '}
@@ -901,7 +928,18 @@ function SettingsPageInner() {
             {exporting ? 'Preparing…' : 'Download my data (JSON)'}
           </button>
         </p>
-        {!showDelete ? (
+        {deletionScheduledAt ? (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+            <p className="text-sm text-amber-800 font-medium mb-1">
+              Your account is scheduled to be deleted on {new Date(deletionScheduledAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}.
+            </p>
+            <p className="text-sm text-amber-800 mb-3">Until then nothing changes. Cancel any time before then to keep your account.</p>
+            <button onClick={cancelDeletion} disabled={cancellingDeletion}
+              className="bg-white border border-amber-300 text-amber-900 px-5 py-2.5 rounded-xl text-sm font-medium hover:bg-amber-100 disabled:opacity-50 transition-all">
+              {cancellingDeletion ? 'Cancelling…' : 'Cancel deletion'}
+            </button>
+          </div>
+        ) : !showDelete ? (
           <button onClick={() => setShowDelete(true)}
             className="border border-red-200 text-red-500 px-6 py-2.5 rounded-xl text-sm font-medium hover:bg-red-50 transition-all">
             Delete my account…
@@ -911,7 +949,7 @@ function SettingsPageInner() {
             <p className="text-sm text-red-700 font-medium mb-2">This will permanently:</p>
             <ul className="text-sm text-red-700 list-disc pl-5 mb-3 space-y-1">
               <li>
-                Delete {deleteFacts ? `${deleteFacts.sessions} proxy session${deleteFacts.sessions === 1 ? '' : 's'}` : 'all your proxy sessions'} — they stop working immediately.
+                Delete {deleteFacts ? `${deleteFacts.sessions} proxy session${deleteFacts.sessions === 1 ? '' : 's'}` : 'all your proxy sessions'} — they stop working once the account is deleted.
               </li>
               <li>
                 Forfeit {deleteFacts ? <strong>{formatGb(deleteFacts.remainingGb)} GB</strong> : 'any'} of unused bandwidth. It is not refunded or transferable.
@@ -922,13 +960,17 @@ function SettingsPageInner() {
               <li>Remove your name, email, payout details, webhooks and revoke your API keys.</li>
               <li>Keep only what accounting requires: records of past payments and invoices.</li>
             </ul>
+            <label className="flex items-start gap-2 text-xs text-red-700 mb-3 cursor-pointer">
+              <input type="checkbox" checked={deleteImmediately} onChange={e => setDeleteImmediately(e.target.checked)} className="mt-0.5" />
+              <span>Delete immediately instead of waiting 7 days (your proxies stop working right away and this cannot be cancelled).</span>
+            </label>
             <label className="block text-xs text-red-700 mb-1.5">Type <span className="font-mono font-bold">DELETE</span> to confirm</label>
             <input value={deleteText} onChange={e => setDeleteText(e.target.value)} autoComplete="off"
               className="w-full max-w-xs bg-white border border-red-200 px-3 py-2 rounded-lg text-sm font-mono focus:outline-none focus:border-red-400 mb-3" />
             <div className="flex gap-3">
               <button onClick={deleteAccount} disabled={deleting || deleteText.trim().toUpperCase() !== 'DELETE'}
                 className="bg-red-600 text-white px-5 py-2.5 rounded-xl text-sm font-medium hover:bg-red-700 disabled:opacity-40 transition-all">
-                {deleting ? 'Deleting...' : 'Permanently delete my account'}
+                {deleting ? 'Working…' : deleteImmediately ? 'Permanently delete my account now' : 'Schedule deletion in 7 days'}
               </button>
               <button onClick={() => { setShowDelete(false); setDeleteText('') }} disabled={deleting}
                 className="border border-border text-ink2 px-5 py-2.5 rounded-xl text-sm hover:text-ink">

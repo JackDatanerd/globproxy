@@ -2,8 +2,7 @@ import { sendEmail, escapeHtml } from '@/lib/email'
 import { authorizeAdmin, readJson, badRequest, isUuid } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
 import { adminNoticeHtml } from '@/lib/adminEmail'
-import { anonymisedProfilePatch, rollbackProfilePatch, releaseGeonodeSubUsers, purgeAccountSecrets, listReleasableCredentials } from '@/lib/accountDeletion'
-import { BAN_FOREVER } from '@/lib/adminSuspend'
+import { performAccountDeletion } from '@/lib/accountDeletion'
 import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
@@ -23,78 +22,46 @@ export async function POST(req: Request) {
   if (tp.role === 'admin') return NextResponse.json({ error: 'Cannot delete an admin account' }, { status: 403 })
   if (tp.is_deleted) return NextResponse.json({ error: 'User is already deleted' }, { status: 409 })
 
-  // Step 1: CLAIM the deletion. The anonymise update is conditional on
-  // is_deleted = false, so two admins (or a double click) can't both run the
-  // irreversible steps below: the loser gets a 409 here. The pre-deletion row
-  // captured above is what any rollback restores.
-  const { data: claimed, error: claimError } = await supabase
-    .from('profiles')
-    .update(anonymisedProfilePatch())
-    .eq('id', user_id)
-    .or('is_deleted.is.null,is_deleted.eq.false') // nullable column
-    .select('id')
-  if (claimError) return NextResponse.json({ error: claimError.message }, { status: 500 })
-  if (!claimed?.length) return NextResponse.json({ error: 'User is already deleted' }, { status: 409 })
-
-  // Step 2: Close the sign-in account FIRST. Banning (rather than deleting —
-  // that would cascade-delete the anonymised tombstone and fail on
-  // reseller_transfers history) blocks future sign-ins/refreshes;
-  // middleware.ts's is_deleted check closes the window for an already-issued
-  // access token. It is done before anything irreversible: if the ban fails
-  // nothing upstream has been touched, so the customer keeps working proxies.
-  // (It used to run after the supplier sub-users were released, so a failed ban
-  // restored the profile but left the customer with dead proxies.)
-  const { error: banError } = await supabase.auth.admin.updateUserById(user_id, { ban_duration: BAN_FOREVER })
-  if (banError) {
-    await supabase.from('profiles').update(rollbackProfilePatch(tp)).eq('id', user_id)
+  // Claim → ban → release every supplier sub-user → purge: ONE implementation shared
+  // with the customer's own deletion and the scheduled run (lib/accountDeletion.ts).
+  //  * The claim is conditional on is_deleted = false, so two admins (or a click racing
+  //    the customer's scheduled deletion) can't both run the irreversible steps.
+  //  * The sign-in account is banned BEFORE anything irreversible: if that fails nothing
+  //    upstream was touched, so the customer keeps working proxies.
+  //  * If any sub-user cannot be released, the claim AND the ban are rolled back (an
+  //    account that was already suspended stays banned) and the admin is told exactly
+  //    what happened: some proxies may already be dead — those are settled, not orphaned.
+  const result = await performAccountDeletion(supabase, user_id, { before: tp })
+  if (!result.ok) {
+    if (result.stage === 'already_deleted') return NextResponse.json({ error: 'User is already deleted' }, { status: 409 })
+    if (result.stage === 'claim') return NextResponse.json({ error: result.error }, { status: 500 })
+    if (result.stage === 'ban') {
+      await logAdminAction(supabase, {
+        adminId, action: 'user.delete_aborted', targetUserId: user_id,
+        details: { stage: 'auth_ban', error: result.error },
+      })
+      return NextResponse.json({ error: `Could not close the sign-in account (${result.error}). Nothing was changed. Try again.` }, { status: 500 })
+    }
+    if (result.stage === 'list') {
+      return NextResponse.json({ error: `Could not read the account's proxy sessions (${result.error}). Nothing was changed.${result.signInBanNotRestored ? ' The sign-in block could not be lifted again — unsuspend the account from its user page.' : ''}` }, { status: 503 })
+    }
+    const restored = !result.signInBanNotRestored
+    const released = result.released ?? 0
+    const failed = result.failed ?? []
     await logAdminAction(supabase, {
       adminId, action: 'user.delete_aborted', targetUserId: user_id,
-      details: { stage: 'auth_ban', error: banError.message },
+      details: { stage: 'release', released, failed: failed.length, ...(restored ? {} : { sign_in_ban_not_restored: true }) },
     })
-    return NextResponse.json({ error: `Could not close the sign-in account (${banError.message}). Nothing was changed. Try again.` }, { status: 500 })
-  }
-
-  // Step 3: Release live Geonode sub-users. profiles.id -> auth.users cascades
-  // into proxy_credentials, so once local rows are gone nothing would record
-  // which sub-users existed. Each one released is tombstoned locally the
-  // moment it is gone. If any fails, the claim AND the ban are rolled back
-  // (an account that was already suspended stays banned) and the admin is told
-  // exactly what happened: some proxies may already be dead.
-  const undoClaim = async () => {
-    await supabase.from('profiles').update(rollbackProfilePatch(tp)).eq('id', user_id)
-    const { error: unbanError } = await supabase.auth.admin.updateUserById(user_id, { ban_duration: tp.is_suspended ? BAN_FOREVER : 'none' })
-    if (unbanError) console.error('[delete-user] could not restore the sign-in ban state after an aborted deletion', user_id, unbanError)
-    return !unbanError
-  }
-
-  let creds
-  try { creds = await listReleasableCredentials(supabase, user_id) }
-  catch (e: any) {
-    await undoClaim()
-    return NextResponse.json({ error: `Could not read the account's proxy sessions (${e?.message ?? e}). Nothing was changed.` }, { status: 503 })
-  }
-
-  const { released, failed } = await releaseGeonodeSubUsers(supabase, creds)
-  if (failed.length) {
-    const restored = await undoClaim()
-    await logAdminAction(supabase, {
-      adminId, action: 'user.delete_aborted', targetUserId: user_id,
-      details: { stage: 'release', released: released.length, failed: failed.length, ...(restored ? {} : { sign_in_ban_not_restored: true }) },
-    })
-    const partial = released.length
-      ? ` ${released.length} of ${creds.length} proxy sessions were already released and are now shut down — the account itself was left intact.`
+    const partial = released
+      ? ` ${released} of ${result.total ?? released + failed.length} proxy sessions were already released and are now shut down — the account itself was left intact.`
       : ' Nothing was changed.'
     return NextResponse.json(
-      { error: `Could not release ${failed.length} proxy session${failed.length === 1 ? '' : 's'} upstream.${partial} Try again in a moment.${restored ? '' : ' The sign-in block could not be lifted again — unsuspend the account from its user page.'}`, failed, released: released.length },
+      { error: `Could not release ${failed.length} proxy session${failed.length === 1 ? '' : 's'} upstream.${partial} Try again in a moment.${restored ? '' : ' The sign-in block could not be lifted again — unsuspend the account from its user page.'}`, failed, released },
       { status: 502 }
     )
   }
-
-  // Step 4: Credentials read as inactive and lose their stored password and
-  // Geonode ids; webhook URLs/secrets, 2FA seeds / backup codes / trusted
-  // browsers and support-report emails are removed; API keys are revoked;
-  // pending payouts are voided. Same end state as the self-service route.
-  const purge = await purgeAccountSecrets(supabase, user_id)
+  const purge = result.purge
+  const released = { length: result.released }
 
   await logAdminAction(supabase, {
     adminId,

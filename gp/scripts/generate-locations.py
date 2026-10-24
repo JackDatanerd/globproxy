@@ -16,6 +16,11 @@
 
 import json
 import re
+import sys
+
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+import _guard  # noqa: E402
 
 SRC = "upstream-targeting.json"
 OUT = "lib/locations/data.ts"
@@ -57,15 +62,16 @@ def norm(s: str) -> str:
 
 
 def main():
-    with open(SRC, "r", encoding="utf-8") as f:
-        source = json.load(f)
+    source = _guard.load_source(SRC)
     countries_by_code = {c["code"]: c for c in source["countries"]}
 
     results = []
+    missing = []
     for code, candidates in CURATED.items():
         country = countries_by_code.get(code)
         if not country:
             print(f"MISSING COUNTRY in source data: {code}")
+            missing.append(code)
             continue
 
         all_cities = {}
@@ -81,6 +87,8 @@ def main():
             else:
                 print(f"  dropping unverified city for {code}: {candidate!r}")
 
+        if not verified:
+            sys.exit(f"REFUSING: none of the curated cities for {code} exist in the source data — the export looks wrong. Nothing was written.")
         total_cities = sum(len(s.get("cities", [])) for s in country.get("states", []))
         results.append(
             {
@@ -95,6 +103,12 @@ def main():
                 "majorCities": verified,
             }
         )
+
+    # A curated country that vanished from the source used to be skipped with one printed
+    # line, silently deleting its /locations page (and sitemap entry) on the next build.
+    if missing and "--allow-missing" not in sys.argv:
+        sys.exit(f"REFUSING: {len(missing)} curated country code(s) are not in the source data: {', '.join(missing)}. "
+                 "Fix CURATED or re-pull the source; pass --allow-missing to drop them on purpose.")
 
     lines = [
         "// Generated from upstream-targeting.json — regenerate by re-running",
@@ -130,8 +144,7 @@ def main():
     lines.append("]")
     lines.append("")
 
-    with open(OUT, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
+    _guard.write_text_atomic(OUT, "\n".join(lines))
 
     print(f"\nWrote {OUT} — {len(results)} countries.")
 

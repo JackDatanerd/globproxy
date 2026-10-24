@@ -24,6 +24,8 @@ export const SECURITY_EVENT_LABELS: Record<string, string> = {
   webhook_deleted: 'Webhook endpoint deleted',
   webhook_secret_rotated: 'Webhook signing secret rotated',
   account_deleted: 'Account deleted',
+  account_delete_scheduled: 'Account deletion scheduled',
+  account_delete_cancelled: 'Account deletion cancelled',
   payout_method_changed: 'Affiliate payout method changed',
   password_reset_requested: 'Password reset requested',
   mfa_recovery_requested: 'Two-factor recovery requested',

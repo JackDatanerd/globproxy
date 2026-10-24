@@ -2,7 +2,7 @@ import { createAdminClient } from '@/lib/supabase/server'
 import Link from 'next/link'
 import AdminStockPanel from '@/components/admin/AdminStockPanel'
 import { formatGb } from '@/lib/format'
-import { GEONODE_COST_PER_GB_USD } from '@/lib/constants'
+import { upstreamCostPerGbUsd } from '@/lib/constants'
 import { CRON_MAX_AGE_SECONDS } from '@/lib/cronHealth'
 
 const money = (n: number) => `$${n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`
@@ -127,7 +127,7 @@ export default async function AdminPage() {
           {label:'Regular users',value:String(totalUsers??0),color:'text-ink'},
           {label:'Resellers',value:String(totalResellers??0),color:'text-accent2'},
           {label:'Total accounts',value:String((totalUsers??0)+(totalResellers??0)),color:'text-ink'},
-          {label:'Cost per GB',value:`$${GEONODE_COST_PER_GB_USD}`,color:'text-muted',sub:'Geonode wholesale'},
+          {label:'Cost per GB',value:upstreamCostPerGbUsd()==null?'not set':`$${upstreamCostPerGbUsd()}`,color:'text-muted',sub:'Upstream wholesale'},
         ].map(m=>(
           <div key={m.label} className="bg-white border border-border rounded-xl p-5">
             <div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-2">{m.label}</div>

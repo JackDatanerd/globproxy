@@ -1,55 +1,16 @@
-import { deleteSubUser, listAllSubUsers, GeonodeApiError } from '@/lib/geonode'
+import { deleteSubUser, listAllSubUsers, getSubUserUsage, GeonodeApiError } from '@/lib/geonode'
 import type { AdminSupabase } from '@/lib/adminAuth'
+import { anonymisedProfilePatch, rollbackProfilePatch } from '@/lib/accountPatch'
+import { BAN_FOREVER } from '@/lib/adminSuspend'
+import { sendEmailSafe } from '@/lib/email'
+import { appUrl } from '@/lib/appUrl'
 
 // Used by app/api/admin/delete-user. It deliberately leaves an account in
 // exactly the same end state as the self-service route
 // (app/api/user/delete-account/route.ts): same fields wiped, same secrets
 // purged, suspension state preserved. If you change one, change the other.
 
-// Everything personal on the profile. Suspension fields are NOT touched: a
-// suspended account that gets deleted must stay suspended (clearing them
-// would turn a deletion into an unsuspend).
-export function anonymisedProfilePatch(): Record<string, any> {
-  return {
-    full_name: '[deleted]',
-    email: '[deleted]',
-    company_name: null,
-    billing_address: null,
-    tax_id: null,
-    is_deleted: true,
-    deleted_at: new Date().toISOString(),
-    api_access: false,
-    reseller_application: null,
-    affiliate_application: null,
-    api_access_application: null,
-    payout_method: null,
-    payout_wallet_address: null,
-    payout_wallet_network: null,
-    payout_bank_details: null,
-    payout_mpesa_phone: null,
-    payout_method_updated_at: null,
-    payout_hold_reason: null,
-    mfa_enabled: false,
-    // A deleted account must not keep the Verified Operator badge (it still
-    // counted in operator lists and stats). The flag and its rate bookkeeping.
-    is_verified_operator: false,
-    verified_operator_since: null,
-    verified_operator_prev_rate: null,
-    verified_operator_prev_rate_lifetime: null,
-  }
-}
-
-// Restores exactly the columns anonymisedProfilePatch() cleared, from a full
-// pre-deletion `select('*')`. Used if the auth ban fails afterwards.
-export function rollbackProfilePatch(before: Record<string, any>): Record<string, any> {
-  const restore: Record<string, any> = {}
-  for (const key of Object.keys(anonymisedProfilePatch())) {
-    restore[key] = before[key] ?? (key === 'api_access' || key === 'mfa_enabled' || key === 'is_verified_operator' ? false : null)
-  }
-  restore.is_deleted = false
-  restore.deleted_at = null
-  return restore
-}
+export { anonymisedProfilePatch, rollbackProfilePatch } from '@/lib/accountPatch'
 
 // Every column that points at, or holds the login for, a live upstream sub-user.
 // A tombstoned credential carries none of them. provision_username / provision_password
@@ -77,9 +38,9 @@ export async function listReleasableCredentials(supabase: AdminSupabase, userId:
   return (data ?? []) as ReleasableCredential[]
 }
 
-// Releases every listed Geonode sub-user. A 404 means it is already gone (a
+// Releases every listed upstream sub-user. A 404 means it is already gone (a
 // retry after a partial run) and counts as released. Each released credential
-// is tombstoned locally AT ONCE (stored password and Geonode ids dropped,
+// is tombstoned locally AT ONCE (stored password and upstream ids dropped,
 // status 'suspended', reason 'deleted'), so if a later sub-user fails and the
 // deletion is abandoned, the database never claims a dead sub-user is still
 // live. Callers must stop before the account is finalised if anything failed —
@@ -90,7 +51,7 @@ export async function listReleasableCredentials(supabase: AdminSupabase, userId:
 // up by that exact username in the supplier's listing (read once, lazily). Not found
 // in a COMPLETE listing means there is nothing to release; not found in an incomplete
 // one proves nothing, so it counts as failed.
-export async function releaseGeonodeSubUsers(
+export async function releaseUpstreamSubUsers(
   supabase: AdminSupabase,
   creds: ReleasableCredential[]
 ): Promise<{ released: string[]; failed: { id: string; error: string }[] }> {
@@ -99,6 +60,14 @@ export async function releaseGeonodeSubUsers(
   let listing: Awaited<ReturnType<typeof listAllSubUsers>> | null = null
   for (const cred of creds) {
     let subUserId = cred.upstream_sub_user_id
+    // Live usage BEFORE the sub-user is deleted (it may not be queryable afterwards),
+    // exactly as deleteCredential() does for a single session: the larger of it and
+    // the last synced figure is what counts as consumed when the accounting is settled.
+    let liveUsedGb: number | null = null
+    if (subUserId) {
+      try { liveUsedGb = await getSubUserUsage(subUserId) }
+      catch (e) { console.error('[accountDeletion] live usage read failed, settling on the synced figure', cred.id, e) }
+    }
     try {
       if (!subUserId && cred.provision_username) {
         listing ??= await listAllSubUsers()
@@ -108,7 +77,7 @@ export async function releaseGeonodeSubUsers(
       if (subUserId) await deleteSubUser(subUserId)
     } catch (e: any) {
       if (!(e instanceof GeonodeApiError && e.status === 404)) {
-        console.error('Failed to clean up Geonode sub-user during account deletion', cred.id, e)
+        console.error('Failed to clean up upstream sub-user during account deletion', cred.id, e)
         failed.push({ id: cred.id, error: String(e?.message ?? e) })
         continue
       }
@@ -122,7 +91,14 @@ export async function releaseGeonodeSubUsers(
         upstream_sub_user_id: null, provision_username: null,
       })
       .eq('id', cred.id)
-    if (error) console.error('[accountDeletion] could not tombstone released credential', cred.id, error)
+    if (error) { console.error('[accountDeletion] could not tombstone released credential', cred.id, error); continue }
+    // Settle the bandwidth accounting the way deleting a session does: unused GB goes
+    // back to the balance and consumed GB moves to the archive. Tombstoning alone left
+    // the account's allocated_gb inflated (and the dead session's usage double counted
+    // in used_gb) — including on an admin-aborted deletion where the account lives on.
+    // A failure here is retried by the 'deletions' sweep (settled_at stays null).
+    const settle = await supabase.rpc('settle_released_credential', { p_credential_id: cred.id, p_live_used_gb: liveUsedGb })
+    if (settle.error) console.error('[accountDeletion] could not settle released credential', cred.id, settle.error.message)
   }
   return { released, failed }
 }
@@ -136,7 +112,7 @@ export type PurgeResult = {
 }
 
 // Everything after the profile is anonymised and the auth account banned:
-// credentials read as inactive and lose their stored password / Geonode ids
+// credentials read as inactive and lose their stored password / upstream ids
 // (ALL of the account's credentials, not only ones that had a sub-user id),
 // secrets with no accounting value are deleted, API keys are revoked.
 // Orders, invoices and ledgers are kept for accounting. Every step is checked
@@ -156,7 +132,7 @@ export async function purgeAccountSecrets(supabase: AdminSupabase, userId: strin
   let stillLive: string[] = []
   try {
     const remaining = await listReleasableCredentials(supabase, userId)
-    const { failed } = await releaseGeonodeSubUsers(supabase, remaining)
+    const { failed } = await releaseUpstreamSubUsers(supabase, remaining)
     stillLive = failed.map((f) => f.id)
     for (const f of failed) warnings.push(`upstream_release ${f.id}: ${f.error}`)
   } catch (e: any) {
@@ -241,4 +217,125 @@ export async function purgeAccountSecrets(supabase: AdminSupabase, userId: strin
   check('scrub_affiliate_data', scrubErr)
 
   return { warnings, scrub: (scrub as any) ?? null }
+}
+
+// ── In-flight payments ───────────────────────────────────────────────
+// A payment still being processed would be credited to the account AFTER it is closed
+// (the webhook / reconcile cannot tell) and nobody would be refunded. Pending checkouts
+// older than two hours are abandoned ones; a paid order that never got credited is
+// always a reason to wait. Shared by the route and the scheduled run.
+export async function countInFlightPayments(supabase: AdminSupabase, userId: string): Promise<{ count: number; error: string | null }> {
+  const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
+  const { count, error } = await supabase
+    .from('orders').select('id', { count: 'exact', head: true })
+    .eq('user_id', userId).eq('bandwidth_credited', false)
+    .or(`and(payment_status.eq.pending,created_at.gt.${twoHoursAgo}),payment_status.eq.paid`)
+  return { count: count ?? 0, error: error?.message ?? null }
+}
+
+// ── The deletion itself ──────────────────────────────────────────────
+// ONE implementation behind the customer's own deletion (immediate or after the
+// cool-off) and the admin's. Order matters:
+//   1. CLAIM — the anonymise update is conditional on is_deleted being false, so two
+//      requests (a double click, a click racing the scheduled run) can never both run
+//      the irreversible steps; the loser gets 'already_deleted'. (The self-service route
+//      used to anonymise unconditionally after releasing the supplier sub-users, so two
+//      concurrent calls both released, both purged and both e-mailed.)
+//   2. BAN the sign-in account — if that fails nothing upstream has been touched.
+//   3. RELEASE every supplier sub-user. Failure rolls the claim AND the ban back.
+//   4. Revoke the caller's sessions, purge secrets, persist anything left over.
+export type DeletionOutcome =
+  | { ok: true; released: number; purge: PurgeResult; cleanupPending: boolean }
+  | {
+      ok: false
+      stage: 'claim' | 'already_deleted' | 'ban' | 'list' | 'release'
+      error: string
+      released?: number
+      total?: number
+      failed?: { id: string; error: string }[]
+      signInBanNotRestored?: boolean
+    }
+
+export async function performAccountDeletion(
+  supabase: AdminSupabase,
+  userId: string,
+  opts: { before: Record<string, any>; accessToken?: string | null },
+): Promise<DeletionOutcome> {
+  const { before } = opts
+
+  const { data: claimed, error: claimError } = await supabase
+    .from('profiles')
+    .update(anonymisedProfilePatch())
+    .eq('id', userId)
+    .or('is_deleted.is.null,is_deleted.eq.false') // nullable column
+    .select('id')
+  if (claimError) return { ok: false, stage: 'claim', error: claimError.message }
+  if (!claimed?.length) return { ok: false, stage: 'already_deleted', error: 'Account already deleted.' }
+
+  const { error: banError } = await supabase.auth.admin.updateUserById(userId, { ban_duration: BAN_FOREVER })
+  if (banError) {
+    await supabase.from('profiles').update(rollbackProfilePatch(before)).eq('id', userId)
+    return { ok: false, stage: 'ban', error: banError.message }
+  }
+
+  const undoClaim = async () => {
+    await supabase.from('profiles').update(rollbackProfilePatch(before)).eq('id', userId)
+    const { error: unbanError } = await supabase.auth.admin.updateUserById(userId, { ban_duration: before.is_suspended ? BAN_FOREVER : 'none' })
+    if (unbanError) console.error('[accountDeletion] could not restore the sign-in ban state after an aborted deletion', userId, unbanError)
+    return !unbanError
+  }
+
+  let creds: ReleasableCredential[]
+  try { creds = await listReleasableCredentials(supabase, userId) }
+  catch (e: any) {
+    const restored = await undoClaim()
+    return { ok: false, stage: 'list', error: String(e?.message ?? e), signInBanNotRestored: !restored }
+  }
+
+  const { released, failed } = await releaseUpstreamSubUsers(supabase, creds)
+  if (failed.length) {
+    const restored = await undoClaim()
+    return { ok: false, stage: 'release', error: `${failed.length} proxy session(s) could not be released`, released: released.length, total: creds.length, failed, signInBanNotRestored: !restored }
+  }
+
+  // End every session of the account (the admin signOut API is keyed on a JWT of the
+  // account's owner, which only the self-service path holds). Best-effort: the ban blocks
+  // refreshes and middleware blocks the pages anyway.
+  if (opts.accessToken) {
+    try {
+      const { error: outErr } = await supabase.auth.admin.signOut(opts.accessToken, 'global')
+      if (outErr) console.error('[accountDeletion] global sign-out failed', userId, outErr.message)
+    } catch (e) { console.error('[accountDeletion] global sign-out threw', userId, e) }
+  }
+
+  const purge = await purgeAccountSecrets(supabase, userId)
+  if (purge.warnings.length) console.error('[accountDeletion] cleanup warnings', userId, purge.warnings)
+
+  // Leftovers are persisted, not just logged: the 'deletions' task retries them and
+  // tells the admin if they do not clear. (A warning used to live in one log line
+  // and in a response nobody was reading.)
+  const cleanupPending = purge.warnings.length > 0
+  const { error: markErr } = await supabase.from('profiles').update({
+    deletion_cleanup_pending: cleanupPending,
+    deletion_cleanup_notes: cleanupPending ? purge.warnings.join('\n').slice(0, 4000) : null,
+    deletion_last_error: null,
+    deletion_attempts: 0, // from here on it counts CLEANUP retries
+  }).eq('id', userId)
+  if (markErr) console.error('[accountDeletion] could not record cleanup state', userId, markErr.message)
+  if (cleanupPending) await alertAdminCleanup(userId, purge.warnings)
+
+  return { ok: true, released: released.length, purge, cleanupPending }
+}
+
+async function alertAdminCleanup(userId: string, warnings: string[]) {
+  const to = process.env.ADMIN_EMAIL
+  if (!to) return
+  await sendEmailSafe({
+    to,
+    subject: '[ACCOUNT DELETION] finished with leftovers — will retry',
+    html: `<p>An account (<code>${userId}</code>) was deleted, but ${warnings.length} cleanup step(s) failed.
+           The hourly <strong>deletions</strong> task retries them and will e-mail again if they do not clear.</p>
+           <pre style="white-space:pre-wrap">${warnings.map((w) => w.replace(/</g, '&lt;')).join('\n')}</pre>
+           <a href="${appUrl()}/admin/settings">Admin → Settings → Scheduled tasks</a>`,
+  })
 }

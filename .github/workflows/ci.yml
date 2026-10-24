@@ -36,9 +36,7 @@ jobs:
           cache: npm
           cache-dependency-path: gp/package-lock.json
       - run: npm ci
-      - name: schema.sql is a faithful roll-up of the migrations
-        run: npm run check:schema
-      - name: cron schedule / task list / rate-limit bindings agree
-        run: npm run check:cron
-      - name: TypeScript
-        run: npm run typecheck
+      # One command, the same one the pre-push hook and deploy.yml run: schema.sql roll-up,
+      # cron / rate-limit wiring, API docs, supplier-name ratchet, unit tests, TypeScript.
+      - name: Checks (schema, cron wiring, API docs, supplier ratchet, tests, types)
+        run: npm run check

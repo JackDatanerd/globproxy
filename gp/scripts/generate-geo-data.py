@@ -13,11 +13,14 @@
 
 import json, os, re, sys
 
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+import _guard  # noqa: E402
+
 SRC = "upstream-targeting.json"
 OUT_ROOT = "public/geo"
 
-with open(SRC, "r", encoding="utf-8") as f:
-    raw = json.load(f)
+raw = _guard.load_source(SRC)
 
 countries = raw["countries"]
 

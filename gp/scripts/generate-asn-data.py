@@ -11,14 +11,27 @@
 #
 # Run from the gp/ directory:   python3 scripts/generate-asn-data.py
 
-import json, os
+import json, os, sys
+
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+import _guard  # noqa: E402
 
 SRC = "upstream-targeting.json"
 OUT_DIR = "public/geo/asns"
 INDEX_OUT = "lib/geo/asnIndex.json"
 
-with open(SRC, "r", encoding="utf-8") as f:
-    countries = json.load(f)["countries"]
+countries = _guard.load_source(SRC)["countries"]
+
+# Same shape check generate-geo-data.py does: refuse to publish a collapse against what is
+# already live (a truncated export would otherwise delete most countries' ISP lists).
+_prev_index = None
+if os.path.exists(INDEX_OUT):
+    try:
+        with open(INDEX_OUT, encoding="utf-8") as _f:
+            _prev_index = json.load(_f)
+    except (json.JSONDecodeError, OSError):
+        _prev_index = None
 
 os.makedirs(OUT_DIR, exist_ok=True)
 index = {}
@@ -41,6 +54,9 @@ for c in countries:
     index[cc] = sorted((r["code"] for r in rows), key=int)
     total += len(rows)
 
+if _prev_index and len(index) < len(_prev_index) * 0.8:
+    sys.exit(f"REFUSING: only {len(index)} countries have ASNs but {len(_prev_index)} are published (a >20% drop looks like a truncated export). Re-pull upstream-targeting.json. Nothing was removed.")
+
 # A country that has lost all its ASNs is skipped above, which used to leave its old
 # file published (and offered in the ISP picker) while the server-side index no longer
 # knew the country. Remove files that are not part of this run.
@@ -50,7 +66,6 @@ for _name in os.listdir(OUT_DIR):
         os.remove(os.path.join(OUT_DIR, _name))
         print("Removed stale", os.path.join(OUT_DIR, _name))
 
-with open(INDEX_OUT, "w", encoding="utf-8") as out:
-    json.dump(index, out, separators=(",", ":"))
+_guard.write_text_atomic(INDEX_OUT, json.dumps(index, separators=(",", ":")))
 
 print(f"wrote {len(index)} country ASN files, {total} ASNs")
