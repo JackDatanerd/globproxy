@@ -337,6 +337,13 @@ jobs:
           for c in "$health" "$home" "$login"; do
             [[ "$c" =~ ^5 ]] && broken="$c"
           done
+          # Not one of the three answered at all (000 = no HTTP response after every retry): the
+          # domain is not reaching the Worker. That is what losing the Custom Domain (or turning
+          # the workers.dev route off with nothing else serving it) looks like, and it is not a
+          # bot-protection page or a blip — those still answer. Roll back.
+          if [ -z "$broken" ] && [ "$health" = "000" ] && [ "$home" = "000" ] && [ "$login" = "000" ]; then
+            broken="000 (no response from $base)"
+          fi
           if [ -n "$broken" ]; then
             echo "::error::The new version is unhealthy (HTTP $broken) - rolling back"
             if [ -n "$PREVIOUS_VERSION_ID" ]; then

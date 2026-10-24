@@ -6,7 +6,12 @@
   // test to prove the app is unaffected. Move it forward together with a
   // preview deploy, not as a drive-by edit.
   "compatibility_date": "2025-04-01",
-  "compatibility_flags": ["nodejs_compat"],
+  // global_fetch_strictly_public: every fetch() the app makes (webhook deliveries to
+  // customer URLs, the provider and payment APIs) goes out over the public internet. Without
+  // it a fetch to a hostname on one of THIS account's own zones is routed to that zone's
+  // Worker/origin instead, which is not what a customer-supplied webhook URL should ever
+  // be able to reach. (OpenNext's own example config carries it too.)
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   // Persist Worker logs. Without this, every console.error in the payment,
   // webhook and cron paths is gone the moment the request ends.
   "observability": { "enabled": true },
@@ -30,11 +35,17 @@
   "placement": { "mode": "smart" },
   "main": "custom-worker.ts",
   "assets": { "directory": ".open-next/assets", "binding": "ASSETS" },
-  // Left at Cloudflare's defaults on purpose: this file does not know whether
-  // anything still uses the *.workers.dev address (previews, staging). While
-  // it stays reachable, next.config.ts marks every *.workers.dev response
-  // noindex so it can't compete with the real domain in search. Once nothing
-  // depends on it, add `"workers_dev": false, "preview_urls": false` here.
+  // The Worker is served ONLY on the real domain (a Custom Domain attached in the Cloudflare
+  // dashboard, which `wrangler deploy` leaves alone because no routes are declared here).
+  // The *.workers.dev address and the per-version preview URLs are switched off:
+  //  - they sit outside the zone, so a WAF / bot / rate-limiting rule on the real domain does
+  //    not apply to them, and they are a second front door to the same app;
+  //  - preview URLs are on by default whenever workers_dev is, and every uploaded version gets
+  //    one — including old versions kept for rollback, which would stay reachable (with this
+  //    Worker's secrets and bindings) long after a fix replaced them.
+  // If a preview is ever wanted again, turn it on for that deploy only.
+  "workers_dev": false,
+  "preview_urls": false,
   // Native Cloudflare Cron Triggers — see custom-worker.ts for the full
   // rationale. Keep in sync with custom-worker.ts's CRON_TASKS map.
   "triggers": {
@@ -151,6 +162,19 @@
       "name": "USER_EMAIL_RATE_LIMITER",
       "namespace_id": "1104",
       "simple": { "limit": 3, "period": 60 }
+    },
+    // Per client ADDRESS, only for requests whose Supabase session cookie is expired (so the
+    // server must call Supabase Auth to refresh it) — custom-worker.ts, lib/sessionProbe.ts.
+    // A browser refreshes about once an hour; the point is that cookies made up to look
+    // "expired" cannot use up Supabase's own per-address token-refresh budget (a configurable
+    // Auth rate limit, 150 per 5 minutes by default, shared by everyone behind this Worker's
+    // address) and turn real users' refreshes into 503s. 20/min keeps an address under 100 per
+    // 5 minutes while leaving room for a burst of parallel requests from one browser or a
+    // shared network.
+    {
+      "name": "SESSION_REFRESH_RATE_LIMITER",
+      "namespace_id": "1105",
+      "simple": { "limit": 20, "period": 60 }
     }
   ]
 }

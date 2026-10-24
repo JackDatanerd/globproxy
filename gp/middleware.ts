@@ -3,6 +3,7 @@ import { createClient as createSupabaseJsClient } from '@supabase/supabase-js'
 import { NextResponse, type NextRequest } from 'next/server'
 import { isAuthOutage } from '@/lib/authOutage'
 import { buildCsp, cspHeaderName } from '@/lib/csp'
+import { isProtectedPath } from '@/lib/protectedPaths'
 
 type CookieToSet = {
   name: string
@@ -155,7 +156,9 @@ export async function middleware(request: NextRequest) {
   // reach the same underlying order data at a URL the MFA gate below
   // never inspects, defeating the point of "mandatory for every
   // protected path" a few lines down.
-  const isProtected = ['/dashboard', '/reseller', '/admin', '/invoice'].some(p => path.startsWith(p))
+  // Whole path segments (lib/protectedPaths.ts, shared with next.config.ts): '/admin' and
+  // '/admin/x' are protected, '/administrator' is not.
+  const isProtected = isProtectedPath(path)
   // Both the mandatory-setup and step-up-verify pages need a logged-in
   // user (they act on user.id) but must be reachable precisely *because*
   // the MFA gate below hasn't been satisfied yet — they're excluded from

@@ -46,6 +46,9 @@
 // @ts-ignore `.open-next/worker.js` is generated at build time
 import { default as handler } from './.open-next/worker.js'
 import { guardApiRequest, guardResponse, limitBody } from './lib/edgeGuard'
+import { classifySession } from './lib/sessionProbe'
+import { clientKeyFromHeader } from './lib/ipParse'
+import { cookiesAreBenign, cacheAge } from './lib/edgeCache'
 
 // Keep this in sync with wrangler.jsonc's triggers.crons array — every
 // pattern here needs a matching entry there, and vice versa. Cloudflare
@@ -119,17 +122,28 @@ const CRON_TASKS: Record<string, string[]> = {
 // for up to EDGE_CACHE_TTL_SECONDS after each release.
 //
 // What keeps it safe:
-//  - only these exact public paths, only GET, only requests with NO cookie
-//    and NO Authorization header (so anything personalised, or any signed-in
-//    visitor, always reaches the real app);
+//  - only these exact public paths, only GET, only requests with NO Authorization
+//    header and NO cookie other than the few that cannot change what an anonymous
+//    page renders (lib/edgeCache.ts: the referral cookies gp_ref / gp_sub and
+//    Cloudflare's own) — so anything personalised, or any signed-in visitor, always
+//    reaches the real app;
 //  - only requests with no query string (that excludes `?ref=` referral
 //    landings and every Next `?_rsc=` client-navigation fetch) and none of
 //    the RSC / server-action headers — otherwise a cached HTML page could be
 //    handed to a client that asked for flight data;
 //  - only 200 text/html responses that set no cookie are stored.
 // Worst case after a deploy or a status change is ~EDGE_CACHE_TTL_SECONDS of
-// staleness on those pages. The x-edge-cache header says HIT or MISS.
+// staleness on those pages. The x-edge-cache header says HIT, STALE or MISS.
+//
+// STALE-WHILE-REVALIDATE: a copy past its TTL (but inside EDGE_CACHE_STALE_SECONDS) is
+// served immediately and refreshed in the background, once per location, instead of the
+// first visitor after every expiry paying a full render and every concurrent one doing
+// the same. The /status page is exempt: it reports live health, so it never serves a
+// copy older than the TTL.
 const EDGE_CACHE_TTL_SECONDS = 300
+const EDGE_CACHE_STALE_SECONDS = 600
+const EDGE_CACHE_NO_SWR: RegExp[] = [/^\/status$/]
+const STORED_AT_HEADER = 'x-edge-stored-at'
 const EDGE_CACHEABLE_PATHS: RegExp[] = [
   /^\/$/,
   /^\/status$/,
@@ -144,9 +158,13 @@ function isEdgeCacheable(request: Request, url: URL): boolean {
   if (url.search !== '') return false
   if (!EDGE_CACHEABLE_PATHS.some((re) => re.test(url.pathname))) return false
   const h = request.headers
-  if (h.has('cookie') || h.has('authorization')) return false
+  if (h.has('authorization') || !cookiesAreBenign(h.get('cookie'))) return false
   if (h.has('rsc') || h.has('next-action') || h.has('next-router-state-tree') || h.has('next-router-prefetch')) return false
   return true
+}
+
+function staleSecondsFor(pathname: string): number {
+  return EDGE_CACHE_NO_SWR.some((re) => re.test(pathname)) ? 0 : EDGE_CACHE_STALE_SECONDS
 }
 
 function appOriginOf(env: any): string | undefined {
@@ -169,7 +187,70 @@ function withDefaultNoStore(res: Response): Response {
   return out
 }
 
+// Brake on requests that make the app call Supabase Auth to REFRESH an expired session
+// (lib/sessionProbe.ts explains why). A real browser does that about once an hour, so
+// the budget is tiny: SESSION_REFRESH_RATE_LIMITER, per client address. Fails open — a
+// missing binding or a limiter error never blocks anyone.
+async function sessionRefreshBrake(request: Request, url: URL, env: any): Promise<Response | null> {
+  try {
+    if (classifySession(request.headers.get('cookie'), Date.now()) !== 'refresh') return null
+    const limiter = env?.SESSION_REFRESH_RATE_LIMITER as { limit: (o: { key: string }) => Promise<{ success: boolean }> } | undefined
+    if (!limiter) return null
+    const ip = clientKeyFromHeader(request.headers.get('cf-connecting-ip'))
+    if (!ip) return null
+    const { success } = await limiter.limit({ key: `SESSION_REFRESH_RATE_LIMITER:${ip}` })
+    if (success) return null
+  } catch (e) {
+    console.error('[session-brake] check failed, allowing request through', e)
+    return null
+  }
+  const api = url.pathname.startsWith('/api/')
+  const message = 'Too many requests. Please try again in a minute.'
+  return new Response(api ? JSON.stringify({ error: message, code: 'rate_limited' }) : message, {
+    status: 429,
+    headers: {
+      'Content-Type': api ? 'application/json' : 'text/plain; charset=utf-8',
+      'Retry-After': '60',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    },
+  })
+}
+
 let warnedNoVersion = false
+
+// Stores `res` under `key` when it is a cacheable anonymous page. Never throws.
+function storeEdgeCopy(cache: Cache, key: Request, res: Response, pathname: string, ctx: any): void {
+  const storable =
+    res.status === 200 &&
+    !res.headers.has('set-cookie') &&
+    (res.headers.get('content-type') ?? '').toLowerCase().includes('text/html')
+  if (!storable) return
+  const forCache = new Response(res.clone().body, res)
+  // Cloudflare keeps the copy for the TTL plus the stale window; the stamp below is what
+  // decides fresh vs stale on the way out.
+  forCache.headers.set('Cache-Control', `public, max-age=${EDGE_CACHE_TTL_SECONDS + staleSecondsFor(pathname)}`)
+  forCache.headers.set(STORED_AT_HEADER, String(Date.now()))
+  ctx.waitUntil(cache.put(key, forCache).catch((e: unknown) => console.error('[edge-cache] store failed', e)))
+}
+
+// One background refresh per cache key per isolate at a time.
+const refreshing = new Map<string, Promise<void>>()
+
+function refreshEdgeCopy(cache: Cache, key: Request, request: Request, env: any, ctx: any, pathname: string): void {
+  if (refreshing.has(key.url)) return
+  const work = (async () => {
+    try {
+      const fresh = new Request(request.url, { method: 'GET', headers: request.headers })
+      const res: Response = await handler.fetch(fresh, env, ctx)
+      storeEdgeCopy(cache, key, res, pathname, ctx)
+    } catch (e) {
+      console.error('[edge-cache] background refresh failed — the stale copy keeps being served until it expires', e)
+    }
+  })().finally(() => refreshing.delete(key.url))
+  refreshing.set(key.url, work)
+  ctx.waitUntil(work)
+}
 
 async function fetchWithEdgeCache(request: Request, env: any, ctx: any): Promise<Response> {
   let url: URL
@@ -178,6 +259,11 @@ async function fetchWithEdgeCache(request: Request, env: any, ctx: any): Promise
   } catch {
     return handler.fetch(request, env, ctx)
   }
+
+  // Before anything else (and before a body is buffered): a request that would make the
+  // app refresh a session against Supabase Auth gets a per-address budget.
+  const braked = await sessionRefreshBrake(request, url, env)
+  if (braked) return braked
 
   // Request guard for /api/*: body-size cap and same-origin enforcement for
   // state-changing calls (see lib/edgeGuard.ts for what is exempt and why).
@@ -208,14 +294,20 @@ async function fetchWithEdgeCache(request: Request, env: any, ctx: any): Promise
     cache = (caches as unknown as { default: Cache }).default
     const hit = await cache.match(key)
     if (hit) {
-      const out = new Response(hit.body, hit)
-      // The stored copy carries `public, max-age=…` only so Cloudflare's cache
-      // will keep it. The BROWSER must not: the same URL renders differently
-      // once the visitor signs in (e.g. the homepage call-to-action), so a
-      // browser-cached anonymous copy would linger after login.
-      out.headers.set('Cache-Control', 'private, no-cache, max-age=0, must-revalidate')
-      out.headers.set('x-edge-cache', 'HIT')
-      return out
+      const stamp = Number(hit.headers.get(STORED_AT_HEADER))
+      const age = cacheAge(hit.headers.has(STORED_AT_HEADER) ? stamp : null, Date.now(), EDGE_CACHE_TTL_SECONDS, staleSecondsFor(url.pathname))
+      if (age !== 'expired') {
+        if (age === 'stale') refreshEdgeCopy(cache, key, request, env, ctx, url.pathname)
+        const out = new Response(hit.body, hit)
+        // The stored copy carries `public, max-age=…` only so Cloudflare's cache
+        // will keep it. The BROWSER must not: the same URL renders differently
+        // once the visitor signs in (e.g. the homepage call-to-action), so a
+        // browser-cached anonymous copy would linger after login.
+        out.headers.set('Cache-Control', 'private, no-cache, max-age=0, must-revalidate')
+        out.headers.delete(STORED_AT_HEADER)
+        out.headers.set('x-edge-cache', age === 'fresh' ? 'HIT' : 'STALE')
+        return out
+      }
     }
   } catch (e) {
     console.error('[edge-cache] lookup failed, serving uncached', e)
@@ -223,17 +315,7 @@ async function fetchWithEdgeCache(request: Request, env: any, ctx: any): Promise
   }
 
   const res: Response = await handler.fetch(request, env, ctx)
-  const storable =
-    cache &&
-    res.status === 200 &&
-    !res.headers.has('set-cookie') &&
-    (res.headers.get('content-type') ?? '').toLowerCase().includes('text/html')
-
-  if (storable && cache) {
-    const forCache = new Response(res.clone().body, res)
-    forCache.headers.set('Cache-Control', `public, max-age=${EDGE_CACHE_TTL_SECONDS}`)
-    ctx.waitUntil(cache.put(key, forCache).catch((e: unknown) => console.error('[edge-cache] store failed', e)))
-  }
+  if (cache) storeEdgeCopy(cache, key, res, url.pathname, ctx)
 
   const out = new Response(res.body, res)
   out.headers.set('x-edge-cache', 'MISS')

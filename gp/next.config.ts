@@ -1,5 +1,6 @@
 import type { NextConfig } from 'next'
 import { buildCsp, cspHeaderName } from './lib/csp'
+import { unprotectedSource } from './lib/protectedPaths'
 
 // Content-Security-Policy. REPORT-ONLY by default: the browser evaluates every
 // rule below and posts violations to /api/csp-report (which logs them and counts
@@ -56,10 +57,11 @@ const nextConfig: NextConfig = {
       },
       // The static CSP, on everything EXCEPT the signed-in areas: middleware.ts sets
       // its own per-request-nonce policy there, and sending both would have the browser
-      // evaluate (and report against) two policies. The prefixes mirror middleware's
-      // isProtected check, which is a plain startsWith — keep the two in step.
+      // evaluate (and report against) two policies. Both this and
+      // middleware's isProtected read the prefixes from lib/protectedPaths.ts (whole path
+      // segments), so they cannot drift apart.
       {
-        source: '/((?!dashboard|reseller|admin|invoice).*)',
+        source: unprotectedSource(),
         headers: [{ key: CSP_HEADER_NAME, value: CSP_POLICY }],
       },
       // Admin API answers (user lists, payout destinations, exports) are never cacheable.

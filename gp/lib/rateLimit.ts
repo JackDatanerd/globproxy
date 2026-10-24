@@ -1,13 +1,17 @@
 import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { NextResponse } from 'next/server'
-import { parseIpv6 } from '@/lib/ssrfGuard'
+import { clientKeyFromHeader, normalizeClientIp } from '@/lib/ipParse'
 import { throttleHit } from '@/lib/authThrottle'
+import { canonicalEmail, targetBuckets, TARGET_PER_ADDRESS_WINDOW_S, TARGET_GLOBAL_WINDOW_S } from '@/lib/targetThrottle'
 
-// Cloudflare's native Rate Limiting bindings — declared directly in
-// wrangler.jsonc (unsafe.bindings, type "ratelimit") and auto-provisioned
-// by Cloudflare on deploy. Deliberately NOT a KV-based implementation: this
-// app has no KV namespace, and the native binding needs no out-of-band
-// setup — it is live as soon as it is deployed.
+// Re-exported so existing importers keep working; the implementation lives in the
+// import-free lib/targetThrottle.ts, where it is unit-tested.
+export { canonicalEmail, normalizeClientIp }
+
+// Cloudflare's native Rate Limiting bindings — declared in wrangler.jsonc under the
+// top-level "ratelimits" key and auto-provisioned by Cloudflare on deploy. Deliberately
+// NOT a KV-based implementation: this app has no KV namespace, and the native binding
+// needs no out-of-band setup — it is live as soon as it is deployed.
 //
 // What each binding protects (limits live in wrangler.jsonc, change both
 // places together and keep /docs/api in step for the API ones):
@@ -15,11 +19,17 @@ import { throttleHit } from '@/lib/authThrottle'
 //   AUTH_RATE_LIMITER         per client address, per route group — the
 //                             unauthenticated and credential-handling auth
 //                             endpoints (login, signup, reset, MFA, …).
-//   AUTH_TARGET_RATE_LIMITER  per TARGET EMAIL, across every address — stops
-//                             a distributed attacker from using signup /
-//                             reset / resend to flood one victim's inbox.
+//   AUTH_TARGET_RATE_LIMITER  per TARGET EMAIL *and* calling address — stops one
+//                             source from using signup / reset / resend to flood a
+//                             victim's inbox. The key includes the caller's address
+//                             on purpose: a cap on the e-mail alone is also a lock
+//                             anyone can turn (see lib/targetThrottle.ts).
 //                             Deliberately NOT applied to login: a per-account
 //                             login cap lets anyone lock a victim out.
+//   SESSION_REFRESH_RATE_LIMITER  per client address, ONLY for requests whose
+//                             Supabase session cookie is expired or unreadable —
+//                             the ones that make the Worker call Supabase Auth to
+//                             refresh it (custom-worker.ts). See lib/sessionProbe.ts.
 //   RESELLER_RATE_LIMITER     per reseller — allocate / reclaim
 //                             (app/api/reseller/*); sized so a legitimate bulk
 //                             allocation isn't throttled but the endpoint can't
@@ -66,6 +76,7 @@ import { throttleHit } from '@/lib/authThrottle'
 export type RateLimiterBinding =
   | 'AUTH_RATE_LIMITER'
   | 'AUTH_TARGET_RATE_LIMITER'
+  | 'SESSION_REFRESH_RATE_LIMITER'
   | 'RESELLER_RATE_LIMITER'
   | 'PAYMENT_RATE_LIMITER'
   | 'PAYMENT_VERIFY_RATE_LIMITER'
@@ -82,7 +93,7 @@ type Limiter = { limit: (opts: { key: string }) => Promise<{ success: boolean }>
 // absent: a renamed or dropped binding makes its limiter fail open, and nothing
 // else would ever say so.
 export const RATE_LIMITER_BINDINGS: RateLimiterBinding[] = [
-  'AUTH_RATE_LIMITER', 'AUTH_TARGET_RATE_LIMITER', 'RESELLER_RATE_LIMITER', 'PAYMENT_RATE_LIMITER', 'PAYMENT_VERIFY_RATE_LIMITER',
+  'AUTH_RATE_LIMITER', 'AUTH_TARGET_RATE_LIMITER', 'SESSION_REFRESH_RATE_LIMITER', 'RESELLER_RATE_LIMITER', 'PAYMENT_RATE_LIMITER', 'PAYMENT_VERIFY_RATE_LIMITER',
   'API_RATE_LIMITER', 'API_WRITE_RATE_LIMITER', 'API_HISTORY_RATE_LIMITER', 'API_IP_RATE_LIMITER',
   'USER_ACTION_RATE_LIMITER', 'USER_EMAIL_RATE_LIMITER',
 ]
@@ -107,7 +118,7 @@ const warnedBindings = new Set<string>()
 function warnMissingBinding(binding: string) {
   if (warnedBindings.has(binding)) return
   warnedBindings.add(binding)
-  console.error(`[rateLimit] binding ${binding} is not present on the Worker — that limit is NOT being enforced (check wrangler.jsonc unsafe.bindings)`)
+  console.error(`[rateLimit] binding ${binding} is not present on the Worker — that limit is NOT being enforced (check the "ratelimits" array in wrangler.jsonc)`)
 }
 
 // Names of declared bindings the running Worker does not have. Returns null
@@ -129,11 +140,9 @@ function tooMany(message = 'Too many requests. Please try again in a minute.', r
   )
 }
 
-// The exact (Postgres) caps. Sized well above any legitimate use — a person
-// signing up, re-sending the confirmation and resetting a password stays far
-// under them — and short enough that a mistaken lock-out clears quickly.
-const TARGET_EXACT_MAX = 6          // per scope, per target address
-const TARGET_EXACT_WINDOW_S = 600   // 10 minutes
+// The exact (Postgres) cap for staff-mail routes. Sized well above any legitimate
+// use and short enough that a mistaken lock-out clears quickly. (The per-target caps
+// for signup / reset / resend live in lib/targetThrottle.ts.)
 const USER_EMAIL_EXACT_MAX = 6      // per scope, per signed-in user
 const USER_EMAIL_EXACT_WINDOW_S = 3600 // 1 hour
 
@@ -152,20 +161,7 @@ async function sha256Hex(input: string): Promise<string> {
 //    environment) spend the budget of everyone else. cf-connecting-ip is
 //    always present on real traffic, so skipping is the safe direction.
 export function clientKey(req: Request): string | null {
-  const raw = req.headers.get('cf-connecting-ip')?.trim()
-  if (!raw) return null
-  return normalizeClientIp(raw)
-}
-
-/** Same grouping clientKey uses (IPv6 -> its /64, v4-mapped -> v4), for a bare address string. */
-export function normalizeClientIp(raw: string): string {
-  if (!raw.includes(':')) return raw
-  const g = parseIpv6(raw)
-  if (!g) return raw
-  if (g.slice(0, 5).every((x) => x === 0) && g[5] === 0xffff) {
-    return `${g[6] >> 8}.${g[6] & 0xff}.${g[7] >> 8}.${g[7] & 0xff}`
-  }
-  return `${g.slice(0, 4).map((x) => x.toString(16)).join(':')}::/64`
+  return clientKeyFromHeader(req.headers.get('cf-connecting-ip'))
 }
 
 let warnedNoClientKey = false
@@ -200,49 +196,40 @@ export async function rateLimited(
   }
 }
 
-// One mailbox, one key. `victim+1@gmail.com`, `victim+2@gmail.com` and
-// `v.ictim@gmail.com` all deliver to the same inbox, so keying the per-target
-// limit on the literal string let an attacker flood a victim with a fresh
-// budget per variant. Strips a `+tag` (honoured by essentially every provider
-// that matters), and for Gmail also ignores dots and folds googlemail.com.
-export function canonicalEmail(raw: string): string {
-  const e = raw.trim().toLowerCase()
-  const at = e.lastIndexOf('@')
-  if (at < 1) return e
-  let local = e.slice(0, at)
-  let domain = e.slice(at + 1)
-  const plus = local.indexOf('+')
-  if (plus > 0) local = local.slice(0, plus)
-  if (domain === 'googlemail.com') domain = 'gmail.com'
-  if (domain === 'gmail.com') local = local.replace(/\./g, '')
-  return `${local}@${domain}`
-}
-
-// Per target email, across all callers. Call it once the email is known
-// (after the body is parsed). The response is identical whether or not an
+// Per target email — see lib/targetThrottle.ts for why this is per (email, address)
+// plus a looser all-addresses hourly ceiling rather than one cap on the email. Call it
+// once the email is known (after the body is parsed), passing the request so the
+// caller's address can be part of the key. The response is identical whether or not an
 // account exists for that address, so it cannot be used to probe for one.
-export async function rateLimitedTarget(scope: string, email: unknown): Promise<NextResponse | null> {
+export async function rateLimitedTarget(scope: string, email: unknown, req?: Request): Promise<NextResponse | null> {
   if (typeof email !== 'string') return null
   const target = canonicalEmail(email)
   if (!target) return null
+  const ip = req ? clientKey(req) : null
 
   // Two independent layers, each in its own try: a failure of the per-location
-  // binding must not also switch off the exact Postgres cap (and vice versa).
+  // binding must not also switch off the exact Postgres caps (and vice versa).
   try {
     const limiter = getLimiter('AUTH_TARGET_RATE_LIMITER')
     if (limiter) {
-      const { success } = await limiter.limit({ key: `AUTH_TARGET_RATE_LIMITER:${scope}:${(await sha256Hex(target)).slice(0, 32)}` })
+      const { success } = await limiter.limit({ key: `AUTH_TARGET_RATE_LIMITER:${scope}:${(await sha256Hex(target)).slice(0, 32)}${ip ? ':' + ip : ''}` })
       if (!success) return tooMany('Too many requests for this email address. Please try again in a minute.')
     }
   } catch (e) {
     console.error('[rateLimit] target binding check failed, continuing to the exact check', e)
   }
 
-  // Exact, cross-location second layer (see the note at the top of this file).
-  // throttleHit fails open on a database error, so this can never be the outage.
+  // Exact, cross-location layer. throttleHit fails open on a database error, so this
+  // can never be the outage. The address bucket is checked first and returns early.
   try {
-    const exact = await throttleHit(`target:${scope}`, target, TARGET_EXACT_MAX, TARGET_EXACT_WINDOW_S)
-    if (exact !== 'ok') return tooMany('Too many requests for this email address. Please try again in a few minutes.', TARGET_EXACT_WINDOW_S)
+    for (const b of targetBuckets(scope, target, ip)) {
+      const exact = await throttleHit(b.scope, b.identifier, b.max, b.windowS)
+      if (exact !== 'ok') {
+        return b.kind === 'address'
+          ? tooMany('Too many requests for this email address from this connection. Please try again in a few minutes.', TARGET_PER_ADDRESS_WINDOW_S)
+          : tooMany('Too many requests for this email address. Please try again later.', TARGET_GLOBAL_WINDOW_S)
+      }
+    }
   } catch (e) {
     console.error('[rateLimit] target exact check failed, allowing request through', e)
   }

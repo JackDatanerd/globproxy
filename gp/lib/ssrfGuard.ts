@@ -14,17 +14,11 @@
 // redirect:'manual' in lib/webhooks.ts and https-only, closes the practical
 // attack surface.
 
+import { ipv4ToInt, parseIpv6 } from './ipParse'
+
 const MAX_URL_LENGTH = 2048
 
 // ── IPv4 ──────────────────────────────────────────────────────────────
-function ipv4ToInt(ip: string): number | null {
-  const m = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
-  if (!m) return null
-  const parts = m.slice(1, 5).map(Number)
-  if (parts.some((p) => p > 255)) return null
-  return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0
-}
-
 const BLOCKED_IPV4_RANGES: [string, number][] = [
   ['0.0.0.0', 8],        // "this network"
   ['10.0.0.0', 8],       // RFC1918
@@ -54,44 +48,7 @@ function isBlockedIpv4(ip: string): boolean {
 }
 
 // ── IPv6 ──────────────────────────────────────────────────────────────
-// Parses any textual IPv6 form (compressed, expanded, with an embedded
-// dotted-quad tail) into 8 16-bit groups. Returns null if it isn't IPv6.
-// Exported so lib/rateLimit.ts can collapse a client address to its /64.
-export function parseIpv6(raw: string): number[] | null {
-  let h = raw.toLowerCase()
-  if (!h.includes(':')) return null
-  const zone = h.indexOf('%')
-  if (zone !== -1) h = h.slice(0, zone)
-
-  // Embedded IPv4 tail (a.b.c.d) -> two hex groups
-  const tail = h.match(/^(.*:)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/)
-  if (tail) {
-    const n = ipv4ToInt(tail[2])
-    if (n === null) return null
-    h = `${tail[1]}${((n >>> 16) & 0xffff).toString(16)}:${(n & 0xffff).toString(16)}`
-  }
-
-  const halves = h.split('::')
-  if (halves.length > 2) return null
-  const toGroups = (part: string) => (part === '' ? [] : part.split(':'))
-  const head = toGroups(halves[0])
-  const rest = halves.length === 2 ? toGroups(halves[1]) : []
-  if (halves.length === 1 && head.length !== 8) return null
-  const missing = 8 - head.length - rest.length
-  if (halves.length === 2 && missing < 1) return null
-
-  const groups = halves.length === 2
-    ? [...head, ...Array(missing).fill('0'), ...rest]
-    : head
-  if (groups.length !== 8) return null
-
-  const out: number[] = []
-  for (const g of groups) {
-    if (!/^[0-9a-f]{1,4}$/.test(g)) return null
-    out.push(parseInt(g, 16))
-  }
-  return out
-}
+// (the textual-address parsers live in lib/ipParse.ts)
 
 const v4From = (hi: number, lo: number) =>
   `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`
