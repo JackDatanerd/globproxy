@@ -1,3 +1,4 @@
+import AdminQueryError from '@/components/admin/AdminQueryError'
 import { createAdminClient } from '@/lib/supabase/server'
 import AdminResellerActions from '@/components/admin/AdminResellerActions'
 import AdminApiAccessActions from '@/components/admin/AdminApiAccessActions'
@@ -23,7 +24,7 @@ export default async function AdminResellersPage({ searchParams }: { searchParam
     .select('id, full_name, email, is_suspended, created_at', { count: 'exact' })
     .eq('role', 'reseller').eq('is_deleted', false)
   if (q) resellerQuery = resellerQuery.or(`email.ilike.%${q}%,full_name.ilike.%${q}%`)
-  const [{ data: resellers, count: resellerCount }, { data: applicants, count: applicantCount }, { data: apiApplicants, count: apiApplicantCount }] = await Promise.all([
+  const [{ data: resellers, count: resellerCount, error: resellersErr }, { data: applicants, count: applicantCount, error: applicantsErr }, { data: apiApplicants, count: apiApplicantCount, error: apiApplicantsErr }] = await Promise.all([
     resellerQuery.order('created_at', { ascending: false }).range(from, from + PAGE_SIZE - 1),
     supabase.from('profiles').select('id, full_name, email, reseller_application', { count: 'exact' }).eq('role', 'user').eq('reseller_status', 'pending').eq('is_deleted', false).order('created_at', { ascending: false }).limit(LIST_CAP),
     supabase.from('profiles').select('id, full_name, email, api_access_application', { count: 'exact' }).eq('role', 'reseller').eq('api_access_status', 'pending').eq('is_deleted', false).order('created_at', { ascending: false }).limit(LIST_CAP),
@@ -35,8 +36,10 @@ export default async function AdminResellersPage({ searchParams }: { searchParam
     : { data: [] }
   const bwMap = Object.fromEntries((bwAccounts ?? []).map(b => [b.user_id, b]))
 
+  const listErr = resellersErr || applicantsErr || apiApplicantsErr
   return (
     <div className="max-w-5xl">
+      {listErr && <AdminQueryError what={`${[resellersErr && 'the reseller list', applicantsErr && 'reseller applications', apiApplicantsErr && 'API-access requests'].filter(Boolean).join(', ')}`} />}
       <div className="mb-8">
         <h1 className="font-display font-bold text-2xl text-ink">Resellers</h1>
         <p className="text-muted text-sm mt-1">Manage reseller accounts and applications</p>

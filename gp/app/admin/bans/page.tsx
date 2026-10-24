@@ -5,7 +5,7 @@ import { AdminBanForm, AdminUnbanButton } from '@/components/admin/AdminBanContr
 const PAGE_SIZE = 50
 
 // Addresses blocked from registering (signup checks them, normalised for
-// case and +tags). Until now the list could only be edited with SQL.
+// case, +tags, Gmail dots; "@domain" entries block a whole domain).
 export default async function AdminBansPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const sp = await searchParams
   const page = parsePage(sp.page)
@@ -23,8 +23,9 @@ export default async function AdminBansPage({ searchParams }: { searchParams: Pr
       <div className="mb-8">
         <h1 className="font-display font-bold text-2xl text-ink">Banned emails</h1>
         <p className="text-muted text-sm mt-1">
-          Blocked from registering. Matching ignores letter case and +tags, so banning one form blocks them all.
-          Banning does not touch an account that already exists — suspend it from its user page.
+          Blocked from registering. Matching ignores letter case, +tags and Gmail dots, so banning one form blocks them all.
+          Write <span className="font-mono">@example.com</span> to ban a whole domain. Banning does not touch an account that
+          already exists unless you tick &ldquo;also suspend&rdquo; — otherwise suspend it from its user page.
         </p>
       </div>
 

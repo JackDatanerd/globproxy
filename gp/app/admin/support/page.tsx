@@ -26,6 +26,18 @@ export default async function AdminSupportPage({ searchParams }: { searchParams:
     supabase.from('support_reports').select('*', { count: 'exact', head: true }).eq('status', 'resolved'),
   ])
 
+  // What the customer was told (migration 0073). A failure here only hides the thread.
+  const reportIds = (reports ?? []).map((r: any) => r.id)
+  const { data: replyRows } = reportIds.length
+    ? await supabase.from('support_report_replies')
+        .select('report_id, message, created_at, admin:admin_id(email)').in('report_id', reportIds).order('created_at', { ascending: true })
+    : { data: [] as any[] }
+  const repliesByReport = new Map<string, any[]>()
+  for (const x of (replyRows ?? []) as any[]) {
+    const list = repliesByReport.get(x.report_id) ?? []
+    list.push(x); repliesByReport.set(x.report_id, list)
+  }
+
   const chip = (on: boolean) => `text-xs font-mono px-3 py-1.5 rounded-full border transition-all ${on ? 'bg-ink text-white border-ink' : 'border-border text-ink2 hover:border-ink2'}`
 
   return (
@@ -63,6 +75,12 @@ export default async function AdminSupportPage({ searchParams }: { searchParams:
                 <AdminSupportActions reportId={r.id} status={r.status} />
               </div>
               <p className="text-sm text-ink mt-3 whitespace-pre-wrap break-words">{r.message}</p>
+              {(repliesByReport.get(r.id) ?? []).map((x: any, i: number) => (
+                <div key={i} className="mt-3 bg-surface border border-border rounded-lg px-3 py-2">
+                  <div className="text-[10px] font-mono text-muted mb-0.5">Sent to customer · {new Date(x.created_at).toLocaleString('en-GB')} · {x.admin?.email ?? 'admin'}</div>
+                  <p className="text-xs text-ink whitespace-pre-wrap break-words">{x.message}</p>
+                </div>
+              ))}
               {r.status === 'resolved' && (
                 <div className="text-[11px] font-mono text-muted mt-3">
                   Resolved {r.resolved_at ? new Date(r.resolved_at).toLocaleString('en-GB') : ''}{r.admin_note ? ` — ${r.admin_note}` : ''}

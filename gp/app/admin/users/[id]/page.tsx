@@ -7,6 +7,7 @@ import AdminMfaResetButton from '@/components/admin/AdminMfaResetButton'
 import AdminDeleteUserButton from '@/components/admin/AdminDeleteUserButton'
 import AdminUserControls from '@/components/admin/AdminUserControls'
 import AdminCredentialAction from '@/components/admin/AdminCredentialAction'
+import AdminUserSecurityPanel, { type PanelSession, type PanelKey } from '@/components/admin/AdminUserSecurityPanel'
 import { formatGb } from '@/lib/format'
 import { formatRatePct } from '@/lib/rates'
 
@@ -25,15 +26,20 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
   // still the record) but gets no controls.
   const deleted = !!profile.is_deleted
 
-  const [{ data: bw }, { data: creds }, { data: audit }, { data: orders }, { data: adjustments }, { data: secEvents }, { count: activeKeys }, { data: referralStats }, { data: payouts }] = await Promise.all([
+  const CRED_LIMIT = 100
+  const [{ data: bw }, { data: creds, count: credCount, error: credErr }, { data: audit }, { data: orders, error: ordersErr }, { data: adjustments }, { data: secEvents }, { data: apiKeys }, { data: referralStats }, { data: payouts }, sessionsRes] = await Promise.all([
     supabase.from('bandwidth_accounts')
       .select('total_gb, used_gb, allocated_gb, available_gb')
       .eq('user_id', id)
       .single(),
+    // Only the columns shown, newest first, capped: a reseller can hold thousands of
+    // sub-user credentials (select('*') silently stopped at 1000 rows, made the
+    // "Credentials (N)" heading wrong and shipped every column of every row).
     supabase.from('proxy_credentials')
-      .select('*')
+      .select('id, label, city, state, country, gb_allocated, gb_used, status, suspended_reason, created_at', { count: 'exact' })
       .eq('user_id', id)
-      .order('created_at', { ascending: false }),
+      .order('created_at', { ascending: false })
+      .limit(CRED_LIMIT),
     // Everything an admin has done to this account (admin_audit_log, migration 0043).
     supabase.from('admin_audit_log')
       .select('id, action, details, created_at, admin:admin_id(email)')
@@ -56,9 +62,11 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
       .order('created_at', { ascending: false })
       .limit(10),
     supabase.from('api_keys')
-      .select('id', { count: 'exact', head: true })
+      .select('id, label, key_prefix, created_at, last_used_at, last_used_ip, expires_at')
       .eq('user_id', id)
-      .is('revoked_at', null),
+      .is('revoked_at', null)
+      .order('created_at', { ascending: false })
+      .limit(50),
     // Referrals this account has made (as an affiliate / referrer).
     supabase.from('referrals')
       .select('id, flagged')
@@ -68,7 +76,10 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
       .eq('referrer_id', id)
       .order('cycle_start', { ascending: false })
       .limit(5),
+    supabase.rpc('list_auth_sessions', { p_user_id: id }),
   ])
+  const activeKeys = apiKeys?.length ?? 0
+  const sessionList: PanelSession[] = Array.isArray(sessionsRes?.data) ? sessionsRes.data : []
   const isAffiliate = !!profile.affiliate_status
   const referralCount = referralStats?.length ?? 0
   const flaggedCount = (referralStats ?? []).filter((r: any) => r.flagged).length
@@ -132,8 +143,19 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
         ))}
       </div>
 
+      {(credErr || ordersErr) && (
+        <div className="mb-4 bg-red-50 border border-red-200 text-red-700 text-sm rounded-xl px-4 py-3">
+          Couldn&apos;t load {[credErr && 'credentials', ordersErr && 'orders'].filter(Boolean).join(' and ')} — what&apos;s shown below may be incomplete. Reload to retry.
+        </div>
+      )}
+
       <div className="mb-4">
-        <h2 className="font-display font-bold text-sm text-ink">Credentials ({creds?.length ?? 0})</h2>
+        <h2 className="font-display font-bold text-sm text-ink">Credentials ({credCount ?? creds?.length ?? 0})</h2>
+        {(credCount ?? 0) > CRED_LIMIT && (
+          <p className="text-xs text-amber-700 mt-1">
+            Showing the newest {CRED_LIMIT}. <Link href={`/admin/credentials?q=${encodeURIComponent(profile.email ?? '')}`} className="underline">See all {credCount} in Credentials →</Link>
+          </p>
+        )}
         <p className="text-muted text-xs mt-1">
           &quot;Used&quot; only reflects currently-active credentials — usage from a deleted credential
           no longer shows here (the GB it consumed stays permanently subtracted from Available above,
@@ -269,11 +291,17 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
         </div>
       )}
 
-      {/* Security events + API keys */}
+      <AdminUserSecurityPanel
+        userId={id} email={profile.email ?? ''} canAct={!deleted && profile.role !== 'admin'}
+        sessions={sessionList.map((x: any) => ({ id: String(x.id), created_at: x.created_at ?? null, updated_at: x.updated_at ?? null, user_agent: x.user_agent ?? null, ip: x.ip ? String(x.ip) : null }))}
+        keys={(apiKeys ?? []) as PanelKey[]} sessionsError={!!sessionsRes?.error}
+      />
+
+      {/* Security events */}
       <div className="bg-white border border-border rounded-xl overflow-hidden mt-6">
         <div className="px-6 py-4 border-b border-border flex items-center justify-between">
           <h2 className="font-display font-bold text-base text-ink">Security events</h2>
-          <span className="text-xs font-mono text-muted">{activeKeys ?? 0} active API key{(activeKeys ?? 0) === 1 ? '' : 's'}</span>
+          <span className="text-xs font-mono text-muted">{activeKeys} active API key{activeKeys === 1 ? '' : 's'}</span>
         </div>
         {(secEvents ?? []).length === 0 ? (
           <div className="px-6 py-8 text-center text-sm text-muted">Nothing recorded.</div>

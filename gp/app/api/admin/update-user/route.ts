@@ -2,6 +2,7 @@ import { sendEmail, escapeHtml } from '@/lib/email'
 import { authorizeAdmin, readJson, badRequest, isUuid } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
 import { adminNoticeHtml, appUrl } from '@/lib/adminEmail'
+import { revokeAllApiKeys } from '@/lib/adminAccountSecurity'
 import { NextResponse } from 'next/server'
 
 type Action = 'make_reseller' | 'make_user' | 'grant_api_access' | 'revoke_api_access' | 'toggle_api_access'
@@ -81,11 +82,26 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'This account was changed by someone else a moment ago — refresh and try again.' }, { status: 409 })
   }
 
+  // Removing API access (directly, or by demoting a reseller) also revokes the
+  // keys — otherwise they come back to life on the next grant.
+  let keysRevoked = 0
+  let keysRevokeFailed = false
+  if (resolved === 'revoke_api_access' || resolved === 'make_user') {
+    const r = await revokeAllApiKeys(supabase, user_id)
+    keysRevoked = r.revoked
+    keysRevokeFailed = !r.ok
+  }
+
   await logAdminAction(supabase, {
     adminId,
     action: `user.${resolved}`,
     targetUserId: user_id,
-    details: { from_role: target.role, updates },
+    details: {
+      from_role: target.role, updates,
+      ...(resolved === 'revoke_api_access' || resolved === 'make_user'
+        ? { api_keys_revoked: keysRevoked, api_keys_revoke_failed: keysRevokeFailed || undefined }
+        : {}),
+    },
   })
 
   // Best-effort notification — the access change already succeeded.
@@ -104,7 +120,7 @@ export async function POST(req: Request) {
     } else if (resolved === 'make_user') {
       subject = 'Your GlobProxy reseller status has been removed'
       heading = 'Reseller status removed'
-      text = `Hi ${firstName}, your account is no longer a reseller account — it's back to a regular customer account. Any bandwidth you'd already allocated to clients is unaffected. If this wasn't expected, contact support.`
+      text = `Hi ${firstName}, your account is no longer a reseller account — it's back to a regular customer account. Any bandwidth you'd already allocated to clients is unaffected, and any API keys you had have been revoked. If this wasn't expected, contact support.`
     } else if (resolved === 'grant_api_access') {
       subject = 'API access has been enabled on your GlobProxy account'
       heading = 'API access enabled ✓'
@@ -113,7 +129,7 @@ export async function POST(req: Request) {
     } else {
       subject = 'API access has been disabled on your GlobProxy account'
       heading = 'API access disabled'
-      text = `Hi ${firstName}, API access has been disabled on your account. Any existing keys stop working immediately. If this wasn't expected, contact support.`
+      text = `Hi ${firstName}, API access has been disabled on your account. Your existing API keys have been revoked, so a new key is needed if access is enabled again. If this wasn't expected, contact support.`
     }
 
     await sendEmail({ to: target.email, subject, html: adminNoticeHtml({ heading, bodyHtml: text, cta }) })
@@ -125,5 +141,5 @@ export async function POST(req: Request) {
   // api_access / is_suspended fresh from `profiles` per request, so a
   // downgraded user's still-live session is already fully constrained the
   // moment the update above commits.
-  return NextResponse.json({ success: true, updates })
+  return NextResponse.json({ success: true, updates, api_keys_revoked: keysRevoked, ...(keysRevokeFailed ? { warning: 'The account was updated but its API keys could not be revoked — revoke them from the user page.' } : {}) })
 }

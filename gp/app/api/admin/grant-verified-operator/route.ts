@@ -4,7 +4,7 @@ import { adminNoticeHtml, appUrl } from '@/lib/adminEmail'
 import { sendEmailSafe, escapeHtml } from '@/lib/email'
 import { NextResponse } from 'next/server'
 import {
-  formatRatePct, VERIFIED_OPERATOR_INTRO_RATE, VERIFIED_OPERATOR_LIFETIME_RATE,
+  validateAffiliateRates, formatRatePct, VERIFIED_OPERATOR_INTRO_RATE, VERIFIED_OPERATOR_LIFETIME_RATE,
   DEFAULT_AFFILIATE_INTRO_RATE as DEFAULT_INTRO_RATE, DEFAULT_AFFILIATE_LIFETIME_RATE as DEFAULT_LIFETIME_RATE,
 } from '@/lib/rates'
 
@@ -20,7 +20,7 @@ export async function POST(req: Request) {
   if (!auth.ok) return auth.response
   const { supabase, adminId } = auth
 
-  const body = await readJson<{ userId?: string; revoke?: boolean; reason?: unknown }>(req)
+  const body = await readJson<{ userId?: string; revoke?: boolean; reason?: unknown; restoreIntroRate?: unknown; restoreLifetimeRate?: unknown }>(req)
   if (!body || !isUuid(body.userId)) return badRequest('User ID missing or invalid')
   const userId = body.userId
   const revoke = body.revoke === true
@@ -43,8 +43,28 @@ export async function POST(req: Request) {
     }
     // Restore what they had BEFORE the grant (a custom approval rate, say)
     // instead of hard-resetting everyone to the defaults.
-    const restoreIntro = existing.verified_operator_prev_rate ?? DEFAULT_INTRO_RATE
-    const restoreLifetime = existing.verified_operator_prev_rate_lifetime ?? DEFAULT_LIFETIME_RATE
+    //
+    // A Verified Operator granted before the previous rates were recorded
+    // (migration 0043) has nothing to restore. Guessing the defaults used to
+    // reset a custom-rate affiliate to 30% / 15% without anyone choosing that, so
+    // the admin is now asked for the rates (the dialog pre-fills the defaults).
+    let restoreIntro: number
+    let restoreLifetime: number
+    if (existing.verified_operator_prev_rate != null && existing.verified_operator_prev_rate_lifetime != null) {
+      restoreIntro = Number(existing.verified_operator_prev_rate)
+      restoreLifetime = Number(existing.verified_operator_prev_rate_lifetime)
+    } else if (body.restoreIntroRate != null || body.restoreLifetimeRate != null) {
+      const rateErr = validateAffiliateRates(body.restoreIntroRate, body.restoreLifetimeRate)
+      if (rateErr) return badRequest(rateErr)
+      restoreIntro = Number(body.restoreIntroRate)
+      restoreLifetime = Number(body.restoreLifetimeRate)
+    } else {
+      return NextResponse.json({
+        error: 'Their pre-upgrade rates were not recorded — choose the rates to restore.',
+        code: 'restore_rates_required',
+        defaults: { intro: DEFAULT_INTRO_RATE, lifetime: DEFAULT_LIFETIME_RATE },
+      }, { status: 409 })
+    }
 
     const { data: revoked, error: revokeErr } = await supabase
       .from('profiles')
@@ -98,7 +118,10 @@ export async function POST(req: Request) {
   const newIntro = Math.max(prevIntro, VERIFIED_OPERATOR_INTRO_RATE)
   const newLifetime = Math.max(prevLifetime, VERIFIED_OPERATOR_LIFETIME_RATE)
 
-  const { data: operator, error: updateErr } = await supabase
+  // The update only applies if the rates are still the ones read above: a
+  // concurrent rate edit used to be overwritten, with its value recorded as the
+  // "previous" rate to restore later. (NULL needs IS NULL, not = NULL.)
+  let grantQuery = supabase
     .from('profiles')
     .update({
       is_verified_operator: true,
@@ -111,8 +134,11 @@ export async function POST(req: Request) {
     .eq('id', userId)
     .eq('is_verified_operator', false) // atomic
     .eq('affiliate_status', 'approved')
-    .select('email, full_name')
-    .maybeSingle()
+  grantQuery = existing.affiliate_commission_rate == null
+    ? grantQuery.is('affiliate_commission_rate', null) : grantQuery.eq('affiliate_commission_rate', existing.affiliate_commission_rate)
+  grantQuery = existing.affiliate_commission_rate_lifetime == null
+    ? grantQuery.is('affiliate_commission_rate_lifetime', null) : grantQuery.eq('affiliate_commission_rate_lifetime', existing.affiliate_commission_rate_lifetime)
+  const { data: operator, error: updateErr } = await grantQuery.select('email, full_name').maybeSingle()
   if (updateErr) return NextResponse.json({ error: updateErr.message }, { status: 500 })
   if (!operator) return NextResponse.json({ error: 'This affiliate can no longer be upgraded (status changed).' }, { status: 409 })
 

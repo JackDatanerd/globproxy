@@ -1,5 +1,7 @@
 import Link from 'next/link'
 import { createAdminClient } from '@/lib/supabase/server'
+import AdminQueryError from '@/components/admin/AdminQueryError'
+import AdminOrdersExport from '@/components/admin/AdminOrdersExport'
 import AdminPager, { parsePage, cleanSearch } from '@/components/admin/AdminPager'
 import { formatGb } from '@/lib/format'
 import AdminRefundButton from '@/components/admin/AdminRefundButton'
@@ -10,7 +12,8 @@ const PAGE_SIZE = 50
 // 'disputed' = a Paystack chargeback is open on the order (migration 0047).
 // 'refund_requested' = the customer asked for a refund from Billing (migration 0062).
 // 'uncredited' = not credited yet but has a payment reference (candidates for Verify & credit).
-const FILTERS = ['paid', 'pending', 'failed', 'cancelled', 'refunded', 'refund', 'disputed', 'refund_requested', 'uncredited'] as const
+// 'unfulfilled' = marked PAID but the bandwidth was never credited (the customer paid and got nothing).
+const FILTERS = ['paid', 'pending', 'failed', 'cancelled', 'refunded', 'refund', 'disputed', 'refund_requested', 'uncredited', 'unfulfilled'] as const
 
 export default async function AdminOrdersPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const sp = await searchParams
@@ -50,10 +53,11 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
   else if (status === 'disputed') query = query.eq('dispute_status', 'open')
   else if (status === 'refund_requested') query = requestOrderIds.length ? query.in('id', requestOrderIds) : query.in('id', ['00000000-0000-0000-0000-000000000000'])
   else if (status === 'uncredited') query = query.eq('bandwidth_credited', false).in('payment_status', ['pending', 'failed', 'cancelled']).not('paystack_reference', 'is', null).eq('is_canary', false)
+  else if (status === 'unfulfilled') query = query.eq('payment_status', 'paid').eq('bandwidth_credited', false).eq('is_canary', false)
   else if (status) query = query.eq('payment_status', status)
   if (searchIds) query = searchIds.length ? query.in('user_id', searchIds) : query.in('user_id', ['00000000-0000-0000-0000-000000000000'])
   const from = (page - 1) * PAGE_SIZE
-  const { data: orders, count } = await query.order('created_at', { ascending: false }).range(from, from + PAGE_SIZE - 1)
+  const { data: orders, count, error: listErr } = await query.order('created_at', { ascending: false }).range(from, from + PAGE_SIZE - 1)
 
   const userIds = [...new Set(orders?.map(o => o.user_id).filter(Boolean) ?? [])]
   const { data: profiles } = userIds.length > 0
@@ -79,6 +83,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
 
   return (
     <div className="max-w-6xl">
+      {listErr && <AdminQueryError what="orders" />}
       <div className="mb-8">
         <h1 className="font-display font-bold text-2xl text-ink">Orders</h1>
         <p className="text-muted text-sm mt-1">All purchase activity across the platform</p>
@@ -107,13 +112,17 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
 
       <div className="flex flex-wrap items-center gap-2 mb-4">
         <Link href={hrefFor('')} className={chip(!status)}>All</Link>
-        {FILTERS.map(f => <Link key={f} href={hrefFor(f)} className={chip(status === f)}>{f === 'refund' ? 'has refund' : f === 'disputed' ? 'open dispute' : f === 'refund_requested' ? 'refund requested' : f === 'uncredited' ? 'paid? (uncredited)' : f}</Link>)}
+        {FILTERS.map(f => <Link key={f} href={hrefFor(f)} className={chip(status === f)}>{f === 'refund' ? 'has refund' : f === 'disputed' ? 'open dispute' : f === 'refund_requested' ? 'refund requested' : f === 'uncredited' ? 'paid? (uncredited)' : f === 'unfulfilled' ? 'paid, not credited' : f}</Link>)}
         <form method="get" className="ml-auto flex gap-2">
           {status && <input type="hidden" name="status" value={status} />}
           <input name="q" defaultValue={q} placeholder="Search customer email or name…"
             className="w-64 bg-white border border-border px-3 py-1.5 rounded-lg text-sm focus:outline-none focus:border-accent" />
           <button className="text-xs font-mono px-3 py-1.5 rounded-lg border border-border text-ink2 hover:border-ink2">Search</button>
         </form>
+      </div>
+
+      <div className="flex justify-end mb-3">
+        <AdminOrdersExport status={['paid', 'pending', 'failed', 'cancelled', 'refunded', 'refund', 'disputed', 'uncredited', 'unfulfilled'].includes(status) ? status : ''} q={q} />
       </div>
 
       <div className="bg-white border border-border rounded-xl overflow-hidden">

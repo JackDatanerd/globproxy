@@ -6,7 +6,7 @@ import ExportPayoutsButton from '@/components/admin/ExportPayoutsButton'
 import AdminPendingPayouts, { type PendingPayoutRow } from '@/components/admin/AdminPendingPayouts'
 import AdminPager, { parsePage, cleanSearch } from '@/components/admin/AdminPager'
 import { formatCycleLabel } from '@/lib/payoutCycle'
-import { formatRatePct, DEFAULT_AFFILIATE_INTRO_RATE, DEFAULT_AFFILIATE_LIFETIME_RATE } from '@/lib/rates'
+import { formatRatePct, DEFAULT_AFFILIATE_INTRO_RATE, DEFAULT_AFFILIATE_LIFETIME_RATE, verifiedOperatorReviewDue } from '@/lib/rates'
 
 const PAGE_SIZE = 50
 const LIST_CAP = 100      // pending applications / suspended affiliates shown at once
@@ -56,6 +56,19 @@ export default async function AdminAffiliatesPage({ searchParams }: { searchPara
   const earningsRes = shownIds.length > 0
     ? await supabase.rpc('admin_affiliate_earnings', { p_referrer_ids: shownIds })
     : { data: [] as unknown[] }
+
+  // Verified Operators due a periodic review (migration 0073). If the reviews table is
+  // missing the query errors and nothing is flagged — the list still renders.
+  const voIds = (affiliates ?? []).filter((a: any) => a.is_verified_operator).map((a: any) => a.id)
+  const { data: voReviews } = voIds.length > 0
+    ? await supabase.from('verified_operator_reviews').select('user_id, reviewed_at').in('user_id', voIds).order('reviewed_at', { ascending: false })
+    : { data: [] as { user_id: string; reviewed_at: string }[] }
+  const lastReview = new Map<string, string>()
+  for (const r of (voReviews ?? [])) if (!lastReview.has(r.user_id)) lastReview.set(r.user_id, r.reviewed_at)
+  const reviewOverdue = (a: any): boolean => {
+    const due = a.is_verified_operator ? verifiedOperatorReviewDue(a.verified_operator_since, lastReview.get(a.id)) : null
+    return !!due && due.getTime() < Date.now()
+  }
 
   const earningsByAffiliate: Record<string, { accruing: number; awaiting: number; paid: number }> = {}
   for (const e of (earningsRes.data ?? []) as { referrer_id: string; accruing_usd: number; awaiting_usd: number; paid_usd: number }[]) {
@@ -236,6 +249,9 @@ export default async function AdminAffiliatesPage({ searchParams }: { searchPara
                           <span className="text-[10px] font-mono bg-accent2/10 text-accent2 px-2 py-0.5 rounded-full">
                             ✓ Verified Operator{a.verified_operator_since ? ` · since ${new Date(a.verified_operator_since).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}` : ''}
                           </span>
+                        )}
+                        {reviewOverdue(a) && (
+                          <span className="text-[10px] font-mono bg-amber-50 text-amber-700 px-2 py-0.5 rounded-full">review due</span>
                         )}
                       </div>
                       <div className="text-xs font-mono text-muted">{a.email}</div>

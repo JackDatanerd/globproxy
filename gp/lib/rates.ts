@@ -34,3 +34,16 @@ export function ratePctValue(rate: number | null | undefined): string {
   const pct = Number(rate ?? 0) * 100
   return String(Number.isInteger(pct) ? pct : Number(pct.toFixed(2)))
 }
+
+// How long a Verified Operator keeps the higher rates before an admin is asked
+// to look again (referral quality, flagged ratio, volume). The status used to be
+// permanent once granted; "Mark reviewed" on the affiliate page restarts the clock.
+export const VERIFIED_OPERATOR_REVIEW_DAYS = 180
+
+// When a Verified Operator is next due a review: the later of the grant date and
+// the last recorded review, plus VERIFIED_OPERATOR_REVIEW_DAYS. null = not an operator.
+export function verifiedOperatorReviewDue(since: string | null | undefined, lastReviewedAt: string | null | undefined): Date | null {
+  const base = [since, lastReviewedAt].filter(Boolean).map(d => new Date(d as string).getTime()).filter(t => Number.isFinite(t))
+  if (base.length === 0) return null
+  return new Date(Math.max(...base) + VERIFIED_OPERATOR_REVIEW_DAYS * 86_400_000)
+}

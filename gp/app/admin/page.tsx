@@ -3,6 +3,7 @@ import Link from 'next/link'
 import AdminStockPanel from '@/components/admin/AdminStockPanel'
 import { formatGb } from '@/lib/format'
 import { GEONODE_COST_PER_GB_USD } from '@/lib/constants'
+import { CRON_MAX_AGE_SECONDS } from '@/lib/cronHealth'
 
 const money = (n: number) => `$${n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`
 
@@ -33,6 +34,9 @@ export default async function AdminPage() {
     { count: openReports },
     { count: openDisputes },
     { count: openRefundRequests },
+    { count: unfulfilledOrders },
+    { count: unconfirmedRefunds },
+    { data: cronRuns },
   ] = await Promise.all([
     supabase.from('profiles').select('*',{count:'exact',head:true}).eq('role','user').eq('is_deleted',false),
     supabase.from('profiles').select('*',{count:'exact',head:true}).eq('role','reseller').eq('is_deleted',false),
@@ -48,7 +52,19 @@ export default async function AdminPage() {
     supabase.from('support_reports').select('*',{count:'exact',head:true}).eq('status','open'),
     supabase.from('orders').select('*',{count:'exact',head:true}).eq('dispute_status','open'),
     supabase.from('refund_requests').select('*',{count:'exact',head:true}).eq('status','open'),
+    // Paid but never credited, and old enough that the webhook/reconcile should have finished.
+    supabase.from('orders').select('*',{count:'exact',head:true}).eq('payment_status','paid').eq('bandwidth_credited',false).eq('is_canary',false)
+      .lt('created_at', new Date(now.getTime() - 15 * 60_000).toISOString()),
+    // Refunds Paystack accepted but did not confirm (written to the audit log by refund-order).
+    supabase.from('admin_audit_log').select('*',{count:'exact',head:true}).eq('action','order.refund_unconfirmed')
+      .gte('created_at', new Date(now.getTime() - 14 * 86_400_000).toISOString()),
+    supabase.from('cron_task_runs').select('task, last_run_at, consecutive_failures'),
   ])
+  // Scheduled tasks failing now, or silent for ~3 missed ticks (same rule as the Settings panel).
+  const failingTasks = (cronRuns ?? []).filter((r: any) => {
+    const maxAge = CRON_MAX_AGE_SECONDS[r.task]
+    return r.consecutive_failures > 0 || (!!maxAge && now.getTime() - new Date(r.last_run_at).getTime() > maxAge * 1000)
+  }).length
 
   const statsOk = !allTime.error && !month.error
   const all = (allTime.data?.[0] ?? null) as { revenue_usd: number; gb_sold: number; order_count: number } | null
@@ -63,6 +79,9 @@ export default async function AdminPage() {
     { label: 'Open support reports', n: openReports ?? 0, href: '/admin/support' },
     { label: 'Open payment disputes', n: openDisputes ?? 0, href: '/admin/orders?status=disputed' },
     { label: 'Refund requests', n: openRefundRequests ?? 0, href: '/admin/orders?status=refund_requested' },
+    { label: 'Paid, bandwidth not credited', n: unfulfilledOrders ?? 0, href: '/admin/orders?status=unfulfilled' },
+    { label: 'Refunds to confirm (14 d)', n: unconfirmedRefunds ?? 0, href: '/admin/audit?q=order.refund_unconfirmed' },
+    { label: 'Scheduled tasks failing', n: failingTasks, href: '/admin/settings' },
   ]
 
   return (

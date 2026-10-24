@@ -4,7 +4,7 @@ import { adminNoticeHtml, appUrl } from '@/lib/adminEmail'
 import { sendEmailSafe, escapeHtml } from '@/lib/email'
 import { formatCycleLabel } from '@/lib/payoutCycle'
 
-export type MarkPaidResult = { ok: true } | { ok: false; status: number; error: string }
+export type MarkPaidResult = { ok: true } | { ok: false; status: number; error: string; code?: 'affiliate_suspended' }
 
 // Records that one affiliate payout was sent. The actual money movement (USDT
 // transfer, bank wire, M-Pesa) happens outside the app; this records that it
@@ -14,19 +14,31 @@ export async function markPayoutPaid(
   supabase: AdminSupabase,
   adminId: string,
   payoutId: string,
-  reference: string
+  reference: string,
+  opts: { allowSuspended?: boolean } = {}
 ): Promise<MarkPaidResult> {
   // A payout for a deleted account can never be paid (its destination was
   // erased on deletion). Deletion now removes pending payouts itself; this
   // also refuses any that predate that.
   const { data: pre } = await supabase
     .from('affiliate_payouts')
-    .select('status, referrer:referrer_id(is_deleted)')
+    .select('status, referrer:referrer_id(is_deleted, is_suspended, affiliate_status)')
     .eq('id', payoutId)
     .maybeSingle()
   if (!pre) return { ok: false, status: 404, error: 'Payout not found' }
   if ((pre.referrer as any)?.is_deleted) {
     return { ok: false, status: 409, error: 'This affiliate\'s account was deleted — their payout destination is gone. Void this payout instead.' }
+  }
+
+  // A suspended affiliate (account suspended, or affiliate status suspended) is
+  // usually suspended for a reason that bears on the money — fraud, a chargeback.
+  // The pending-payouts table only hides the checkbox; the single "Mark paid"
+  // button and any direct call went straight through. Refused here unless the
+  // admin explicitly overrides (the single route's overrideSuspended, which the
+  // button asks for after a confirm); bulk never overrides.
+  const ref = pre.referrer as any
+  if ((ref?.is_suspended || ref?.affiliate_status === 'suspended') && !opts.allowSuspended) {
+    return { ok: false, status: 409, code: 'affiliate_suspended', error: 'This affiliate is suspended — check why before paying. Confirm to pay anyway, or void the payout.' }
   }
 
   // mark_affiliate_payout_paid is the idempotent, atomic claim (updates the
@@ -49,7 +61,7 @@ export async function markPayoutPaid(
 
   await logAdminAction(supabase, {
     adminId, action: 'payout.mark_paid', targetUserId: payout?.referrer_id ?? null, targetRef: payoutId,
-    details: { amount_usd: payout ? Number(payout.amount_usd) : undefined, method: payout?.payout_method, reference: reference || undefined },
+    details: { amount_usd: payout ? Number(payout.amount_usd) : undefined, method: payout?.payout_method, reference: reference || undefined, ...(opts.allowSuspended && (ref?.is_suspended || ref?.affiliate_status === 'suspended') ? { paid_while_suspended: true } : {}) },
   })
 
   const referrer = payout?.referrer as any

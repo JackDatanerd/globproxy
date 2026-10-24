@@ -10,7 +10,7 @@ import { formatRatePct, ratePctValue, VERIFIED_OPERATOR_INTRO_RATE, VERIFIED_OPE
 type Props =
   | { userId: string; action: 'approve' | 'reject' | 'suspendAffiliate' | 'reinstateAffiliate' | 'grantVerifiedOperator' | 'revokeVerifiedOperator'; payoutId?: never }
   | { userId: string; action: 'editRates'; currentIntro: number; currentLifetime: number; payoutId?: never }
-  | { payoutId: string; action: 'markPaid' | 'voidPayout'; amountUsd?: number; userId?: never }
+  | { payoutId: string; action: 'markPaid' | 'voidPayout' | 'reversePayout'; amountUsd?: number; userId?: never }
 
 // Prompts take whole percentages ("30"), the API takes fractions (0.30).
 // `def` is pre-filled EXACTLY (ratePctValue) — it used to be Math.round()ed, so
@@ -73,6 +73,14 @@ export default function AdminAffiliateActions(props: Props) {
         path = '/api/admin/void-payout'; body = { payoutId: props.payoutId, reason }; success = 'Payout voided'
         break
       }
+      case 'reversePayout': {
+        const amount = props.amountUsd != null ? ` of $${props.amountUsd.toFixed(2)}` : ''
+        if (!confirm(`Reverse this PAID payout${amount}?\n\nUse this only when the money did NOT arrive (wrong address, failed transfer, returned wire). It goes back to Pending so you can re-send it or void it, and the affiliate is told it was not completed. If it DID arrive, do not reverse it.`)) return
+        const reason = window.prompt('Reason (required — recorded in the audit log, shown to the affiliate):', '')
+        if (!reason?.trim() || reason.trim().length < 3) { if (reason !== null) toast.error('A reason (at least 3 characters) is required'); return }
+        path = '/api/admin/reverse-payout'; body = { payoutId: props.payoutId, reason: reason.trim() }; success = 'Payout moved back to pending'
+        break
+      }
       case 'grantVerifiedOperator': {
         if (!confirm(`Make this affiliate a Verified Operator? Their rates rise to ${formatRatePct(VERIFIED_OPERATOR_INTRO_RATE)} / ${formatRatePct(VERIFIED_OPERATOR_LIFETIME_RATE)} (a higher existing rate is kept).`)) return
         const reason = askReason('Why is this affiliate being made a Verified Operator? (required — recorded in the audit log)')
@@ -108,19 +116,31 @@ export default function AdminAffiliateActions(props: Props) {
     }
 
     setLoading(true)
-    const { ok, data } = await adminPost(path, body)
+    let { ok, data } = await adminPost(path, body)
+    // A suspended affiliate's payout is refused by the server unless confirmed.
+    if (!ok && (data as any).code === 'affiliate_suspended') {
+      if (confirm(`${data.error}\n\nPay it anyway?`)) ({ ok, data } = await adminPost(path, { ...body, overrideSuspended: true }))
+    }
+    // A Verified Operator granted before pre-upgrade rates were recorded: ask what to restore.
+    if (!ok && (data as any).code === 'restore_rates_required') {
+      const d = (data as any).defaults ?? {}
+      const intro = askPercent('Restore the commission % for the first 90 days to:', ratePctValue(d.intro ?? DEFAULT_AFFILIATE_INTRO_RATE), MAX_AFFILIATE_INTRO_RATE)
+      const lifetime = intro === null ? null : askPercent('Restore the commission % after the first 90 days to:', ratePctValue(d.lifetime ?? DEFAULT_AFFILIATE_LIFETIME_RATE), MAX_AFFILIATE_LIFETIME_RATE)
+      if (intro !== null && lifetime !== null) ({ ok, data } = await adminPost(path, { ...body, restoreIntroRate: intro, restoreLifetimeRate: lifetime }))
+    }
     if (!ok) { toast.error(data.error ?? 'Action failed'); setLoading(false); return }
     toast.success(success)
     window.location.reload()
   }
 
-  const danger = props.action === 'reject' || props.action === 'voidPayout' || props.action === 'revokeVerifiedOperator' || props.action === 'suspendAffiliate'
+  const danger = props.action === 'reject' || props.action === 'voidPayout' || props.action === 'reversePayout' || props.action === 'revokeVerifiedOperator' || props.action === 'suspendAffiliate'
   const neutral = props.action === 'editRates'
   const label = loading ? '...'
     : props.action === 'approve' ? 'Approve'
     : props.action === 'reject' ? 'Reject'
     : props.action === 'markPaid' ? 'Mark paid'
     : props.action === 'voidPayout' ? 'Void'
+    : props.action === 'reversePayout' ? 'Reverse'
     : props.action === 'grantVerifiedOperator' ? 'Make Verified Operator'
     : props.action === 'suspendAffiliate' ? 'Suspend'
     : props.action === 'reinstateAffiliate' ? 'Reinstate'

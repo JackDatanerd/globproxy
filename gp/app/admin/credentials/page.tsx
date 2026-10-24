@@ -1,6 +1,7 @@
 import { suspendedReasonLabel } from '@/lib/suspendReason'
 import Link from 'next/link'
 import { createAdminClient } from '@/lib/supabase/server'
+import AdminQueryError from '@/components/admin/AdminQueryError'
 import AdminPager, { parsePage, cleanSearch } from '@/components/admin/AdminPager'
 import AdminCredentialAction from '@/components/admin/AdminCredentialAction'
 import { formatGb } from '@/lib/format'
@@ -37,7 +38,7 @@ export default async function AdminCredentialsPage({ searchParams }: { searchPar
   if (status) query = query.eq('status', status)
   if (searchIds) query = searchIds.length ? query.in('user_id', searchIds) : query.in('user_id', ['00000000-0000-0000-0000-000000000000'])
   const from = (page - 1) * PAGE_SIZE
-  const { data: creds, count } = await query.order('created_at', { ascending: false }).range(from, from + PAGE_SIZE - 1)
+  const { data: creds, count, error: listErr } = await query.order('created_at', { ascending: false }).range(from, from + PAGE_SIZE - 1)
 
   const [{ count: totalCount }, { count: active }, { count: pending }, { count: suspended }] = await Promise.all([
     visible(supabase.from('proxy_credentials').select('*', { count: 'exact', head: true })),
@@ -65,6 +66,7 @@ export default async function AdminCredentialsPage({ searchParams }: { searchPar
 
   return (
     <div className="max-w-6xl">
+      {listErr && <AdminQueryError what="credentials" />}
       <div className="mb-8">
         <h1 className="font-display font-bold text-2xl text-ink">All Credentials</h1>
         <p className="text-muted text-sm mt-1">{totalCount ?? 0} total proxy sessions across all users</p>

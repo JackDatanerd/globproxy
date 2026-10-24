@@ -8,12 +8,12 @@ export async function POST(req: Request) {
   const auth = await authorizeAdmin(req)
   if (!auth.ok) return auth.response
 
-  const body = await readJson<{ payoutId?: string; reference?: unknown }>(req)
+  const body = await readJson<{ payoutId?: string; reference?: unknown; overrideSuspended?: unknown }>(req)
   if (!body || !isUuid(body.payoutId)) return badRequest('Payout ID missing or invalid')
   if (body.reference != null && typeof body.reference !== 'string') return badRequest('reference must be text')
   const reference = (body.reference ?? '').toString().trim().slice(0, 200)
 
-  const result = await markPayoutPaid(auth.supabase, auth.adminId, body.payoutId, reference)
-  if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status })
+  const result = await markPayoutPaid(auth.supabase, auth.adminId, body.payoutId, reference, { allowSuspended: body.overrideSuspended === true })
+  if (!result.ok) return NextResponse.json({ error: result.error, ...(result.code ? { code: result.code } : {}) }, { status: result.status })
   return NextResponse.json({ success: true })
 }

@@ -6,21 +6,35 @@ import { adminPost } from '@/lib/adminFetch'
 export function AdminBanForm() {
   const [email, setEmail] = useState('')
   const [reason, setReason] = useState('')
+  const [suspendExisting, setSuspendExisting] = useState(false)
   const [loading, setLoading] = useState(false)
+  const isDomain = email.trim().startsWith('@')
 
   async function ban(e: React.FormEvent) {
     e.preventDefault()
-    if (!email.trim()) return
-    if (!confirm(`Ban ${email.trim()} from registering? Aliases of the address (case, +tags) are blocked too.`)) return
+    const value = email.trim()
+    if (!value) return
+    const msg = isDomain
+      ? `Ban EVERY address at ${value} from registering? Accounts that already use the domain are not touched.`
+      : `Ban ${value} from registering? Aliases of the address (case, +tags, Gmail dots) are blocked too.${suspendExisting ? ' Any account already using it will also be suspended.' : ''}`
+    if (!confirm(msg)) return
     setLoading(true)
-    const { ok, data } = await adminPost('/api/admin/ban-email', { email, reason })
+    const { ok, data } = await adminPost('/api/admin/ban-email', { email: value, reason, suspendExisting: suspendExisting && !isDomain })
     setLoading(false)
     if (!ok) { toast.error(data.error ?? 'Could not ban that address'); return }
-    if ((data as any).existing_account_id) {
-      toast('Banned. An account with this address already exists — this does not affect it. Suspend it separately if needed.', { duration: 9000 })
+    const d = data as any
+    const total: number = d.existing_total ?? 0
+    if (d.suspend_failures?.length) {
+      toast.error(`Banned, but ${d.suspend_failures.length} account(s) could not be suspended — suspend them from the Users page.`, { duration: 9000 })
+      setTimeout(() => window.location.reload(), 3500)
+    } else if (d.suspended > 0) {
+      toast.success(`Banned and suspended ${d.suspended} existing account${d.suspended === 1 ? '' : 's'}`, { duration: 6000 })
+      setTimeout(() => window.location.reload(), 2500)
+    } else if (total > 0) {
+      toast(`Banned. ${total} existing account${total === 1 ? '' : 's'} already use${total === 1 ? 's' : ''} this ${isDomain ? 'domain' : 'address'} — the ban does not affect ${total === 1 ? 'it' : 'them'}. Search Users for ${isDomain ? value : 'it'} to review.`, { duration: 9000 })
       setTimeout(() => window.location.reload(), 3500)
     } else {
-      toast.success('Address banned')
+      toast.success(isDomain ? 'Domain banned' : 'Address banned')
       window.location.reload()
     }
   }
@@ -28,8 +42,8 @@ export function AdminBanForm() {
   return (
     <form onSubmit={ban} className="bg-white border border-border rounded-xl p-5 mb-6 flex flex-wrap gap-3 items-end">
       <div className="flex-1 min-w-[220px]">
-        <label className="text-[10px] font-mono text-muted uppercase tracking-widest block mb-1.5">Email address</label>
-        <input value={email} onChange={e => setEmail(e.target.value)} type="email" required placeholder="abuser@example.com"
+        <label className="text-[10px] font-mono text-muted uppercase tracking-widest block mb-1.5">Email address or @domain</label>
+        <input value={email} onChange={e => setEmail(e.target.value)} type="text" required placeholder="abuser@example.com  or  @throwaway.example"
           className="w-full bg-white border border-border px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-accent" />
       </div>
       <div className="flex-1 min-w-[220px]">
@@ -37,8 +51,12 @@ export function AdminBanForm() {
         <input value={reason} onChange={e => setReason(e.target.value)} maxLength={300} placeholder="Chargeback fraud, repeat abuse…"
           className="w-full bg-white border border-border px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-accent" />
       </div>
+      <label className={`flex items-center gap-2 text-xs text-muted ${isDomain ? 'opacity-40' : ''}`}>
+        <input type="checkbox" checked={suspendExisting && !isDomain} disabled={isDomain} onChange={e => setSuspendExisting(e.target.checked)} />
+        Also suspend accounts already using it
+      </label>
       <button disabled={loading} className="text-xs font-mono text-red-600 border border-red-300 px-4 py-2.5 rounded-lg hover:bg-red-50 disabled:opacity-50">
-        {loading ? 'Banning…' : 'Ban address'}
+        {loading ? 'Banning…' : isDomain ? 'Ban domain' : 'Ban address'}
       </button>
     </form>
   )

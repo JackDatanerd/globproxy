@@ -2,12 +2,13 @@ import Link from 'next/link'
 import type { ReactNode } from 'react'
 import AdminReasonActionButton from '@/components/admin/AdminReasonActionButton'
 import AdminAffiliateActions from '@/components/admin/AdminAffiliateActions'
+import AdminVerifiedOperatorReview from '@/components/admin/AdminVerifiedOperatorReview'
 import { notFound } from 'next/navigation'
 import { createAdminClient } from '@/lib/supabase/server'
 import { isUuid } from '@/lib/adminAuth'
 import { formatCycleLabel } from '@/lib/payoutCycle'
 import { AFFILIATE_HOLD_HOURS } from '@/lib/referrals'
-import { formatRatePct, DEFAULT_AFFILIATE_INTRO_RATE, DEFAULT_AFFILIATE_LIFETIME_RATE } from '@/lib/rates'
+import { formatRatePct, DEFAULT_AFFILIATE_INTRO_RATE, DEFAULT_AFFILIATE_LIFETIME_RATE, VERIFIED_OPERATOR_REVIEW_DAYS, verifiedOperatorReviewDue } from '@/lib/rates'
 
 const usd = (n: unknown) => `$${Number(n ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 const day = (s: string | null) => s ? new Date(s).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' }) : '—'
@@ -27,8 +28,8 @@ export default async function AdminAffiliateDetailPage({ params }: { params: Pro
   if (!isUuid(id)) notFound()
   const supabase = await createAdminClient()
 
-  const [{ data: p }, { data: referrals }, { data: commissions }, { data: payouts }, earningsRes, { count: refCount }, { data: adjustments }] = await Promise.all([
-    supabase.from('profiles').select('id, email, full_name, is_deleted, is_suspended, affiliate_status, affiliate_application, affiliate_commission_rate, affiliate_commission_rate_lifetime, is_verified_operator, payout_method, payout_wallet_address, payout_mpesa_phone, payout_bank_details, payout_method_updated_at, payout_hold_reason, referral_code, created_at').eq('id', id).maybeSingle(),
+  const [{ data: p }, { data: referrals }, { data: commissions }, { data: payouts }, earningsRes, { count: refCount }, { data: adjustments }, perfRes, reviewsRes] = await Promise.all([
+    supabase.from('profiles').select('id, email, full_name, is_deleted, is_suspended, affiliate_status, affiliate_application, affiliate_commission_rate, affiliate_commission_rate_lifetime, is_verified_operator, verified_operator_since, payout_method, payout_wallet_address, payout_mpesa_phone, payout_bank_details, payout_method_updated_at, payout_hold_reason, referral_code, created_at').eq('id', id).maybeSingle(),
     supabase.from('referrals')
       .select('id, created_at, flagged, flag_reason, sub_id, gb_bonus_credited_at, gb_bonus_reversed_at, referred:referred_user_id(email, is_deleted)')
       .eq('referrer_id', id).order('created_at', { ascending: false }).limit(50),
@@ -43,8 +44,20 @@ export default async function AdminAffiliateDetailPage({ params }: { params: Pro
     supabase.from('affiliate_adjustments')
       .select('id, created_at, amount_usd, reason, payout_id, waived_at')
       .eq('referrer_id', id).order('created_at', { ascending: false }).limit(50),
+    // Decision context for Verified Operator (migration 0073); hidden if it is not applied yet.
+    supabase.rpc('admin_affiliate_performance', { p_referrer_id: id }),
+    supabase.from('verified_operator_reviews')
+      .select('reviewed_at, note, admin:reviewed_by(email)')
+      .eq('user_id', id).order('reviewed_at', { ascending: false }).limit(5),
   ])
   if (!p) notFound()
+  const perf = (perfRes.error ? null : perfRes.data) as null | {
+    referrals_total: number; referrals_flagged: number; referrals_converted: number
+    gross_90d_usd: number; commission_90d_usd: number; commissions_voided: number; open_deductions_usd: number
+  }
+  const reviews = (reviewsRes.error ? [] : (reviewsRes.data ?? [])) as any[]
+  const reviewDue = p.is_verified_operator ? verifiedOperatorReviewDue(p.verified_operator_since ?? null, reviews[0]?.reviewed_at ?? null) : null
+  const reviewOverdue = !!reviewDue && reviewDue.getTime() < Date.now()
 
   // Verified Operator grant / revoke history (who, when, which rates) from the
   // audit log — so a rate on this page can be traced to the decision behind it.
@@ -142,6 +155,37 @@ export default async function AdminAffiliateDetailPage({ params }: { params: Pro
         </div>
       </div>
 
+      {perf && (p.affiliate_status === 'approved' || p.is_verified_operator) && (
+        <div className="bg-white border border-border rounded-xl p-5 mb-6 text-xs">
+          <div className="flex items-start justify-between gap-4 mb-3">
+            <div>
+              <div className="text-sm font-medium text-ink">{p.is_verified_operator ? 'Verified Operator review' : 'Verified Operator readiness'}</div>
+              <div className="text-muted mt-0.5">
+                {p.is_verified_operator
+                  ? <>Review every {VERIFIED_OPERATOR_REVIEW_DAYS} days — {reviewOverdue
+                      ? <span className="text-amber-700 font-medium">review overdue since {day(reviewDue!.toISOString())}</span>
+                      : <>next due {day(reviewDue?.toISOString() ?? null)}</>}</>
+                  : 'What this affiliate has actually delivered, to inform a grant.'}
+              </div>
+            </div>
+            {p.is_verified_operator && <AdminVerifiedOperatorReview userId={p.id} />}
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div><div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-0.5">Referrals</div><div className="font-mono text-ink">{perf.referrals_total} <span className="text-muted">({perf.referrals_converted} bought)</span></div></div>
+            <div><div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-0.5">Flagged</div><div className={`font-mono ${perf.referrals_flagged > 0 ? 'text-amber-700' : 'text-ink'}`}>{perf.referrals_flagged}{perf.referrals_total > 0 ? ` (${Math.round(perf.referrals_flagged / perf.referrals_total * 100)}%)` : ''}</div></div>
+            <div><div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-0.5">Referred sales, 90 d</div><div className="font-mono text-ink">{usd(perf.gross_90d_usd)}</div></div>
+            <div><div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-0.5">Commission, 90 d</div><div className="font-mono text-ink">{usd(perf.commission_90d_usd)}</div></div>
+            <div><div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-0.5">Voided commissions</div><div className={`font-mono ${perf.commissions_voided > 0 ? 'text-amber-700' : 'text-ink'}`}>{perf.commissions_voided}</div></div>
+            <div><div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-0.5">Open deductions</div><div className={`font-mono ${Number(perf.open_deductions_usd) > 0 ? 'text-amber-700' : 'text-ink'}`}>{usd(perf.open_deductions_usd)}</div></div>
+          </div>
+          {reviews.length > 0 && (
+            <div className="mt-3 border-t border-border pt-2 text-muted">
+              {reviews.map((r, i) => <div key={i}>Reviewed {day(r.reviewed_at)} by {r.admin?.email ?? 'admin'} — {r.note}</div>)}
+            </div>
+          )}
+        </div>
+      )}
+
       {(voHistory?.length ?? 0) > 0 && (
         <Section title="Verified Operator history" empty="" rows={voHistory ?? []} heads={['When', 'Action', 'By', 'Rates (intro / lifetime)', 'Reason']}
           cell={(r: any) => {
@@ -155,8 +199,10 @@ export default async function AdminAffiliateDetailPage({ params }: { params: Pro
           }} />
       )}
 
-      <Section title="Payouts" empty="No payouts yet." rows={payouts ?? []} heads={['Cycle', 'Amount', 'Method', 'Status', 'Paid', 'Reference']}
-        cell={(r: any) => [formatCycleLabel(r), usd(r.amount_usd), r.payout_method, r.status, day(r.paid_at), r.payment_reference ?? '—']} />
+      <Section title="Payouts" empty="No payouts yet." rows={payouts ?? []} heads={['Cycle', 'Amount', 'Method', 'Status', 'Paid', 'Reference', '']}
+        cell={(r: any) => [formatCycleLabel(r), usd(r.amount_usd), r.payout_method, r.status, day(r.paid_at), r.payment_reference ?? '—',
+          // A paid payout whose money never arrived goes back to pending (it can then be re-sent or voided).
+          r.status === 'paid' ? <AdminAffiliateActions key={r.id} payoutId={r.id} action="reversePayout" amountUsd={Number(r.amount_usd)} /> : '']} />
 
       <Section title="Commissions (latest 50)" empty="No commissions yet." rows={commissions ?? []} heads={['Date', 'Order', 'Rate', 'Commission', 'State', '']}
         cell={(r: any) => [day(r.created_at), usd(r.gross_amount_usd), formatRatePct(r.commission_rate), usd(r.commission_amount_usd), r.voided_at && r.status === 'paid' ? 'paid — recovering' : state(r),

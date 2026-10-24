@@ -24,7 +24,7 @@ export async function POST(req: Request) {
 
     await logAdminAction(auth.supabase, {
       adminId: auth.adminId, action: 'reseller_invitation_cancelled', targetUserId: inv.reseller_id, targetRef: body!.pendingId,
-      details: { recipient_email: inv.recipient_email, returned_gb: r.data.returned_gb },
+      details: { returned_gb: r.data.returned_gb }, // not the recipient's address: the audit log is append-only
     })
     return NextResponse.json({ success: true, returned_gb: r.data.returned_gb })
   } catch (err) {

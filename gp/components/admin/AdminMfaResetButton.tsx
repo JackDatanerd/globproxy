@@ -17,7 +17,8 @@ export default function AdminMfaResetButton({ userId }: { userId: string }) {
     const { ok, data } = await adminPost('/api/admin/mfa-reset', { user_id: userId })
     setLoading(false)
     if (!ok) { toast.error(data.error ?? 'Reset failed'); return }
-    toast.success('MFA reset — user has been notified by email')
+    if ((data as any).warning) toast.error((data as any).warning, { duration: 10000 })
+    else toast.success('MFA reset — other sessions signed out, user notified by email')
     router.refresh()
   }
 

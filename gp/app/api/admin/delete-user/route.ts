@@ -3,6 +3,7 @@ import { authorizeAdmin, readJson, badRequest, isUuid } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
 import { adminNoticeHtml } from '@/lib/adminEmail'
 import { anonymisedProfilePatch, rollbackProfilePatch, releaseGeonodeSubUsers, purgeAccountSecrets, listReleasableCredentials } from '@/lib/accountDeletion'
+import { BAN_FOREVER } from '@/lib/adminSuspend'
 import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
@@ -35,50 +36,58 @@ export async function POST(req: Request) {
   if (claimError) return NextResponse.json({ error: claimError.message }, { status: 500 })
   if (!claimed?.length) return NextResponse.json({ error: 'User is already deleted' }, { status: 409 })
 
-  // Step 2: Release live Geonode sub-users. profiles.id -> auth.users cascades
+  // Step 2: Close the sign-in account FIRST. Banning (rather than deleting —
+  // that would cascade-delete the anonymised tombstone and fail on
+  // reseller_transfers history) blocks future sign-ins/refreshes;
+  // middleware.ts's is_deleted check closes the window for an already-issued
+  // access token. It is done before anything irreversible: if the ban fails
+  // nothing upstream has been touched, so the customer keeps working proxies.
+  // (It used to run after the supplier sub-users were released, so a failed ban
+  // restored the profile but left the customer with dead proxies.)
+  const { error: banError } = await supabase.auth.admin.updateUserById(user_id, { ban_duration: BAN_FOREVER })
+  if (banError) {
+    await supabase.from('profiles').update(rollbackProfilePatch(tp)).eq('id', user_id)
+    await logAdminAction(supabase, {
+      adminId, action: 'user.delete_aborted', targetUserId: user_id,
+      details: { stage: 'auth_ban', error: banError.message },
+    })
+    return NextResponse.json({ error: `Could not close the sign-in account (${banError.message}). Nothing was changed. Try again.` }, { status: 500 })
+  }
+
+  // Step 3: Release live Geonode sub-users. profiles.id -> auth.users cascades
   // into proxy_credentials, so once local rows are gone nothing would record
   // which sub-users existed. Each one released is tombstoned locally the
-  // moment it is gone. If any fails, the claim is rolled back and the admin is
-  // told exactly what happened: some proxies may already be dead.
+  // moment it is gone. If any fails, the claim AND the ban are rolled back
+  // (an account that was already suspended stays banned) and the admin is told
+  // exactly what happened: some proxies may already be dead.
+  const undoClaim = async () => {
+    await supabase.from('profiles').update(rollbackProfilePatch(tp)).eq('id', user_id)
+    const { error: unbanError } = await supabase.auth.admin.updateUserById(user_id, { ban_duration: tp.is_suspended ? BAN_FOREVER : 'none' })
+    if (unbanError) console.error('[delete-user] could not restore the sign-in ban state after an aborted deletion', user_id, unbanError)
+    return !unbanError
+  }
+
   let creds
   try { creds = await listReleasableCredentials(supabase, user_id) }
   catch (e: any) {
-    await supabase.from('profiles').update(rollbackProfilePatch(tp)).eq('id', user_id)
+    await undoClaim()
     return NextResponse.json({ error: `Could not read the account's proxy sessions (${e?.message ?? e}). Nothing was changed.` }, { status: 503 })
   }
 
   const { released, failed } = await releaseGeonodeSubUsers(supabase, creds)
   if (failed.length) {
-    await supabase.from('profiles').update(rollbackProfilePatch(tp)).eq('id', user_id)
+    const restored = await undoClaim()
     await logAdminAction(supabase, {
       adminId, action: 'user.delete_aborted', targetUserId: user_id,
-      details: { released: released.length, failed: failed.length },
+      details: { stage: 'release', released: released.length, failed: failed.length, ...(restored ? {} : { sign_in_ban_not_restored: true }) },
     })
     const partial = released.length
       ? ` ${released.length} of ${creds.length} proxy sessions were already released and are now shut down — the account itself was left intact.`
       : ' Nothing was changed.'
     return NextResponse.json(
-      { error: `Could not release ${failed.length} proxy session${failed.length === 1 ? '' : 's'} upstream.${partial} Try again in a moment.`, failed, released: released.length },
+      { error: `Could not release ${failed.length} proxy session${failed.length === 1 ? '' : 's'} upstream.${partial} Try again in a moment.${restored ? '' : ' The sign-in block could not be lifted again — unsuspend the account from its user page.'}`, failed, released: released.length },
       { status: 502 }
     )
-  }
-
-  // Step 3: Ban the auth account instead of deleting it (deleting would
-  // cascade-delete the anonymised tombstone and fail on reseller_transfers
-  // history). Blocks future sign-ins/refreshes; middleware.ts's is_deleted
-  // check closes the window for an already-issued access token.
-  const { error: banError } = await supabase.auth.admin.updateUserById(user_id, { ban_duration: '876000h' })
-  if (banError) {
-    await supabase.from('profiles').update(rollbackProfilePatch(tp)).eq('id', user_id)
-    // The proxy sessions were already released at this point, so the admin needs
-    // this on record (and in the message), not a bare 500.
-    await logAdminAction(supabase, {
-      adminId, action: 'user.delete_aborted', targetUserId: user_id,
-      details: { stage: 'auth_ban', released: released.length, error: banError.message },
-    })
-    return NextResponse.json({
-      error: `Could not close the sign-in account (${banError.message}). The profile was restored${released.length ? `, but ${released.length} proxy session${released.length === 1 ? ' was' : 's were'} already shut down` : ''}. Try again.`,
-    }, { status: 500 })
   }
 
   // Step 4: Credentials read as inactive and lose their stored password and
@@ -92,7 +101,7 @@ export async function POST(req: Request) {
     action: 'user.delete',
     targetUserId: user_id,
     details: {
-      email: tp.email, role: tp.role, geonode_sub_users_released: released.length,
+      role: tp.role, geonode_sub_users_released: released.length,
       payouts_voided: purge.scrub?.voided_payouts ?? [],
       earnings_forfeited_usd: purge.scrub?.forfeited_usd ?? 0,
       ...(purge.warnings.length ? { cleanup_warnings: purge.warnings } : {}),

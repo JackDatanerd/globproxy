@@ -221,6 +221,13 @@ export async function purgeAccountSecrets(supabase: AdminSupabase, userId: strin
   check('support_reports_close', (await supabase.from('support_reports')
     .update({ status: 'resolved', resolved_at: new Date().toISOString(), admin_note: 'Account deleted' })
     .eq('user_id', userId).eq('status', 'open')).error)
+  // What support wrote back to the customer is theirs too — goes with the account.
+  {
+    const { data: reportRows, error: reportErr } = await supabase.from('support_reports').select('id').eq('user_id', userId)
+    check('support_report_ids', reportErr)
+    const ids = (reportRows ?? []).map((r: any) => r.id)
+    if (ids.length) check('support_report_replies', (await supabase.from('support_report_replies').delete().in('report_id', ids)).error)
+  }
   check('api_keys', (await supabase.from('api_keys')
     .update({ revoked_at: new Date().toISOString() })
     .eq('user_id', userId)

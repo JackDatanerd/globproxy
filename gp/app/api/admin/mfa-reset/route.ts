@@ -1,5 +1,6 @@
 import { appUrl } from '@/lib/appUrl'
-import { adminResetMfa, revokeOtherSessions } from '@/lib/mfa'
+import { adminResetMfa } from '@/lib/mfa'
+import { revokeAllSessions } from '@/lib/adminAccountSecurity'
 import { authorizeAdmin, readJson, badRequest, isUuid } from '@/lib/adminAuth'
 import { sendEmailSafe, escapeHtml } from '@/lib/email'
 import { logSecurityEvent } from '@/lib/securityEvents'
@@ -50,9 +51,13 @@ export async function POST(req: Request) {
   }
   // Whoever else is signed in to that account (the reason for a reset may be a
   // takeover) must sign in again.
-  await revokeOtherSessions(user_id)
+  // Checked, not swallowed: a failed revoke is reported to the admin and recorded.
+  const sessions = await revokeAllSessions(supabase, user_id)
   await logSecurityEvent({ userId: user_id, actorId: adminId, event: 'mfa_reset_by_admin', req, admin: supabase })
-  await logAdminAction(supabase, { adminId, action: 'user.mfa_reset', targetUserId: user_id })
+  await logAdminAction(supabase, {
+    adminId, action: 'user.mfa_reset', targetUserId: user_id,
+    details: { sessions_revoked: sessions.ok ? sessions.revoked : 0, ...(sessions.ok ? {} : { sessions_revoke_failed: true }) },
+  })
 
   // Security-relevant account change — notify the owner the same way
   // suspend/unsuspend does, so a reset the account owner didn't request
@@ -93,5 +98,9 @@ export async function POST(req: Request) {
     })
   }
 
-  return NextResponse.json({ success: true })
+  return NextResponse.json({
+    success: true,
+    sessions_revoked: sessions.ok,
+    ...(sessions.ok ? {} : { warning: 'Two-factor was reset, but the account\'s other login sessions could not be ended. Use "Sign out everywhere" on the user page.' }),
+  })
 }

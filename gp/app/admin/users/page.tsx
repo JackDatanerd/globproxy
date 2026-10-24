@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { createAdminClient } from '@/lib/supabase/server'
 import AdminUserControls from '@/components/admin/AdminUserControls'
 import AdminSyncUsageButton from '@/components/admin/AdminSyncUsageButton'
+import AdminQueryError from '@/components/admin/AdminQueryError'
 import AdminPager, { parsePage, cleanSearch } from '@/components/admin/AdminPager'
 import { formatGb } from '@/lib/format'
 
@@ -38,7 +39,7 @@ export default async function AdminUsersPage({ searchParams }: { searchParams: P
   else if (status === 'no2fa') query = query.in('role', ['admin', 'reseller']).eq('mfa_enabled', false)
   if (q) query = query.or(`email.ilike.%${q}%,full_name.ilike.%${q}%`)
   const from = (page - 1) * PAGE_SIZE
-  const { data: users, count } = await query.order('created_at', { ascending: sort === 'oldest' }).range(from, from + PAGE_SIZE - 1)
+  const { data: users, count, error: listErr } = await query.order('created_at', { ascending: sort === 'oldest' }).range(from, from + PAGE_SIZE - 1)
 
   const userIds = users?.map(u => u.id) ?? []
   const { data: bwAccounts } = userIds.length > 0
@@ -48,6 +49,7 @@ export default async function AdminUsersPage({ searchParams }: { searchParams: P
 
   return (
     <div className="max-w-6xl">
+      {listErr && <AdminQueryError what="the user list" />}
       <div className="mb-6 flex items-start justify-between">
         <div>
           <h1 className="font-display font-bold text-2xl text-ink">All Users</h1>
