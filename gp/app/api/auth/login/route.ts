@@ -103,7 +103,8 @@ export async function POST(req: Request) {
   // Refuse to hand out a session to a suspended/deleted account at all,
   // instead of issuing one and relying on the next page load to kick it out.
   if (profile?.is_deleted || profile?.is_suspended) {
-    await supabase.auth.signOut().catch(() => {})
+    // Local scope: a global sign-out here would also end the owner's other devices.
+    await supabase.auth.signOut({ scope: 'local' }).catch(() => {})
     return NextResponse.json(
       { error: profile.is_deleted ? 'This account has been deleted.' : 'Your account has been suspended. Contact support@globproxy.com.',
         code: profile.is_deleted ? 'deleted' : 'suspended' },

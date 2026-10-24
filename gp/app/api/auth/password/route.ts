@@ -128,11 +128,18 @@ export async function POST(req: Request) {
   // The DB trigger already wiped every MFA verified-browser row. A caller who
   // was verified a moment ago and just proved their current password keeps
   // working; a recovery caller (email proof only) must pass 2FA again.
-  const res = NextResponse.json({ ok: true, needs_mfa: enrolled && !verifiedBefore })
+  let res = NextResponse.json({ ok: true, needs_mfa: enrolled && !verifiedBefore })
   if (enrolled && verifiedBefore) {
-    const { data: { session } } = await supabase.auth.getSession()
-    const { token, ttlS } = await issueVerifiedSession(user.id, undefined, req, sessionIdFromJwt(session?.access_token))
-    withMfaCookie(res, token, ttlS)
+    // The password is already changed; failing here must not turn that into a
+    // 500. Worst case the user is asked for their code once.
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const { token, ttlS } = await issueVerifiedSession(user.id, undefined, req, sessionIdFromJwt(session?.access_token))
+      withMfaCookie(res, token, ttlS)
+    } catch (e) {
+      console.error('[auth/password] could not re-issue verified session', user.id, e)
+      res = NextResponse.json({ ok: true, needs_mfa: true })
+    }
   }
   clearSudoCookie(res)
   res.cookies.set(RECOVERY_COOKIE_NAME, '', { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax', path: '/', maxAge: 0 })

@@ -131,6 +131,10 @@ export async function requestRecovery(userId: string, email: string, fullName: s
     token_hash: await sha256Hex(token),
     expires_at: new Date(Date.now() + RECOVERY_LINK_TTL_MS).toISOString(),
   })
+  if (error?.code === '23505') {
+    // Another request for this account was created at the same moment (unique open-request index, migration 0077).
+    throw new Error('A recovery request is already in progress for this account. Use the link in its e-mails, or try again in a moment.')
+  }
   if (error) {
     console.error('[mfaRecovery] insert failed', error.message)
     throw new Error('Could not start recovery. Please try again.')

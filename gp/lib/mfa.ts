@@ -766,6 +766,32 @@ export async function revokeVerifiedSession(token: string | undefined): Promise<
 }
 
 /**
+ * Plain sign-out. A normal (12 h) verified session ends with the sign-in it
+ * belonged to. A "trust this browser" session is kept on purpose, as the
+ * checkbox promises and migration 0071 documents: it only ends via Revoke in
+ * Settings, a password change, 2FA removal, or its own 30-day expiry.
+ * Returns true when the trusted session was kept (the caller must then leave
+ * the gp_mfa cookie in place, otherwise the row is orphaned and the browser
+ * is asked for a code anyway).
+ */
+export async function endVerifiedSessionOnSignOut(token: string | undefined): Promise<boolean> {
+  if (!token) return false
+  const supabase = await createAdminClient()
+  const tokenHash = await sha256Hex(token)
+  const { data, error } = await supabase.from('mfa_verified_sessions')
+    .select('remembered, expires_at').eq('token_hash', tokenHash).maybeSingle()
+  if (error) {
+    // Fail toward the safer outcome: end the session.
+    console.error('[mfa] sign-out lookup failed; revoking', error.message)
+    await supabase.from('mfa_verified_sessions').delete().eq('token_hash', tokenHash)
+    return false
+  }
+  if (data?.remembered && new Date(data.expires_at as string).getTime() > Date.now()) return true
+  await supabase.from('mfa_verified_sessions').delete().eq('token_hash', tokenHash)
+  return false
+}
+
+/**
  * Remember which login session a verified/trusted browser is currently using.
  * Called at every sign-in from a browser that already holds a gp_mfa cookie, so
  * a later "sign this device out" can end that browser's 2FA trust as well (a
