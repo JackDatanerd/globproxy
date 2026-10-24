@@ -1,10 +1,12 @@
 'use client'
 import { useMemo, useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import ProxyCard from '@/components/dashboard/ProxyCard'
 import { formatGb } from '@/lib/format'
 import { buildProxyUsername, getProxyPort, deriveSessionId } from '@/lib/proxyEndpoint'
 import toast from 'react-hot-toast'
+import { saveTextFile, apiFetch, apiJson } from '@/lib/clientApi'
 
 interface Props {
   creds: any[]
@@ -57,6 +59,12 @@ function usageTier(cred: any): 'urgent' | 'warn' | null {
 // one row is expanded at a time so opening a new one doesn't leave a wall
 // of open cards behind.
 export default function ProxyList({ creds, availableGb, rotationEnabled }: Props) {
+  const router = useRouter()
+  const [exporting, setExporting] = useState(false)
+  // Bulk actions: pause / resume / delete many sessions in one go.
+  const [selecting, setSelecting] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [bulkBusy, setBulkBusy] = useState(false)
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [expandedId, setExpandedId] = useState<string | null>(null)
@@ -130,21 +138,42 @@ export default function ProxyList({ creds, availableGb, rotationEnabled }: Props
   }, [creds, query, statusFilter])
 
   // One file with every active session's connection details — for loading a
-  // scraper fleet or a proxy manager without opening 30 cards. Sticky sessions
-  // export one stable endpoint each (the same one the card's quick-copy gives);
-  // named sticky sessions live in each card's Sticky sessions tab.
-  function exportAll(format: 'csv' | 'txt') {
-    const rows = creds
-      .filter(c => c.status === 'active' && c.username && c.password)
-      .map(c => {
-        const sticky = c.session_type === 'sticky'
-        const host = c.host || 'proxy.globproxy.com'
-        const port = c.port || getProxyPort(c.protocol, c.session_type)
-        const user = sticky
-          ? buildProxyUsername(c.username, c, deriveSessionId(c.id, 0))
-          : buildProxyUsername(c.username, { ...c, session_type: 'rotating', sticky_duration: null })
-        return { label: c.label || '', type: c.session_type, protocol: c.protocol || 'http', host, port, user, pass: c.password }
-      })
+  // scraper fleet or a proxy manager without opening 30 cards. A sticky session
+  // exports each of its named sessions (the fixed endpoints from its Sticky
+  // sessions tab); one with none yet exports a single stable endpoint, the same
+  // one the card's quick-copy gives.
+  async function exportAll(format: 'csv' | 'txt') {
+    if (exporting) return
+    setExporting(true)
+    try { await exportAllInner(format) } finally { setExporting(false) }
+  }
+  async function exportAllInner(format: 'csv' | 'txt') {
+    type Row = { label: string; type: string; protocol: string; host: string; port: number | string; user: string; pass: string }
+    const active = creds.filter(c => c.status === 'active' && c.username && c.password)
+    let namedFailed = 0
+    const rows: Row[] = []
+    for (const c of active) {
+      const sticky = c.session_type === 'sticky'
+      const host = c.host || 'proxy.globproxy.com'
+      const port = c.port || getProxyPort(c.protocol, c.session_type)
+      const base = { type: c.session_type, protocol: c.protocol || 'http', host, port, pass: c.password as string }
+      if (!sticky) {
+        rows.push({ ...base, label: c.label || '', user: buildProxyUsername(c.username, { ...c, session_type: 'rotating', sticky_duration: null }) })
+        continue
+      }
+      let named: { label: string; session_token: string }[] = []
+      try {
+        const data = await apiFetch(`/api/dashboard/proxies/${c.id}/sessions`)
+        named = data.sessions ?? []
+      } catch { namedFailed++ }
+      if (named.length === 0) {
+        rows.push({ ...base, label: c.label || '', user: buildProxyUsername(c.username, c, deriveSessionId(c.id, 0)) })
+      } else {
+        for (const n of named) {
+          rows.push({ ...base, label: `${c.label || 'Session'} / ${n.label}`, user: buildProxyUsername(c.username, c, n.session_token) })
+        }
+      }
+    }
     if (rows.length === 0) { toast.error('No active sessions to export.'); return }
     const csvCell = (v: unknown) => {
       let s = String(v ?? '')
@@ -155,12 +184,50 @@ export default function ProxyList({ creds, availableGb, rotationEnabled }: Props
     const body = format === 'csv'
       ? ['label,type,protocol,host,port,username,password', ...rows.map(r => [r.label, r.type, r.protocol, r.host, r.port, r.user, r.pass].map(csvCell).join(','))].join('\n') + '\n'
       : rows.map(r => `${r.host}:${r.port}:${r.user}:${r.pass}`).join('\n') + '\n'
-    const blob = new Blob([body], { type: format === 'csv' ? 'text/csv' : 'text/plain' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url; a.download = `globproxy-endpoints.${format}`
-    a.click(); URL.revokeObjectURL(url)
-    toast.success(`Exported ${rows.length} session${rows.length === 1 ? '' : 's'} — the file contains passwords, keep it private.`)
+    saveTextFile(body, `globproxy-endpoints.${format}`, format === 'csv' ? 'text/csv' : 'text/plain')
+    toast.success(`Exported ${rows.length} endpoint${rows.length === 1 ? '' : 's'} — the file contains passwords, keep it private.`)
+    if (namedFailed > 0) toast(`Couldn\u2019t load the named sessions of ${namedFailed} sticky session${namedFailed === 1 ? '' : 's'} — a single endpoint was exported for ${namedFailed === 1 ? 'it' : 'each'}.`, { icon: '⚠️', duration: 6000 })
+  }
+
+  // Reseller-allocated sessions can't be paused/deleted by the customer (the
+  // server refuses), so they are never offered a checkbox.
+  const selectable = (c: any) => !c.created_by
+  const selectedCreds = creds.filter(c => selected.has(c.id))
+  const canPause  = selectedCreds.filter(c => c.status === 'active')
+  const canResume = selectedCreds.filter(c => c.status === 'suspended' && c.suspended_reason === 'customer')
+  function toggleSelected(id: string) {
+    setSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
+  }
+  function exitSelecting() { setSelecting(false); setSelected(new Set()) }
+
+  async function runBulk(kind: 'pause' | 'resume' | 'delete') {
+    if (bulkBusy) return
+    const targets = kind === 'pause' ? canPause : kind === 'resume' ? canResume : selectedCreds
+    if (targets.length === 0) return
+    if (kind === 'delete') {
+      const unused = targets.reduce((sum, c) => sum + Math.max(0, Number(c.gb_allocated ?? 0) - Number(c.gb_used ?? 0)), 0)
+      if (!window.confirm(`Delete ${targets.length} session${targets.length === 1 ? '' : 's'}? About ${formatGb(unused)} GB of unused bandwidth returns to your balance; GB already used isn't refunded. This can't be undone.`)) return
+    }
+    setBulkBusy(true)
+    let ok = 0
+    const failed: string[] = []
+    let stop = false
+    for (const c of targets) {
+      try {
+        if (kind === 'delete') await apiJson('DELETE', `/api/dashboard/proxies/${c.id}`)
+        else await apiJson('POST', `/api/dashboard/proxies/${c.id}/${kind}`)
+        ok++
+      } catch (err: any) {
+        if (err?.code === 'mfa_required') { stop = true; break }   // redirected to verify
+        failed.push(c.label || c.id.slice(0, 8))
+      }
+    }
+    setBulkBusy(false)
+    const verb = kind === 'pause' ? 'paused' : kind === 'resume' ? 'resumed' : 'deleted'
+    if (ok > 0) toast.success(`${ok} session${ok === 1 ? '' : 's'} ${verb}`)
+    if (failed.length > 0) toast.error(`Couldn’t ${kind} ${failed.length}: ${failed.slice(0, 3).join(', ')}${failed.length > 3 ? '…' : ''}`, { duration: 6000 })
+    if (!stop) exitSelecting()
+    router.refresh()
   }
 
   const counts = useMemo(() => ({
@@ -239,21 +306,57 @@ export default function ProxyList({ creds, availableGb, rotationEnabled }: Props
         </div>
         <span className="ml-auto text-[11px] font-mono text-muted">{filtered.length} shown</span>
         <div className="flex gap-1.5">
-          <button onClick={() => exportAll('txt')} title="Download host:port:user:pass for every active session"
-            className="text-[11px] font-mono px-3 py-1.5 rounded-full border border-border text-ink2 hover:border-accent hover:text-accent transition-colors">
-            Export .txt
+          <button onClick={() => selecting ? exitSelecting() : setSelecting(true)} aria-pressed={selecting}
+            className={`text-[11px] font-mono px-3 py-1.5 rounded-full border transition-colors ${selecting ? 'border-accent bg-accent-light text-accent' : 'border-border text-ink2 hover:border-accent hover:text-accent'}`}>
+            {selecting ? 'Done' : 'Select'}
           </button>
-          <button onClick={() => exportAll('csv')} title="Download a CSV of every active session"
-            className="text-[11px] font-mono px-3 py-1.5 rounded-full border border-border text-ink2 hover:border-accent hover:text-accent transition-colors">
+          <button onClick={() => exportAll('txt')} disabled={exporting} title="Download host:port:user:pass for every active session"
+            className="text-[11px] font-mono px-3 py-1.5 rounded-full border border-border text-ink2 hover:border-accent hover:text-accent transition-colors disabled:opacity-50">
+            {exporting ? 'Exporting…' : 'Export .txt'}
+          </button>
+          <button onClick={() => exportAll('csv')} disabled={exporting} title="Download a CSV of every active session"
+            className="text-[11px] font-mono px-3 py-1.5 rounded-full border border-border text-ink2 hover:border-accent hover:text-accent transition-colors disabled:opacity-50">
             Export .csv
           </button>
         </div>
       </div>
 
+      {selecting && (
+        <div className="sticky top-2 z-10 mb-2.5 bg-white border border-accent/30 rounded-xl px-4 py-2.5 flex items-center gap-2.5 flex-wrap shadow-sm">
+          <span className="text-xs font-mono text-ink">{selected.size} selected</span>
+          <button onClick={() => setSelected(new Set(filtered.filter(selectable).map(c => c.id)))}
+            className="text-[11px] font-mono text-accent hover:underline">Select all shown</button>
+          <button onClick={() => setSelected(new Set())} disabled={selected.size === 0}
+            className="text-[11px] font-mono text-muted hover:underline disabled:opacity-40">Clear</button>
+          <span className="ml-auto flex gap-1.5">
+            <button onClick={() => runBulk('pause')} disabled={bulkBusy || canPause.length === 0}
+              className="text-[11px] font-mono px-3 py-1.5 rounded-lg border border-border text-muted hover:border-amber-300 hover:text-amber-600 transition-all disabled:opacity-40">
+              Pause{canPause.length > 0 ? ` (${canPause.length})` : ''}
+            </button>
+            <button onClick={() => runBulk('resume')} disabled={bulkBusy || canResume.length === 0}
+              className="text-[11px] font-mono px-3 py-1.5 rounded-lg border border-border text-muted hover:border-accent hover:text-accent transition-all disabled:opacity-40">
+              Resume{canResume.length > 0 ? ` (${canResume.length})` : ''}
+            </button>
+            <button onClick={() => runBulk('delete')} disabled={bulkBusy || selected.size === 0}
+              className="text-[11px] font-mono px-3 py-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 transition-all disabled:opacity-40">
+              {bulkBusy ? 'Working…' : `Delete${selected.size > 0 ? ` (${selected.size})` : ''}`}
+            </button>
+          </span>
+        </div>
+      )}
+
       {filtered.length > 0 ? (
         <div className="flex flex-col gap-2">
           {filtered.map((cred) => (
-            <div key={cred.id} ref={el => { cardRefs.current[cred.id] = el }}>
+            <div key={cred.id} ref={el => { cardRefs.current[cred.id] = el }} className={selecting ? 'flex items-start gap-2.5' : undefined}>
+              {selecting && (
+                <input type="checkbox" checked={selected.has(cred.id)} disabled={!selectable(cred) || bulkBusy}
+                  onChange={() => toggleSelected(cred.id)}
+                  aria-label={`Select ${cred.label || 'session'}`}
+                  title={selectable(cred) ? undefined : 'Allocated by a reseller — can\u2019t be changed here'}
+                  className="mt-5 h-4 w-4 flex-shrink-0 accent-[var(--accent,#0057ff)] disabled:opacity-30" />
+              )}
+              <div className={selecting ? 'flex-1 min-w-0' : undefined}>
               <ProxyCard
                 cred={cred}
                 availableGb={availableGb}
@@ -267,6 +370,7 @@ export default function ProxyList({ creds, availableGb, rotationEnabled }: Props
                 onToggle={() => setExpandedId(prev => prev === cred.id ? null : cred.id)}
                 rotationEnabled={rotationEnabled}
               />
+              </div>
             </div>
           ))}
         </div>

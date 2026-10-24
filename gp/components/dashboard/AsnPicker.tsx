@@ -6,7 +6,9 @@ import { fetchCountryAsns, type AsnOption } from '@/lib/geoTargeting'
 // actually exist there (type a name or number); an ASN that isn't in that
 // country's list is flagged, because the API rejects it — a session pinned to
 // an ASN with no peers would otherwise connect to nothing. Without a country
-// it stays a plain numeric field. The value is always digits only.
+// it stays a plain numeric field. The value handed to the parent is always
+// digits only; the box itself keeps whatever the customer is typing so an ISP
+// *name* can be searched (the browser filters the list as they type).
 export default function AsnPicker({
   country, value, onChange, className,
 }: { country: string; value: string; onChange: (v: string) => void; className: string }) {
@@ -24,20 +26,40 @@ export default function AsnPicker({
   }, [country])
 
   const listId = `asn-options-${country || 'none'}`
+  // What the customer sees in the box. The parent's `value` is digits only.
+  const [text, setText] = useState(value)
+  useEffect(() => {
+    // Parent changed the value itself (country reset, saved default) — resync,
+    // unless the text already means it (typing "AS79" must not become "79").
+    if (digitsOf(text) !== value && !(value === '' && isSearching(text))) setText(value)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value])
+
   const trimmed = value.trim()
   const match = options.find(o => o.code === trimmed)
-  // Accept a pasted "AS7922" or "AS7922 COMCAST…" and keep just the digits.
+  // Accept a pasted "AS7922" or "AS7922 COMCAST…" (digits are kept); anything
+  // with no leading number is an ISP-name search — shown, but not a value.
   function handleChange(raw: string) {
-    const m = raw.match(/^\s*(?:AS)?(\d{1,10})/i)
-    onChange(m ? m[1] : raw.replace(/[^\d]/g, ''))
+    // Without a country list there is nothing to search — digits only.
+    if (options.length === 0) {
+      const d = digitsOf(raw) || raw.replace(/[^\d]/g, '')
+      setText(d); onChange(d); return
+    }
+    // An exact ISP name (typed or pasted) resolves to its number.
+    const byName = options.find(o => o.name.trim().toLowerCase() === raw.trim().toLowerCase())
+    if (byName) { setText(byName.code); onChange(byName.code); return }
+    setText(raw)
+    onChange(digitsOf(raw))
   }
+  const searching = isSearching(text)
 
   return (
     <div>
       <input
-        value={value}
+        value={text}
         onChange={e => handleChange(e.target.value)}
-        inputMode="numeric"
+        onBlur={() => { if (searching) setText('') }}
+        inputMode={options.length > 0 ? 'search' : 'numeric'}
         list={options.length > 0 ? listId : undefined}
         placeholder={country && options.length > 0 ? 'Search ISP or number' : 'e.g. 7922'}
         className={className}
@@ -47,6 +69,7 @@ export default function AsnPicker({
           {options.map(o => <option key={o.code} value={o.code}>{o.name}</option>)}
         </datalist>
       )}
+      {searching && options.length > 0 && <p className="text-[10.5px] text-muted mt-1">Pick an ISP from the list to select it.</p>}
       {trimmed && match && <p className="text-[10.5px] text-muted mt-1 truncate">{match.name}</p>}
       {trimmed && country && loaded && options.length > 0 && !match && (
         <p className="text-[10.5px] text-red-600 mt-1">AS{trimmed} isn’t available in this country — pick one from the list.</p>
@@ -54,4 +77,13 @@ export default function AsnPicker({
       {!country && <p className="text-[10.5px] text-muted mt-1">Choose a country to browse its ISPs.</p>}
     </div>
   )
+}
+
+function digitsOf(raw: string): string {
+  const m = raw.match(/^\s*(?:AS)?(\d{1,10})/i)
+  return m ? m[1] : ''
+}
+// Text with no leading ASN number = the customer is searching by ISP name.
+function isSearching(raw: string): boolean {
+  return raw.trim() !== '' && digitsOf(raw) === ''
 }

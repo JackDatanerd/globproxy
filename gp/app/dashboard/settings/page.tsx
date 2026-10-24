@@ -9,6 +9,7 @@ import { WEBHOOK_EVENTS, WEBHOOK_EVENT_LABELS, WEBHOOK_WILDCARD } from '@/lib/we
 import { apiFetch, apiJson, copyText, redirectToMfa } from '@/lib/clientApi'
 import { fetchWithReauth } from '@/lib/reauthPrompt'
 import { formatGb } from '@/lib/format'
+import NumberField from '@/components/dashboard/NumberField'
 
 const COUNTRIES = [
   'Afghanistan','Albania','Algeria','Angola','Argentina','Australia','Austria','Bangladesh',
@@ -280,7 +281,13 @@ function SettingsPageInner() {
     }
     setDefaultAutoLoading(true)
     try {
-      await apiJson('PATCH', '/api/dashboard/settings/auto-topup-default', defaultAuto)
+      // A half-edited (empty) number box is NaN in state; never put that on the wire
+      // (JSON turns it into null) — when the feature is off the values are inert.
+      await apiJson('PATCH', '/api/dashboard/settings/auto-topup-default', {
+        ...defaultAuto,
+        threshold_gb: Number.isFinite(defaultAuto.threshold_gb) ? defaultAuto.threshold_gb : 1,
+        amount_gb: Number.isFinite(defaultAuto.amount_gb) ? defaultAuto.amount_gb : 5,
+      })
       toast.success(defaultAuto.enabled ? 'Default auto-allocate saved' : 'Default auto-allocate turned off')
     } catch (err: any) {
       toast.error(err.message ?? 'Failed to save default')
@@ -543,8 +550,8 @@ function SettingsPageInner() {
             <div>
               <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">When remaining falls below</label>
               <div className="relative">
-                <input type="number" inputMode="decimal" min={0} step="any" value={defaultAuto.threshold_gb}
-                  onChange={e => setDefaultAuto(d => ({ ...d, threshold_gb: +e.target.value }))}
+                <NumberField min={0} value={defaultAuto.threshold_gb} ariaLabel="Threshold in GB"
+                  onValue={n => setDefaultAuto(d => ({ ...d, threshold_gb: n }))}
                   className="w-32 bg-surface border border-border px-3.5 py-2.5 rounded-xl text-sm focus:outline-none focus:border-accent transition-colors pr-9" />
                 <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] font-mono text-muted pointer-events-none">GB</span>
               </div>
@@ -552,8 +559,8 @@ function SettingsPageInner() {
             <div>
               <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">Add</label>
               <div className="relative">
-                <input type="number" inputMode="decimal" min={0.01} step="any" value={defaultAuto.amount_gb}
-                  onChange={e => setDefaultAuto(d => ({ ...d, amount_gb: +e.target.value }))}
+                <NumberField min={0.01} value={defaultAuto.amount_gb} ariaLabel="Top-up amount in GB"
+                  onValue={n => setDefaultAuto(d => ({ ...d, amount_gb: n }))}
                   className="w-32 bg-surface border border-border px-3.5 py-2.5 rounded-xl text-sm focus:outline-none focus:border-accent transition-colors pr-9" />
                 <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] font-mono text-muted pointer-events-none">GB</span>
               </div>

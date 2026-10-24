@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
 import TrustedBrowsers from '@/components/dashboard/TrustedBrowsers'
+import { saveTextFile } from '@/lib/clientApi'
 
 interface Status {
   enrolled: boolean
@@ -118,11 +119,7 @@ export default function TwoFactorSettings({ role: _role }: { role?: string } = {
 
   function downloadCodes(codes: string[]) {
     const text = `GlobProxy backup codes\nGenerated ${new Date().toISOString()}\n\n${codes.join('\n')}\n`
-    const blob = new Blob([text], { type: 'text/plain' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url; a.download = 'globproxy-backup-codes.txt'; a.click()
-    URL.revokeObjectURL(url)
+    saveTextFile(text, 'globproxy-backup-codes.txt')
   }
 
   if (!status && loadError) {

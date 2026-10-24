@@ -56,6 +56,19 @@ export async function PUT(req: Request) {
   let body: any
   try { body = await req.json() } catch { return NextResponse.json({ error: 'Invalid request' }, { status: 400 }) }
   const enabled = body?.enabled === true
+  // "Turn off" must always work, whatever state the other form fields are in:
+  // a bare { enabled: false } only flips the switch on the existing rule. (It
+  // used to demand a valid threshold / cap / top-up too, so a customer who had
+  // mistyped a field could not even switch the card-charging rule off.)
+  if (body?.enabled === false && body.threshold_gb === undefined && body.monthly_cap_usd === undefined && body.plan === undefined) {
+    const { error: offErr } = await (await createAdminClient()).from('auto_recharge')
+      .update({ enabled: false, updated_at: new Date().toISOString() }).eq('user_id', user.id)
+    if (offErr) {
+      console.error('[auto-recharge] switch-off failed', offErr)
+      return NextResponse.json({ error: 'Could not switch off auto-recharge. Please try again.' }, { status: 500 })
+    }
+    return NextResponse.json({ ok: true })
+  }
   if (!validThreshold(body?.threshold_gb)) return NextResponse.json({ error: 'Choose a threshold between 1 and 500 GB.' }, { status: 400 })
   if (!validCap(body?.monthly_cap_usd)) return NextResponse.json({ error: 'Choose a 30-day limit between $1 and $5,000.' }, { status: 400 })
   const quote = resolveOrder(body?.plan, body?.gb)

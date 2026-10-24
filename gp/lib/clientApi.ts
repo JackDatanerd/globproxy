@@ -105,13 +105,27 @@ export async function downloadFile(url: string, fallbackName: string): Promise<v
   const cd = res.headers.get('content-disposition') || ''
   const m = cd.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i)
   const name = m ? decodeURIComponent(m[1]) : fallbackName
-  const blob = await res.blob()
+  saveBlob(await res.blob(), name)
+}
+
+/**
+ * Saves a Blob as a file download. The anchor is attached while it is clicked
+ * (a detached anchor's click is ignored by some browsers) and the object URL is
+ * revoked later — revoking in the same tick cancels the download in Firefox and
+ * Safari. Use this for EVERY client-side download.
+ */
+export function saveBlob(blob: Blob, filename: string): void {
   const href = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = href
-  a.download = name
+  a.download = filename
+  a.style.display = 'none'
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)
   setTimeout(() => URL.revokeObjectURL(href), 10_000)
+}
+
+export function saveTextFile(text: string, filename: string, mime = 'text/plain'): void {
+  saveBlob(new Blob([text], { type: mime }), filename)
 }

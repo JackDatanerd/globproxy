@@ -42,6 +42,33 @@ export const CRED_COLS =
 // Public API shape for a credential. `password` is returned because the
 // credential is unusable without it (the dashboard reads the same column
 // directly) — treat API keys with the same care as the passwords they expose.
+/**
+ * Dashboard counterpart of toApiCredential's supplier guard. The proxies page
+ * reads the raw row with the service role (the username/password columns are
+ * not customer-selectable), so it must apply the same rule before the row is
+ * serialised into the browser: nothing that names the upstream supplier is ever
+ * shown, exported or embedded in a code snippet.
+ *  - host / username fall back to our own neutral values;
+ *  - free-text reason columns are dropped (the UI only compares them to fixed
+ *    enum strings, so a stray value is useless to it and unsafe to ship).
+ */
+export function toDashboardCredential(row: Record<string, any>): Record<string, any> {
+  const { upstream_username, upstream_password, ...rest } = row
+  const out: Record<string, any> = {
+    ...rest,
+    username: upstream_username ?? null,
+    password: upstream_password ?? null,
+  }
+  if (leaksSupplier(out.host)) out.host = PROXY_HOST
+  if (leaksSupplier(out.username)) out.username = `gp_${out.id}`
+  if (leaksSupplier(out.password)) out.password = null
+  if (leaksSupplier(out.label)) out.label = 'Session'
+  for (const k of ['pending_reason', 'suspended_reason'] as const) {
+    if (leaksSupplier(out[k])) out[k] = null
+  }
+  return out
+}
+
 export function toApiCredential(c: any) {
   // Second line of defence behind the check at provisioning (lib/geonode.ts): a
   // stored username that names the supplier is never handed to a customer. They get

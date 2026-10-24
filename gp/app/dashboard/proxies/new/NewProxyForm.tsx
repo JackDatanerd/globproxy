@@ -2,7 +2,7 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { apiJson } from '@/lib/clientApi'
-import { formatGb } from '@/lib/format'
+import { formatGb, formatDurationMinutes } from '@/lib/format'
 import {
   fetchCountryList, fetchCountryDetail, POPULAR_COUNTRY_CODES,
   type CountryListItem, type CountryDetail,
@@ -11,6 +11,7 @@ import { buildProxyUsername, getProxyPort, validateTargeting } from '@/lib/proxy
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 import AsnPicker from '@/components/dashboard/AsnPicker'
+import { MinutesInput } from '@/components/dashboard/StickyDurationSelect'
 import NumberField from '@/components/dashboard/NumberField'
 
 const STICKY_DURATIONS = [
@@ -358,12 +359,7 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
                 </div>
                 {customDurationActive && (
                   <div className="flex items-center gap-2 mt-2.5">
-                    <input type="number" inputMode="numeric" min={1} max={1440} step={1}
-                      value={form.sticky_duration}
-                      onChange={e => {
-                        const n = Math.round(Number(e.target.value))
-                        set('sticky_duration', Number.isFinite(n) ? Math.min(1440, Math.max(1, n)) : 1)
-                      }}
+                    <MinutesInput value={form.sticky_duration} onChange={n => set('sticky_duration', n)}
                       className="w-28 bg-surface border border-border px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors" />
                     <span className="text-xs text-muted">minutes (1–1440)</span>
                   </div>
@@ -491,7 +487,7 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
                 <span className="font-mono text-[10.5px] uppercase tracking-wide text-white/45">Type</span>
                 <span className="font-medium text-white/90">
                   {form.session_type === 'sticky'
-                    ? `Sticky · ${form.sticky_duration >= 60 ? (form.sticky_duration / 60) + 'hr' : form.sticky_duration + 'min'}`
+                    ? `Sticky · ${formatDurationMinutes(form.sticky_duration)}`
                     : 'Rotating'}
                 </span>
               </div>

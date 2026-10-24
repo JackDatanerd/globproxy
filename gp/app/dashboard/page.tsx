@@ -131,7 +131,7 @@ export default async function DashboardPage() {
             /proxies page instead of a plain dot + text, so status reads
             the same way everywhere in the app. */}
         <div className="bg-white border border-border rounded-2xl overflow-hidden">
-          <div className="flex items-center justify-between px-5 pt-4.5 pb-3">
+          <div className="flex items-center justify-between px-5 pt-[18px] pb-3">
             <h2 className="font-display font-semibold text-[15.5px] text-ink">Proxy Sessions</h2>
             <Link href="/dashboard/proxies" className="text-[11px] font-mono text-accent hover:underline">Manage all →</Link>
           </div>
@@ -169,7 +169,7 @@ export default async function DashboardPage() {
         {/* Recent orders — proper paid/pending/failed pills instead of one
             badge whose color and text both do the same job. */}
         <div className="bg-white border border-border rounded-2xl overflow-hidden">
-          <div className="flex items-center justify-between px-5 pt-4.5 pb-3">
+          <div className="flex items-center justify-between px-5 pt-[18px] pb-3">
             <h2 className="font-display font-semibold text-[15.5px] text-ink">Recent Orders</h2>
             <Link href="/dashboard/billing" className="text-[11px] font-mono text-accent hover:underline">View all →</Link>
           </div>

@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
-import { apiFetch, apiJson } from '@/lib/clientApi'
+import { apiFetch, apiJson, saveTextFile } from '@/lib/clientApi'
 import { buildProxyUsername } from '@/lib/proxyEndpoint'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
@@ -100,7 +100,10 @@ export default function SessionManager({ credentialId, cred, host, port, baseUse
     }
   }
 
-  async function deleteSession(id: string) {
+  async function deleteSession(id: string, label: string) {
+    // Every other destructive action in the dashboard confirms; this one frees a
+    // fixed endpoint the customer may have wired into a running job.
+    if (!window.confirm(`Delete "${label}"? Its fixed endpoint stops being listed here and any job still using it should be pointed at another session.`)) return
     setSessions(prev => prev?.filter(s => s.id !== id) ?? null)
     try {
       await apiJson('DELETE', `/api/dashboard/sessions/${id}`)
@@ -143,6 +146,12 @@ export default function SessionManager({ credentialId, cred, host, port, baseUse
   }
 
   const sorted = [...sessions].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0))
+  const allEndpoints = sorted.map(s => `${host}:${port}:${buildProxyUsername(baseUser, cred, s.session_token)}:${pass}`)
+  function downloadAll() {
+    const safe = String(cred.label || 'sticky-sessions').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'sticky-sessions'
+    saveTextFile(allEndpoints.join('\n') + '\n', `${safe}-sessions.txt`)
+    toast.success(`Downloaded ${allEndpoints.length} endpoint${allEndpoints.length === 1 ? '' : 's'} — the file contains the password, keep it private.`)
+  }
 
   return (
     <div className="bg-ink rounded-lg overflow-hidden">
@@ -151,6 +160,19 @@ export default function SessionManager({ credentialId, cred, host, port, baseUse
           Sticky sessions {sessions.length > 0 ? `(${sessions.length})` : ''}
         </span>
         <div className="flex items-center gap-1.5">
+          {sessions.length > 0 && (
+            <>
+              <button onClick={() => onCopy(allEndpoints.join('\n'), `${allEndpoints.length} endpoint${allEndpoints.length === 1 ? '' : 's'} copied`)}
+                aria-label="Copy all session endpoints"
+                className="text-[10px] font-mono text-white/60 hover:text-white border border-white/15 px-2 py-1 rounded transition-colors">
+                copy all
+              </button>
+              <button onClick={downloadAll} aria-label="Download all session endpoints as a text file"
+                className="text-[10px] font-mono text-white/60 hover:text-white border border-white/15 px-2 py-1 rounded transition-colors">
+                .txt
+              </button>
+            </>
+          )}
           <select value={batchCount} onChange={e => setBatchCount(Number(e.target.value))} disabled={creating}
             aria-label="How many sessions to create"
             className="text-[10px] font-mono bg-white/5 text-white/70 border border-white/15 rounded px-1.5 py-1 focus:outline-none focus:border-accent">
@@ -209,7 +231,7 @@ export default function SessionManager({ credentialId, cred, host, port, baseUse
                     className="text-[10px] font-mono text-white/40 hover:text-amber-400 px-1.5">
                     remove
                   </button>
-                  <button onClick={() => deleteSession(s.id)} aria-label={`Delete ${s.label}`}
+                  <button onClick={() => deleteSession(s.id, s.label)} aria-label={`Delete ${s.label}`}
                     title="Delete this session and its fixed endpoint"
                     className="text-[10px] font-mono text-white/40 hover:text-red-400 px-1.5">
                     delete

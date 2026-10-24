@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { buildProxyUsername, getProxyPort, deriveSessionId } from '@/lib/proxyEndpoint'
 import { apiJson, copyText } from '@/lib/clientApi'
-import { formatGb, formatPct } from '@/lib/format'
+import { formatGb, formatPct, formatDurationMinutes } from '@/lib/format'
 import SessionManager from '@/components/dashboard/SessionManager'
 import IpWhitelist from '@/components/dashboard/IpWhitelist'
 import CredentialSettings from '@/components/dashboard/CredentialSettings'
@@ -34,7 +34,7 @@ const WARN_PCT = 80
 const URGENT_PCT = 95
 
 type Tab = 'cred' | 'bandwidth' | 'endpoints' | 'whitelist' | 'edit' | 'code'
-type Lang = 'py' | 'node' | 'browser'
+type Lang = 'py' | 'node' | 'playwright' | 'puppeteer' | 'curl' | 'go' | 'php' | 'browser'
 
 // Row-based redesign: collapsed by default (status communicated by the left
 // rail, not by reading text), expands to the same credential/endpoint/code
@@ -393,6 +393,131 @@ const agent = new HttpsProxyAgent(
 //
 // Recommended extension: Proxy SwitchyOmega (Chrome/Firefox)`
 
+
+  // ── More languages / tools. Values are embedded through JSON.stringify (JS,
+  // Go) or a single-quote escape (PHP, shell) so a label-derived or generated
+  // credential containing a quote, `$` or backslash can't break the snippet.
+  const q = (v: string | number) => JSON.stringify(String(v))
+  const shq = (v: string | number) => `'${String(v).replace(/'/g, `'\\''`)}'`
+  const phpq = (v: string | number) => `'${String(v).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`
+  const proxyUrl = `${isSocks5 ? 'socks5h' : 'http'}://${user}:${pass}@${host}:${port}`
+
+  const curlEnvSnippet = `# Route every curl / wget / pip / git command in this shell through the proxy
+export ALL_PROXY=${shq(proxyUrl)}
+export HTTPS_PROXY=${shq(proxyUrl)}
+export HTTP_PROXY=${shq(proxyUrl)}
+
+curl https://ipinfo.io/json   # shows your proxy IP and location
+
+# Unset when you're done:
+# unset ALL_PROXY HTTPS_PROXY HTTP_PROXY`
+
+  // Chromium cannot authenticate to a SOCKS5 proxy, so Playwright / Puppeteer
+  // need an HTTP session — say so instead of printing a snippet that fails.
+  const socksBrowserNote = (tool: string) => `// ${tool} (Chromium) cannot authenticate to a SOCKS5 proxy.
+// Create an HTTP / HTTPS session instead (New session → Protocol: HTTP / HTTPS)
+// and use its endpoint here, or use the cURL / Python / Go snippets for SOCKS5.`
+
+  const playwrightSnippet = isSocks5 ? socksBrowserNote('Playwright') : `// npm install playwright
+const { chromium } = require("playwright");
+
+(async () => {
+  const browser = await chromium.launch({
+    proxy: {
+      server: ${q(`http://${host}:${port}`)},
+      username: ${q(user)},
+      password: ${q(pass)},
+    },
+  });
+  const page = await browser.newPage();
+  await page.goto("https://ipinfo.io/json");
+  console.log(await page.textContent("body")); // shows proxy IP and location
+  await browser.close();
+})();`
+
+  const puppeteerSnippet = isSocks5 ? socksBrowserNote('Puppeteer') : `// npm install puppeteer
+const puppeteer = require("puppeteer");
+
+(async () => {
+  const browser = await puppeteer.launch({
+    args: [${q(`--proxy-server=http://${host}:${port}`)}],
+  });
+  const page = await browser.newPage();
+  await page.authenticate({ username: ${q(user)}, password: ${q(pass)} });
+  await page.goto("https://ipinfo.io/json");
+  console.log(await page.evaluate(() => document.body.innerText)); // proxy IP and location
+  await browser.close();
+})();`
+
+  const goSnippet = isSocks5 ? `// go get golang.org/x/net/proxy
+package main
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+
+	"golang.org/x/net/proxy"
+)
+
+func main() {
+	dialer, err := proxy.SOCKS5("tcp", ${q(`${host}:${port}`)},
+		&proxy.Auth{User: ${q(user)}, Password: ${q(pass)}}, proxy.Direct)
+	if err != nil {
+		panic(err)
+	}
+	client := &http.Client{Transport: &http.Transport{Dial: dialer.Dial}}
+	res, err := client.Get("https://ipinfo.io/json")
+	if err != nil {
+		panic(err)
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	fmt.Println(string(body)) // shows proxy IP and location
+}` : `package main
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+)
+
+func main() {
+	proxyURL, _ := url.Parse(${q(`http://${host}:${port}`)})
+	proxyURL.User = url.UserPassword(${q(user)}, ${q(pass)})
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+	res, err := client.Get("https://ipinfo.io/json")
+	if err != nil {
+		panic(err)
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	fmt.Println(string(body)) // shows proxy IP and location
+}`
+
+  const phpSnippet = `<?php
+$ch = curl_init("https://ipinfo.io/json");
+curl_setopt_array($ch, [
+    CURLOPT_PROXY          => ${phpq(`${host}:${port}`)},
+    CURLOPT_PROXYTYPE      => ${isSocks5 ? 'CURLPROXY_SOCKS5_HOSTNAME' : 'CURLPROXY_HTTP'},
+    CURLOPT_PROXYUSERPWD   => ${phpq(`${user}:${pass}`)},
+    CURLOPT_RETURNTRANSFER => true,
+]);
+echo curl_exec($ch); // shows proxy IP and location
+curl_close($ch);`
+
+  const SNIPPETS: { id: Lang; tab: string; title: string; text: string }[] = [
+    { id: 'py',         tab: 'Python',     title: 'Python / requests',       text: pySnippet },
+    { id: 'node',       tab: 'Node.js',    title: 'Node.js / node-fetch',    text: nodeSnippet },
+    { id: 'playwright', tab: 'Playwright', title: 'Playwright (Node.js)',    text: playwrightSnippet },
+    { id: 'puppeteer',  tab: 'Puppeteer',  title: 'Puppeteer (Node.js)',     text: puppeteerSnippet },
+    { id: 'curl',       tab: 'cURL / env', title: 'Shell environment',       text: curlEnvSnippet },
+    { id: 'go',         tab: 'Go',         title: 'Go / net/http',           text: goSnippet },
+    { id: 'php',        tab: 'PHP',        title: 'PHP / cURL',              text: phpSnippet },
+    { id: 'browser',    tab: 'Browser ext.', title: 'Browser extension',     text: browserSnippet },
+  ]
+
   // Rail color — instant status read without opening the row. Pending and
   // warming-up are transient states; hot means the credential is close to
   // running out of its allocated GB.
@@ -439,7 +564,7 @@ const agent = new HttpsProxyAgent(
           </span>
           <span className="flex items-center gap-1.5 text-[11px] font-mono text-muted mt-0.5 w-full">
             <span>{cred.session_type}</span><span>·</span><span>{(cred.protocol || 'http').toUpperCase()}</span>
-            {isSticky && cred.sticky_duration && <><span>·</span><span>{cred.sticky_duration}min sticky</span></>}
+            {isSticky && cred.sticky_duration && <><span>·</span><span>{formatDurationMinutes(cred.sticky_duration)} sticky</span></>}
             {(cred.country || cred.city) && <><span>·</span><span>{[cred.city, cred.country].filter(Boolean).join(', ')}</span></>}
           </span>
         </button>
@@ -820,46 +945,26 @@ const agent = new HttpsProxyAgent(
                     </div>
                   </div>
 
-                  <div className="flex gap-2 mb-3">
-                    {(['py', 'node', 'browser'] as const).map(l => (
-                      <button key={l} onClick={() => setLang(l)}
+                  <div className="flex gap-2 mb-3 flex-wrap" role="tablist" aria-label="Code snippet language">
+                    {SNIPPETS.map(sn => (
+                      <button key={sn.id} onClick={() => setLang(sn.id)} role="tab" aria-selected={lang === sn.id}
                         className={clsx('text-[10.5px] font-mono px-3 py-1.5 rounded-full border transition-colors',
-                          lang === l ? 'bg-ink text-white border-ink' : 'bg-white text-ink2 border-border hover:border-ink2/40')}>
-                        {l === 'py' ? 'Python' : l === 'node' ? 'Node.js' : 'Browser ext.'}
+                          lang === sn.id ? 'bg-ink text-white border-ink' : 'bg-white text-ink2 border-border hover:border-ink2/40')}>
+                        {sn.tab}
                       </button>
                     ))}
                   </div>
 
-                  {lang === 'py' && (
-                    <div className="bg-ink rounded-lg overflow-hidden">
+                  {SNIPPETS.filter(sn => sn.id === lang).map(sn => (
+                    <div key={sn.id} className="bg-ink rounded-lg overflow-hidden">
                       <div className="flex items-center justify-between px-3 py-2 border-b border-white/10">
-                        <span className="text-[10px] font-mono text-white/40">Python / requests</span>
-                        <button onClick={() => copy(pySnippet, 'Snippet copied')}
+                        <span className="text-[10px] font-mono text-white/40">{sn.title}</span>
+                        <button onClick={() => copy(sn.text, 'Snippet copied')}
                           className="text-[10px] font-mono text-accent hover:opacity-70 border border-accent/30 px-2.5 py-1 rounded transition-colors">copy</button>
                       </div>
-                      <pre className="px-3 py-3 text-[11px] font-mono text-white/70 overflow-x-auto whitespace-pre-wrap leading-5">{pySnippet}</pre>
+                      <pre className="px-3 py-3 text-[11px] font-mono text-white/70 overflow-x-auto whitespace-pre-wrap leading-5">{sn.text}</pre>
                     </div>
-                  )}
-                  {lang === 'node' && (
-                    <div className="bg-ink rounded-lg overflow-hidden">
-                      <div className="flex items-center justify-between px-3 py-2 border-b border-white/10">
-                        <span className="text-[10px] font-mono text-white/40">Node.js / node-fetch</span>
-                        <button onClick={() => copy(nodeSnippet, 'Snippet copied')}
-                          className="text-[10px] font-mono text-accent hover:opacity-70 border border-accent/30 px-2.5 py-1 rounded transition-colors">copy</button>
-                      </div>
-                      <pre className="px-3 py-3 text-[11px] font-mono text-white/70 overflow-x-auto whitespace-pre-wrap leading-5">{nodeSnippet}</pre>
-                    </div>
-                  )}
-                  {lang === 'browser' && (
-                    <div className="bg-ink rounded-lg overflow-hidden">
-                      <div className="flex items-center justify-between px-3 py-2 border-b border-white/10">
-                        <span className="text-[10px] font-mono text-white/40">Browser extension</span>
-                        <button onClick={() => copy(browserSnippet, 'Snippet copied')}
-                          className="text-[10px] font-mono text-accent hover:opacity-70 border border-accent/30 px-2.5 py-1 rounded transition-colors">copy</button>
-                      </div>
-                      <pre className="px-3 py-3 text-[11px] font-mono text-white/70 overflow-x-auto whitespace-pre-wrap leading-5">{browserSnippet}</pre>
-                    </div>
-                  )}
+                  ))}
                 </div>
               )}
             </>

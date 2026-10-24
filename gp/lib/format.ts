@@ -55,3 +55,16 @@ export function formatUsd(value: number | string | null | undefined): string {
   const n = Number(value ?? 0)
   return '$' + (Number.isFinite(n) ? n : 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
+
+/**
+ * Human label for a sticky lifetime in minutes: 45 -> "45 min", 60 -> "1 hr",
+ * 100 -> "1 hr 40 min", 1440 -> "24 hr". (A raw `min / 60` printed
+ * "1.6666666666666667hr" for 100.)
+ */
+export function formatDurationMinutes(min: number | null | undefined): string {
+  const m = Math.round(Number(min))
+  if (!Number.isFinite(m) || m <= 0) return '—'
+  if (m < 60) return `${m} min`
+  const h = Math.floor(m / 60), r = m % 60
+  return r === 0 ? `${h} hr` : `${h} hr ${r} min`
+}

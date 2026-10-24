@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import { safeNextPath } from '@/lib/safeNext'
 import toast from 'react-hot-toast'
 import { fetchWithReauth } from '@/lib/reauthPrompt'
+import { saveTextFile } from '@/lib/clientApi'
 
 type Step = 'loading' | 'scan' | 'confirm' | 'backup_codes' | 'error'
 
@@ -85,13 +86,7 @@ function MfaSetupFlow() {
 
   function downloadBackupCodes() {
     const text = `GlobProxy backup codes\nGenerated ${new Date().toISOString()}\n\nEach code can be used once if you lose access to your authenticator app.\nKeep this somewhere safe — treat it like a password.\n\n${backupCodes.join('\n')}\n`
-    const blob = new Blob([text], { type: 'text/plain' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'globproxy-backup-codes.txt'
-    a.click()
-    URL.revokeObjectURL(url)
+    saveTextFile(text, 'globproxy-backup-codes.txt')
   }
 
   function copyBackupCodes() {

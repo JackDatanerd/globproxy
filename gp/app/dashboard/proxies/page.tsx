@@ -3,7 +3,7 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import ProxyList from '@/components/dashboard/ProxyList'
 import { formatGb, formatPct } from '@/lib/format'
-import { passwordRotationEnabled } from '@/lib/credentials'
+import { passwordRotationEnabled, toDashboardCredential } from '@/lib/credentials'
 
 export default async function ProxiesPage() {
   const supabase = await createClient()
@@ -49,10 +49,8 @@ export default async function ProxiesPage() {
   // Never hand the browser the raw rows: their column names (and the
   // supplier's internal sub-user id) would show in the page payload. Expose
   // only neutral names.
-  const safeCreds = (creds ?? []).map((row: Record<string, any>) => {
-    const { upstream_username, upstream_password, ...rest } = row
-    return { ...rest, username: upstream_username ?? null, password: upstream_password ?? null }
-  })
+  // toDashboardCredential also applies the supplier guard (see lib/credentials).
+  const safeCreds = (creds ?? []).map((row: Record<string, any>) => toDashboardCredential(row))
 
   const total     = bw?.total_gb     ?? 0
   const used      = bw?.used_gb      ?? 0

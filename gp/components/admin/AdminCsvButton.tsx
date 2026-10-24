@@ -3,6 +3,7 @@ import { useState } from 'react'
 import toast from 'react-hot-toast'
 import { createClient } from '@/lib/supabase/client'
 import { fetchWithReauth } from '@/lib/reauthPrompt'
+import { saveBlob } from '@/lib/clientApi'
 
 // Downloads a CSV from an admin route. The routes need the Bearer token, so a
 // plain <a href> can't be used.
@@ -16,13 +17,7 @@ export default function AdminCsvButton({ path, filename }: { path: string; filen
       if (!session?.access_token) { toast.error('Your session has expired — refresh and sign in again.'); return }
       const res = await fetchWithReauth(path, { headers: { Authorization: `Bearer ${session.access_token}` } })
       if (!res.ok) { toast.error((await res.json().catch(() => ({}))).error ?? 'Export failed'); return }
-      const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `${filename}.csv`
-      a.click()
-      URL.revokeObjectURL(url)
+      saveBlob(await res.blob(), `${filename}.csv`)
     } catch {
       toast.error('Network error — try again.')
     } finally {

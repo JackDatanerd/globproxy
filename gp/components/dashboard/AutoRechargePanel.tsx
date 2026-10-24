@@ -4,6 +4,7 @@ import toast from 'react-hot-toast'
 import { apiFetch, apiJson } from '@/lib/clientApi'
 import { PLANS, resolveOrder, CUSTOM_MIN_GB, CUSTOM_MAX_GB } from '@/lib/plans'
 import { formatUsd } from '@/lib/format'
+import { validThreshold, validCap } from '@/lib/rechargeRules'
 
 type Card = { brand: string | null; last4: string | null; exp_month: string | null; exp_year: string | null }
 type Settings = {
@@ -52,7 +53,24 @@ export default function AutoRechargePanel() {
 
   const quote = resolveOrder(choice, choice === 'custom' ? Number(customGb) : undefined)
 
+  async function turnOff() {
+    // Independent of the form fields: switching the rule off must work even
+    // while a field holds something invalid.
+    setSaving(true)
+    try {
+      await apiJson('PUT', '/api/dashboard/billing/auto-recharge', { enabled: false })
+      setEnabled(false); setWhy(null)
+      toast.success('Auto-recharge is off.')
+    } catch (err: any) {
+      if (err?.code !== 'mfa_required') toast.error(err?.message || 'Could not switch off auto-recharge')
+    }
+    setSaving(false)
+  }
+
   async function save(nextEnabled: boolean) {
+    // Same rules as the server (lib/rechargeRules), so a typo is caught here with a clear message.
+    if (!validThreshold(Number(threshold))) { toast.error('Choose a threshold between 1 and 500 GB.'); return }
+    if (!validCap(Number(cap))) { toast.error('Choose a 30-day limit between $1 and $5,000.'); return }
     if (!quote) { toast.error(`Choose a plan, or a whole number of GB from ${CUSTOM_MIN_GB} to ${CUSTOM_MAX_GB}.`); return }
     setSaving(true)
     try {
@@ -86,7 +104,7 @@ export default function AutoRechargePanel() {
 
   return (
     <div className="bg-white border border-border rounded-xl mb-8">
-      <button onClick={() => setOpen(o => !o)} className="w-full flex items-center justify-between px-6 py-4 text-left">
+      <button onClick={() => setOpen(o => !o)} aria-expanded={open} className="w-full flex items-center justify-between px-6 py-4 text-left">
         <div>
           <h2 className="font-display font-bold text-base text-ink">
             Auto-recharge {loaded && <span className={`ml-2 text-[10px] font-mono px-2 py-0.5 rounded-full ${enabled ? 'bg-accent2-light text-accent2' : 'bg-surface text-muted'}`}>{enabled ? 'ON' : 'OFF'}</span>}
@@ -98,7 +116,7 @@ export default function AutoRechargePanel() {
       {open && (
         <div className="px-6 pb-6 border-t border-border pt-4">
           {loadFailed ? (
-            <p className="text-sm text-muted">We couldn&apos;t load your auto-recharge settings. Refresh to try again.</p>
+            <p className="text-sm text-muted">We couldn&apos;t load your auto-recharge settings. <button onClick={() => { setLoadFailed(false); load() }} className="text-accent hover:underline">Try again</button></p>
           ) : !loaded ? (
             <p className="text-sm text-muted">Loading…</p>
           ) : !card ? (
@@ -136,7 +154,7 @@ export default function AutoRechargePanel() {
                 <button onClick={() => save(true)} disabled={saving} className="bg-accent text-white px-5 py-2.5 rounded-xl text-sm font-medium disabled:opacity-60">
                   {saving ? 'Saving…' : enabled ? 'Update' : 'Turn on'}
                 </button>
-                {enabled && <button onClick={() => save(false)} disabled={saving} className="text-sm text-ink2 border border-border px-4 py-2.5 rounded-xl disabled:opacity-60">Turn off</button>}
+                {enabled && <button onClick={turnOff} disabled={saving} className="text-sm text-ink2 border border-border px-4 py-2.5 rounded-xl disabled:opacity-60">Turn off</button>}
               </div>
               <p className="text-[11px] text-muted">By turning this on you authorise GlobProxy to charge the saved card whenever the rule above applies. You get the normal invoice and e-mail for every top-up, and you can turn it off or remove the card at any time.</p>
             </div>

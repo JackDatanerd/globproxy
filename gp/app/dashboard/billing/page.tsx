@@ -194,7 +194,8 @@ export default function BillingPage() {
             <button onClick={load} className="text-accent text-sm hover:underline mt-1">Try again</button>
           </div>
         ) : orders.length > 0 ? (
-          <table className="w-full">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[640px]">
             <thead>
               <tr className="border-b border-border bg-surface">
                 {['Date', 'Bandwidth', 'Amount', 'Status', ''].map((h, i) => (
@@ -297,6 +298,7 @@ export default function BillingPage() {
               ))}
             </tbody>
           </table>
+          </div>
         ) : (
           <div className="text-center py-14">
             <p className="text-muted text-sm font-light">No orders yet.</p>
