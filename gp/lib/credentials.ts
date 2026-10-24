@@ -62,7 +62,8 @@ export function toApiCredential(c: any) {
     country: c.country, state: c.state, city: c.city, asn: c.asn,
     session_type: c.session_type, protocol: c.protocol ?? 'http',
     sticky_duration: c.sticky_duration, endpoint_count: c.endpoint_count,
-    host: c.host, port: c.port,
+    // Same rule for the host: a stored host that names the supplier is never shown.
+    host: leaksSupplier(c.host) ? PROXY_HOST : c.host, port: c.port,
     username: c.upstream_username, // raw proxy username
     // NOTE: a legacy `upstream_username` alias used to be returned here. It named
     // our upstream supplier to every API customer, so it was removed — use

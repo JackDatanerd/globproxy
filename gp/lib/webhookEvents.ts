@@ -1,11 +1,17 @@
 // Pure constants — no server imports — so the dashboard (client component),
 // the API routes, the delivery engine and the docs all read the same list.
 // Keep in sync with the webhook_endpoints_valid_events CHECK constraint
-// (migrations 0042 + 0046 + 0054 + 0059 + 0062 + 0064 + 0069 + 0070): an event added here must be added there too, or the
+// (migrations 0042 + 0046 + 0054 + 0059 + 0062 + 0064 + 0069 + 0070 + 0074): an event added here must be added there too, or the
 // insert/update is rejected by the database.
 // Sent as `api_version` in every payload so a receiver can tell which shape it is
 // parsing if the event format ever has to change incompatibly. Additive today.
 export const WEBHOOK_API_VERSION = 'v1'
+
+// An endpoint subscribed to ['*'] receives EVERY subscribable event, including ones
+// added later — without it each new event needed every receiver to edit its
+// subscription by hand, and it silently heard nothing until it did. ('test' is
+// always delivered to the endpoint it is sent to, wildcard or not.)
+export const WEBHOOK_WILDCARD = '*'
 
 export const WEBHOOK_EVENTS = [
   'session_created',
@@ -36,6 +42,9 @@ export const WEBHOOK_EVENTS = [
   'api_key_created',
   'api_key_revoked',
   'api_key_expiring',
+  'api_key_updated',
+  'webhook_endpoint_disabled',
+  'reseller_low_stock',
 ] as const
 
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number]
@@ -69,6 +78,9 @@ export const WEBHOOK_EVENT_LABELS: Record<WebhookEvent, string> = {
   api_key_created: 'API key created',
   api_key_revoked: 'API key revoked',
   api_key_expiring: 'API key expiring soon',
+  api_key_updated: 'API key edited (scopes, allowed IPs, expiry or label)',
+  webhook_endpoint_disabled: 'Another webhook endpoint was switched off',
+  reseller_low_stock: 'Reseller stock fell below your alert level',
 }
 
 // One line per event for the docs and GET /api/v1/webhooks/events.
@@ -101,6 +113,17 @@ export const WEBHOOK_EVENT_DESCRIPTIONS: Record<WebhookEvent, { description: str
   api_key_created: { description: 'An API key was created on your account.', data: ['key_id', 'label', 'key_prefix', 'scopes', 'expires_at', 'rotated_from'] },
   api_key_revoked: { description: 'An API key was revoked. reason is "manual" (one key revoked), "revoke_all" (the panic button) or "rotated" (an old key revoked immediately by a rotation; replaced_by is the new key id).', data: ['key_id', 'label', 'key_prefix', 'reason', 'replaced_by'] },
   api_key_expiring: { description: 'An API key expires within 7 days.', data: ['key_id', 'label', 'key_prefix', 'expires_at'] },
+  api_key_updated: { description: 'An API key was edited (label, scopes, allowed IPs or expiry). changed lists the fields; widened is true when the edit made the key more powerful (a scope added, IP restrictions removed or relaxed, or the expiry extended). The key itself is never sent.', data: ['key_id', 'label', 'key_prefix', 'changed', 'widened', 'scopes', 'expires_at'] },
+  webhook_endpoint_disabled: { description: 'One of your webhook endpoints was switched off automatically (repeated delivery failures, a 410 Gone, or an address that is no longer allowed). Delivered to your OTHER endpoints, since the disabled one can no longer receive anything. reason says why.', data: ['webhook_id', 'url', 'reason'] },
+  reseller_low_stock: { description: 'Your available reseller stock fell below the low-stock alert level you set (resellers). Sent once until stock rises above the level again.', data: ['available_gb', 'low_stock_gb'] },
+}
+
+export type WebhookSubscription = WebhookEvent | typeof WEBHOOK_WILDCARD
+
+// Does an endpoint with these event_types receive `event`? The single place that
+// knows what the wildcard means.
+export function subscribesTo(eventTypes: readonly string[] | null | undefined, event: string): boolean {
+  return !!eventTypes && (eventTypes.includes(WEBHOOK_WILDCARD) || eventTypes.includes(event))
 }
 
 export function isWebhookEvent(v: unknown): v is WebhookEvent {
@@ -111,11 +134,14 @@ export function isWebhookEvent(v: unknown): v is WebhookEvent {
 // names it. (cleanEventTypes below silently dropped unknown names, so a typo
 // like "bandwith_exhausted" created an endpoint subscribed to fewer events and
 // still answered 200.)
-export function parseEventTypes(input: unknown): { ok: true; value: WebhookEvent[] } | { ok: false; error: string } {
-  const hint = `event_types must be a non-empty array of: ${WEBHOOK_EVENTS.join(', ')}`
+export function parseEventTypes(input: unknown): { ok: true; value: WebhookSubscription[] } | { ok: false; error: string } {
+  const hint = `event_types must be a non-empty array of: ${WEBHOOK_EVENTS.join(', ')} — or [\"*\"] for every event`
   if (!Array.isArray(input) || input.length === 0) return { ok: false, error: hint }
-  const unknown = input.filter((e) => !isWebhookEvent(e))
+  // "*" means everything, so alongside other names it adds nothing: it is stored on
+  // its own (and the names are still checked, so a typo next to it is still an error).
+  const unknown = input.filter((e) => e !== WEBHOOK_WILDCARD && !isWebhookEvent(e))
   if (unknown.length) return { ok: false, error: `Unknown event type${unknown.length > 1 ? 's' : ''}: ${unknown.map((e) => JSON.stringify(String(e).slice(0, 40))).join(', ')}. ${hint}` }
+  if (input.includes(WEBHOOK_WILDCARD)) return { ok: true, value: [WEBHOOK_WILDCARD] }
   return { ok: true, value: [...new Set(input as WebhookEvent[])] }
 }
 

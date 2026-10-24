@@ -5,8 +5,9 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build --webpack",
-    "build:cf": "node scripts/check-cron-sync.mjs && opennextjs-cloudflare build",
+    "build:cf": "node scripts/check-cron-sync.mjs && node scripts/check-api-docs-sync.mjs && opennextjs-cloudflare build",
     "check:cron": "node scripts/check-cron-sync.mjs",
+    "check:api-docs": "node scripts/check-api-docs-sync.mjs",
     "check:migrations": "node scripts/check-migrations-applied.mjs",
     "typecheck": "tsc --noEmit",
     "start": "next start",

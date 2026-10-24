@@ -119,10 +119,20 @@ export async function PATCH(req: Request) {
   const updated = await applyKeyUpdate(admin, user.id, body.id, plan.data.patch)
   if (!updated.ok) return err(updated.message, updated.status)
 
+  const changed = Object.keys(plan.data.patch).filter((k) => k !== 'expiry_warned_at')
   await logSecurityEvent({
     userId: user.id, event: 'api_key_updated', req, admin,
-    meta: { key_prefix: plan.data.current.key_prefix, changed: Object.keys(plan.data.patch).filter((k) => k !== 'expiry_warned_at'), widened: plan.data.loosens },
+    meta: { key_prefix: plan.data.current.key_prefix, changed, widened: plan.data.loosens },
   })
+  // The same fact for an integration: a key quietly given more reach is the thing a
+  // monitoring receiver most wants to hear about. (Never the key itself.)
+  if (changed.length) {
+    const u = updated.data as { id?: string; label?: string | null; key_prefix?: string; scopes?: string[]; expires_at?: string | null }
+    await notifyKeyEvent(user.id, 'api_key_updated', {
+      id: u.id ?? plan.data.current.id, label: u.label ?? plan.data.current.label ?? null,
+      key_prefix: u.key_prefix ?? plan.data.current.key_prefix, scopes: u.scopes, expires_at: u.expires_at ?? null,
+    }, { changed, widened: plan.data.loosens })
+  }
   // Widening a key is exactly what an intruder does to a key they found.
   if (plan.data.loosens) {
     await notifySecurityChange(user.id, 'An API key on your GlobProxy account was widened', `the API key starting ${plan.data.current.key_prefix}… was just given broader access (more scopes, a later expiry or more allowed IPs).`)

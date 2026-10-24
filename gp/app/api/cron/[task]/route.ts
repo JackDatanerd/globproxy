@@ -733,9 +733,16 @@ async function runProvision() {
 // ── Webhooks: delivery retries + threshold events ──────────────────
 async function runWebhooks() {
   try {
-    const retries = await runWebhookRetries()
-    const thresholds = await runBandwidthThresholdWebhooks()
-    const housekeeping = await runIntegrationHousekeeping(warnExpiringApiKeys)
+    // Thresholds FIRST: they store their events as due-now (defer), so the retry pass
+    // right after sends them in this same tick instead of the next one. Each step is
+    // isolated — one throwing used to skip the rest of the tick (no retries, no
+    // pruning, no key-expiry warnings) until it stopped throwing.
+    const step = async <T,>(label: string, fn: () => Promise<T>): Promise<T | { error: string }> => {
+      try { return await fn() } catch (e: any) { console.error(`[cron webhooks] ${label} failed:`, e); return { error: String(e?.message ?? e) } }
+    }
+    const thresholds = await step('thresholds', runBandwidthThresholdWebhooks)
+    const retries = await step('retries', runWebhookRetries)
+    const housekeeping = await step('housekeeping', () => runIntegrationHousekeeping(warnExpiringApiKeys))
     return { retries, thresholds, housekeeping }
   } catch (e: any) {
     console.error('[cron webhooks] failed:', e)

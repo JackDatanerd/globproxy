@@ -1,6 +1,59 @@
-import { withApiAuth, parsePage, parseDateParam } from '@/lib/apiHelpers'
+import { withApiAuth, parsePage, parseDateParam, readJsonBody, asApiRateLimited } from '@/lib/apiHelpers'
 import { apiError } from '@/lib/apiAuth'
+import { runIdempotent } from '@/lib/idempotency'
+import { resolveOrder, CUSTOM_MIN_GB, CUSTOM_MAX_GB } from '@/lib/plans'
+import { startCheckout, hasOpenDispute, DISPUTE_PAUSE_MESSAGE } from '@/lib/checkout'
+import { rateLimited, rateLimitedUser } from '@/lib/rateLimit'
 import { NextResponse } from 'next/server'
+
+// POST /api/v1/orders   { "plan": "growth" }  or  { "plan": "custom", "gb": 37 }
+// Starts a bandwidth purchase and returns a hosted card-checkout link. Nothing is
+// charged until a person pays on that page; the bandwidth is credited the moment the
+// payment is confirmed (a `bandwidth_credited` webhook with source "purchase", and the
+// order turns "paid" in GET /orders/:id). Prices: GET /api/v1/pricing. Card only —
+// M-Pesa needs the buyer to confirm a live exchange rate, so it stays in the dashboard.
+// Starting a new checkout retires the account's other unpaid orders (same as the buy
+// page). `Idempotency-Key` is optional: a retry returns the same order and link.
+// Needs the `write` scope.
+export async function POST(req: Request) {
+  return withApiAuth(req, 'POST orders', async ({ user, supabase }) => {
+    const json = await readJsonBody(req)
+    if (!json.ok) return json.response
+    const b = json.body
+    if (!b || typeof b !== 'object' || Array.isArray(b)) return apiError(400, 'invalid_request', 'Body must be a JSON object like { "plan": "growth" } or { "plan": "custom", "gb": 37 }.')
+    if (b.method !== undefined && b.method !== 'card') {
+      return apiError(400, 'invalid_request', 'Only card checkout is available through the API. Pay by M-Pesa from the dashboard.')
+    }
+    const quote = resolveOrder(b.plan, b.gb)
+    if (!quote) {
+      return apiError(400, 'invalid_request', `plan must be one of micro, starter, growth, scale — or "custom" with gb as a whole number from ${CUSTOM_MIN_GB} to ${CUSTOM_MAX_GB}.`)
+    }
+
+    // The same payment limiter the buy page uses, per address and per account.
+    const limited = (await rateLimited(req, 'PAYMENT_RATE_LIMITER', user.id)) ?? (await rateLimitedUser('PAYMENT_RATE_LIMITER', user.id, 'checkout'))
+    if (limited) return asApiRateLimited(limited)
+
+    const { data: profile } = await supabase.from('profiles').select('email').eq('id', user.id).maybeSingle()
+    if (!profile?.email) return apiError(400, 'invalid_request', 'Your account has no email address. Add one in the dashboard before purchasing.')
+    if (await hasOpenDispute(supabase, user.id)) return apiError(403, 'forbidden', DISPUTE_PAUSE_MESSAGE)
+
+    return runIdempotent(req, supabase, user.id, 'POST /orders', JSON.stringify([quote.slug, quote.gb]), async () => {
+      try {
+        const started = await startCheckout(supabase, { id: user.id, email: profile.email }, quote)
+        return {
+          kind: 'ok', status: 201,
+          body: {
+            order: { id: started.order.id, gb_amount: quote.gb, amount_usd: quote.total, status: 'pending', created_at: started.order.created_at },
+            checkout_url: started.url,
+          },
+        }
+      } catch (e) {
+        console.error('[v1 POST orders] checkout start failed', e)
+        return { kind: 'fail', response: apiError(503, 'service_unavailable', 'Could not start checkout. Try again shortly.') }
+      }
+    })
+  }, { scope: 'write' })
+}
 
 // GET /api/v1/orders?limit=50&offset=0&status=paid&created_after=…&created_before=…
 // Bandwidth purchases (read-only). Payment-processor references are

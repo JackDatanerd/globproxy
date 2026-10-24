@@ -4,6 +4,7 @@ import { adminNoticeHtml, appUrl } from '@/lib/adminEmail'
 import { lastCompletedCycle, formatCycleLabel } from '@/lib/payoutCycle'
 import { formatGb, formatUsd } from '@/lib/format'
 import { sendInviteResolutionNotices } from '@/lib/resellerAllocation'
+import { dispatchWebhook } from '@/lib/webhooks'
 
 // Scheduled work for section 7 (resellers & affiliates). Both entry points
 // catch their own failures and report them as `{ error }` so the cron heartbeat
@@ -51,6 +52,10 @@ export async function runResellerMaintenance() {
         .update({ reseller_low_stock_alerted_at: new Date().toISOString() })
         .eq('id', r.out_reseller_id).is('reseller_low_stock_alerted_at', null).select('id')
       if (!won?.length) continue
+      // Same moment, machine-readable: lets an integration restock or page someone.
+      await dispatchWebhook(r.out_reseller_id, 'reseller_low_stock', {
+        available_gb: Number(r.out_available_gb), low_stock_gb: Number(r.out_threshold_gb),
+      }, { defer: true })
       await sendEmail({
         to: r.out_email,
         subject: `Low bandwidth stock: ${formatGb(Number(r.out_available_gb))} left`,

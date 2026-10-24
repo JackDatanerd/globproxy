@@ -4,7 +4,7 @@ import { createAdminClient } from '@/lib/supabase/server'
 import { validateWebhookUrl, validateWebhookPort, checkHostnameResolution } from '@/lib/ssrfGuard'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { fetchAllRows } from '@/lib/dbPaging'
-import { WEBHOOK_API_VERSION, type WebhookEvent } from '@/lib/webhookEvents'
+import { WEBHOOK_API_VERSION, WEBHOOK_WILDCARD, subscribesTo, type WebhookEvent } from '@/lib/webhookEvents'
 
 export type { WebhookEvent } from '@/lib/webhookEvents'
 
@@ -110,6 +110,17 @@ function nextAttemptAt(attemptsDone: number): string | null {
 }
 
 async function notifyAutoDisabled(supabase: SupabaseAdmin, ep: Endpoint) {
+  // Tell the account's OTHER endpoints first (the disabled one is already switched
+  // off, so the lookup skips it): an integration with a second receiver can then
+  // alert someone, which the e-mail below cannot do for a machine.
+  try {
+    const { data: gone } = await supabase.from('webhook_endpoints').select('disabled_reason, url').eq('id', ep.id).maybeSingle()
+    await dispatchWebhook(ep.user_id, 'webhook_endpoint_disabled', {
+      webhook_id: ep.id, url: gone?.url ?? ep.url, reason: gone?.disabled_reason ?? 'repeated delivery failures',
+    }, { defer: true })
+  } catch (e) {
+    console.error('[webhooks] webhook_endpoint_disabled dispatch failed', ep.id, e)
+  }
   try {
     const { data: profile } = await supabase.from('profiles').select('email, full_name').eq('id', ep.user_id).single()
     if (!profile?.email) return
@@ -299,7 +310,12 @@ export async function dispatchWebhook(
   event: WebhookEvent,
   data: Record<string, unknown>,
   opts: { defer?: boolean; skipIfSubscribedTo?: WebhookEvent } = {}
-): Promise<void> {
+): Promise<boolean> {
+  // Resolves true when nothing was LOST: there was nobody to tell, or every
+  // delivery row was stored (sending it is then retried by the cron task).
+  // false means an endpoint lookup or a delivery insert failed, i.e. an event that
+  // happened was not recorded anywhere. Most callers ignore it; a caller that keeps
+  // its own de-dupe flag (the bandwidth thresholds) uses it to un-claim the alert.
   try {
     const supabase = await createAdminClient()
     const { data: endpoints, error } = await supabase
@@ -307,23 +323,24 @@ export async function dispatchWebhook(
       .select(EP_COLS)
       .eq('user_id', userId)
       .eq('enabled', true)
-      .contains('event_types', [event])
+      .overlaps('event_types', [event, WEBHOOK_WILDCARD])
 
     if (error) {
       console.error('[webhooks] failed to load endpoints for', userId, event, error)
-      return
+      return false
     }
     // skipIfSubscribedTo: an endpoint that already receives that OTHER event
     // for the same moment is not sent this one too (see runBandwidthThresholdWebhooks).
     const targets = ((endpoints ?? []) as Endpoint[]).filter(
-      (ep) => !(opts.skipIfSubscribedTo && ep.event_types?.includes(opts.skipIfSubscribedTo))
+      (ep) => !(opts.skipIfSubscribedTo && subscribesTo(ep.event_types, opts.skipIfSubscribedTo))
     )
-    if (!targets.length) return
+    if (!targets.length) return true
 
     const eventId = crypto.randomUUID()
     const payload = JSON.stringify({ id: eventId, event, api_version: WEBHOOK_API_VERSION, created_at: new Date().toISOString(), data })
 
     const pending: Promise<unknown>[] = []
+    let lost = false
     await Promise.all(
       targets.map(async (ep) => {
         // Inserted as 'retrying' due in 2 minutes: if this Worker dies
@@ -339,6 +356,7 @@ export async function dispatchWebhook(
           .single()
         if (insErr || !row) {
           console.error('[webhooks] failed to persist delivery', ep.id, insErr)
+          lost = true
           return
         }
         if (opts.defer) return
@@ -351,8 +369,10 @@ export async function dispatchWebhook(
       const all = Promise.all(pending)
       if (!runInBackground(all)) await all
     }
+    return !lost
   } catch (e) {
     console.error('[webhooks] dispatch failed', userId, event, e)
+    return false
   }
 }
 
@@ -371,7 +391,7 @@ export async function dispatchWebhookBatch(
     const supabase = await createAdminClient()
     const { data: endpoints, error } = await supabase
       .from('webhook_endpoints').select(EP_COLS)
-      .eq('user_id', userId).eq('enabled', true).contains('event_types', [event])
+      .eq('user_id', userId).eq('enabled', true).overlaps('event_types', [event, WEBHOOK_WILDCARD])
     if (error) { console.error('[webhooks] batch: failed to load endpoints for', userId, event, error); return }
     if (!endpoints?.length) return
 
@@ -577,7 +597,7 @@ export async function runBandwidthThresholdWebhooks() {
     supabase
       .from('webhook_endpoints').select('user_id')
       .eq('enabled', true)
-      .overlaps('event_types', ['bandwidth_threshold_crossed', 'bandwidth_exhausted'])
+      .overlaps('event_types', ['bandwidth_threshold_crossed', 'bandwidth_exhausted', WEBHOOK_WILDCARD])
       .order('id', { ascending: true })
       .range(from, to)
   )
@@ -634,22 +654,36 @@ export async function runBandwidthThresholdWebhooks() {
     const already = level === 100 ? acc.wh_alerted_100_at : level === 95 ? acc.wh_alerted_95_at : acc.wh_alerted_80_at
     if (already) continue
 
-    // Claim before sending (flag first, then deliver): a duplicate webhook
-    // is worse than the rare lost one, and the delivery itself is retried.
+    // Claim before sending (flag first, then deliver): a duplicate webhook is worse
+    // than a late one. If the event could not even be RECORDED (endpoint lookup or
+    // delivery insert failed) the claim is taken back below, so the next 5-minute
+    // run tries again instead of the alert being lost until usage dips under 80%.
+    // Once a delivery row exists, sending it is retried by the 'webhooks' task.
     const flags: Record<string, string> = { wh_alerted_80_at: nowIso }
     if (level >= 95) flags.wh_alerted_95_at = nowIso
     if (level === 100) flags.wh_alerted_100_at = nowIso
     const { error: flagErr } = await supabase.from('bandwidth_accounts').update(flags).eq('user_id', acc.user_id)
     if (flagErr) { console.error('[webhooks] failed to set threshold flag', acc.user_id, flagErr); continue }
 
+    let recorded = true
     if (level === 100) {
-      await dispatchWebhook(acc.user_id, 'bandwidth_exhausted', payloadBase)
+      recorded = await dispatchWebhook(acc.user_id, 'bandwidth_exhausted', payloadBase, { defer: true })
       // An endpoint subscribed to the threshold event but not to the exhausted
       // one would otherwise hear nothing at 100% (the de-dupe flags are set
       // either way): give it the final threshold, once.
-      await dispatchWebhook(acc.user_id, 'bandwidth_threshold_crossed', { threshold_pct: 100, ...payloadBase }, { skipIfSubscribedTo: 'bandwidth_exhausted' })
+      recorded = (await dispatchWebhook(acc.user_id, 'bandwidth_threshold_crossed', { threshold_pct: 100, ...payloadBase }, { skipIfSubscribedTo: 'bandwidth_exhausted', defer: true })) && recorded
     } else {
-      await dispatchWebhook(acc.user_id, 'bandwidth_threshold_crossed', { threshold_pct: level, ...payloadBase })
+      recorded = await dispatchWebhook(acc.user_id, 'bandwidth_threshold_crossed', { threshold_pct: level, ...payloadBase }, { defer: true })
+    }
+    if (!recorded) {
+      // Put the account back exactly as it was so the next run retries. At 100%
+      // two events are sent; if only one of them was stored, the retry repeats that
+      // one under a new event id — a duplicate is the lesser evil against a lost alert.
+      const { error: undoErr } = await supabase.from('bandwidth_accounts')
+        .update({ wh_alerted_80_at: acc.wh_alerted_80_at, wh_alerted_95_at: acc.wh_alerted_95_at, wh_alerted_100_at: acc.wh_alerted_100_at })
+        .eq('user_id', acc.user_id)
+      if (undoErr) console.error('[webhooks] failed to release threshold claim', acc.user_id, undoErr)
+      continue
     }
     fired++
   }

@@ -4,6 +4,7 @@ import { parseLabel } from '@/lib/apiValidation'
 import { getOwnedCredential } from '@/lib/credentials'
 import { buildProxyUsername, genSessionId } from '@/lib/proxyEndpoint'
 import { NextResponse } from 'next/server'
+import { leaksSupplier } from '@/lib/supplierGuard'
 
 const MAX_ACTIVE_SESSIONS = 200
 
@@ -12,7 +13,8 @@ function view(s: any, cred: any) {
     id: s.id, label: s.label, pinned: s.pinned, collapsed: s.collapsed,
     session_token: s.session_token,
     // Ready-to-use username that pins this session's exit IP.
-    connection_username: cred.upstream_username ? buildProxyUsername(cred.upstream_username, cred, s.session_token) : null,
+    // Never built from a username that names the supplier (same guard as toApiCredential).
+    connection_username: cred.upstream_username && !leaksSupplier(cred.upstream_username) ? buildProxyUsername(cred.upstream_username, cred, s.session_token) : null,
     created_at: s.created_at,
   }
 }

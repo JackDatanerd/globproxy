@@ -3,6 +3,7 @@ import { apiError } from '@/lib/apiAuth'
 import { parseCreateCredential, parseCreateAutoTopup } from '@/lib/apiValidation'
 import { createCredential, toApiCredential } from '@/lib/credentials'
 import { runIdempotent, parseIdempotencyKey } from '@/lib/idempotency'
+import { NextResponse } from 'next/server'
 
 const MAX_BULK_CREATE = 10
 
@@ -14,8 +15,12 @@ const MAX_BULK_CREATE = 10
 //
 // `Idempotency-Key` is REQUIRED here. Item i is created under the derived key
 // "<key>#i", so re-sending the same request after a timeout returns the
-// already-created sub-users instead of making duplicates — and a partial
-// failure is safe to retry. Each item counts against the 30/min write limit.
+// already-created sub-users instead of making duplicates. A call in which EVERY
+// item succeeded is stored under the key and replayed; a call with any failed item
+// is NOT stored (the key is freed), so re-sending the identical request with the
+// same key re-runs only the failed items — the created ones come back as they were.
+// Reusing a key with changed items is the client's bug (use a new key).
+// Each item counts against the 30/min write limit.
 export async function POST(req: Request) {
   return withApiAuth(req, 'POST sub-users/bulk', async ({ user, supabase, consumeWrites }) => {
     const idem = parseIdempotencyKey(req)
@@ -50,7 +55,12 @@ export async function POST(req: Request) {
           : { index: i, status: r.status, error: { code: r.code, message: r.message } })
       }
       const succeeded = results.filter((r) => r.status === 201).length
-      return { kind: 'ok', status: 200, body: { results, succeeded, failed: results.length - succeeded } }
+      const body = { results, succeeded, failed: results.length - succeeded }
+      // Anything short of full success must stay retryable under the same key, e.g.
+      // after buying bandwidth following per-item 402s. Storing it would replay the
+      // stale failures for 24 hours.
+      if (body.failed > 0) return { kind: 'fail', response: NextResponse.json(body, { status: 200 }) }
+      return { kind: 'ok', status: 200, body }
     })
   })
 }

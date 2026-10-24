@@ -274,13 +274,13 @@ export async function revokeApiKeys(admin: Admin, userId: string, ids: string[] 
 
 // ── Webhook fan-out for key lifecycle events ─────────────────────────────
 export async function notifyKeyEvent(
-  userId: string, event: 'api_key_created' | 'api_key_revoked',
+  userId: string, event: 'api_key_created' | 'api_key_revoked' | 'api_key_updated',
   k: { id: string; label: string | null; key_prefix: string; scopes?: string[]; expires_at?: string | null },
   extra: Record<string, unknown> = {}
 ) {
   await dispatchWebhook(userId, event, {
     key_id: k.id, label: k.label, key_prefix: k.key_prefix,
-    ...(event === 'api_key_created' ? { scopes: k.scopes ?? null, expires_at: k.expires_at ?? null } : {}),
+    ...(event !== 'api_key_revoked' ? { scopes: k.scopes ?? null, expires_at: k.expires_at ?? null } : {}),
     ...extra,
   })
 }

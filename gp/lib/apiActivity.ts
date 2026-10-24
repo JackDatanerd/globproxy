@@ -1,5 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/server'
-import { applyCursor } from '@/lib/cursor'
+import { applyCursor, cursorTs } from '@/lib/cursor'
 
 type Admin = Awaited<ReturnType<typeof createAdminClient>>
 
@@ -33,5 +33,5 @@ export async function listApiActivity(
     id: r.id, key_id: r.key_id, key_prefix: r.key?.key_prefix ?? null, key_label: r.key?.label ?? null,
     method: r.method, path: r.path, status: r.status, ip: r.ip, request_id: r.request_id, created_at: r.created_at,
   }))
-  return { ok: true, data: { activity: rows, has_more: hasMore, next_before: hasMore ? rows[rows.length - 1].created_at : null, next_before_id: hasMore ? String(rows[rows.length - 1].id) : null } }
+  return { ok: true, data: { activity: rows, has_more: hasMore, next_before: hasMore ? cursorTs(rows[rows.length - 1].created_at) : null, next_before_id: hasMore ? String(rows[rows.length - 1].id) : null } }
 }

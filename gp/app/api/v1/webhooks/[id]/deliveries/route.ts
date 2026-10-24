@@ -1,4 +1,5 @@
 import { withApiAuth, failFrom } from '@/lib/apiHelpers'
+import { cursorTs } from '@/lib/cursor'
 import { listDeliveries } from '@/lib/webhookEndpoints'
 import { NextResponse } from 'next/server'
 
@@ -17,7 +18,7 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
     return NextResponse.json({
       deliveries: rows,
       has_more: hasMore,
-      next_before: hasMore ? rows[rows.length - 1].created_at : null,
+      next_before: hasMore ? cursorTs(rows[rows.length - 1].created_at) : null,
       next_before_id: hasMore ? rows[rows.length - 1].id : null,
     })
   })

@@ -1,10 +1,10 @@
 import { requireMfaVerified } from '@/lib/mfa'
 import { createAdminClient, createClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
-import { initializeTransaction, generateReference } from '@/lib/paystack'
+import { startCheckout, hasOpenDispute, DISPUTE_PAUSE_MESSAGE } from '@/lib/checkout'
 import { resolveOrder } from '@/lib/plans'
 import { getKesQuote, kesFor } from '@/lib/fx'
-import { appUrl, isCrossSiteRequest } from '@/lib/appUrl'
+import { isCrossSiteRequest } from '@/lib/appUrl'
 import { rateLimited, rateLimitedUser } from '@/lib/rateLimit'
 import { NextResponse } from 'next/server'
 
@@ -52,17 +52,9 @@ export async function POST(req: Request) {
     const mfaBlock = await requireMfaVerified(req, user.id)
     if (mfaBlock) return mfaBlock
 
-    // A payment dispute (chargeback) is open on this account: no new purchases
-    // until it is settled — otherwise buy → use → dispute can be repeated.
-    const { data: openDispute, error: disputeErr } = await supabase
-      .from('orders').select('id').eq('user_id', user.id).eq('dispute_status', 'open').limit(1)
-    // Secondary control: if this lookup fails, log it and let the purchase
-    // proceed rather than turning a DB hiccup into a checkout outage.
-    if (disputeErr) console.error('[checkout] dispute lookup failed', disputeErr)
-    if (openDispute && openDispute.length > 0) {
-      return NextResponse.json({
-        error: 'New purchases are paused while a payment dispute on your account is open. Please contact support@globproxy.com.',
-      }, { status: 403 })
+    // A payment dispute (chargeback) is open on this account: no new purchases.
+    if (await hasOpenDispute(supabase, user.id)) {
+      return NextResponse.json({ error: DISPUTE_PAUSE_MESSAGE }, { status: 403 })
     }
 
     let body: any
@@ -102,73 +94,12 @@ export async function POST(req: Request) {
     if (!user.email) {
       return NextResponse.json({ error: 'Your account has no email address. Add one before purchasing.' }, { status: 400 })
     }
-    const base = appUrl()
-
-    const reference = generateReference()
-
-    // Create the new order and initialize it with Paystack FIRST. Older
-    // pending orders are only retired after that succeeds — previously they
-    // were cancelled up front, so a failed initialize left the customer with
-    // no live order, and (before late-payment recovery) a paid-but-cancelled
-    // one in another tab.
-    const { data: order, error } = await supabase.from('orders').insert({
-      user_id: user.id,
-      gb_amount: planData.gb,
-      amount_usd: planData.total,
-      plan_slug: planData.slug, // which plan (or 'custom') — printed on the invoice
-      payment_method: method === 'mpesa' ? 'mpesa' : 'paystack',
-      payment_status: 'pending',
-      paystack_reference: reference,
-      // M-Pesa: the KES amount the customer is asked to pay, locked now, plus the
-      // rate it came from. Verification expects exactly this, not the USD price.
-      ...(kes ? { pay_currency: 'KES', pay_amount: kes.amount, fx_rate: kes.rate } : {}),
-    }).select().single()
-
-    if (error || !order) throw error ?? new Error('order insert returned no row')
-
-    let txn
-    try {
-      txn = await initializeTransaction({
-        email: user.email,
-        amount_usd: planData.total,
-        ...(kes ? { currency: 'KES' as const, amount_major: kes.amount, channels: ['mobile_money'] } : {}),
-        reference,
-        metadata: {
-          order_id: order.id,
-          user_id: user.id,
-          gb_amount: String(planData.gb),
-          plan: planData.slug,
-          ...(kes ? { currency: 'KES', amount_kes: String(kes.amount) } : {}),
-        },
-        callback_url: `${base}/dashboard?payment=success&reference=${reference}`,
-      })
-    } catch (initErr) {
-      // The reference never reached Paystack, so nothing can ever be paid
-      // against this order — drop it instead of leaving an orphan 'pending'.
-      const { error: delErr } = await supabase.from('orders').delete().eq('id', order.id)
-      if (delErr) {
-        await supabase.from('orders').update({
-          payment_status: 'cancelled', failure_reason: 'checkout initialization failed', failed_at: new Date().toISOString(),
-        }).eq('id', order.id)
-      }
-      throw initErr
-    }
-
-    // Retire the customer's other pending orders so the history doesn't pile
-    // up with abandoned checkouts. Safe even if one of them is still being
-    // paid in another tab: the webhook / verify-payment / reconcile cron credit
-    // any order Paystack confirms as paid, whatever its local status.
-    await supabase
-      .from('orders')
-      .update({ payment_status: 'cancelled' })
-      .eq('user_id', user.id)
-      .eq('payment_status', 'pending')
-      .neq('id', order.id)
+    const started = await startCheckout(supabase, { id: user.id, email: user.email }, planData, kes)
 
     return NextResponse.json({
-      url: txn.authorization_url,
-      access_code: txn.access_code,
-      reference,
+      url: started.url,
+      access_code: started.access_code,
+      reference: started.reference,
       ...(kes ? { amount_kes: kes.amount } : {}),
     })
   } catch (err: any) {

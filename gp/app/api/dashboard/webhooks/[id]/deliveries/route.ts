@@ -1,4 +1,5 @@
 import { requireMfaVerified } from '@/lib/mfa'
+import { cursorTs } from '@/lib/cursor'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { listDeliveries } from '@/lib/webhookEndpoints'
 import { NextResponse } from 'next/server'
@@ -26,5 +27,5 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
   if (!r.ok) return NextResponse.json({ error: r.message }, { status: r.status })
   const rows = r.data.rows
   const hasMore = r.data.has_more
-  return NextResponse.json({ deliveries: rows, has_more: hasMore, next_before: hasMore ? rows[rows.length - 1].created_at : null, next_before_id: hasMore ? rows[rows.length - 1].id : null })
+  return NextResponse.json({ deliveries: rows, has_more: hasMore, next_before: hasMore ? cursorTs(rows[rows.length - 1].created_at) : null, next_before_id: hasMore ? rows[rows.length - 1].id : null })
 }

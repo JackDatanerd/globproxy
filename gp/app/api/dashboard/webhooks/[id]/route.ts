@@ -38,6 +38,14 @@ export async function DELETE(req: Request, context: { params: Promise<{ id: stri
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  // Create, edit and rotate all demand a step-up and are throttled; this was the one
+  // action that did neither, so a stolen session could silently switch off every
+  // webhook an integration (or a monitoring receiver) depends on.
+  const mfaGate = await requireStepUp(req, user.id)
+  if (mfaGate) return mfaGate
+  const throttled = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'webhook-delete')
+  if (throttled) return throttled
+
   const suspended = await requireActiveUser(user.id)
   if (suspended) return suspended
 

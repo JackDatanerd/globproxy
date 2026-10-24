@@ -38,7 +38,7 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
     }
     if (!sticky) count = 1
 
-    const host = cred.host || PROXY_HOST
+    const host = cred.host && !leaksSupplier(cred.host) ? cred.host : PROXY_HOST
     const port = cred.port || getProxyPort(cred.protocol, cred.session_type)
     const scheme = cred.protocol === 'socks5' ? 'socks5' : 'http'
     const endpoints = Array.from({ length: count }, (_, i) => {

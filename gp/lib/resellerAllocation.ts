@@ -1,4 +1,4 @@
-import { applyCursor } from '@/lib/cursor'
+import { applyCursor, cursorTs } from '@/lib/cursor'
 import { createAdminClient } from '@/lib/supabase/server'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { dispatchWebhook } from '@/lib/webhooks'
@@ -515,5 +515,5 @@ export async function listTransfers(
     gb_amount: Number(r.gb_amount), gb_reclaimed: Number(r.reclaimed_gb ?? 0), gb_net: Number(r.gb_amount) - Number(r.reclaimed_gb ?? 0),
     status: r.status, note: r.note ?? null, created_at: r.created_at,
   }))
-  return { ok: true, data: { transfers, has_more: hasMore, next_before: hasMore ? transfers[transfers.length - 1].created_at : null, next_before_id: hasMore ? transfers[transfers.length - 1].id : null } }
+  return { ok: true, data: { transfers, has_more: hasMore, next_before: hasMore ? cursorTs(transfers[transfers.length - 1].created_at) : null, next_before_id: hasMore ? transfers[transfers.length - 1].id : null } }
 }

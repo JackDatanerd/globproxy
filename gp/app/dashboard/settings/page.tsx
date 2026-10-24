@@ -5,7 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
 import TwoFactorSettings from '@/components/dashboard/TwoFactorSettings'
 import { ChangePasswordCard, ChangeEmailCard, SecurityActivityCard, ActiveSessionsCard } from '@/components/dashboard/AccountSecurityCards'
-import { WEBHOOK_EVENTS, WEBHOOK_EVENT_LABELS } from '@/lib/webhookEvents'
+import { WEBHOOK_EVENTS, WEBHOOK_EVENT_LABELS, WEBHOOK_WILDCARD } from '@/lib/webhookEvents'
 import { apiFetch, apiJson, copyText, redirectToMfa } from '@/lib/clientApi'
 import { fetchWithReauth } from '@/lib/reauthPrompt'
 import { formatGb } from '@/lib/format'
@@ -326,7 +326,7 @@ function SettingsPageInner() {
       if (logId === id) setLogId(null)
       if (editingWebhookId === id) setEditingWebhookId(null)
     } catch (err: any) {
-      toast.error(err.message ?? 'Failed to delete webhook')
+      if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Failed to delete webhook')
     }
   }
 
@@ -401,6 +401,23 @@ function SettingsPageInner() {
     } catch (err: any) {
       toast.error(err.message ?? 'Redelivery failed')
     }
+    await loadDeliveries(endpointId)
+  }
+
+  const [redeliveringAll, setRedeliveringAll] = useState(false)
+  // Catch-up after an outage: re-sends the endpoint's failed deliveries, oldest first,
+  // a few per click (the server stops early when the receiver is still down).
+  async function redeliverAllFailed(endpointId: string) {
+    setRedeliveringAll(true)
+    try {
+      const r = await apiJson('POST', `/api/dashboard/webhooks/${endpointId}/deliveries/redeliver-failed`, { limit: 5 })
+      if (r.attempted === 0) toast.success('No failed deliveries to redeliver')
+      else if (r.stopped_early) toast.error(`Sent ${r.succeeded} of ${r.attempted}, then stopped: your endpoint is still failing`)
+      else toast.success(`Redelivered ${r.succeeded} of ${r.attempted}${r.more_failed ? ' — click again for the rest' : ''}`)
+    } catch (err: any) {
+      if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Redelivery failed')
+    }
+    setRedeliveringAll(false)
     await loadDeliveries(endpointId)
   }
 
@@ -577,7 +594,7 @@ function SettingsPageInner() {
                     <div className="text-sm text-ink font-mono truncate max-w-full">{w.url}</div>
                     {w.description ? <div className="text-xs text-ink2 mt-0.5 truncate max-w-full">{w.description}</div> : null}
                     <div className="text-xs text-muted mt-0.5">
-                      {w.event_types.join(', ')}
+                      {w.event_types.includes(WEBHOOK_WILDCARD) ? 'all events' : w.event_types.join(', ')}
                       {w.previous_secret_expires_at && new Date(w.previous_secret_expires_at) > new Date()
                         ? <span className="text-amber-600"> · old signing secret also accepted until {new Date(w.previous_secret_expires_at).toLocaleString()}</span> : null}
                       {!w.enabled && w.disabled_reason ? <span className="text-red-500"> · disabled: {w.disabled_reason}</span> : null}
@@ -640,10 +657,16 @@ function SettingsPageInner() {
                     <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">Description (optional)</label>
                     <input type="text" maxLength={200} value={editDesc} onChange={e => setEditDesc(e.target.value)} placeholder="e.g. production billing listener"
                       className="w-full bg-surface border border-border px-3 py-2 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors mb-3" />
-                    <div className="flex flex-wrap gap-4 mb-3">
+                    <label className="flex items-center gap-2 cursor-pointer select-none mb-2">
+                      <input type="checkbox" checked={editEvents.includes(WEBHOOK_WILDCARD)}
+                        onChange={e => setEditEvents(e.target.checked ? [WEBHOOK_WILDCARD] : [])}
+                        className="w-3.5 h-3.5 rounded border-border text-accent focus:ring-accent" />
+                      <span className="text-xs text-ink font-medium">All events, including ones we add later</span>
+                    </label>
+                    <div className={`flex flex-wrap gap-4 mb-3 ${editEvents.includes(WEBHOOK_WILDCARD) ? 'opacity-40 pointer-events-none' : ''}`}>
                       {WEBHOOK_EVENTS.map(val => (
                         <label key={val} className="flex items-center gap-2 cursor-pointer select-none">
-                          <input type="checkbox" checked={editEvents.includes(val)}
+                          <input type="checkbox" checked={editEvents.includes(WEBHOOK_WILDCARD) || editEvents.includes(val)}
                             onChange={e => setEditEvents(evs => e.target.checked ? [...evs, val] : evs.filter(x => x !== val))}
                             className="w-3.5 h-3.5 rounded border-border text-accent focus:ring-accent" />
                           <span className="text-xs text-ink2">{WEBHOOK_EVENT_LABELS[val]}</span>
@@ -665,6 +688,12 @@ function SettingsPageInner() {
                       <p className="text-xs text-muted">No deliveries in the last 14 days.</p>
                     ) : (
                       <div className="flex flex-col gap-1.5">
+                        {logRows.some(d => d.status === 'failed' && d.event_type !== 'test') && (
+                          <button onClick={() => redeliverAllFailed(w.id)} disabled={redeliveringAll}
+                            className="text-xs text-ink2 hover:text-ink border border-border px-2.5 py-1 rounded-lg self-start mb-1 disabled:opacity-60">
+                            {redeliveringAll ? 'Redelivering…' : 'Redeliver all failed'}
+                          </button>
+                        )}
                         {logRows.map(d => (
                           <div key={d.id}>
                           <div className="flex items-center justify-between gap-3 text-xs font-mono">
@@ -728,10 +757,16 @@ function SettingsPageInner() {
           <input type="text" maxLength={200} placeholder="Description (optional) — e.g. production billing listener" value={newWebhookDesc}
             onChange={e => setNewWebhookDesc(e.target.value)}
             className="w-full bg-surface border border-border px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-accent transition-colors mb-3" />
-          <div className="flex flex-wrap gap-4 mb-4">
+          <label className="flex items-center gap-2 cursor-pointer select-none mb-2">
+            <input type="checkbox" checked={newWebhookEvents.includes(WEBHOOK_WILDCARD)}
+              onChange={e => setNewWebhookEvents(e.target.checked ? [WEBHOOK_WILDCARD] : [])}
+              className="w-3.5 h-3.5 rounded border-border text-accent focus:ring-accent" />
+            <span className="text-xs text-ink font-medium">All events, including ones we add later</span>
+          </label>
+          <div className={`flex flex-wrap gap-4 mb-4 ${newWebhookEvents.includes(WEBHOOK_WILDCARD) ? 'opacity-40 pointer-events-none' : ''}`}>
             {WEBHOOK_EVENTS.map((val) => [val, WEBHOOK_EVENT_LABELS[val]] as const).map(([val, label]) => (
               <label key={val} className="flex items-center gap-2 cursor-pointer select-none">
-                <input type="checkbox" checked={newWebhookEvents.includes(val)}
+                <input type="checkbox" checked={newWebhookEvents.includes(WEBHOOK_WILDCARD) || newWebhookEvents.includes(val)}
                   onChange={e => setNewWebhookEvents(evs => e.target.checked ? [...evs, val] : evs.filter(x => x !== val))}
                   className="w-3.5 h-3.5 rounded border-border text-accent focus:ring-accent" />
                 <span className="text-xs text-ink2">{label}</span>

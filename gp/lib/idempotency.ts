@@ -111,6 +111,36 @@ export async function releaseIdempotencyKey(admin: Admin, userId: string, key: s
     admin.from('api_idempotency_keys').delete().eq('user_id', userId).eq('key', key))
 }
 
+// Per-item idempotency for the bulk endpoints. The outer Idempotency-Key only
+// guards the request as a whole; each item additionally claims "<key>#<i>" so a
+// retry after a PARTIAL failure re-runs just the items that did not succeed and
+// replays the ones that did (a top-up is never applied twice). Only 2xx outcomes
+// are kept; anything else frees the item's claim so it can be retried. A claim
+// whose outcome is unknown (the worker died mid-item) is never re-run — the item
+// answers 409 and the caller checks the sub-user's balance.
+export type ItemOutcome = { status: number; body: Record<string, unknown> }
+
+export async function runItemOnce(
+  admin: Admin, userId: string, itemKey: string, scope: string, canonical: string,
+  run: () => Promise<ItemOutcome>
+): Promise<ItemOutcome> {
+  const claim = await claimIdempotencyKey(admin, userId, itemKey, canonical, scope, { allowStaleTakeover: false })
+  if (claim.kind === 'replay') return { status: claim.status, body: (claim.body ?? {}) as Record<string, unknown> }
+  if (claim.kind === 'mismatch') {
+    return { status: 422, body: { error: { code: 'idempotency_conflict', message: 'This item was already processed under this Idempotency-Key with different values. Use a new Idempotency-Key for a changed request.' } } }
+  }
+  if (claim.kind === 'in_flight') {
+    return { status: 409, body: { error: { code: 'conflict', message: 'This item is still being processed. Retry shortly.' } } }
+  }
+  if (claim.kind === 'unknown_outcome') {
+    return { status: 409, body: { error: { code: 'conflict', message: 'An earlier attempt at this item did not finish and its outcome is unknown. Check the sub-user\u2019s current balance before retrying with a NEW Idempotency-Key.' } } }
+  }
+  const out = await run()
+  if (out.status >= 200 && out.status < 300) await completeIdempotencyKey(admin, userId, itemKey, out.status, out.body)
+  else await releaseIdempotencyKey(admin, userId, itemKey)
+  return out
+}
+
 export type IdempotentOutcome =
   | { kind: 'ok'; status: number; body: unknown }           // replayable success — stored under the key
   | { kind: 'fail'; response: Response }                    // not replayable — key released, client may retry

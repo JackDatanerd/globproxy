@@ -232,7 +232,7 @@ export default function ApiDocsPage() {
           <p className="text-sm text-ink2 leading-relaxed mt-3">
             Time-ordered logs (<span className="font-mono text-ink">/webhooks/:id/deliveries</span>, <span className="font-mono text-ink">/account/activity</span>,{' '}
             <span className="font-mono text-ink">/reseller/allocations</span>) are newest-first and use a cursor: when <span className="font-mono text-ink">has_more</span> is true,
-            pass <span className="font-mono text-ink">next_before</span> as <span className="font-mono text-ink">before</span> <em>and</em> <span className="font-mono text-ink">next_before_id</span> as <span className="font-mono text-ink">before_id</span> to get the next, older page (sending both keeps rows that share a timestamp from being skipped).
+            pass <span className="font-mono text-ink">next_before</span> as <span className="font-mono text-ink">before</span> <em>and</em> <span className="font-mono text-ink">next_before_id</span> as <span className="font-mono text-ink">before_id</span> to get the next, older page (sending both keeps rows that share a timestamp from being skipped). Cursor values are UTC timestamps ending in <span className="font-mono text-ink">Z</span>, so they can be pasted into a URL as they are.
           </p>
         </section>
 
@@ -250,7 +250,7 @@ export default function ApiDocsPage() {
             ['POST /sub-users', 'optional', 'A retry can never create a second sub-user, even if it races the original.'],
             ['POST /sub-users/:id/release', 'optional', 'A retry never releases twice; an unknown earlier outcome answers 409 like top-ups.'],
             ['POST /sub-users/:id/topup', 'optional', 'A retry never tops up twice. If an earlier attempt with the key died with an unknown outcome you get 409 — check gb_allocated, then retry with a new key.'],
-            ['POST /sub-users/bulk, /sub-users/bulk-topup', 'REQUIRED', 'Item i is processed under "<key>#i", so a partially failed bulk call is safe to retry.'],
+            ['POST /sub-users/bulk, /sub-users/bulk-topup', 'REQUIRED', 'Item i claims the derived key "<key>#i". A call where every item succeeded is stored and replayed. If any item failed, nothing is stored: re-send the IDENTICAL request with the same key and only the failed items run again — finished ones come back unchanged and a top-up is never applied twice. Changed items need a new key.'],
             ['POST /reseller/allocations, /allocations/:id/reclaim', 'REQUIRED', 'Same unknown-outcome rule as top-up: a transfer is never applied twice.'],
           ]} />
           <Code>{`curl -X POST https://globproxy.com/api/v1/sub-users \\
@@ -614,7 +614,7 @@ export default function ApiDocsPage() {
             <p className="text-sm text-ink2 mb-4">
               Find out which values are valid before creating a sub-user. <span className="font-mono text-ink">GET /locations</span> lists countries (<span className="font-mono text-ink">code</span> → <span className="font-mono text-ink">country</span>);{' '}
               <span className="font-mono text-ink">GET /locations/:country</span> lists its states with their cities (<span className="font-mono text-ink">state</span> / <span className="font-mono text-ink">city</span>; add <span className="font-mono text-ink">?cities=false</span> to skip the city lists);{' '}
-              <span className="font-mono text-ink">GET /locations/:country/asns</span> lists ISPs (<span className="font-mono text-ink">asn</span>; empty where ISP targeting isn't offered).
+              <span className="font-mono text-ink">GET /locations/:country/asns</span> lists ISPs (<span className="font-mono text-ink">asn</span>; empty where ISP targeting isn't offered, <span className="font-mono text-ink">404</span> for a code that is not a country).
             </p>
             <Code>{`curl https://globproxy.com/api/v1/locations/us/asns \\
   -H "Authorization: Bearer YOUR_KEY"
@@ -624,8 +624,8 @@ export default function ApiDocsPage() {
 
           <Endpoint method="POST" path="/api/v1/sub-users/bulk-topup" title="Top up sub-users in bulk">
             <p className="text-sm text-ink2 mb-4">
-              Up to 20 independent top-ups per call. <span className="font-mono text-ink">Idempotency-Key</span> is <strong>required</strong>; each item counts as one write.
-              If an earlier attempt with the same key finished with an unknown outcome, this answers 409 instead of re-running it — check the sub-users' <span className="font-mono text-ink">gb_allocated</span>, then retry with a new key.
+              Up to 20 independent top-ups per call. <span className="font-mono text-ink">Idempotency-Key</span> is <strong>required</strong>; each item counts as one write (a call refused with 429 for lack of budget may already have used part of it, so wait for the <span className="font-mono text-ink">Retry-After</span> interval before retrying).
+              If any item fails the call is not stored, so re-sending the same request with the same key re-runs only the failed items. If an earlier attempt with the same key finished with an unknown outcome, this answers 409 instead of re-running it — check the sub-users' <span className="font-mono text-ink">gb_allocated</span>, then retry with a new key.
             </p>
             <Code>{`curl -X POST https://globproxy.com/api/v1/sub-users/bulk-topup \\
   -H "Authorization: Bearer YOUR_KEY" \\
@@ -739,7 +739,7 @@ export default function ApiDocsPage() {
             <p className="text-sm text-ink2 mt-4">
               Accepts <span className="font-mono text-ink">label</span>, <span className="font-mono text-ink">pinned</span>,{' '}
               <span className="font-mono text-ink">collapsed</span> and <span className="font-mono text-ink">terminate: true</span>.{' '}
-              <span className="font-mono text-ink">DELETE</span> on the same path removes a session outright.
+              <span className="font-mono text-ink">DELETE /sub-users/:id/sessions/:sessionId</span> removes a session outright.
             </p>
           </Endpoint>
 
@@ -759,6 +759,42 @@ export default function ApiDocsPage() {
       "refunded_usd": 0, "refunded_at": null, "created_at": "2026-10-01T08:00:00.000Z", "paid_at": "2026-10-01T08:01:10.000Z" }
   ],
   "total": 1, "limit": 50, "offset": 0, "has_more": false
+}`}</Code>
+          </Endpoint>
+
+          <Endpoint method="POST" path="/api/v1/orders" title="Buy bandwidth">
+            <p className="text-sm text-ink2 mb-4">
+              Starts a purchase and returns a hosted card-checkout link — send it to whoever pays. Nothing is charged until they complete the payment; the bandwidth is then
+              credited automatically (a <span className="font-mono text-ink">bandwidth_credited</span> webhook with source <span className="font-mono text-ink">purchase</span>, and the order turns{' '}
+              <span className="font-mono text-ink">paid</span> in <span className="font-mono text-ink">GET /orders/:id</span>). Body: <span className="font-mono text-ink">plan</span> (<span className="font-mono text-ink">micro</span>,{' '}
+              <span className="font-mono text-ink">starter</span>, <span className="font-mono text-ink">growth</span>, <span className="font-mono text-ink">scale</span> or <span className="font-mono text-ink">custom</span> with a whole-number{' '}
+              <span className="font-mono text-ink">gb</span> from 1 to 499). Card only — M-Pesa is available in the dashboard. Starting a checkout cancels the account&apos;s other unpaid orders, as the buy page does.
+              <span className="font-mono text-ink"> Idempotency-Key</span> is optional: a retry returns the same order and link. Needs the <span className="font-mono text-ink">write</span> scope.
+            </p>
+            <Code>{`curl -X POST https://globproxy.com/api/v1/orders \\
+  -H "Authorization: Bearer YOUR_KEY" \\
+  -H "Idempotency-Key: restock-2026-10-24" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "plan": "custom", "gb": 37 }'`}</Code>
+            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response (201)</p>
+            <Code>{`{
+  "order": { "id": "5d0b...", "gb_amount": 37, "amount_usd": 103.6, "status": "pending", "created_at": "2026-10-24T08:00:00.000Z" },
+  "checkout_url": "https://checkout.paystack.com/..."
+}`}</Code>
+          </Endpoint>
+
+          <Endpoint method="GET" path="/api/v1/pricing" title="Prices">
+            <p className="text-sm text-ink2 mb-4">
+              The plans <span className="font-mono text-ink">POST /orders</span> sells and the custom range, in USD. Add <span className="font-mono text-ink">?gb=37</span> to price exactly that quantity — the same calculation the checkout charges with.
+            </p>
+            <Code>{`curl "https://globproxy.com/api/v1/pricing?gb=37" \\
+  -H "Authorization: Bearer YOUR_KEY"`}</Code>
+            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <Code>{`{
+  "currency": "USD",
+  "plans": [ { "slug": "micro", "name": "Micro", "gb": 1, "price_per_gb": 4.5, "total_usd": 4.5 }, … ],
+  "custom": { "min_gb": 1, "max_gb": 499 },
+  "quote": { "gb": 37, "total_usd": 103.6, "price_per_gb": 2.8 }
 }`}</Code>
           </Endpoint>
 
@@ -972,7 +1008,11 @@ export default function ApiDocsPage() {
             ['api_key_created', 'event', 'An API key was created (or rotated). data: key_id, label, key_prefix, scopes, expires_at, plus rotated_from (the replaced key\'s id) when it came from a rotation.'],
             ['api_key_revoked', 'event', 'An API key was revoked, including an old key revoked immediately by a rotation with no grace window. data: key_id, label, key_prefix, reason — "manual" (one key revoked), "revoke_all" (the panic button) or "rotated" (plus replaced_by, the new key id).'],
             ['api_key_expiring', 'event', 'An API key expires within 7 days. data: key_id, label, key_prefix, expires_at.'],
+            ['api_key_updated', 'event', 'An API key was edited. data: key_id, label, key_prefix, changed (the fields), widened (true when the key became more powerful: a scope added, IP restrictions relaxed or the expiry extended), scopes, expires_at. The key itself is never sent.'],
+            ['webhook_endpoint_disabled', 'event', 'One of your endpoints was switched off automatically (50 failures in a row, a 410 Gone, or an address that is no longer allowed). Sent to your OTHER endpoints. data: webhook_id, url, reason.'],
+            ['reseller_low_stock', 'event', 'Your available reseller stock fell below the low-stock level you set (resellers); sent once until stock rises above it again. data: available_gb, low_stock_gb.'],
           ]} />
+          <p className="text-sm text-ink2 leading-relaxed mt-3">Subscribe to <span className="font-mono text-ink">["*"]</span> to receive every event, including ones added later (choose “All events” in the dashboard); without it a new event reaches only the endpoints that name it.</p>
           <p className="text-sm text-ink2 leading-relaxed mt-3">The same catalog, with each event's data keys, is machine-readable at <span className="font-mono text-ink">GET /api/v1/webhooks/events</span>.</p>
 
           <p className="text-xs font-mono text-muted uppercase tracking-wider mt-5 mb-1.5">Payload</p>
@@ -1019,6 +1059,44 @@ def verify(raw_body: bytes, header: str, secret: str) -> bool:
         return False
     expected = hmac.new(secret.encode(), f"{parts['t']}.".encode() + raw_body, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, parts["v1"])`}</Code>
+          <Code>{`// Go
+func verify(raw []byte, header, secret string) bool {
+	parts := map[string]string{}
+	for _, p := range strings.Split(header, ",") {
+		if kv := strings.SplitN(p, "=", 2); len(kv) == 2 {
+			parts[kv[0]] = kv[1]
+		}
+	}
+	ts, err := strconv.ParseInt(parts["t"], 10, 64)
+	if err != nil || math.Abs(float64(time.Now().Unix()-ts)) > 300 {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(parts["t"] + "."))
+	mac.Write(raw)
+	return hmac.Equal([]byte(hex.EncodeToString(mac.Sum(nil))), []byte(parts["v1"]))
+}`}</Code>
+          <Code>{`<?php // PHP
+function verify(string $raw, string $header, string $secret): bool {
+    $parts = [];
+    foreach (explode(',', $header) as $p) {
+        [$k, $v] = array_pad(explode('=', $p, 2), 2, '');
+        $parts[$k] = $v;
+    }
+    if (abs(time() - (int)($parts['t'] ?? 0)) > 300) return false;
+    $expected = hash_hmac('sha256', ($parts['t'] ?? '') . '.' . $raw, $secret);
+    return hash_equals($expected, $parts['v1'] ?? '');
+}`}</Code>
+          <Code>{`# Ruby
+require 'openssl'
+require 'rack/utils'
+
+def verify(raw_body, header, secret)
+  parts = header.split(',').map { |p| p.split('=', 2) }.to_h
+  return false if (Time.now.to_i - parts['t'].to_i).abs > 300
+  expected = OpenSSL::HMAC.hexdigest('SHA256', secret, "#{parts['t']}.#{raw_body}")
+  Rack::Utils.secure_compare(expected, parts['v1'].to_s)
+end`}</Code>
 
           <p className="text-xs font-mono text-muted uppercase tracking-wider mt-5 mb-1.5">Delivery, retries and auto-disable</p>
           <ul className="text-sm text-ink2 leading-relaxed space-y-1.5 list-disc list-inside">
@@ -1033,7 +1111,7 @@ def verify(raw_body: bytes, header: str, secret: str) -> bool:
           <p className="text-xs font-mono text-muted uppercase tracking-wider mt-5 mb-1.5">Managing webhooks over the API</p>
           <Table rows={[
             ['GET /api/v1/webhooks', 'read', 'List endpoints (the secret is never listed).'],
-            ['POST /api/v1/webhooks', 'write', 'Body: url, event_types[], description?. Returns the secret once.'],
+            ['POST /api/v1/webhooks', 'write', 'Body: url, event_types[] (or ["*"] for every event), description?. Returns the secret once.'],
             ['GET / PATCH / DELETE /api/v1/webhooks/:id', 'read / write', 'PATCH accepts url, event_types, description, enabled.'],
             ['POST /api/v1/webhooks/:id/test', 'write', 'Sends a signed "test" event now (one per 10 seconds per account).'],
             ['POST /api/v1/webhooks/:id/rotate-secret', 'write', 'Issues a new secret (returned once). Body (optional): grace_minutes 0–4320 — keep the old secret signing the -Previous header for that long. Default: the old secret stops immediately.'],
