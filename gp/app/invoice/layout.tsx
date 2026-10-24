@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation'
-import { cookies } from 'next/headers'
+import { cookies, headers } from 'next/headers'
+import { safeNextPath } from '@/lib/safeNext'
 import { createClient } from '@/lib/supabase/server'
 import { checkVerifiedSession, MFA_COOKIE_NAME } from '@/lib/mfa'
 
@@ -12,7 +13,10 @@ import { checkVerifiedSession, MFA_COOKIE_NAME } from '@/lib/mfa'
 export default async function InvoiceLayout({ children }: { children: React.ReactNode }) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect('/auth/login')
+  // Middleware forwards the requested path, so sign-in and the 2FA step return to the
+  // invoice that was asked for (they used to drop it / land on Billing).
+  const here = safeNextPath((await headers()).get('x-return-path'), '/dashboard/billing')
+  if (!user) redirect(`/auth/login?next=${encodeURIComponent(here)}`)
 
   const { data: profile, error } = await supabase
     .from('profiles')
@@ -27,7 +31,7 @@ export default async function InvoiceLayout({ children }: { children: React.Reac
 
   if (profile.mfa_enabled) {
     const token = (await cookies()).get(MFA_COOKIE_NAME)?.value
-    if (!(await checkVerifiedSession(token, user.id))) redirect('/auth/mfa-verify?next=/dashboard/billing')
+    if (!(await checkVerifiedSession(token, user.id))) redirect(`/auth/mfa-verify?next=${encodeURIComponent(here)}`)
   }
 
   return <>{children}</>

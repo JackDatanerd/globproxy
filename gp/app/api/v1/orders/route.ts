@@ -2,7 +2,7 @@ import { withApiAuth, parsePage, parseDateParam, readJsonBody, asApiRateLimited 
 import { apiError } from '@/lib/apiAuth'
 import { runIdempotent } from '@/lib/idempotency'
 import { resolveOrder, CUSTOM_MIN_GB, CUSTOM_MAX_GB } from '@/lib/plans'
-import { startCheckout, hasOpenDispute, DISPUTE_PAUSE_MESSAGE } from '@/lib/checkout'
+import { startCheckout, purchaseBlock } from '@/lib/checkout'
 import { rateLimited, rateLimitedUser } from '@/lib/rateLimit'
 import { NextResponse } from 'next/server'
 
@@ -35,7 +35,8 @@ export async function POST(req: Request) {
 
     const { data: profile } = await supabase.from('profiles').select('email').eq('id', user.id).maybeSingle()
     if (!profile?.email) return apiError(400, 'invalid_request', 'Your account has no email address. Add one in the dashboard before purchasing.')
-    if (await hasOpenDispute(supabase, user.id)) return apiError(403, 'forbidden', DISPUTE_PAUSE_MESSAGE)
+    const blocked = await purchaseBlock(supabase, user.id)
+    if (blocked) return apiError(403, 'forbidden', blocked)
 
     return runIdempotent(req, supabase, user.id, 'POST /orders', JSON.stringify([quote.slug, quote.gb]), async () => {
       try {

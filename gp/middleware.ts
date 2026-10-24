@@ -180,6 +180,8 @@ export async function middleware(request: NextRequest) {
     const headers = new Headers(request.headers)
     headers.set(cspHeaderName(), nonceCsp)
     headers.set('x-nonce', nonce)
+    // Where the person was going, for layouts that must send them through sign-in / 2FA and back.
+    headers.set('x-return-path', request.nextUrl.pathname + request.nextUrl.search)
     const res = NextResponse.next({ request: { headers } })
     res.headers.set(cspHeaderName(), nonceCsp)
     return res

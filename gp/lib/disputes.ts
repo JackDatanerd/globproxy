@@ -1,6 +1,8 @@
 import type { createAdminClient } from '@/lib/supabase/server'
 import { alertAdminPayment } from '@/lib/paymentAlerts'
 import { dispatchWebhook } from '@/lib/webhooks'
+import { placePaymentHold } from '@/lib/paymentHold'
+import { sendDisputeLostEmail } from '@/lib/billingEmails'
 
 type Admin = Awaited<ReturnType<typeof createAdminClient>>
 
@@ -70,6 +72,20 @@ export async function applyDisputeLoss(
     creditNote: result?.credit_note ?? null,
   }
 
+  // A lost chargeback puts the account on hold (cleared by an admin). Applies whether or
+  // not any GB could be taken back; a failed write is logged and never undoes the loss.
+  if (!order.is_canary) {
+    const placed = await placePaymentHold(supabase, order.user_id, {
+      reason: `Payment dispute lost (${opts.source})`, source: 'dispute_lost', orderId: order.id,
+    })
+    if (placed) {
+      await alertAdminPayment('Account put on payment hold after a lost dispute', {
+        order_id: order.id, user_id: order.user_id,
+        note: 'New purchases are blocked for this account until you clear the hold (Admin → user → Payment hold).',
+      })
+    }
+  }
+
   if (out.applied) {
     await alertAdminPayment('DISPUTE LOST — bandwidth taken back', {
       order_id: order.id, source: opts.source, refund_usd: out.refundUsd, credit_note: out.creditNote,
@@ -82,6 +98,9 @@ export async function applyDisputeLoss(
       await dispatchWebhook(order.user_id, 'bandwidth_refunded', {
         order_id: order.id, refund_usd: out.refundUsd, gb_clawed_back: out.gbClawed,
         gb_not_recoverable: out.gbNotRecoverable, fully_refunded: remaining - out.refundUsd <= 0.005,
+      })
+      await sendDisputeLostEmail(supabase, order.user_id, {
+        refundUsd: out.refundUsd, gbClawed: out.gbClawed, gbNotRecoverable: out.gbNotRecoverable, creditNote: out.creditNote,
       })
     }
   } else if (out.reason && out.reason !== 'duplicate' && out.reason !== 'nothing_to_refund') {

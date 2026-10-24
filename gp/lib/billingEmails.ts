@@ -152,3 +152,71 @@ export async function sendScaleWelcomeEmail(supabase: Admin, userId: string, p: 
       </div>`),
   })
 }
+
+// A chargeback was opened against one of the customer's payments. Nothing is taken back
+// yet (disputes can be won), but new purchases are paused until it is decided — the
+// customer is told why instead of meeting a bare error at checkout.
+export async function sendDisputeOpenedEmail(supabase: Admin, userId: string, p: { amountUsd: number; gb: number }) {
+  const c = await customerEmail(supabase, userId)
+  if (!c) return
+  await sendEmailSafe({
+    to: c.email,
+    subject: 'A payment on your GlobProxy account is under dispute',
+    html: shell('Payment dispute opened', `
+      <p style="color:#444;text-align:center;">Hi ${escapeHtml(c.first)}, your bank has disputed the payment of <strong>${money(p.amountUsd)}</strong> for ${escapeHtml(p.gb)} GB of bandwidth.</p>
+      <p style="color:#444;text-align:center;">While the dispute is open, new purchases on your account are paused. Your existing bandwidth keeps working. If you did not mean to dispute this payment, or it was a mistake, please contact your bank and write to us at support@globproxy.com — if the dispute is withdrawn, the pause lifts automatically.</p>
+      <div style="text-align:center;margin:28px 0;">
+        <a href="${appUrl()}/dashboard/billing" style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">View billing →</a>
+      </div>`),
+  })
+}
+
+// The dispute went against us: the money was taken back by the bank, so the matching
+// bandwidth is removed (never below what is already allocated) and a credit note issued.
+export async function sendDisputeLostEmail(supabase: Admin, userId: string, p: {
+  refundUsd: number; gbClawed: number; gbNotRecoverable: number; creditNote: string | null
+}) {
+  const c = await customerEmail(supabase, userId)
+  if (!c) return
+  const gbLine = p.gbClawed > 0
+    ? `<p style="color:#444;text-align:center;">${escapeHtml(Number(p.gbClawed).toFixed(2))} GB of the bandwidth from that order has been removed from your account balance.</p>`
+    : ''
+  const shortLine = p.gbNotRecoverable > 0
+    ? `<p style="color:#444;text-align:center;">${escapeHtml(Number(p.gbNotRecoverable).toFixed(2))} GB of it was already assigned to your proxy sessions and could not be taken back.</p>`
+    : ''
+  const noteLine = p.creditNote
+    ? `<p style="color:#444;text-align:center;">Credit note: <strong>${escapeHtml(p.creditNote)}</strong> — it also appears on your invoice.</p>`
+    : ''
+  await sendEmailSafe({
+    to: c.email,
+    subject: 'Your payment dispute was decided — GlobProxy',
+    html: shell('Payment dispute decided', `
+      <p style="color:#444;text-align:center;">Hi ${escapeHtml(c.first)}, the dispute on your payment was decided in your favour with your bank, and <strong>${money(p.refundUsd)}</strong> was returned to you.</p>
+      ${gbLine}${shortLine}${noteLine}
+      <p style="color:#444;text-align:center;">New purchases on this account stay on hold until our team has reviewed it. Write to support@globproxy.com and we will help.</p>
+      <div style="text-align:center;margin:28px 0;">
+        <a href="${appUrl()}/dashboard/billing" style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">View billing →</a>
+      </div>`),
+  })
+}
+
+// Auto-recharge could not top the account up. `disabled` = it has been switched off.
+export async function sendAutoRechargeProblemEmail(supabase: Admin, userId: string, p: {
+  kind: 'failed' | 'disabled' | 'cap'; amountUsd: number; gb: number; reason?: string | null; capUsd?: number
+}) {
+  const c = await customerEmail(supabase, userId)
+  if (!c) return
+  const body = p.kind === 'cap'
+    ? `<p style="color:#444;text-align:center;">Hi ${escapeHtml(c.first)}, your balance is below your auto-recharge threshold, but topping up ${escapeHtml(p.gb)} GB (${money(p.amountUsd)}) would pass the ${money(p.capUsd ?? 0)} 30-day limit you set. Nothing was charged. Raise the limit or buy bandwidth yourself from your dashboard.</p>`
+    : p.kind === 'disabled'
+      ? `<p style="color:#444;text-align:center;">Hi ${escapeHtml(c.first)}, auto-recharge has been switched off because the last few charges to your saved card did not go through${p.reason ? ` (${escapeHtml(p.reason)})` : ''}. You have not been charged. Add a new card and turn it back on from Billing.</p>`
+      : `<p style="color:#444;text-align:center;">Hi ${escapeHtml(c.first)}, we tried to top up ${escapeHtml(p.gb)} GB (${money(p.amountUsd)}) on your saved card and it did not go through${p.reason ? ` (${escapeHtml(p.reason)})` : ''}. You have not been charged. We will try again; after a few failures auto-recharge switches itself off.</p>`
+  await sendEmailSafe({
+    to: c.email,
+    subject: p.kind === 'cap' ? 'Auto-recharge paused — your limit was reached' : p.kind === 'disabled' ? 'Auto-recharge switched off — GlobProxy' : 'Auto-recharge payment didn’t go through',
+    html: shell('Auto-recharge', `${body}
+      <div style="text-align:center;margin:28px 0;">
+        <a href="${appUrl()}/dashboard/billing" style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">Open billing →</a>
+      </div>`),
+  })
+}

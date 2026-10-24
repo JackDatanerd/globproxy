@@ -10,6 +10,8 @@ import { dispatchWebhook } from '@/lib/webhooks'
 import { snapshotCommission, notifyCommissionRefunded } from '@/lib/affiliateNotify'
 import { failPendingOrder } from '@/lib/orderFailure'
 import { applyDisputeLoss } from '@/lib/disputes'
+import { captureSavedCard } from '@/lib/autoRecharge'
+import { sendDisputeOpenedEmail } from '@/lib/billingEmails'
 
 type Admin = Awaited<ReturnType<typeof createAdminClient>>
 
@@ -60,6 +62,9 @@ export async function POST(req: Request) {
       case 'charge.dispute.resolve':
         await handleDispute(supabase, event.event, event.data)
         break
+      case 'charge.dispute.remind':
+        await handleDisputeReminder(supabase, event.data)
+        break
     }
     return NextResponse.json({ received: true })
   } catch (err: any) {
@@ -96,6 +101,8 @@ async function handleChargeSuccess(supabase: Admin, data: any) {
   }
 
   if (order.payment_status === 'paid' || order.bandwidth_credited) {
+    // verify-payment / reconcile often credit first; the card still has to be saved.
+    if (!paymentMismatchReason({ amount, currency, reference }, order)) await maybeSaveCard(supabase, order, metadata, data)
     return NextResponse.json({ received: true }) // already handled
   }
 
@@ -138,6 +145,8 @@ async function handleChargeSuccess(supabase: Admin, data: any) {
     throw new Error(`activateBandwidth failed for order ${order.id}: ${result.error}`)
   }
 
+  await maybeSaveCard(supabase, order, metadata, data)
+
   // Canary bootstrap: capture a reusable authorization_code for the daily
   // canary charge (see cron 'canary'). Best-effort — the credit is committed,
   // so nothing here may turn this delivery into a failure.
@@ -158,6 +167,13 @@ async function handleChargeSuccess(supabase: Admin, data: any) {
   }
 
   return NextResponse.json({ received: true })
+}
+
+// The customer ticked "save this card for auto-recharge" at checkout (our own metadata flag,
+// returned to us signed by Paystack). Best-effort and never for the synthetic canary order.
+async function maybeSaveCard(supabase: Admin, order: { user_id: string; is_canary?: boolean | null }, metadata: any, data: any) {
+  if (String(metadata?.save_card ?? '') !== '1' || order.is_canary) return
+  await captureSavedCard(supabase, order.user_id, data)
 }
 
 // NOTE: Paystack documents no `charge.failed` event, so this handler may never
@@ -396,7 +412,7 @@ async function handleDispute(supabase: Admin, kind: string, data: any) {
   let lost: { applied: boolean; refundUsd: number; gbClawed: number; gbNotRecoverable: number } | null = null
   if (txRef) {
     const { data: cur, error: curErr } = await supabase.from('orders')
-      .select('id, user_id, amount_usd, refunded_usd, is_canary, bandwidth_credited, dispute_status, pay_currency, pay_amount')
+      .select('id, user_id, amount_usd, gb_amount, refunded_usd, is_canary, bandwidth_credited, dispute_status, pay_currency, pay_amount')
       .eq('paystack_reference', txRef).maybeSingle()
     if (curErr) throw curErr // transient — let Paystack redeliver
     if (cur) {
@@ -411,6 +427,11 @@ async function handleDispute(supabase: Admin, kind: string, data: any) {
           : { dispute_status: 'resolved', dispute_resolution: String(resolution ?? 'resolved').slice(0, 200) }
         const { error } = await supabase.from('orders').update(patch).eq('id', cur.id)
         if (error) throw error // transient — let Paystack redeliver
+        // Tell the customer why purchases just paused — once, on the transition (a
+        // redelivered create finds it already open).
+        if (opened && cur.dispute_status !== 'open' && !cur.is_canary) {
+          await sendDisputeOpenedEmail(supabase, cur.user_id, { amountUsd: Number(cur.amount_usd), gb: Number(cur.gb_amount) })
+        }
         if (accepted && cur.bandwidth_credited) {
           // A partial chargeback takes only its share: convert refund_amount (minor
           // units of the charged currency) with the order's own locked ratio.
@@ -450,5 +471,27 @@ async function handleDispute(supabase: Admin, kind: string, data: any) {
         ? (lost.applied ? `LOST — ${lost.gbClawed} GB taken back, $${lost.refundUsd.toFixed(2)} credited back on the order` : 'LOST — nothing left on the order to take back')
         : 'Not stated as lost — if it was lost, use "Dispute lost" on Admin → Orders',
     }),
+  })
+}
+
+// charge.dispute.remind: Paystack repeats it every 4 hours while a dispute is unanswered, and
+// the response window is short. The admin was told once when it opened; this nags — but at
+// most every 12 hours per order (a conditional write, so overlapping deliveries send one).
+async function handleDisputeReminder(supabase: Admin, data: any) {
+  const txRef: string = data?.transaction?.reference ?? data?.transaction_reference ?? ''
+  if (!txRef) return
+  const { data: order, error } = await supabase.from('orders')
+    .select('id, amount_usd, is_canary, dispute_status').eq('paystack_reference', txRef).maybeSingle()
+  if (error) throw error
+  if (!order || order.dispute_status !== 'open') return // answered / settled / not ours
+  const cutoff = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString()
+  const { data: stamped, error: stErr } = await supabase.from('orders')
+    .update({ dispute_reminded_at: new Date().toISOString() })
+    .eq('id', order.id).eq('dispute_status', 'open').or(`dispute_reminded_at.is.null,dispute_reminded_at.lt.${cutoff}`).select('id')
+  if (stErr) throw stErr
+  if ((stamped?.length ?? 0) === 0) return
+  await alertAdminPayment('DISPUTE STILL UNANSWERED — respond in Paystack', {
+    order_id: order.id, transaction_reference: txRef, amount_usd: Number(order.amount_usd),
+    note: 'Paystack is reminding you: the response window for this chargeback is running out. After it lapses Paystack accepts the dispute on your behalf.',
   })
 }

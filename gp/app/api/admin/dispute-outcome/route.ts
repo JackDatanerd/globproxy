@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { authorizeAdmin, readJson, isUuid, badRequest } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
 import { applyDisputeLoss } from '@/lib/disputes'
+import { placePaymentHold } from '@/lib/paymentHold'
 
 // POST { orderId, outcome: 'lost' | 'won', reason, amountUsd? } — settle a
 // chargeback by hand. 'lost' takes back the proportional bandwidth that is not
@@ -50,7 +51,20 @@ export async function POST(req: Request) {
   }
 
   if (!order.bandwidth_credited) {
-    return NextResponse.json({ error: 'This order was never credited, so there is no bandwidth to take back.' }, { status: 409 })
+    // The bank took the money back but the order never credited any bandwidth, so there is
+    // nothing to claw back. It used to refuse here, which left an open dispute that could
+    // only be closed by recording a false "won" (and the account paused for good). Record
+    // the loss, conditional on the status just read, and hold the account like any other loss.
+    const { data: updated, error } = await supabase.from('orders')
+      .update({ dispute_status: 'lost', dispute_resolution: reason })
+      .eq('id', order.id).eq('dispute_status', order.dispute_status).select('id')
+    if (error) return NextResponse.json({ error: 'Could not record the outcome. Please try again.' }, { status: 500 })
+    if (!updated || updated.length === 0) {
+      return NextResponse.json({ error: 'This dispute changed while you were working (it may have just been settled). Reload and check its current status.' }, { status: 409 })
+    }
+    if (!order.is_canary) await placePaymentHold(supabase, order.user_id, { reason: `Payment dispute lost (admin ${adminId})`, source: 'dispute_lost', orderId: order.id })
+    await logAdminAction(supabase, { adminId, action: 'order.dispute_lost', targetUserId: order.user_id, targetRef: order.id, details: { reason, uncredited: true } })
+    return NextResponse.json({ success: true, outcome: 'lost', refund_usd: 0, gb_clawed: 0, gb_not_recoverable: 0 })
   }
   try {
     const r = await applyDisputeLoss(supabase, order, { source: `admin ${adminId}`, resolution: reason, amountUsd: body.amountUsd as number | undefined })

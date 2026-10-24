@@ -2,6 +2,8 @@ import { createAdminClient } from '@/lib/supabase/server'
 import { initializeTransaction, generateReference } from '@/lib/paystack'
 import { appUrl } from '@/lib/appUrl'
 import type { OrderQuote } from '@/lib/plans'
+import { hasPaymentHold, PAYMENT_HOLD_MESSAGE } from '@/lib/paymentHold'
+import { currentTax } from '@/lib/invoiceTax'
 
 // The one place a hosted-checkout order is created. /api/checkout (the dashboard buy
 // page) and POST /api/v1/orders (API keys) both end here, so what is charged, what the
@@ -22,6 +24,15 @@ export async function hasOpenDispute(supabase: Admin, userId: string): Promise<b
 export const DISPUTE_PAUSE_MESSAGE =
   'New purchases are paused while a payment dispute on your account is open. Please contact support@globproxy.com.'
 
+// Why this account may not start a purchase right now, or null. An OPEN dispute pauses
+// buying while it is decided; an account that LOST one stays on hold until an admin
+// clears it (lib/paymentHold.ts). Every checkout entry point asks this one question.
+export async function purchaseBlock(supabase: Admin, userId: string): Promise<string | null> {
+  if (await hasOpenDispute(supabase, userId)) return DISPUTE_PAUSE_MESSAGE
+  if (await hasPaymentHold(supabase, userId)) return PAYMENT_HOLD_MESSAGE
+  return null
+}
+
 export type CheckoutStart = {
   order: { id: string; created_at: string }
   url: string
@@ -37,8 +48,13 @@ export async function startCheckout(
   user: { id: string; email: string },
   quote: OrderQuote,
   kes: { amount: number; rate: number } | null = null,
+  // saveCard: the customer ticked "save this card for auto-recharge". Card orders only;
+  // the webhook stores the reusable authorization when this order is paid.
+  opts: { saveCard?: boolean } = {},
 ): Promise<CheckoutStart> {
   const reference = generateReference()
+  const tax = currentTax() // frozen onto the order: a later rate change never rewrites its invoice
+  const saveCard = !!opts.saveCard && !kes
 
   const { data: order, error } = await supabase.from('orders').insert({
     user_id: user.id,
@@ -51,6 +67,7 @@ export async function startCheckout(
     // M-Pesa: the KES amount the customer is asked to pay, locked now, plus the rate it
     // came from. Verification expects exactly this, not the USD price.
     ...(kes ? { pay_currency: 'KES', pay_amount: kes.amount, fx_rate: kes.rate } : {}),
+    ...(tax ? { tax_rate_pct: tax.rate, tax_label: tax.label } : {}),
   }).select().single()
   if (error || !order) throw error ?? new Error('order insert returned no row')
 
@@ -66,6 +83,7 @@ export async function startCheckout(
         user_id: user.id,
         gb_amount: String(quote.gb),
         plan: quote.slug,
+        ...(saveCard ? { save_card: '1' } : {}),
         ...(kes ? { currency: 'KES', amount_kes: String(kes.amount) } : {}),
       },
       callback_url: `${appUrl()}/dashboard?payment=success&reference=${reference}`,

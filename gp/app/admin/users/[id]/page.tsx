@@ -1,3 +1,4 @@
+import AdminPaymentHold from '@/components/admin/AdminPaymentHold'
 import { suspendedReasonLabel } from '@/lib/suspendReason'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
@@ -25,6 +26,7 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
   // A deleted account stays viewable (its orders and the admin history are
   // still the record) but gets no controls.
   const deleted = !!profile.is_deleted
+  const { data: hold } = await supabase.from('payment_holds').select('reason, source, created_at').eq('user_id', id).maybeSingle()
 
   const CRED_LIMIT = 100
   const [{ data: bw }, { data: creds, count: credCount, error: credErr }, { data: audit }, { data: orders, error: ordersErr }, { data: adjustments }, { data: secEvents }, { data: apiKeys }, { data: referralStats }, { data: payouts }, sessionsRes] = await Promise.all([
@@ -113,6 +115,8 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
         </div>
       )}
 
+      {!deleted && hold && <AdminPaymentHold userId={id} hold={hold} />}
+
       <div className="mt-4 mb-8 flex items-start justify-between">
         <div>
           <h1 className="font-display font-bold text-2xl text-ink">{profile.full_name || profile.email}</h1>
@@ -127,6 +131,7 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
           <AdminUserControls user={{ id: profile.id, email: profile.email, role: profile.role, is_suspended: profile.is_suspended, api_access: profile.api_access, mfa_enabled: profile.mfa_enabled }} />
           {profile.mfa_enabled && profile.role !== 'admin' && <AdminMfaResetButton userId={id} />}
           <AdminSyncUsageButton userId={id} label="Sync this user's usage now" />
+          {!hold && <AdminPaymentHold userId={id} hold={null} />}
           {/* Mirrors delete-user's own server-side check — hidden here too
               so the only way to hit "Cannot delete an admin account" is by
               editing the request by hand, not by a normal click. */}

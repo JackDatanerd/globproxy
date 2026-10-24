@@ -6,6 +6,7 @@ import toast from 'react-hot-toast'
 import { formatGb, formatUsd } from '@/lib/format'
 import { PLANS } from '@/lib/plans'
 import BillingDetailsForm from '@/components/dashboard/BillingDetailsForm'
+import AutoRechargePanel from '@/components/dashboard/AutoRechargePanel'
 import ExportButton from '@/components/dashboard/ExportButton'
 
 export default function BillingPage() {
@@ -17,6 +18,8 @@ export default function BillingPage() {
   const [notes, setNotes] = useState<Record<string, { number: string; amount: number }[]>>({})
   const [requests, setRequests] = useState<Record<string, { status: string; note: string | null }>>({})
   const [requesting, setRequesting] = useState<string | null>(null)
+  // Set when a lost chargeback has put the account on hold (new purchases blocked).
+  const [hold, setHold] = useState(false)
 
   // PostgREST caps a single response (1000 rows by default) and reports
   // nothing when it truncates — page through so history and totals are
@@ -34,7 +37,7 @@ export default function BillingPage() {
       for (let from = 0; ; from += PAGE) {
         const { data, error } = await sb
           .from('orders')
-          .select('id, created_at, gb_amount, amount_usd, refunded_usd, payment_status, payment_method, pay_amount, pay_currency, failure_reason')
+          .select('id, created_at, gb_amount, amount_usd, refunded_usd, payment_status, payment_method, pay_amount, pay_currency, failure_reason, dispute_status, auto_recharge')
           .eq('user_id', user.id)
           .order('created_at', { ascending: false })
           .order('id', { ascending: false })
@@ -47,10 +50,12 @@ export default function BillingPage() {
 
       // Credit notes and refund requests ride along; a failed read just omits
       // them (the order history above is what matters).
-      const [{ data: refunds }, { data: reqs }] = await Promise.all([
+      const [{ data: refunds }, { data: reqs }, { data: holdRow }] = await Promise.all([
         sb.from('order_refunds').select('order_id, credit_note_number, amount_usd').order('created_at', { ascending: true }).limit(1000),
         sb.from('refund_requests').select('order_id, status, decline_note, created_at').order('created_at', { ascending: true }).limit(1000),
+        sb.from('payment_holds').select('user_id').eq('user_id', user.id).maybeSingle(),
       ])
+      setHold(!!holdRow)
       const n: Record<string, { number: string; amount: number }[]> = {}
       for (const r of refunds ?? []) (n[r.order_id] ??= []).push({ number: r.credit_note_number, amount: Number(r.amount_usd) })
       setNotes(n)
@@ -164,6 +169,15 @@ export default function BillingPage() {
         ))}
       </div>
 
+      {(hold || orders.some(o => o.dispute_status === 'open')) && (
+        <div className="mb-6 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-4 py-3 text-sm">
+          {hold
+            ? 'New purchases are on hold on this account after a payment dispute that was decided against it. Write to support@globproxy.com and we will review it.'
+            : 'Your bank has disputed a payment on this account. New purchases are paused until the dispute is decided; your existing bandwidth keeps working. Questions: support@globproxy.com.'}
+        </div>
+      )}
+
+      <AutoRechargePanel />
       <BillingDetailsForm />
 
       {/* Orders table */}
@@ -219,11 +233,15 @@ export default function BillingPage() {
                     }`}>
                       {o.payment_status}
                     </span>
+                    {o.dispute_status === 'open' && <div className="text-[10px] text-amber-700 mt-1">Payment disputed</div>}
+                    {o.auto_recharge && <div className="text-[10px] text-muted mt-1">Auto-recharge</div>}
                     {requests[o.id]?.status === 'open' && (
                       <div className="text-[10px] text-amber-700 mt-1">Refund requested</div>
                     )}
                     {requests[o.id]?.status === 'declined' && (
-                      <div className="text-[10px] text-muted mt-1 max-w-[180px]" title={requests[o.id]?.note ?? undefined}>Refund request declined</div>
+                      <div className="text-[10px] text-muted mt-1 max-w-[180px]" title={requests[o.id]?.note ?? undefined}>
+                        Refund request declined{requests[o.id]?.note ? <span className="block whitespace-normal text-ink2">{requests[o.id]?.note}</span> : null}
+                      </div>
                     )}
                     {o.payment_status === 'failed' && o.failure_reason && (
                       <div className="text-[10px] text-muted mt-1 max-w-[180px] truncate" title={o.failure_reason}>{o.failure_reason}</div>

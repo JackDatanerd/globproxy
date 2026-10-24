@@ -5,6 +5,7 @@ import { requireActiveUser } from '@/lib/apiAuth'
 import { toCsv, csvResponse } from '@/lib/csv'
 import { getPlan } from '@/lib/plans'
 import { appUrl } from '@/lib/appUrl'
+import { orderTax, taxIncluded } from '@/lib/invoiceTax'
 import { NextResponse } from 'next/server'
 
 // Reuses lib/csv.ts (added alongside the usage-history CSV export) rather
@@ -41,7 +42,7 @@ export async function GET(req: Request) {
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await supabase
       .from('orders')
-      .select('id, created_at, paid_at, invoice_number, plan_slug, gb_amount, amount_usd, refunded_usd, payment_status, paystack_reference, failure_reason, payment_method, pay_currency, pay_amount')
+      .select('id, created_at, paid_at, invoice_number, plan_slug, gb_amount, amount_usd, refunded_usd, payment_status, paystack_reference, failure_reason, payment_method, pay_currency, pay_amount, tax_rate_pct, tax_label, dispute_status')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false })
       .order('id', { ascending: false })
@@ -89,6 +90,9 @@ export async function GET(req: Request) {
     { header: 'amount_usd', value: o => Number(o.amount_usd).toFixed(2) },
     { header: 'refunded_usd', value: o => Number(o.refunded_usd ?? 0).toFixed(2) },
     { header: 'net_usd', value: o => Math.max(Number(o.amount_usd) - Number(o.refunded_usd ?? 0), 0).toFixed(2) },
+    { header: 'tax_label', value: o => orderTax(o)?.label ?? '' },
+    { header: 'tax_rate_pct', value: o => orderTax(o)?.rate ?? '' },
+    { header: 'tax_included_usd', value: o => { const t = orderTax(o); return t ? taxIncluded(Number(o.amount_usd), t.rate).toFixed(2) : '' } },
     { header: 'credit_notes', value: o => (notesByOrder.get(o.id) ?? []).join('; ') },
     { header: 'status', value: o => o.payment_status },
     { header: 'payment_method', value: o => o.payment_method ?? '' },
@@ -96,6 +100,7 @@ export async function GET(req: Request) {
     { header: 'charged_amount', value: o => o.pay_amount != null ? Number(o.pay_amount).toFixed(2) : Number(o.amount_usd).toFixed(2) },
     { header: 'refunded_charged_amount', value: o => refundedLocalByOrder.has(o.id) ? refundedLocalByOrder.get(o.id)!.toFixed(2) : '' },
     { header: 'invoice_url', value: o => o.invoice_number ? `${appUrl()}/invoice/${o.id}` : '' },
+    { header: 'dispute', value: o => o.dispute_status ?? '' },
     { header: 'failure_reason', value: o => o.failure_reason ?? '' },
     { header: 'payment_reference', value: o => o.paystack_reference ?? '' },
   ])

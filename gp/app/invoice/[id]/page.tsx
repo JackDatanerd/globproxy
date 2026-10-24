@@ -3,6 +3,7 @@ import { redirect, notFound } from 'next/navigation'
 import Link from 'next/link'
 import InvoiceActions from '@/components/InvoiceActions'
 import { getPlan } from '@/lib/plans'
+import { orderTax, taxIncluded } from '@/lib/invoiceTax'
 
 // Private financial documents — never indexed, never cached across users.
 export const metadata = { title: 'Invoice — GlobProxy', robots: { index: false, follow: false } }
@@ -50,7 +51,7 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
   // invoice.
   const { data: refunds } = await supabase
     .from('order_refunds')
-    .select('credit_note_number, amount_usd, created_at, charged_amount, charged_currency')
+    .select('credit_note_number, amount_usd, created_at, charged_amount, charged_currency, source')
     .eq('order_id', order.id)
     .order('created_at', { ascending: true })
 
@@ -114,6 +115,8 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
   const billedName = buyer.name || buyer.email || 'Customer'
   // Named plans read "Growth plan — 100 GB …"; custom quantities just the GB.
   const planName = order.plan_slug && order.plan_slug !== 'custom' ? getPlan(order.plan_slug)?.name : undefined
+  // The tax rate frozen onto the order when it was placed (none = no tax line).
+  const tax = orderTax(order)
   const revised = Number(order.billing_details_revision ?? 0) > 0 && order.billing_details_updated_at
 
   return (
@@ -199,12 +202,18 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
               <td className="pt-4 text-sm font-semibold text-ink text-right">Total (USD)</td>
               <td className="pt-4 text-sm font-semibold text-ink text-right font-mono">${Number(order.amount_usd).toFixed(2)}</td>
             </tr>
+            {tax && (
+              <tr>
+                <td className="pt-1 text-xs text-muted text-right">Includes {tax.label} at {tax.rate}%</td>
+                <td className="pt-1 text-xs text-muted text-right font-mono">${taxIncluded(Number(order.amount_usd), tax.rate).toFixed(2)}</td>
+              </tr>
+            )}
             {(refunds ?? []).length > 0 ? (
               <>
                 {refunds!.map(r => (
                   <tr key={r.credit_note_number}>
                     <td className="pt-2 text-sm text-red-500 text-right">
-                      Refund · credit note{' '}
+                      {r.source === 'dispute' ? 'Chargeback' : 'Refund'} · credit note{' '}
                       <Link href={`/invoice/${order.id}/credit/${r.credit_note_number}`} className="underline print:no-underline">{r.credit_note_number}</Link>
                       {' '}({formatDate(r.created_at)})
                     </td>

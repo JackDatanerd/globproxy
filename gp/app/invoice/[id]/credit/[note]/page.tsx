@@ -2,6 +2,7 @@ import { createClient } from '@/lib/supabase/server'
 import { redirect, notFound } from 'next/navigation'
 import Link from 'next/link'
 import InvoiceActions from '@/components/InvoiceActions'
+import { orderTax, taxIncluded } from '@/lib/invoiceTax'
 
 // Private financial document — never indexed, never cached across users.
 export const metadata = { title: 'Credit note — GlobProxy', robots: { index: false, follow: false } }
@@ -27,7 +28,7 @@ export default async function CreditNotePage({ params }: { params: Promise<{ id:
 
   const { data: order } = await supabase
     .from('orders')
-    .select('id, invoice_number, billing_details, amount_usd, refunded_usd, paid_at, created_at, payment_method, pay_currency, pay_amount, is_canary')
+    .select('id, invoice_number, billing_details, amount_usd, refunded_usd, paid_at, created_at, payment_method, pay_currency, pay_amount, is_canary, tax_rate_pct, tax_label')
     .eq('id', id)
     .eq('user_id', user.id)
     .single()
@@ -61,6 +62,7 @@ export default async function CreditNotePage({ params }: { params: Promise<{ id:
   const billedName = buyer.name || buyer.email || 'Customer'
   const amount = Number(refund.amount_usd)
   const invoiceRef = order.invoice_number ?? `#${order.id.slice(0, 8)}`
+  const tax = orderTax(order)
   const paidMpesa = order.pay_currency && order.pay_currency !== 'USD' && order.pay_amount != null
 
   return (
@@ -136,6 +138,12 @@ export default async function CreditNotePage({ params }: { params: Promise<{ id:
               <td className="pt-4 text-sm font-semibold text-ink text-right">Total credited (USD)</td>
               <td className="pt-4 text-sm font-semibold text-ink text-right font-mono">${amount.toFixed(2)}</td>
             </tr>
+            {tax && (
+              <tr>
+                <td className="pt-1 text-xs text-muted text-right">Includes {tax.label} at {tax.rate}% credited</td>
+                <td className="pt-1 text-xs text-muted text-right font-mono">${taxIncluded(amount, tax.rate).toFixed(2)}</td>
+              </tr>
+            )}
           </tfoot>
         </table>
         {paidMpesa && (

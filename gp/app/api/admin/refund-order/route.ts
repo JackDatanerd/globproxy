@@ -64,6 +64,11 @@ export async function POST(req: Request) {
     if (relErr) console.error('[refund-order] could not release the refund lock', order.id, relErr)
   }
 
+  const failBeforeSend = async (message: string) => {
+    await releaseClaim()
+    return NextResponse.json({ error: message }, { status: 409 })
+  }
+
   try {
     // Paystack refunds in the currency the customer PAID in. An M-Pesa order
     // was charged in KES, so a partial USD amount is converted at the rate
@@ -77,9 +82,23 @@ export async function POST(req: Request) {
     const untouched = Number(order.refunded_usd ?? 0) === 0
     let amountMajor: number | undefined
     if (!(full && untouched)) {
-      amountMajor = payCur === 'USD' || order.pay_amount == null
-        ? amount
-        : Math.round(Number(order.pay_amount) * (amount / Number(order.amount_usd)))
+      if (payCur === 'USD' || order.pay_amount == null) {
+        amountMajor = amount
+      } else {
+        amountMajor = Math.round(Number(order.pay_amount) * (amount / Number(order.amount_usd)))
+        // Each earlier partial refund was rounded to whole shillings on its own, so the
+        // proportional figure for the LAST bit can come out a shilling above what is
+        // actually left of the charge and Paystack refuses it. When the shillings already
+        // returned are all on record, never ask for more than what is left.
+        const { data: prior, error: priorErr } = await supabase.from('order_refunds').select('charged_amount').eq('order_id', order.id)
+        if (priorErr) throw priorErr
+        if ((prior ?? []).length > 0 && (prior ?? []).every(r => r.charged_amount != null)) {
+          const returned = (prior ?? []).reduce((s, r) => s + Number(r.charged_amount), 0)
+          const leftMajor = Math.max(Math.floor(Number(order.pay_amount) - returned), 0)
+          if (leftMajor < 1) return await failBeforeSend('The whole KES amount of this order has already been returned.')
+          amountMajor = full ? leftMajor : Math.min(amountMajor, leftMajor)
+        }
+      }
     }
     const result = await createRefund({
       reference: order.paystack_reference,

@@ -17,7 +17,9 @@ export default function PaymentVerifier() {
 
   useEffect(() => {
     const payment = params.get('payment')
-    const reference = params.get('reference')
+    // Paystack appends its own ?trxref=…&reference=… to the callback URL, which already
+    // carries a query string: keep only the reference itself, whatever got glued on.
+    const reference = params.get('reference')?.split(/[?&#\s]/)[0] || null
     if (payment !== 'success' || !reference || ran.current) return
     ran.current = true
 

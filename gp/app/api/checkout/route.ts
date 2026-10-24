@@ -1,7 +1,7 @@
 import { requireMfaVerified } from '@/lib/mfa'
 import { createAdminClient, createClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
-import { startCheckout, hasOpenDispute, DISPUTE_PAUSE_MESSAGE } from '@/lib/checkout'
+import { startCheckout, purchaseBlock } from '@/lib/checkout'
 import { resolveOrder } from '@/lib/plans'
 import { getKesQuote, kesFor } from '@/lib/fx'
 import { isCrossSiteRequest } from '@/lib/appUrl'
@@ -52,10 +52,10 @@ export async function POST(req: Request) {
     const mfaBlock = await requireMfaVerified(req, user.id)
     if (mfaBlock) return mfaBlock
 
-    // A payment dispute (chargeback) is open on this account: no new purchases.
-    if (await hasOpenDispute(supabase, user.id)) {
-      return NextResponse.json({ error: DISPUTE_PAUSE_MESSAGE }, { status: 403 })
-    }
+    // A payment dispute is open on this account, or one was lost and the account is on
+    // hold: no new purchases.
+    const blocked = await purchaseBlock(supabase, user.id)
+    if (blocked) return NextResponse.json({ error: blocked }, { status: 403 })
 
     let body: any
     try {
@@ -94,7 +94,7 @@ export async function POST(req: Request) {
     if (!user.email) {
       return NextResponse.json({ error: 'Your account has no email address. Add one before purchasing.' }, { status: 400 })
     }
-    const started = await startCheckout(supabase, { id: user.id, email: user.email }, planData, kes)
+    const started = await startCheckout(supabase, { id: user.id, email: user.email }, planData, kes, { saveCard: body?.save_card === true })
 
     return NextResponse.json({
       url: started.url,

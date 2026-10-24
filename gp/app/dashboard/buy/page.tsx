@@ -36,6 +36,7 @@ export default function BuyPage() {
   const [method, setMethod] = useState<Method>('card')
   // KES per USD from /api/checkout/options; null = M-Pesa not offered right now.
   const [kesRate, setKesRate] = useState<number | null>(null)
+  const [saveCard, setSaveCard] = useState(false)
   const [loading, setLoading] = useState(false)
   const [statusText, setStatusText] = useState<string | null>(null)
 
@@ -80,6 +81,7 @@ export default function BuyPage() {
           ...(quote.custom ? { gb: quote.gb } : {}),
           method: mpesaOn ? 'mpesa' : 'card',
           ...(mpesaOn && kesTotal ? { expected_kes: kesTotal } : {}),
+          ...(!mpesaOn && saveCard ? { save_card: true } : {}),
         }),
       })
 
@@ -283,6 +285,12 @@ export default function BuyPage() {
           : mpesaOn && kesTotal ? `Pay ${formatKes(kesTotal)} with M-Pesa →`
           : `Pay ${formatUsd(quote.total)} by card →`}
       </button>
+      {!mpesaOn && (
+        <label className="flex items-start gap-2 justify-center text-xs text-ink2 mt-3 cursor-pointer">
+          <input type="checkbox" checked={saveCard} onChange={e => setSaveCard(e.target.checked)} className="mt-0.5" />
+          <span>Save this card for auto-recharge. Nothing extra is charged now; you choose the rule in Billing and can remove the card any time.</span>
+        </label>
+      )}
       {mpesaOn && (
         <p className="text-center text-xs text-muted mt-3">You&apos;ll get an M-Pesa prompt on your phone — enter your PIN to confirm. Keep this page open until it completes.</p>
       )}

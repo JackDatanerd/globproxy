@@ -169,6 +169,9 @@ export async function purgeAccountSecrets(supabase: AdminSupabase, userId: strin
   } catch (e: any) {
     check('auth_user_metadata', { message: String(e?.message ?? e) })
   }
+  // A saved card is a standing authority to charge — it must not outlive the account.
+  check('auto_recharge', (await supabase.from('auto_recharge').delete().eq('user_id', userId)).error)
+  check('saved_cards', (await supabase.from('saved_cards').delete().eq('user_id', userId)).error)
   check('webhook_endpoints', (await supabase.from('webhook_endpoints').delete().eq('user_id', userId)).error)
   // The API request log holds source IPs; the profile row is kept (scrubbed), so
   // the FK cascade never fires — clear it explicitly (migration 0054).

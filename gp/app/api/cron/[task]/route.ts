@@ -17,6 +17,7 @@ import { fetchAllRows } from '@/lib/dbPaging'
 import { findReportedError, recordCronRun, checkCronFreshness, checkStockWatchdog, checkUsageSyncFreshness, claimCronLock, releaseCronLock } from '@/lib/cronHealth'
 import { runInviteNotices, runResellerMaintenance } from '@/lib/resellerCron'
 import { runAccountDeletions } from '@/lib/accountDeletionCron'
+import { runAutoRecharge } from '@/lib/autoRecharge'
 import { NextResponse } from 'next/server'
 
 // Secured with the CRON_SECRET Worker secret (pushed by .github/workflows/deploy.yml).
@@ -813,7 +814,7 @@ export async function POST(req: Request, context: { params: Promise<{ task: stri
   // answers 400 on every tick and silently never runs ('invites' and 'resellers' were
   // scheduled and handled in the switch below but missing from this list).
   // scripts/check-cron-sync.mjs fails the build when the two drift.
-  const KNOWN = ['stock', 'usage', 'alerts', 'summary', 'cleanup', 'canary', 'reconcile', 'security', 'provision', 'webhooks', 'benchmark', 'invites', 'resellers', 'deletions']
+  const KNOWN = ['stock', 'usage', 'alerts', 'summary', 'cleanup', 'canary', 'reconcile', 'security', 'provision', 'webhooks', 'benchmark', 'invites', 'resellers', 'deletions', 'recharge']
   if (!KNOWN.includes(task)) return NextResponse.json({ error: `Unknown task: ${task}` }, { status: 400 })
 
   // One copy of a task at a time (migration 0056). A skipped run reports ok
@@ -847,6 +848,7 @@ export async function POST(req: Request, context: { params: Promise<{ task: stri
       case 'invites':   result = await runInviteNotices();    break
       case 'resellers': result = await runResellerMaintenance(); break
       case 'deletions': result = await runAccountDeletions(); break
+      case 'recharge':  result = await runAutoRecharge();     break
       default: return NextResponse.json({ error: `Unknown task: ${task}` }, { status: 400 })
     }
     // A task that catches its own failure reports `{ error }` inside a 200; the
