@@ -1,4 +1,4 @@
-import { getSubUserUsage } from '@/lib/geonode'
+import { getSubUserUsage } from '@/lib/credentials'
 import { recordUsageDeltas } from '@/lib/usageLedger'
 import type { createAdminClient } from '@/lib/supabase/server'
 

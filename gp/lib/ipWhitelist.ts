@@ -1,4 +1,10 @@
-import { GeonodeApiError } from '@/lib/geonode'
+import { GeonodeApiError, listWhitelistedIps, bulkAddWhitelistedIps, subUserExists } from '@/lib/geonode'
+
+// Neutral names for modules that must not mention the supplier (scripts/check-supplier-leak.mjs).
+export { listWhitelistedIps, bulkAddWhitelistedIps, subUserExists }
+
+// True for a provider "not found" answer (duck-typed so callers need not import the provider module).
+export const isUpstreamNotFound = (e: unknown): boolean => (e as any)?.status === 404 && typeof (e as any)?.body !== 'undefined'
 import { NextResponse } from 'next/server'
 import { dispatchWebhook } from '@/lib/webhooks'
 

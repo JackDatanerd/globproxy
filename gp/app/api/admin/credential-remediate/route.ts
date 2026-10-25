@@ -1,7 +1,6 @@
 import { authorizeAdmin, readJson, badRequest, isUuid } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
-import { subUserExists } from '@/lib/geonode'
-import { providerConfigured } from '@/lib/credentials'
+import { providerConfigured, subUserExists } from '@/lib/credentials'
 import { dispatchWebhook } from '@/lib/webhooks'
 import { NextResponse } from 'next/server'
 

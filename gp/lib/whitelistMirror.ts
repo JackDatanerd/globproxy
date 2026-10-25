@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server'
 import type { createAdminClient } from '@/lib/supabase/server'
 import {
-  listWhitelistedIps, bulkAddWhitelistedIps, subUserExists, GeonodeApiError, type WhitelistedIp,
-} from '@/lib/geonode'
-import { MAX_BULK_ITEMS, whitelistErrorResponse } from '@/lib/ipWhitelist'
+  listWhitelistedIps, bulkAddWhitelistedIps, subUserExists, isUpstreamNotFound, MAX_BULK_ITEMS, whitelistErrorResponse,
+} from '@/lib/ipWhitelist'
+
+type WhitelistedIp = { ip: string; description?: string }
 
 type Admin = Awaited<ReturnType<typeof createAdminClient>>
 
@@ -69,7 +70,7 @@ export async function backfillWhitelistMirrors(admin: Admin, limit = 15): Promis
       mirrored++
     } catch (e) {
       // 404 = sub-user missing upstream: the usage sync's missing-sub-user handling owns that.
-      if (!(e instanceof GeonodeApiError && e.status === 404)) console.error('[whitelist-mirror] backfill failed', r.id, e)
+      if (!isUpstreamNotFound(e)) console.error('[whitelist-mirror] backfill failed', r.id, e)
     }
   }
   return { checked: rows?.length ?? 0, mirrored }
@@ -78,7 +79,7 @@ export async function backfillWhitelistMirrors(admin: Admin, limit = 15): Promis
 // A supplier 404 on a whitelist call can mean "that IP isn't listed" OR "this session's
 // proxy no longer exists upstream". The second used to be reported as the first. Ask once.
 export async function whitelistFailure(e: unknown, upstreamSubUserId: string): Promise<NextResponse> {
-  if (upstreamSubUserId && e instanceof GeonodeApiError && e.status === 404) {
+  if (upstreamSubUserId && isUpstreamNotFound(e)) {
     const exists = await subUserExists(upstreamSubUserId).catch(() => true)
     if (!exists) {
       console.error('[whitelist] sub-user missing upstream', upstreamSubUserId)

@@ -2,7 +2,7 @@ import { createAdminClient } from '@/lib/supabase/server'
 import { leaksSupplier } from '@/lib/supplierGuard'
 import {
   createSubUser, createOrAdoptSubUser, memoizedSubUserLookup, newUpstreamIdentity, deleteSubUser, getSubUserUsage, updateSubUserTrafficLimit, updateSubUserPassword,
-  classifyUpstreamError, GeonodeApiError, type UpstreamReason, type UpstreamIdentity, PROXY_HOST,
+  classifyUpstreamError, GeonodeApiError, subUserExists, type UpstreamReason, type UpstreamIdentity, PROXY_HOST,
 } from '@/lib/geonode'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { appUrl } from '@/lib/appUrl'
@@ -24,6 +24,9 @@ import { parseLabel, parseTargeting, parseSessionOptions, parseFiniteNumber, MAX
 // revokes that). Everything here uses the admin client; callers have
 // already authenticated and passed the user's id.
 type Admin = Awaited<ReturnType<typeof createAdminClient>>
+
+// Neutral re-exports for modules that must not mention the supplier (scripts/check-supplier-leak.mjs).
+export { subUserExists, getSubUserUsage }
 
 export type CredErrorCode =
   | 'invalid_request' | 'not_found' | 'forbidden' | 'conflict'
