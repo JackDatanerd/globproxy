@@ -3,7 +3,7 @@ import { useState, useMemo, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { buildProxyUsername, getProxyPort, deriveSessionId } from '@/lib/proxyEndpoint'
-import { apiJson, copyText, toastApiError } from '@/lib/clientApi'
+import { apiJson, apiFetch, copyText, saveTextFile, toastApiError } from '@/lib/clientApi'
 import { formatGb, formatPct, formatDurationMinutes } from '@/lib/format'
 import SessionManager from '@/components/dashboard/SessionManager'
 import IpWhitelist from '@/components/dashboard/IpWhitelist'
@@ -102,7 +102,12 @@ export default function ProxyCard({ cred, index, availableGb, expanded, onToggle
   const baseUser = cred.username || '—'
   const pass = cred.password || '—'
   const gbAllocated = cred.gb_allocated || 0
-  const gbUsed = cred.gb_used || 0
+  // "Refresh usage" reads the live figure; it replaces the synced one until the page
+  // hands down fresher data (router.refresh / a new sync).
+  const [live, setLive] = useState<number | null>(null)
+  const [refreshingUsage, setRefreshingUsage] = useState(false)
+  useEffect(() => { setLive(null) }, [cred.gb_used])
+  const gbUsed = live ?? (cred.gb_used || 0)
   const pct = gbAllocated > 0 ? (gbUsed / gbAllocated) * 100 : 0
 
   // Re-evaluated on a timer while inside the 10-minute window: computed once
@@ -186,19 +191,9 @@ export default function ProxyCard({ cred, index, availableGb, expanded, onToggle
 
   function downloadTxt() {
     const name = cred.label || `proxy-session-${index + 1}`
-    const blob = new Blob([endpoints.join('\n')], { type: 'text/plain' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
     // Labels are free text — keep the download name filesystem-safe.
     const safe = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'proxy-session'
-    a.href = url; a.download = `${safe}.txt`
-    // Attached while clicked and revoked later: revoking in the same tick can
-    // cancel the download in Safari/Firefox, and a detached anchor's click is
-    // ignored by some of them.
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    setTimeout(() => URL.revokeObjectURL(url), 10_000)
+    saveTextFile(endpoints.join('\n') + '\n', `${safe}.txt`)
     toast.success('Downloaded')
   }
 
@@ -257,6 +252,21 @@ export default function ProxyCard({ cred, index, availableGb, expanded, onToggle
       toastApiError(err)
     } finally {
       setTopupLoading(false)
+    }
+  }
+
+  async function handleRefreshUsage() {
+    if (refreshingUsage) return
+    setRefreshingUsage(true)
+    try {
+      const d = await apiFetch<{ gb_used: number; refreshed: boolean }>(`/api/dashboard/proxies/${cred.id}/usage`)
+      if (Number.isFinite(Number(d.gb_used))) setLive(Number(d.gb_used))
+      toast.success(d.refreshed ? 'Usage refreshed' : 'Already up to date — checked moments ago')
+      if (d.refreshed) router.refresh()
+    } catch (err: any) {
+      toastApiError(err, 'Couldn\u2019t refresh usage right now')
+    } finally {
+      setRefreshingUsage(false)
     }
   }
 
@@ -676,34 +686,35 @@ curl_close($ch);`
                   tabs[next].focus(); tabs[next].click()
                 }}
                 className="flex items-center gap-5 border-b border-border mb-4 overflow-x-auto">
-                <button role="tab" aria-selected={tab === 'cred'} tabIndex={tab === 'cred' ? 0 : -1} onClick={() => setTab('cred')}
+                <button role="tab" id={`${cred.id}-tab-cred`} aria-controls={`${cred.id}-panel`} aria-selected={tab === 'cred'} tabIndex={tab === 'cred' ? 0 : -1} onClick={() => setTab('cred')}
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'cred' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
                   Credentials
                 </button>
-                <button role="tab" aria-selected={tab === 'bandwidth'} tabIndex={tab === 'bandwidth' ? 0 : -1} onClick={() => setTab('bandwidth')}
+                <button role="tab" id={`${cred.id}-tab-bandwidth`} aria-controls={`${cred.id}-panel`} aria-selected={tab === 'bandwidth'} tabIndex={tab === 'bandwidth' ? 0 : -1} onClick={() => setTab('bandwidth')}
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'bandwidth' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
                   Bandwidth{pct >= WARN_PCT && <span className={clsx('ml-1', pct >= URGENT_PCT ? 'text-red-400' : 'text-amber-400')}>●</span>}
                 </button>
-                <button role="tab" aria-selected={tab === 'endpoints'} tabIndex={tab === 'endpoints' ? 0 : -1} onClick={() => setTab('endpoints')}
+                <button role="tab" id={`${cred.id}-tab-endpoints`} aria-controls={`${cred.id}-panel`} aria-selected={tab === 'endpoints'} tabIndex={tab === 'endpoints' ? 0 : -1} onClick={() => setTab('endpoints')}
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'endpoints' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
                   {isSticky ? 'Sticky sessions' : 'Endpoint'}
                 </button>
-                <button role="tab" aria-selected={tab === 'whitelist'} tabIndex={tab === 'whitelist' ? 0 : -1} onClick={() => setTab('whitelist')}
+                <button role="tab" id={`${cred.id}-tab-whitelist`} aria-controls={`${cred.id}-panel`} aria-selected={tab === 'whitelist'} tabIndex={tab === 'whitelist' ? 0 : -1} onClick={() => setTab('whitelist')}
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'whitelist' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
                   IP whitelist
                 </button>
                 {canEdit && (
-                  <button role="tab" aria-selected={tab === 'edit'} tabIndex={tab === 'edit' ? 0 : -1} onClick={() => setTab('edit')}
+                  <button role="tab" id={`${cred.id}-tab-edit`} aria-controls={`${cred.id}-panel`} aria-selected={tab === 'edit'} tabIndex={tab === 'edit' ? 0 : -1} onClick={() => setTab('edit')}
                     className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'edit' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
                     Edit
                   </button>
                 )}
-                <button role="tab" aria-selected={tab === 'code'} tabIndex={tab === 'code' ? 0 : -1} onClick={() => setTab('code')}
+                <button role="tab" id={`${cred.id}-tab-code`} aria-controls={`${cred.id}-panel`} aria-selected={tab === 'code'} tabIndex={tab === 'code' ? 0 : -1} onClick={() => setTab('code')}
                   className={clsx('text-xs font-mono pb-2 -mb-px border-b-2 transition-colors', tab === 'code' ? 'text-ink border-accent font-medium' : 'text-muted border-transparent hover:text-ink')}>
                   Code snippets
                 </button>
               </div>
 
+              <div role="tabpanel" id={`${cred.id}-panel`} aria-labelledby={`${cred.id}-tab-${tab}`}>
               {tab === 'cred' && (
                 <div className="bg-surface border border-border rounded-lg overflow-hidden mb-2">
                   {[
@@ -753,6 +764,13 @@ curl_close($ch);`
 
               {tab === 'bandwidth' && (
                 <div className="mb-2">
+                  <div className="flex items-center justify-between gap-3 mb-2">
+                    <span className="text-[10.5px] text-muted">Usage updates about every 5 minutes. Need the exact figure now?</span>
+                    <button type="button" onClick={handleRefreshUsage} disabled={refreshingUsage}
+                      className="text-[11px] font-mono px-3 py-1.5 rounded-lg border border-border text-ink2 hover:border-accent hover:text-accent transition-colors disabled:opacity-50 flex-shrink-0">
+                      {refreshingUsage ? 'Refreshing…' : 'Refresh usage'}
+                    </button>
+                  </div>
                   {!canDelete ? (
                     <div className="text-xs text-muted bg-surface border border-border rounded-lg px-4 py-3 font-mono">
                       ⚠ This session was allocated by your reseller. Bandwidth top-ups and auto-allocate aren't available here — contact them directly.
@@ -977,6 +995,7 @@ curl_close($ch);`
                   ))}
                 </div>
               )}
+              </div>
             </>
           )}
 
@@ -986,6 +1005,11 @@ curl_close($ch);`
               {!canDelete ? '⚠ Allocated by reseller — cannot delete' : 'Deleting returns this session\u2019s unused GB to your account — GB already used isn\u2019t refunded'}
             </div>
             <div className="flex items-center flex-shrink-0">
+            <Link href={`/dashboard/proxies/new?from=${cred.id}`}
+              title="Open the new-session form pre-filled with this session's location, protocol and type"
+              className="text-xs font-mono px-3 py-1.5 rounded-lg border border-border text-muted hover:border-accent hover:text-accent transition-all mr-2">
+              Duplicate
+            </Link>
             <ReportIssueButton variant="link" context={`Session “${cred.label || `#${index + 1}`}” (${cred.id})`} />
             {canDelete && cred.status === 'active' && (
               <button onClick={() => togglePause(false)} disabled={pausing || deleting}

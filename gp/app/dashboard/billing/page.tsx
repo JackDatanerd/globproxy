@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
@@ -22,6 +22,11 @@ export default function BillingPage() {
   const [refundReason, setRefundReason] = useState('')
   // Set when a lost chargeback has put the account on hold (new purchases blocked).
   const [hold, setHold] = useState(false)
+  // History controls: accounts with years of orders (or auto-recharge) otherwise get one
+  // endless table. Filtering and paging are display-only; the totals above use every order.
+  const [statusFilter, setStatusFilter] = useState<'all' | 'paid' | 'pending' | 'failed' | 'cancelled' | 'refunded'>('all')
+  const [visible, setVisible] = useState(25)
+  const dialogRef = useRef<HTMLDivElement>(null)
 
   // PostgREST caps a single response (1000 rows by default) and reports
   // nothing when it truncates — page through so history and totals are
@@ -75,6 +80,22 @@ export default function BillingPage() {
 
   useEffect(() => { load() }, [])
 
+  // Refund dialog: Escape closes it (unless a request is in flight) and Tab stays inside it.
+  useEffect(() => {
+    if (!refundFor) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !requesting) { setRefundFor(null); return }
+      if (e.key !== 'Tab') return
+      const f = dialogRef.current?.querySelectorAll<HTMLElement>('textarea, button:not([disabled])')
+      if (!f || f.length === 0) return
+      const first = f[0], last = f[f.length - 1]
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [refundFor, requesting])
+
   async function cancelOrder(orderId: string) {
     setCancelling(orderId)
     const sb = createClient()
@@ -126,6 +147,8 @@ export default function BillingPage() {
     setRequesting(null)
   }
 
+  const filteredOrders = statusFilter === 'all' ? orders : orders.filter(o => o.payment_status === statusFilter)
+  const shownOrders = filteredOrders.slice(0, visible)
   const paid = orders.filter(o => o.payment_status === 'paid')
   // Net of partial refunds; fully refunded orders have their own status and aren't in `paid`.
   const totalSpent = paid.reduce((s, o) => s + Number(o.amount_usd) - Number(o.refunded_usd ?? 0), 0)
@@ -178,7 +201,7 @@ export default function BillingPage() {
 
       {refundFor && (
         <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-center p-4" onClick={() => { if (!requesting) setRefundFor(null) }}>
-          <div role="dialog" aria-modal="true" aria-label="Request a refund" className="bg-white border border-border rounded-xl p-5 w-full max-w-md" onClick={e => e.stopPropagation()}>
+          <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Request a refund" className="bg-white border border-border rounded-xl p-5 w-full max-w-md" onClick={e => e.stopPropagation()}>
             <div className="text-sm font-medium text-ink mb-1">Request a refund of {formatUsd(Number(refundFor.amount_usd) - Number(refundFor.refunded_usd ?? 0))}</div>
             <div className="text-xs text-muted mb-3">For the {refundFor.gb_amount} GB order. Refunds are available within 72 hours of purchase if no bandwidth has been used (see the refund policy). Why are you asking for a refund?</div>
             <textarea autoFocus value={refundReason} onChange={e => setRefundReason(e.target.value)} rows={4} maxLength={500}
@@ -197,8 +220,22 @@ export default function BillingPage() {
 
       {/* Orders table */}
       <div className="bg-white border border-border rounded-xl overflow-hidden">
-        <div className="px-6 py-4 border-b border-border">
+        <div className="px-6 py-4 border-b border-border flex items-center justify-between gap-3 flex-wrap">
           <h2 className="font-display font-bold text-base text-ink">Order history</h2>
+          {!loading && !loadError && orders.length > 0 && (
+            <div className="flex gap-1.5 flex-wrap" role="group" aria-label="Filter orders by status">
+              {(['all', 'paid', 'pending', 'failed', 'cancelled', 'refunded'] as const).map(st => {
+                const n = st === 'all' ? orders.length : orders.filter(o => o.payment_status === st).length
+                if (st !== 'all' && n === 0 && statusFilter !== st) return null
+                return (
+                  <button key={st} onClick={() => { setStatusFilter(st); setVisible(25) }} aria-pressed={statusFilter === st}
+                    className={`text-[11px] font-mono px-3 py-1 rounded-full border transition-colors ${statusFilter === st ? 'bg-ink text-white border-ink' : 'bg-white text-ink2 border-border hover:border-ink2/40'}`}>
+                    {st === 'all' ? 'All' : st[0].toUpperCase() + st.slice(1)} <span className="opacity-60">({n})</span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
         </div>
 
         {loading ? (
@@ -219,8 +256,8 @@ export default function BillingPage() {
               </tr>
             </thead>
             <tbody>
-              {orders.map((o, i) => (
-                <tr key={o.id} className={`${i < orders.length - 1 ? 'border-b border-border' : ''} hover:bg-surface`}>
+              {shownOrders.map((o, i) => (
+                <tr key={o.id} className={`${i < shownOrders.length - 1 ? 'border-b border-border' : ''} hover:bg-surface`}>
                   <td className="px-6 py-4 text-xs font-mono text-muted">
                     {new Date(o.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
                   </td>
@@ -314,6 +351,16 @@ export default function BillingPage() {
               ))}
             </tbody>
           </table>
+          {filteredOrders.length === 0 && (
+            <div className="text-center py-10 text-sm text-muted font-light">No {statusFilter} orders.</div>
+          )}
+          {filteredOrders.length > shownOrders.length && (
+            <div className="px-6 py-4 border-t border-border text-center">
+              <button onClick={() => setVisible(v => v + 25)} className="text-sm text-accent hover:underline">
+                Show more ({filteredOrders.length - shownOrders.length} older)
+              </button>
+            </div>
+          )}
           </div>
         ) : (
           <div className="text-center py-14">

@@ -121,6 +121,8 @@ export default function IpWhitelist({ credentialId }: Props) {
     const items = parseBulkLines(bulkText)
     if (items.length === 0) { toast.error('Paste at least one IP'); return }
     if (items.length > 150) { toast.error('Max 150 IPs per bulk request'); return }
+    const tooLong = items.findIndex(i => i.description.length > 100)
+    if (tooLong !== -1) { toast.error(`Line ${tooLong + 1}: the description is over 100 characters — shorten it and try again.`); return }
     const before = ips?.length ?? 0
     setBulkAdding(true)
     try {

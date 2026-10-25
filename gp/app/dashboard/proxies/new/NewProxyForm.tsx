@@ -26,25 +26,39 @@ const STICKY_DURATIONS = [
 
 type DefaultAutoTopup = { enabled: boolean; threshold_gb: number | null; amount_gb: number | null }
 
-export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availableGb: number; defaultAutoTopup?: DefaultAutoTopup }) {
+// Settings carried over from an existing session ("Duplicate" on a session card).
+export type NewSessionInitial = {
+  label?: string | null; country?: string | null; state?: string | null; city?: string | null; asn?: string | null
+  protocol?: string | null; session_type?: string | null; sticky_duration?: number | null; gb_allocated?: number | null
+}
+
+// How many identical sessions one submit can create. Each is its own allocation + endpoint.
+const COPY_OPTIONS = [1, 2, 3, 5, 10, 20]
+
+export default function NewProxyForm({ availableGb, defaultAutoTopup, initial, duplicateOf }: { availableGb: number; defaultAutoTopup?: DefaultAutoTopup; initial?: NewSessionInitial | null; duplicateOf?: string | null }) {
   const router = useRouter()
   const [loading, setLoading] = useState(false)
-  const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [advancedOpen, setAdvancedOpen] = useState(!!initial?.asn)
+  const [copies, setCopies] = useState(1)
   // Seeds the auto-allocate fields from the account-level default (set on
   // the Settings page) so it doesn't have to be re-entered on every new
   // session — still fully editable below before submitting, and a plain
   // 1/5 fallback when there's no default configured yet.
   const [form, setForm] = useState({
-    label:           '',
-    country:         '',
-    state:           '',
-    city:            '',
-    asn:             '',
-    protocol:        'http' as 'http' | 'socks5',
-    session_type:    'rotating' as 'rotating' | 'sticky',
-    sticky_duration: 10,
+    label:           initial?.label ? `${initial.label} (copy)`.slice(0, 100) : '',
+    country:         initial?.country ?? '',
+    state:           initial?.state ?? '',
+    city:            initial?.city ?? '',
+    asn:             initial?.asn ?? '',
+    protocol:        (initial?.protocol === 'socks5' ? 'socks5' : 'http') as 'http' | 'socks5',
+    session_type:    (initial?.session_type === 'sticky' ? 'sticky' : 'rotating') as 'rotating' | 'sticky',
+    sticky_duration: Number(initial?.sticky_duration) >= 1 && Number(initial?.sticky_duration) <= 1440 ? Number(initial?.sticky_duration) : 10,
     // Never start over budget: an account with under 1 GB free used to open the form with the red "exceeds your balance" warning.
-    gb_allocated:    availableGb > 0 && availableGb < 1 ? (Math.floor(availableGb * 100) / 100 || availableGb) : 1,
+    gb_allocated:    (() => {
+      const want = Number(initial?.gb_allocated) > 0 ? Number(initial?.gb_allocated) : 1
+      const cap = Math.floor(availableGb * 100) / 100 || availableGb
+      return Math.min(want, cap)
+    })(),
     auto_topup_enabled:      defaultAutoTopup?.enabled ?? false,
     auto_topup_threshold_gb: defaultAutoTopup?.threshold_gb ?? 1,
     auto_topup_amount_gb:    defaultAutoTopup?.amount_gb ?? 5,
@@ -78,7 +92,8 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
   // One Idempotency-Key per distinct request: a retry of the SAME submit (timeout,
   // dropped connection) replays the original answer instead of creating a second
   // session; editing the form first mints a new key.
-  const idem = useRef<{ sig: string; key: string } | null>(null)
+  const idem = useRef<Map<string, string>>(new Map())
+  const countryReq = useRef('')
 
   useEffect(() => {
     fetchCountryList()
@@ -86,11 +101,24 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
       .catch(e => setCountryListError(e.message))
   }, [])
 
+  // A duplicated session arrives with its country/region already chosen: load that
+  // country's regions without resetting the pre-filled region and city.
+  useEffect(() => {
+    const c = initial?.country
+    if (!c) return
+    countryReq.current = c
+    setGeoLoading(true)
+    fetchCountryDetail(c)
+      .then(d => { if (countryReq.current === c) setCountryDetail(d) })
+      .catch(e => { if (countryReq.current === c) setGeoError(e.message) })
+      .finally(() => { if (countryReq.current === c) setGeoLoading(false) })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // Latest country the customer picked. fetchCountryDetail has no
   // cancellation, so switching A → B quickly could let A's late response
   // overwrite B's regions/cities (and the form would then accept a region that
   // belongs to the wrong country). Only the response for the current pick counts.
-  const countryReq = useRef('')
   function setCountry(v: string) {
     countryReq.current = v
     // asn too: an ISP belongs to one country, and its field is hidden while "Advanced" is collapsed.
@@ -133,9 +161,10 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
 
   // Tolerance of half a cent of a GB: "use all" and typed values go through
   // floats, and a balance like 4.999999999 must not read as over budget.
-  const overBudget = form.gb_allocated > availableGb + 0.005
-  const gbLeftAfter = Math.max(0, availableGb - (form.gb_allocated || 0))
-  const gbMeterPct = availableGb > 0 ? Math.min(100, ((form.gb_allocated || 0) / availableGb) * 100) : 0
+  const totalGb = (form.gb_allocated || 0) * copies
+  const overBudget = totalGb > availableGb + 0.005
+  const gbLeftAfter = Math.max(0, availableGb - totalGb)
+  const gbMeterPct = availableGb > 0 ? Math.min(100, (totalGb / availableGb) * 100) : 0
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -144,7 +173,9 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
       return
     }
     if (overBudget) {
-      toast.error(`You only have ${formatGb(availableGb)} GB available`)
+      toast.error(copies > 1
+        ? `${copies} sessions × ${formatGb(form.gb_allocated)} GB is ${formatGb(totalGb)} GB — you only have ${formatGb(availableGb)} GB available`
+        : `You only have ${formatGb(availableGb)} GB available`)
       return
     }
     const targetingError = validateTargeting(form)
@@ -167,46 +198,72 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
       }
     }
     setLoading(true)
+    let created = 0, queued = 0
     try {
       // Only the fields the server uses. sticky_duration is meaningless on a
       // rotating session (it used to be sent — and stored — anyway), and
       // endpoint_count is always 1: a rotating username carries no session id,
-      // so extra "endpoints" were identical strings.
-      const payload = {
-        label: form.label.trim() || undefined,
-        country: form.country || undefined,
-        state: form.state || undefined,
-        city: form.city || undefined,
-        asn: form.asn || undefined,
-        protocol: form.protocol,
-        session_type: form.session_type,
-        ...(form.session_type === 'sticky' ? { sticky_duration: form.sticky_duration } : {}),
-        endpoint_count: 1,
-        gb_allocated: form.gb_allocated,
-        auto_topup_enabled: form.auto_topup_enabled,
-        auto_topup_threshold_gb: form.auto_topup_enabled ? form.auto_topup_threshold_gb : undefined,
-        auto_topup_amount_gb: form.auto_topup_enabled ? form.auto_topup_amount_gb : undefined,
+      // so extra "endpoints" were identical strings. Several sessions are
+      // created one request each, so every one has its own allocation, credentials
+      // and Idempotency-Key (a retry of the same submit replays instead of duplicating).
+      const base = form.label.trim()
+      for (let i = 0; i < copies; i++) {
+        const payload = {
+          label: copies > 1 ? `${base || 'Session'} #${i + 1}`.slice(0, 100) : (base || undefined),
+          country: form.country || undefined,
+          state: form.state || undefined,
+          city: form.city || undefined,
+          asn: form.asn || undefined,
+          protocol: form.protocol,
+          session_type: form.session_type,
+          ...(form.session_type === 'sticky' ? { sticky_duration: form.sticky_duration } : {}),
+          endpoint_count: 1,
+          gb_allocated: form.gb_allocated,
+          auto_topup_enabled: form.auto_topup_enabled,
+          auto_topup_threshold_gb: form.auto_topup_enabled ? form.auto_topup_threshold_gb : undefined,
+          auto_topup_amount_gb: form.auto_topup_enabled ? form.auto_topup_amount_gb : undefined,
+        }
+        const sig = JSON.stringify(payload)
+        let key = idem.current.get(sig)
+        if (!key) { key = crypto.randomUUID(); idem.current.set(sig, key) }
+        let data: any
+        try {
+          data = await apiFetch('/api/dashboard/proxies', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
+            body: sig,
+          })
+        } catch (err: any) {
+          if (created > 0) {
+            // The 2FA step-up is already redirecting to verification; don't race it.
+            if (err?.code === 'mfa_required') return
+            // Some were made: say so, and go to the list instead of leaving the form
+            // looking untouched (a resubmit would create the first ones again).
+            toast.error(`Created ${created} of ${copies}, then stopped: ${err?.message ?? 'request failed'}`, { duration: 8000 })
+            router.push('/dashboard/proxies'); router.refresh()
+            return
+          }
+          throw err
+        }
+        created++
+        if (data.status === 'pending') queued++
+        if (data.warning && copies === 1) toast(data.warning, { icon: '⚠️', duration: 6000 })
       }
-      const sig = JSON.stringify(payload)
-      if (!idem.current || idem.current.sig !== sig) idem.current = { sig, key: crypto.randomUUID() }
-      const data = await apiFetch('/api/dashboard/proxies', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idem.current.key },
-        body: sig,
-      })
-      if (data.status === 'pending') toast('Session queued — the network is adding capacity. It activates on its own; your GB is reserved.', { icon: '⏳', duration: 7000 })
-      else toast.success('Proxy session created!')
-      if (data.warning) toast(data.warning, { icon: '⚠️', duration: 6000 })
+      if (queued > 0) toast(queued === copies && copies === 1
+        ? 'Session queued — the network is adding capacity. It activates on its own; your GB is reserved.'
+        : `${queued} of ${created} sessions queued — the network is adding capacity. They activate on their own; your GB is reserved.`, { icon: '⏳', duration: 7000 })
+      else toast.success(created === 1 ? 'Proxy session created!' : `${created} proxy sessions created!`)
 
       // Optional, non-fatal: update the account-level default so future
       // sessions pre-fill with these same numbers. Failing this shouldn't
       // block navigating away from a session that was already created
       // successfully — it's just a convenience setting for next time.
-      if (saveAsDefault) {
+      // Only when auto-allocate is on: the checkbox is hidden otherwise.
+      if (saveAsDefault && form.auto_topup_enabled) {
         await apiJson('PATCH', '/api/dashboard/settings/auto-topup-default', {
           enabled: form.auto_topup_enabled,
-          threshold_gb: form.auto_topup_enabled ? form.auto_topup_threshold_gb : null,
-          amount_gb: form.auto_topup_enabled ? form.auto_topup_amount_gb : null,
+          threshold_gb: form.auto_topup_threshold_gb,
+          amount_gb: form.auto_topup_amount_gb,
         }).catch((e) => {
           // fetch only rejects on network failure, so a 4xx from the route
           // (e.g. validation) used to vanish without a trace.
@@ -233,9 +290,9 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
       </div>
 
       <div className="mb-6">
-        <h1 className="font-display font-bold text-2xl text-ink">New proxy session</h1>
+        <h1 className="font-display font-bold text-2xl text-ink">{duplicateOf ? 'Duplicate session' : 'New proxy session'}</h1>
         <p className="text-muted text-sm mt-1">
-          Configure your proxy — <span className="text-accent font-medium">{formatGb(availableGb)} GB</span> available to allocate.
+          {duplicateOf ? `Settings copied from “${duplicateOf}” — adjust anything below. ` : 'Configure your proxy — '}<span className="text-accent font-medium">{formatGb(availableGb)} GB</span> available to allocate.
         </p>
       </div>
 
@@ -425,10 +482,18 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
                   <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11.5px] font-mono text-muted pointer-events-none">GB</span>
                 </div>
                 <p className="text-xs text-muted mt-1.5">
-                  {formatGb(availableGb)} GB available. {form.session_type === 'rotating'
+                  {formatGb(availableGb)} GB available{copies > 1 ? ` · ${copies} × ${formatGb(form.gb_allocated)} = ${formatGb(totalGb)} GB in total` : ''}. {form.session_type === 'rotating'
                     ? 'One rotating endpoint serves any number of connections.'
                     : 'You can create named sticky sessions after this is set up.'}
                 </p>
+              </div>
+              <div>
+                <label htmlFor="copies" className="block text-xs text-ink2 font-medium mb-1.5">Number of sessions</label>
+                <select id="copies" value={copies} onChange={e => setCopies(Number(e.target.value))}
+                  className="w-full bg-surface border border-border px-3.5 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors">
+                  {COPY_OPTIONS.map(n => <option key={n} value={n}>{n === 1 ? '1 session' : `${n} identical sessions`}</option>)}
+                </select>
+                {copies > 1 && <p className="text-xs text-muted mt-1.5">Each gets its own {formatGb(form.gb_allocated)} GB, credentials and numbered label (“{form.label.trim() || 'Session'} #1”…). They are created one after another.</p>}
               </div>
             </div>
           </div>
@@ -442,7 +507,7 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
               </div>
               <button
                 type="button"
-                onClick={() => set('auto_topup_enabled', !form.auto_topup_enabled)}
+                onClick={() => { if (form.auto_topup_enabled) setSaveAsDefault(false); set('auto_topup_enabled', !form.auto_topup_enabled) }}
                 aria-pressed={form.auto_topup_enabled}
                 className={clsx('relative w-9 h-5 rounded-full transition-colors flex-shrink-0', form.auto_topup_enabled ? 'bg-accent' : 'bg-border')}
               >
@@ -539,7 +604,7 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
                     style={{ width: `${gbMeterPct}%` }} />
                 </div>
                 <div className="flex justify-between text-[10px] font-mono text-white/45 mt-1.5">
-                  <span>{formatGb(form.gb_allocated)} GB allocated</span>
+                  <span>{formatGb(totalGb)} GB allocated</span>
                   <span>{formatGb(gbLeftAfter)} GB left after</span>
                 </div>
               </div>
@@ -554,7 +619,7 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
             <div className="px-6 pb-6 pt-1">
               <button type="submit" disabled={loading || overBudget || (form.gb_allocated || 0) <= 0}
                 className="w-full bg-accent2 text-ink py-3 rounded-xl text-[13.5px] font-semibold hover:brightness-105 hover:-translate-y-0.5 disabled:opacity-40 disabled:hover:translate-y-0 transition-all">
-                {loading ? 'Creating session…' : `Create session — ${formatGb(form.gb_allocated)} GB`}
+                {loading ? (copies > 1 ? 'Creating sessions…' : 'Creating session…') : copies > 1 ? `Create ${copies} sessions — ${formatGb(totalGb)} GB` : `Create session — ${formatGb(form.gb_allocated)} GB`}
               </button>
               <button type="button" onClick={() => router.push('/dashboard/proxies')}
                 className="w-full text-center mt-2.5 text-xs text-white/40 hover:text-white/70 transition-colors">

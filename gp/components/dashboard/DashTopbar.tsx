@@ -21,14 +21,18 @@ export default function DashTopbar({
   async function signOut() {
     if (signingOut) return
     setSigningOut(true)
-    // Clears the separate gp_mfa "verified this browser" cookie/session —
-    // Supabase's own signOut() below has no idea that cookie exists, so
-    // without this a shared machine would stay MFA-verified until the
-    // cookie's natural expiry even after the account signs out.
-    await fetch('/api/auth/mfa/logout', { method: 'POST' }).catch(() => {})
-    const { error } = // Local scope: signing out here must not end the user's other devices
-    // (that is what "Sign out of all other devices" is for).
-    await createClient().auth.signOut({ scope: 'local' })
+    // Local scope: signing out here must not end the user's other devices
+    // (that is what "Sign out of all other devices" is for). Done FIRST: if it fails the
+    // person is still signed in and must keep their verified-browser state, instead of
+    // being dropped to a 2FA prompt by a sign-out that didn't happen.
+    const { error } = await createClient().auth.signOut({ scope: 'local' })
+    if (!error) {
+      // Clears the separate gp_mfa "verified this browser" cookie/session —
+      // Supabase's own signOut() has no idea that cookie exists, so without this a
+      // shared machine would stay MFA-verified until the cookie's natural expiry.
+      // The route needs no session, only the cookie.
+      await fetch('/api/auth/mfa/logout', { method: 'POST' }).catch(() => {})
+    }
     if (error) {
       // Previously reported "Signed out" and navigated away even when the
       // session was still alive.

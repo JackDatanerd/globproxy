@@ -168,7 +168,9 @@ export default function AutoRechargePanel() {
                 <button onClick={() => save(true)} disabled={saving} className="bg-accent text-white px-5 py-2.5 rounded-xl text-sm font-medium disabled:opacity-60">
                   {saving ? 'Saving…' : enabled ? 'Update' : 'Turn on'}
                 </button>
-                {enabled && <button onClick={turnOff} disabled={saving} className="text-sm text-ink2 border border-border px-4 py-2.5 rounded-xl disabled:opacity-60">Turn off</button>}
+                {enabled
+                  ? <button onClick={turnOff} disabled={saving} className="text-sm text-ink2 border border-border px-4 py-2.5 rounded-xl disabled:opacity-60">Turn off</button>
+                  : <button onClick={() => save(false)} disabled={saving} className="text-sm text-ink2 border border-border px-4 py-2.5 rounded-xl disabled:opacity-60">Save without turning on</button>}
               </div>
               <p className="text-[11px] text-muted">By turning this on you authorise GlobProxy to charge the saved card whenever the rule above applies. You get the normal invoice and e-mail for every top-up, and you can turn it off or remove the card at any time.</p>
             </div>

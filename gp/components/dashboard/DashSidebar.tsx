@@ -1,7 +1,7 @@
 'use client'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import clsx from 'clsx'
 
 const userNav = [
@@ -76,6 +76,7 @@ function isActive(path: string, href: string): boolean {
 
 export default function DashSidebar({ role, email, open = false, onClose }: Props) {
   const path = usePathname()
+  const asideRef = useRef<HTMLElement>(null)
 
   // Close the drawer when navigating, and on Escape.
   useEffect(() => { onClose?.() }, [path]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -85,6 +86,18 @@ export default function DashSidebar({ role, email, open = false, onClose }: Prop
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [open, onClose])
+
+  // Off-canvas drawer (below md): the page behind it must not scroll, and keyboard
+  // focus should land inside it rather than stay on the hidden-behind menu button.
+  useEffect(() => {
+    if (!open) return
+    const isDrawer = window.matchMedia('(max-width: 767px)').matches
+    if (!isDrawer) return
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    asideRef.current?.querySelector<HTMLElement>('a[href]')?.focus()
+    return () => { document.body.style.overflow = prev }
+  }, [open])
 
   let nav: NavItem[] = role === 'admin' ? adminNav : role === 'reseller' ? resellerNav : userNav
 
@@ -116,7 +129,9 @@ export default function DashSidebar({ role, email, open = false, onClose }: Prop
     <>
     {open && <div className="fixed inset-0 top-16 bg-ink/40 z-30 md:hidden" onClick={onClose} aria-hidden="true" />}
     <aside
+      ref={asideRef}
       id="dash-sidebar"
+      aria-label="Dashboard navigation"
       className={clsx(
         'w-56 bg-white border-r border-border flex-shrink-0 flex-col py-6',
         // md+: normal in-flow column. Below md: fixed drawer under the topbar.

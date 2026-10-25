@@ -6,24 +6,13 @@ import toast from 'react-hot-toast'
 import TwoFactorSettings from '@/components/dashboard/TwoFactorSettings'
 import { ChangePasswordCard, ChangeEmailCard, SecurityActivityCard, ActiveSessionsCard } from '@/components/dashboard/AccountSecurityCards'
 import { WEBHOOK_EVENTS, WEBHOOK_EVENT_LABELS, WEBHOOK_WILDCARD } from '@/lib/webhookEvents'
-import { apiFetch, apiJson, copyText, redirectToMfa } from '@/lib/clientApi'
+import { apiFetch, apiJson, copyText, redirectToMfa, saveBlob } from '@/lib/clientApi'
+import { fetchCountryList } from '@/lib/geoTargeting'
 import { fetchWithReauth } from '@/lib/reauthPrompt'
 import { formatGb } from '@/lib/format'
 import NumberField from '@/components/dashboard/NumberField'
 
-const COUNTRIES = [
-  'Afghanistan','Albania','Algeria','Angola','Argentina','Australia','Austria','Bangladesh',
-  'Belgium','Bolivia','Brazil','Bulgaria','Cambodia','Cameroon','Canada','Chile','China',
-  'Colombia','Croatia','Czech Republic','Denmark','Ecuador','Egypt','Estonia','Ethiopia',
-  'Finland','France','Germany','Ghana','Greece','Guatemala','Hungary','India','Indonesia',
-  'Iran','Iraq','Ireland','Israel','Italy','Ivory Coast','Japan','Jordan','Kazakhstan',
-  'Kenya','Kuwait','Latvia','Lithuania','Malaysia','Mexico','Morocco','Mozambique',
-  'Netherlands','New Zealand','Nigeria','Norway','Pakistan','Peru','Philippines','Poland',
-  'Portugal','Qatar','Romania','Russia','Saudi Arabia','Senegal','Serbia','Singapore',
-  'Slovakia','Slovenia','South Africa','South Korea','Spain','Sri Lanka','Sweden',
-  'Switzerland','Taiwan','Tanzania','Thailand','Turkey','Uganda','Ukraine','United Arab Emirates',
-  'United Kingdom','United States','Uruguay','Vietnam','Zambia','Zimbabwe',
-].sort()
+
 
 const VOLUME_OPTIONS = [
   'Under 10 GB / month',
@@ -50,6 +39,11 @@ function SettingsPageInner() {
   const [deleteFacts, setDeleteFacts] = useState<{ remainingGb: number; sessions: number; unpaidEarningsUsd: number } | null>(null)
   const [exporting, setExporting] = useState(false)
   const [profileError, setProfileError] = useState<string | null>(null)
+  // Reseller application country list: the same ~210-country dataset the proxy
+  // forms use (a hard-coded 88-name list left out e.g. Rwanda, DR Congo, Hong Kong).
+  // If it can't load, the field falls back to free text rather than blocking applicants.
+  const [countryNames, setCountryNames] = useState<string[] | null>(null)
+  const [countryLoadFailed, setCountryLoadFailed] = useState(false)
 
   // Default auto-allocate
   const [defaultAuto, setDefaultAuto] = useState({ enabled: false, threshold_gb: 1, amount_gb: 5 })
@@ -100,6 +94,13 @@ function SettingsPageInner() {
     phone: '',
     monthly_volume: '',
   })
+
+  useEffect(() => {
+    if (!showForm || countryNames || countryLoadFailed) return
+    fetchCountryList()
+      .then(l => setCountryNames(l.map(c => c.name).sort((a, b) => a.localeCompare(b))))
+      .catch(() => setCountryLoadFailed(true))
+  }, [showForm, countryNames, countryLoadFailed])
 
   async function loadWebhooks() {
     setWebhooksLoading(true)
@@ -252,13 +253,7 @@ function SettingsPageInner() {
         if (res.status === 403 && data?.code === 'reauth_required') return
         throw new Error(data?.error || `Export failed (${res.status})`)
       }
-      const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `globproxy-my-data-${new Date().toISOString().slice(0, 10)}.json`
-      document.body.appendChild(a); a.click(); a.remove()
-      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      saveBlob(await res.blob(), `globproxy-my-data-${new Date().toISOString().slice(0, 10)}.json`)
       toast.success('Your data was downloaded')
     } catch (err: any) {
       toast.error(err?.message ?? 'Could not export your data')
@@ -862,15 +857,27 @@ function SettingsPageInner() {
               {/* Country */}
               <div>
                 <label className="block text-[10px] font-mono text-accent2/70 uppercase tracking-wider mb-1.5">Country *</label>
-                <select
-                  value={appForm.country}
-                  onChange={e => setAppForm({ ...appForm, country: e.target.value })}
-                  required
-                  className="w-full bg-white border border-accent2/20 px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-accent2 transition-colors"
-                >
-                  <option value="">Select your country</option>
-                  {COUNTRIES.map(c => <option key={c} value={c}>{c}</option>)}
-                </select>
+                {countryLoadFailed ? (
+                  <input
+                    type="text"
+                    value={appForm.country}
+                    onChange={e => setAppForm({ ...appForm, country: e.target.value })}
+                    placeholder="Your country"
+                    maxLength={80}
+                    required
+                    className="w-full bg-white border border-accent2/20 px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-accent2 transition-colors"
+                  />
+                ) : (
+                  <select
+                    value={appForm.country}
+                    onChange={e => setAppForm({ ...appForm, country: e.target.value })}
+                    required
+                    className="w-full bg-white border border-accent2/20 px-4 py-3 rounded-xl text-sm focus:outline-none focus:border-accent2 transition-colors"
+                  >
+                    <option value="">{countryNames ? 'Select your country' : 'Loading countries…'}</option>
+                    {(countryNames ?? []).map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                )}
               </div>
 
               {/* Phone */}

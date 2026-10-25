@@ -8,11 +8,23 @@ export default async function ApiKeysPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/auth/login')
 
-  const { data: profile } = await supabase
+  const { data: profile, error: profileError } = await supabase
     .from('profiles')
     .select('role, api_access, api_access_status')
     .eq('id', user.id)
     .single()
+
+  // A failed lookup must not fall through to the keys UI as if the role were known.
+  if (profileError || !profile) {
+    return (
+      <div className="max-w-2xl">
+        <h1 className="font-display font-bold text-2xl text-ink mb-4">API Access</h1>
+        <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-5 py-4 text-sm">
+          We couldn&apos;t load your account details right now. Refresh the page to try again.
+        </div>
+      </div>
+    )
+  }
 
   // A plain 'user' account has nothing to point API access at (no
   // sub-user allocation to automate) until they become a reseller first —

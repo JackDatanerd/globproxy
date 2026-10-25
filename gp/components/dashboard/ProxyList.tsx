@@ -142,12 +142,12 @@ export default function ProxyList({ creds, availableGb, rotationEnabled }: Props
   // exports each of its named sessions (the fixed endpoints from its Sticky
   // sessions tab); one with none yet exports a single stable endpoint, the same
   // one the card's quick-copy gives.
-  async function exportAll(format: 'csv' | 'txt') {
+  async function exportAll(format: 'csv' | 'txt' | 'url') {
     if (exporting) return
     setExporting(true)
     try { await exportAllInner(format) } finally { setExporting(false) }
   }
-  async function exportAllInner(format: 'csv' | 'txt') {
+  async function exportAllInner(format: 'csv' | 'txt' | 'url') {
     type Row = { label: string; type: string; protocol: string; host: string; port: number | string; user: string; pass: string }
     const active = creds.filter(c => c.status === 'active' && c.username && c.password)
     let namedFailed = 0
@@ -181,10 +181,15 @@ export default function ProxyList({ creds, availableGb, rotationEnabled }: Props
       if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
     }
+    // `url` = scheme://user:pass@host:port, one per line — what most scrapers, browsers
+    // and proxy managers paste directly (the .txt form is host:port:user:pass).
+    const urlOf = (r: Row) => `${r.protocol === 'socks5' ? 'socks5' : 'http'}://${encodeURIComponent(r.user)}:${encodeURIComponent(r.pass)}@${r.host}:${r.port}`
     const body = format === 'csv'
       ? ['label,type,protocol,host,port,username,password', ...rows.map(r => [r.label, r.type, r.protocol, r.host, r.port, r.user, r.pass].map(csvCell).join(','))].join('\n') + '\n'
-      : rows.map(r => `${r.host}:${r.port}:${r.user}:${r.pass}`).join('\n') + '\n'
-    saveTextFile(body, `globproxy-endpoints.${format}`, format === 'csv' ? 'text/csv' : 'text/plain')
+      : format === 'url'
+        ? rows.map(urlOf).join('\n') + '\n'
+        : rows.map(r => `${r.host}:${r.port}:${r.user}:${r.pass}`).join('\n') + '\n'
+    saveTextFile(body, format === 'url' ? 'globproxy-endpoints-urls.txt' : `globproxy-endpoints.${format}`, format === 'csv' ? 'text/csv' : 'text/plain')
     toast.success(`Exported ${rows.length} endpoint${rows.length === 1 ? '' : 's'} — the file contains passwords, keep it private.`)
     if (namedFailed > 0) toast(`Couldn\u2019t load the named sessions of ${namedFailed} sticky session${namedFailed === 1 ? '' : 's'} — a single endpoint was exported for ${namedFailed === 1 ? 'it' : 'each'}.`, { icon: '⚠️', duration: 6000 })
   }
@@ -316,6 +321,10 @@ export default function ProxyList({ creds, availableGb, rotationEnabled }: Props
           <button onClick={() => exportAll('txt')} disabled={exporting} title="Download host:port:user:pass for every active session"
             className="text-[11px] font-mono px-3 py-1.5 rounded-full border border-border text-ink2 hover:border-accent hover:text-accent transition-colors disabled:opacity-50">
             {exporting ? 'Exporting…' : 'Export .txt'}
+          </button>
+          <button onClick={() => exportAll('url')} disabled={exporting} title="Download user:pass@host:port URLs, one per line, for every active session"
+            className="text-[11px] font-mono px-3 py-1.5 rounded-full border border-border text-ink2 hover:border-accent hover:text-accent transition-colors disabled:opacity-50">
+            Export URLs
           </button>
           <button onClick={() => exportAll('csv')} disabled={exporting} title="Download a CSV of every active session"
             className="text-[11px] font-mono px-3 py-1.5 rounded-full border border-border text-ink2 hover:border-accent hover:text-accent transition-colors disabled:opacity-50">
