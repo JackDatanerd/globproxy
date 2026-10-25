@@ -72,7 +72,7 @@ export default async function ProxiesPage() {
             {creds?.length ?? 0} session{creds?.length === 1 ? '' : 's'} · manage credentials, endpoints, and sticky sessions
           </p>
         </div>
-        {available > 0 ? (
+        {available >= 0.01 ? (
           <Link href="/dashboard/proxies/new"
             className="bg-accent text-white px-5 py-2.5 rounded-xl text-sm font-medium hover:-translate-y-0.5 transition-all shadow-[0_2px_8px_rgba(0,87,255,.2)]">
             + New session
@@ -138,11 +138,13 @@ export default async function ProxiesPage() {
           <div className="text-3xl mb-3">⬡</div>
           <h2 className="font-display font-bold text-lg text-ink mb-2">No sessions yet</h2>
           <p className="text-muted text-sm font-light mb-5 max-w-xs mx-auto">
-            You have {formatGb(available)} GB ready to use. Create your first proxy session.
+            {available >= 0.01
+              ? `You have ${formatGb(available)} GB ready to use. Create your first proxy session.`
+              : 'You have no unassigned bandwidth left. Buy more to create a session.'}
           </p>
-          <Link href="/dashboard/proxies/new"
+          <Link href={available >= 0.01 ? '/dashboard/proxies/new' : '/dashboard/buy'}
             className="inline-flex items-center gap-2 bg-accent text-white px-6 py-2.5 rounded-xl text-sm font-medium hover:opacity-90 transition-opacity">
-            + New session →
+            {available >= 0.01 ? '+ New session →' : 'Buy bandwidth →'}
           </Link>
         </div>
       ) : null}

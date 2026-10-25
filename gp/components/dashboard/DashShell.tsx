@@ -9,11 +9,12 @@ import MfaRecommendBanner from '@/components/dashboard/MfaRecommendBanner'
 // sidebar can talk to each other while the layout itself stays a server
 // component (page content arrives as `children`).
 export default function DashShell({
-  role, email, showMfaBanner, children,
+  role, email, showMfaBanner, verifiedOperator = false, children,
 }: {
   role: string
   email: string | null
   showMfaBanner: boolean
+  verifiedOperator?: boolean
   children: React.ReactNode
 }) {
   const [navOpen, setNavOpen] = useState(false)
@@ -21,14 +22,14 @@ export default function DashShell({
 
   return (
     <div className="min-h-screen bg-surface flex flex-col">
-      <DashTopbar profile={{ role, email }} onMenu={() => setNavOpen(o => !o)} menuOpen={navOpen} />
+      <DashTopbar profile={{ role, email, verifiedOperator }} onMenu={() => setNavOpen(o => !o)} menuOpen={navOpen} />
       {/* No overflow-* on this row or <main>: an ancestor with overflow set
           becomes the scroll container for `position: sticky`, and since neither
           is height-constrained it never scrolls — so every sticky element inside
           a page (the new-session summary/Create button) silently stopped
           sticking. The document scrolls; the sidebar sticks itself. */}
       <div className="flex flex-1">
-        <DashSidebar role={role} open={navOpen} onClose={closeNav} />
+        <DashSidebar role={role} email={email} open={navOpen} onClose={closeNav} />
         <main className="flex-1 min-w-0 p-4 sm:p-6 md:p-8">
           {showMfaBanner && <MfaRecommendBanner role={role} />}
           {children}

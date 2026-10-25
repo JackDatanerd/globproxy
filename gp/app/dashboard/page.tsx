@@ -6,6 +6,7 @@ import PaymentVerifier from '@/components/PaymentVerifier'
 import ReferralLinkCard from '@/components/dashboard/ReferralLinkCard'
 import { formatGb, formatPct, formatUsd } from '@/lib/format'
 import { getProxyPort } from '@/lib/proxyEndpoint'
+import { leaksSupplier } from '@/lib/supplierGuard'
 import { REFERRAL_GB_BONUS, REFERRAL_MIN_ORDER_USD } from '@/lib/referrals'
 
 export default async function DashboardPage() {
@@ -146,8 +147,8 @@ export default async function DashboardPage() {
                   <div key={c.id} className="relative flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-surface transition-colors">
                     <div className={`absolute left-0 top-2 bottom-2 w-[3px] rounded-full ${rail}`} />
                     <div className="flex-1 min-w-0 ml-2">
-                      <div className="text-[13px] font-medium text-ink truncate">{c.label || 'Untitled session'}</div>
-                      <div className="text-[10.5px] font-mono text-muted mt-0.5">{c.host || 'proxy.globproxy.com'}:{c.port || getProxyPort(c.protocol, c.session_type)}</div>
+                      <div className="text-[13px] font-medium text-ink truncate">{c.label && !leaksSupplier(c.label) ? c.label : 'Untitled session'}</div>
+                      <div className="text-[10.5px] font-mono text-muted mt-0.5">{c.host && !leaksSupplier(c.host) ? c.host : 'proxy.globproxy.com'}:{c.port || getProxyPort(c.protocol, c.session_type)}</div>
                     </div>
                     {c.country && <span className="text-[9.5px] font-mono bg-accent-light text-accent px-2 py-0.5 rounded-full flex-shrink-0">{c.country}</span>}
                     <div className={`flex items-center gap-1.5 text-[10.5px] font-mono flex-shrink-0 ${c.status === 'active' ? 'text-accent2' : 'text-muted'}`}>

@@ -192,7 +192,10 @@ export default function ProxyList({ creds, availableGb, rotationEnabled }: Props
   // Reseller-allocated sessions can't be paused/deleted by the customer (the
   // server refuses), so they are never offered a checkbox.
   const selectable = (c: any) => !c.created_by
-  const selectedCreds = creds.filter(c => selected.has(c.id))
+  // Only rows currently shown: a selection made before the search/filter changed must not
+  // be acted on invisibly.
+  const selectedCreds = filtered.filter(c => selected.has(c.id))
+  const hiddenSelected = selected.size - selectedCreds.length
   const canPause  = selectedCreds.filter(c => c.status === 'active')
   const canResume = selectedCreds.filter(c => c.status === 'suspended' && c.suspended_reason === 'customer')
   function toggleSelected(id: string) {
@@ -323,7 +326,7 @@ export default function ProxyList({ creds, availableGb, rotationEnabled }: Props
 
       {selecting && (
         <div className="sticky top-2 z-10 mb-2.5 bg-white border border-accent/30 rounded-xl px-4 py-2.5 flex items-center gap-2.5 flex-wrap shadow-sm">
-          <span className="text-xs font-mono text-ink">{selected.size} selected</span>
+          <span className="text-xs font-mono text-ink">{selectedCreds.length} selected{hiddenSelected > 0 ? ` (+${hiddenSelected} hidden by the filter — not affected)` : ''}</span>
           <button onClick={() => setSelected(new Set(filtered.filter(selectable).map(c => c.id)))}
             className="text-[11px] font-mono text-accent hover:underline">Select all shown</button>
           <button onClick={() => setSelected(new Set())} disabled={selected.size === 0}
@@ -337,9 +340,9 @@ export default function ProxyList({ creds, availableGb, rotationEnabled }: Props
               className="text-[11px] font-mono px-3 py-1.5 rounded-lg border border-border text-muted hover:border-accent hover:text-accent transition-all disabled:opacity-40">
               Resume{canResume.length > 0 ? ` (${canResume.length})` : ''}
             </button>
-            <button onClick={() => runBulk('delete')} disabled={bulkBusy || selected.size === 0}
+            <button onClick={() => runBulk('delete')} disabled={bulkBusy || selectedCreds.length === 0}
               className="text-[11px] font-mono px-3 py-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 transition-all disabled:opacity-40">
-              {bulkBusy ? 'Working…' : `Delete${selected.size > 0 ? ` (${selected.size})` : ''}`}
+              {bulkBusy ? 'Working…' : `Delete${selectedCreds.length > 0 ? ` (${selectedCreds.length})` : ''}`}
             </button>
           </span>
         </div>

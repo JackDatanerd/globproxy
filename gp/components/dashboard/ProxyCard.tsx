@@ -3,13 +3,14 @@ import { useState, useMemo, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { buildProxyUsername, getProxyPort, deriveSessionId } from '@/lib/proxyEndpoint'
-import { apiJson, copyText } from '@/lib/clientApi'
+import { apiJson, copyText, toastApiError } from '@/lib/clientApi'
 import { formatGb, formatPct, formatDurationMinutes } from '@/lib/format'
 import SessionManager from '@/components/dashboard/SessionManager'
 import IpWhitelist from '@/components/dashboard/IpWhitelist'
 import CredentialSettings from '@/components/dashboard/CredentialSettings'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
+import ReportIssueButton from '@/components/dashboard/ReportIssueButton'
 
 interface Props {
   cred: any
@@ -120,6 +121,9 @@ export default function ProxyCard({ cred, index, availableGb, expanded, onToggle
   }, [warmEndsAt])
   const isWarmingUp = !!cred.activated_at && nowMs < warmEndsAt
 
+  // A credential the server had to withhold (no username/password to show) must not be
+  // presented as usable: no quick-copy, no snippets full of placeholders.
+  const credsReady = !!cred.username && !!cred.password
   const isSticky = cred.session_type === 'sticky'
   const isSocks5 = cred.protocol === 'socks5'
   // The server refuses delete / edit / top-up / release on ANY reseller-
@@ -228,7 +232,7 @@ export default function ProxyCard({ cred, index, availableGb, expanded, onToggle
         : 'Session deleted')
       router.refresh()
     } catch (err: any) {
-      toast.error(err.message)
+      toastApiError(err)
     } finally {
       setDeleting(false); setConfirmDelete(false)
     }
@@ -250,7 +254,7 @@ export default function ProxyCard({ cred, index, availableGb, expanded, onToggle
       setTopupAmount('')
       router.refresh()
     } catch (err: any) {
-      toast.error(err.message)
+      toastApiError(err)
     } finally {
       setTopupLoading(false)
     }
@@ -274,7 +278,7 @@ export default function ProxyCard({ cred, index, availableGb, expanded, onToggle
       setReleaseAmount('')
       router.refresh()
     } catch (err: any) {
-      toast.error(err.message)
+      toastApiError(err)
     } finally {
       setReleasing(false)
     }
@@ -289,7 +293,7 @@ export default function ProxyCard({ cred, index, availableGb, expanded, onToggle
       setShowPass(true)
       router.refresh()
     } catch (err: any) {
-      toast.error(err.message)
+      toastApiError(err)
     } finally {
       setRotating(false); setConfirmRotate(false)
     }
@@ -303,7 +307,7 @@ export default function ProxyCard({ cred, index, availableGb, expanded, onToggle
       toast.success('Session is now active')
       router.refresh()
     } catch (err: any) {
-      toast.error(err.message)
+      toastApiError(err)
     } finally {
       setRetrying(false)
     }
@@ -327,7 +331,7 @@ export default function ProxyCard({ cred, index, availableGb, expanded, onToggle
       toast.success(autoEnabled ? 'Auto-allocate enabled' : 'Auto-allocate disabled')
       router.refresh()
     } catch (err: any) {
-      toast.error(err.message)
+      toastApiError(err)
     } finally {
       setAutoLoading(false)
     }
@@ -581,7 +585,7 @@ curl_close($ch);`
           </div>
         )}
 
-        {cred.status === 'active' && (isSticky ? !!quickStickyEndpoint : endpoints.length > 0) && (
+        {cred.status === 'active' && credsReady && (isSticky ? !!quickStickyEndpoint : endpoints.length > 0) && (
           <button onClick={quickCopy} title={isSticky ? 'Quick copy a sticky endpoint' : 'Quick copy endpoint'}
             aria-label={isSticky ? 'Quick copy a sticky endpoint' : 'Quick copy endpoint'}
             className={clsx(
@@ -649,7 +653,13 @@ curl_close($ch);`
             </div>
           )}
 
-          {cred.status === 'active' && (
+          {cred.status === 'active' && !credsReady && (
+            <div className="mb-4 text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-4 py-3 font-mono">
+              ⏳ This session’s connection details aren’t available yet. Refresh in a minute; if they still don’t appear,
+              <Link href="/dashboard/support" className="underline hover:opacity-80 ml-1">contact support</Link> and quote “{cred.label || cred.id.slice(0, 8)}”.
+            </div>
+          )}
+          {cred.status === 'active' && credsReady && (
             <>
               {/* Tabs */}
               <div role="tablist" aria-label="Session details"
@@ -976,6 +986,7 @@ curl_close($ch);`
               {!canDelete ? '⚠ Allocated by reseller — cannot delete' : 'Deleting returns this session\u2019s unused GB to your account — GB already used isn\u2019t refunded'}
             </div>
             <div className="flex items-center flex-shrink-0">
+            <ReportIssueButton variant="link" context={`Session “${cred.label || `#${index + 1}`}” (${cred.id})`} />
             {canDelete && cred.status === 'active' && (
               <button onClick={() => togglePause(false)} disabled={pausing || deleting}
                 title="Stop this session using bandwidth without deleting it. Resume any time."

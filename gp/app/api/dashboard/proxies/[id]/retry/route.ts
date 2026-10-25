@@ -43,7 +43,11 @@ export async function POST(
   // Scoped to this user's pending credentials; the claim is atomic.
   const result = await provisionPendingCredentials({ userId: user.id, limit: 5, ignoreBackoff: true })
   if (result.skipped) return NextResponse.json({ error: 'Provisioning is currently unavailable.' }, { status: 409 })
-  if (result.activated > 0) return NextResponse.json({ success: true, status: 'active' })
+  // Provisioning runs over up to 5 of this customer's pending sessions, so
+  // "something activated" is not "THIS session activated" — read this one back.
+  const { data: now } = await supabase
+    .from('proxy_credentials').select('status, pending_reason').eq('id', id).maybeSingle()
+  if (now?.status === 'active') return NextResponse.json({ success: true, status: 'active' })
   if (result.claimed === 0) {
     return NextResponse.json({ error: 'A provisioning attempt is already in progress — check back in a moment.' }, { status: 409 })
   }

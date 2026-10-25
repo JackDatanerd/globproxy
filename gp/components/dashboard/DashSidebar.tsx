@@ -55,6 +55,8 @@ const adminNav = [
 
 interface Props {
   role: string
+  // Shown at the top of the mobile drawer — the topbar hides the address below `md`.
+  email?: string | null
   // Mobile drawer state — below `md` the sidebar is an off-canvas drawer
   // opened from the topbar's menu button. Fixed w-56 with no responsive
   // behaviour used to eat 224px of a 375px phone.
@@ -72,7 +74,7 @@ function isActive(path: string, href: string): boolean {
   return path === href || path.startsWith(href + '/')
 }
 
-export default function DashSidebar({ role, open = false, onClose }: Props) {
+export default function DashSidebar({ role, email, open = false, onClose }: Props) {
   const path = usePathname()
 
   // Close the drawer when navigating, and on Escape.
@@ -102,7 +104,8 @@ export default function DashSidebar({ role, open = false, onClose }: Props) {
 
   // An admin browsing their OWN account pages (/dashboard/*) used to be shown
   // only the admin nav — no way to reach their proxies, billing or settings.
-  const adminOnOwnAccount = role === 'admin' && path.startsWith('/dashboard')
+  // /dashboard/api-keys is linked from the admin nav itself: keep the admin nav there instead of flipping the whole sidebar.
+  const adminOnOwnAccount = role === 'admin' && path.startsWith('/dashboard') && path !== '/dashboard/api-keys'
   if (adminOnOwnAccount) {
     nav = [...insertBefore(userNav, 'Settings', apiKeyItem), { label: '← Admin Panel', href: '/admin' }]
   }
@@ -124,6 +127,7 @@ export default function DashSidebar({ role, open = false, onClose }: Props) {
         open ? 'flex fixed top-16 bottom-0 left-0 z-40 shadow-xl' : 'hidden'
       )}>
       <nav className="flex flex-col gap-0.5 px-3 flex-1">
+        {email && <div className="md:hidden text-xs text-ink2 px-3 pb-2 truncate" title={email}>{email}</div>}
         <div className="text-[10px] font-mono text-muted uppercase tracking-widest px-3 pb-3">{label}</div>
         {nav.map(item => (
           <Link key={item.href} href={item.href}

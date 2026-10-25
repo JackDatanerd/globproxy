@@ -31,7 +31,7 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
   const cpage = Math.max(1, Math.min(100_000, parseInt(sp.cpage ?? '1', 10) || 1))
   const accruing = currentAccruingCycle()
 
-  const { data: profile } = await supabase.from('profiles')
+  const { data: profile, error: profileErr } = await supabase.from('profiles')
     .select('referral_code, affiliate_status, affiliate_commission_rate, affiliate_commission_rate_lifetime, is_verified_operator, payout_method, payout_wallet_address, payout_bank_details, payout_mpesa_phone, payout_method_updated_at, payout_hold_reason')
     .eq('id', user.id)
     .single()
@@ -48,7 +48,7 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
   // at 1000 rows, and "this cycle so far" used to be summed from only the
   // latest 20 commissions.
   const admin = await createAdminClient()
-  const [{ data: summaryRows, error: summaryErr }, { data: funnel, error: funnelErr }, { data: commissions, error: commissionsErr, count: commissionsCount }, { data: payouts, error: payoutsErr, count: payoutsCount }, { count: referredByAnyone }, { count: purchaseCount }, adjustmentsRes, tagsRes, deductionsRes] = await Promise.all([
+  const [{ data: summaryRows, error: summaryErr }, { data: funnel, error: funnelErr }, { data: commissions, error: commissionsErr, count: commissionsCount }, { data: payouts, error: payoutsErr, count: payoutsCount }, { count: referredByAnyone, error: referredErr }, { count: purchaseCount, error: purchaseErr }, adjustmentsRes, tagsRes, deductionsRes] = await Promise.all([
     admin.rpc('my_affiliate_summary', { p_user_id: user.id, p_cycle_start: accruing.cycleStart, p_cycle_end: accruing.cycleEnd }),
     admin.rpc('my_referral_funnel', { p_user_id: user.id, p_limit: FUNNEL_PAGE, p_offset: (page - 1) * FUNNEL_PAGE }),
     showMoney
@@ -78,7 +78,8 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
     showMoney ? admin.rpc('my_affiliate_open_deductions', { p_user_id: user.id }) : Promise.resolve({ data: 0, error: null }),
   ])
 
-  const loadFailed = !!(summaryErr || funnelErr || commissionsErr || payoutsErr || adjustmentsRes.error || tagsRes.error || deductionsRes.error)
+  // profileErr matters most: without the profile an approved affiliate reads as a plain user and is shown the application form.
+  const loadFailed = !!(profileErr || referredErr || purchaseErr || summaryErr || funnelErr || commissionsErr || payoutsErr || adjustmentsRes.error || tagsRes.error || deductionsRes.error)
   const s = (summaryRows as any[])?.[0] ?? {}
   // Refund deductions not yet netted into a payout (a commission that was paid
   // and whose order was refunded afterwards). They come off the next payout.
@@ -215,7 +216,7 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
         </div>
       )}
 
-      {!referredByAnyone && !purchaseCount && <ClaimReferralForm />}
+      {!referredErr && !purchaseErr && !profileErr && !referredByAnyone && !purchaseCount && <ClaimReferralForm />}
 
       <div className="mt-4">
         {showMoney ? (
@@ -366,7 +367,7 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
             <div className="text-xs text-muted mb-3">You can still earn the standard GB bonus above, and you&apos;re welcome to apply again 7 days after your last application.</div>
             <AffiliateApplyForm />
           </div>
-        ) : (
+        ) : profileErr ? null : (
           <AffiliateApplyForm />
         )}
       </div>
@@ -386,9 +387,9 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
               <thead>
                 <tr className="text-left text-[10px] font-mono text-muted uppercase tracking-wider">
                   <th className="pb-2 pr-3">Who</th><th className="pb-2 pr-3">Joined</th>
-                  {isAffiliate && <th className="pb-2 pr-3">Tag</th>}
+                  {showMoney && <th className="pb-2 pr-3">Tag</th>}
                   <th className="pb-2 pr-3">First purchase</th><th className="pb-2 pr-3 text-right">Orders</th>
-                  <th className="pb-2 text-right">{isAffiliate ? 'Earned' : 'Bonus'}</th>
+                  <th className="pb-2 text-right">{showMoney ? 'Earned' : 'Bonus'}</th>
                 </tr>
               </thead>
               <tbody>
@@ -399,11 +400,11 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
                       {r.flagged && <span className="ml-2 text-[9px] font-mono bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded-full">under review</span>}
                     </td>
                     <td className="py-2 pr-3 text-muted whitespace-nowrap">{shortDate(r.joined_at)}</td>
-                    {isAffiliate && <td className="py-2 pr-3 font-mono text-muted">{r.sub_id ?? '—'}</td>}
+                    {showMoney && <td className="py-2 pr-3 font-mono text-muted">{r.sub_id ?? '—'}</td>}
                     <td className="py-2 pr-3 text-muted whitespace-nowrap">{r.first_purchase_at ? shortDate(r.first_purchase_at) : '—'}</td>
                     <td className="py-2 pr-3 text-right font-mono">{Number(r.orders_count)}</td>
                     <td className="py-2 text-right font-mono text-ink">
-                      {isAffiliate ? usd(Number(r.earned_usd)) : (r.bonus_credited ? `${REFERRAL_GB_BONUS} GB` : r.bonus_reversed ? 'reversed (refund)' : '—')}
+                      {showMoney ? usd(Number(r.earned_usd)) : (r.bonus_credited ? `${REFERRAL_GB_BONUS} GB` : r.bonus_reversed ? 'reversed (refund)' : '—')}
                     </td>
                   </tr>
                 ))}

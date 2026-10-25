@@ -12,7 +12,7 @@ import ReportIssueButton from './ReportIssueButton'
 export default function DashTopbar({
   profile, onMenu, menuOpen = false,
 }: {
-  profile: { role?: string | null; email?: string | null } | null
+  profile: { role?: string | null; email?: string | null; verifiedOperator?: boolean } | null
   onMenu?: () => void
   menuOpen?: boolean
 }) {
@@ -51,6 +51,7 @@ export default function DashTopbar({
       <Link href="/dashboard" className="font-display font-black text-lg sm:text-xl text-ink tracking-tight flex-shrink-0">Glob<span className="text-accent">Proxy</span></Link>
       <div className="flex-1" />
       <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+        {profile?.verifiedOperator && <span title="GlobProxy Verified Operator" className="hidden sm:inline bg-accent2-light text-accent2 text-[10px] font-mono tracking-widest px-2.5 py-1 rounded-full">✓ VERIFIED OPERATOR</span>}
         {profile?.role === 'reseller' && <span className="hidden sm:inline bg-accent2-light text-accent2 text-[10px] font-mono tracking-widest px-2.5 py-1 rounded-full">RESELLER</span>}
         {profile?.role === 'admin' && <span className="hidden sm:inline bg-accent-light text-accent text-[10px] font-mono tracking-widest px-2.5 py-1 rounded-full">ADMIN</span>}
         <span className="text-sm text-ink2 hidden md:block">{profile?.email}</span>

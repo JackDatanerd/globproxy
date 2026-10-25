@@ -7,6 +7,7 @@
 // the user just saw a red toast with no way forward. This normalises all
 // three.
 
+import toast from 'react-hot-toast'
 import { fetchWithReauth } from '@/lib/reauthPrompt'
 
 export class ApiError extends Error {
@@ -24,6 +25,13 @@ export class ApiError extends Error {
 export function redirectToMfa(data: any): void {
   const next = encodeURIComponent(window.location.pathname + window.location.search)
   window.location.href = `${data?.redirect || '/auth/mfa-verify'}?next=${next}`
+}
+
+// Shows an API failure as a toast — except the 2FA step-up, where the page is
+// already redirecting to verification and a red toast would only flash.
+export function toastApiError(err: any, fallback = 'Something went wrong'): void {
+  if (err?.code === 'mfa_required' || err?.code === 'reauth_required') return
+  toast.error(err?.message || fallback)
 }
 
 export async function apiFetch<T = any>(url: string, init?: RequestInit): Promise<T> {

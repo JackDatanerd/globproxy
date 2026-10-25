@@ -18,6 +18,8 @@ export default function BillingPage() {
   const [notes, setNotes] = useState<Record<string, { number: string; amount: number }[]>>({})
   const [requests, setRequests] = useState<Record<string, { status: string; note: string | null }>>({})
   const [requesting, setRequesting] = useState<string | null>(null)
+  const [refundFor, setRefundFor] = useState<any | null>(null)
+  const [refundReason, setRefundReason] = useState('')
   // Set when a lost chargeback has put the account on hold (new purchases blocked).
   const [hold, setHold] = useState(false)
 
@@ -37,7 +39,7 @@ export default function BillingPage() {
       for (let from = 0; ; from += PAGE) {
         const { data, error } = await sb
           .from('orders')
-          .select('id, created_at, gb_amount, amount_usd, refunded_usd, payment_status, payment_method, pay_amount, pay_currency, failure_reason, dispute_status, auto_recharge')
+          .select('id, created_at, gb_amount, amount_usd, refunded_usd, payment_status, payment_method, pay_amount, pay_currency, failure_reason, dispute_status, auto_recharge, is_canary')
           .eq('user_id', user.id)
           .order('created_at', { ascending: false })
           .order('id', { ascending: false })
@@ -103,11 +105,7 @@ export default function BillingPage() {
     setCancelling(null)
   }
 
-  async function requestRefund(o: any) {
-    const reason = window.prompt(
-      `Request a refund of ${formatUsd(Number(o.amount_usd) - Number(o.refunded_usd ?? 0))} for this ${o.gb_amount} GB order.\n\n` +
-      'Refunds are available within 72 hours of purchase if no bandwidth has been used (see the refund policy). Why are you asking for a refund?', '')
-    if (reason === null) return
+  async function requestRefund(o: any, reason: string) {
     if (reason.trim().length < 3) { toast.error('Please tell us briefly why you are asking for a refund.'); return }
     setRequesting(o.id)
     try {
@@ -120,6 +118,7 @@ export default function BillingPage() {
       else {
         toast.success(d.within_policy ? 'Refund request sent — it falls inside our refund window. We reply within 2 business days.' : 'Refund request sent — it is outside our standard window, so we will review it. We reply within 2 business days.', { duration: 8000 })
         setRequests(prev => ({ ...prev, [o.id]: { status: 'open', note: null } }))
+        setRefundFor(null); setRefundReason('')
       }
     } catch {
       toast.error('Could not send your refund request')
@@ -177,6 +176,22 @@ export default function BillingPage() {
         </div>
       )}
 
+      {refundFor && (
+        <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-center p-4" onClick={() => { if (!requesting) setRefundFor(null) }}>
+          <div role="dialog" aria-modal="true" aria-label="Request a refund" className="bg-white border border-border rounded-xl p-5 w-full max-w-md" onClick={e => e.stopPropagation()}>
+            <div className="text-sm font-medium text-ink mb-1">Request a refund of {formatUsd(Number(refundFor.amount_usd) - Number(refundFor.refunded_usd ?? 0))}</div>
+            <div className="text-xs text-muted mb-3">For the {refundFor.gb_amount} GB order. Refunds are available within 72 hours of purchase if no bandwidth has been used (see the refund policy). Why are you asking for a refund?</div>
+            <textarea autoFocus value={refundReason} onChange={e => setRefundReason(e.target.value)} rows={4} maxLength={500}
+              className="w-full text-sm text-ink bg-surface border border-border rounded-lg px-3 py-2 mb-3" placeholder="A sentence is enough" />
+            <div className="flex gap-2">
+              <button onClick={() => requestRefund(refundFor, refundReason)} disabled={!!requesting || refundReason.trim().length < 3}
+                className="text-xs font-mono px-4 py-2 rounded-lg border border-accent bg-accent text-white disabled:opacity-50">{requesting ? 'Sending…' : 'Send request'}</button>
+              <button onClick={() => setRefundFor(null)} disabled={!!requesting} className="text-xs font-mono px-4 py-2 rounded-lg border border-border text-muted">Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <AutoRechargePanel />
       <BillingDetailsForm />
 
@@ -230,6 +245,7 @@ export default function BillingPage() {
                     <span className={`text-[10px] font-mono px-2.5 py-1 rounded-full ${
                       o.payment_status === 'paid' ? 'bg-accent2-light text-accent2' :
                       o.payment_status === 'pending' ? 'bg-yellow-50 text-yellow-600' :
+                      o.payment_status === 'cancelled' || o.payment_status === 'refunded' ? 'bg-surface text-muted border border-border' :
                       'bg-red-50 text-red-400'
                     }`}>
                       {o.payment_status}
@@ -262,7 +278,7 @@ export default function BillingPage() {
                     {o.payment_status === 'paid' && !o.is_canary && requests[o.id]?.status !== 'open'
                       && Number(o.amount_usd) - Number(o.refunded_usd ?? 0) > 0.005 && (
                       <button
-                        onClick={() => requestRefund(o)}
+                        onClick={() => { setRefundReason(''); setRefundFor(o) }}
                         disabled={requesting === o.id}
                         className="text-[10px] font-mono text-muted hover:text-ink border border-border hover:border-ink2 px-3 py-1 rounded-lg transition-colors disabled:opacity-50 mr-2"
                       >
@@ -280,7 +296,7 @@ export default function BillingPage() {
                           href={`/dashboard/buy?${sel}${o.payment_method === 'mpesa' ? '&method=mpesa' : ''}`}
                           className="text-[10px] font-mono text-accent hover:underline border border-accent/30 px-3 py-1 rounded-lg inline-block mr-2"
                         >
-                          {o.payment_status === 'pending' ? 'Pay now' : 'Try again'}
+                          {o.payment_status === 'pending' ? 'Pay again' : 'Try again'}
                         </Link>
                       ) : null
                     })()}

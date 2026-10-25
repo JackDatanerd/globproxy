@@ -534,7 +534,18 @@ function SettingsPageInner() {
           <h2 className="font-display font-bold text-base text-ink">Default auto-allocate</h2>
           <button
             type="button"
-            onClick={() => setDefaultAuto(d => ({ ...d, enabled: !d.enabled }))}
+            onClick={() => {
+              const next = !defaultAuto.enabled
+              setDefaultAuto(d => ({ ...d, enabled: next }))
+              // Turning it OFF takes effect at once (nothing to validate); turning it ON waits for the numbers + Save.
+              if (!next) {
+                apiJson('PATCH', '/api/dashboard/settings/auto-topup-default', { enabled: false,
+                  threshold_gb: Number.isFinite(defaultAuto.threshold_gb) ? defaultAuto.threshold_gb : 1,
+                  amount_gb: Number.isFinite(defaultAuto.amount_gb) ? defaultAuto.amount_gb : 5 })
+                  .then(() => toast.success('Default auto-allocate turned off'))
+                  .catch((err: any) => { setDefaultAuto(d => ({ ...d, enabled: true })); if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Failed to save default') })
+              }
+            }}
             aria-pressed={defaultAuto.enabled}
             className={`relative w-9 h-5 rounded-full transition-colors flex-shrink-0 ${defaultAuto.enabled ? 'bg-accent' : 'bg-border'}`}
           >
@@ -571,12 +582,7 @@ function SettingsPageInner() {
             </button>
           </form>
         )}
-        {!defaultAuto.enabled && (
-          <button onClick={() => saveDefaultAuto()} disabled={defaultAutoLoading}
-            className="text-xs font-mono text-muted hover:text-ink transition-colors">
-            {defaultAutoLoading ? 'Saving...' : 'Save (off)'}
-          </button>
-        )}
+        {defaultAuto.enabled && <p className="text-[11px] text-muted mt-2">Not saved until you press “Save default”.</p>}
       </div>
 
       {/* Webhooks */}

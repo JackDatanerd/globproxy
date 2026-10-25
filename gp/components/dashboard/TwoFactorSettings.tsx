@@ -212,7 +212,7 @@ export default function TwoFactorSettings({ role: _role }: { role?: string } = {
       ) : mode === 'idle' ? (
         <>
           <p className="text-sm text-muted mb-4">
-            {status.backup_codes_remaining} backup code{status.backup_codes_remaining === 1 ? '' : 's'} remaining.
+            {status.backup_codes_remaining ?? 0} backup code{status.backup_codes_remaining === 1 ? '' : 's'} remaining.
           </p>
           <div className="flex gap-2 flex-wrap">
             <button onClick={() => setMode('regenerate')} className="text-xs font-mono border border-border rounded-lg px-4 py-2.5 hover:border-accent hover:text-accent transition-colors">

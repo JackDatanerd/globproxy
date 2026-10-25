@@ -97,6 +97,36 @@ const ENDPOINTS = [
   -H "Content-Type: application/json" \\
   -d '{ "ip": "203.0.113.4", "description": "Office IP" }'`,
   },
+  {
+    method: 'POST', title: 'Pause a sub-user',
+    path: '/api/v1/sub-users/:id/pause',
+    example: `curl -X POST https://globproxy.com/api/v1/sub-users/SUB_USER_ID/pause \\\n  -H "Authorization: Bearer YOUR_KEY"`,
+  },
+  {
+    method: 'POST', title: 'Resume a paused sub-user',
+    path: '/api/v1/sub-users/:id/resume',
+    example: `curl -X POST https://globproxy.com/api/v1/sub-users/SUB_USER_ID/resume \\\n  -H "Authorization: Bearer YOUR_KEY"`,
+  },
+  {
+    method: 'POST', title: 'Release unused GB back to your balance',
+    path: '/api/v1/sub-users/:id/release',
+    example: `curl -X POST https://globproxy.com/api/v1/sub-users/SUB_USER_ID/release \\\n  -H "Authorization: Bearer YOUR_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '{ "gb_amount": 2 }'`,
+  },
+  {
+    method: 'POST', title: 'Rotate a sub-user password',
+    path: '/api/v1/sub-users/:id/rotate-password',
+    example: `curl -X POST https://globproxy.com/api/v1/sub-users/SUB_USER_ID/rotate-password \\\n  -H "Authorization: Bearer YOUR_KEY"`,
+  },
+  {
+    method: 'GET', title: 'Plan pricing',
+    path: '/api/v1/pricing',
+    example: `curl https://globproxy.com/api/v1/pricing \\\n  -H "Authorization: Bearer YOUR_KEY"`,
+  },
+  {
+    method: 'GET', title: 'Supported locations',
+    path: '/api/v1/locations',
+    example: `curl https://globproxy.com/api/v1/locations \\\n  -H "Authorization: Bearer YOUR_KEY"`,
+  },
 ]
 
 type ApiKeyMeta = {
@@ -522,7 +552,7 @@ export default function ApiKeysClient({ canAllocate = false }: { canAllocate?: b
             Auth header: <span className="font-mono text-ink">Authorization: Bearer YOUR_KEY</span>
           </p>
           <p className="text-xs text-muted mt-2">
-            Also available: sticky sessions, webhook management (rotate secret, delivery log, redeliver), idempotent creates, whitelist bulk add/remove — see the{' '}
+            Also available: sticky sessions, bulk operations, reseller allocation, webhook management (rotate secret, delivery log, redeliver), idempotent creates, whitelist bulk add/remove — see the{' '}
             <a href="/docs/api" target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">full API docs</a> for those and every parameter.
           </p>
         </div>

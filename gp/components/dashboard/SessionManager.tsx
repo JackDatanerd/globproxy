@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
-import { apiFetch, apiJson, saveTextFile } from '@/lib/clientApi'
+import { apiFetch, apiJson, saveTextFile, toastApiError } from '@/lib/clientApi'
 import { buildProxyUsername } from '@/lib/proxyEndpoint'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
@@ -72,7 +72,7 @@ export default function SessionManager({ credentialId, cred, host, port, baseUse
       setSessions(prev => [...(prev ?? []), ...made])
       toast.success(made.length > 1 ? `${made.length} sessions created` : 'Session created')
     } catch (err: any) {
-      if (err?.code !== 'mfa_required') toast.error(err.message)
+      if (err?.code !== 'mfa_required') toastApiError(err)
     } finally {
       setCreating(false)
     }
@@ -84,7 +84,7 @@ export default function SessionManager({ credentialId, cred, host, port, baseUse
     try {
       await apiJson('PATCH', `/api/dashboard/sessions/${id}`, patch)
     } catch (err: any) {
-      toast.error(err.message)
+      toastApiError(err)
       load() // resync on failure
     }
   }
@@ -95,7 +95,7 @@ export default function SessionManager({ credentialId, cred, host, port, baseUse
       await apiJson('PATCH', `/api/dashboard/sessions/${id}`, { terminate: true })
       toast.success('Session hidden — its IP still expires on its own when the lifetime elapses')
     } catch (err: any) {
-      toast.error(err.message)
+      toastApiError(err)
       load()
     }
   }
@@ -109,7 +109,7 @@ export default function SessionManager({ credentialId, cred, host, port, baseUse
       await apiJson('DELETE', `/api/dashboard/sessions/${id}`)
       toast.success('Session deleted')
     } catch (err: any) {
-      toast.error(err.message)
+      toastApiError(err)
       load()
     }
   }

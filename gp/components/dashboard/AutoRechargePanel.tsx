@@ -35,11 +35,15 @@ export default function AutoRechargePanel() {
   const [customGb, setCustomGb] = useState('25')
   const [cap, setCap] = useState('100')
   const [why, setWhy] = useState<string | null>(null)
+  const [usage, setUsage] = useState<{ spent_30d_usd: number; last_charge_at: string | null } | null>(null)
+  const [failures, setFailures] = useState(0)
 
   async function load() {
     try {
       const d = await apiFetch('/api/dashboard/billing/auto-recharge')
       setCard(d.card ?? null)
+      setUsage(d.usage ?? null)
+      setFailures(Number(d.settings?.consecutive_failures ?? 0))
       const s: Settings = d.settings
       setEnabled(!!s.enabled); setThreshold(String(s.threshold_gb)); setCap(String(s.monthly_cap_usd))
       setChoice(s.plan_slug); if (s.gb) setCustomGb(String(s.gb))
@@ -149,6 +153,16 @@ export default function AutoRechargePanel() {
               <label className="block">
                 <span className={label}>Never spend more than (USD per 30 days)</span>
                 <input value={cap} onChange={e => setCap(e.target.value)} inputMode="decimal" className={input} />
+                {usage && (
+                  <span className="text-[11px] text-muted mt-1 block">
+                    Auto-recharge has spent {formatUsd(usage.spent_30d_usd)} in the last 30 days
+                    {Number(cap) > 0 ? ` (${Math.min(100, Math.round((usage.spent_30d_usd / Number(cap)) * 100))}% of this limit)` : ''}
+                    {usage.last_charge_at ? ` · last charge ${new Date(usage.last_charge_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}` : ' · no charges yet'}.
+                  </span>
+                )}
+                {enabled && failures > 0 && (
+                  <span className="text-[11px] text-amber-700 mt-1 block">{failures} recent charge{failures === 1 ? '' : 's'} to this card did not go through. It switches off automatically if this keeps happening.</span>
+                )}
               </label>
               <div className="flex items-center gap-3">
                 <button onClick={() => save(true)} disabled={saving} className="bg-accent text-white px-5 py-2.5 rounded-xl text-sm font-medium disabled:opacity-60">

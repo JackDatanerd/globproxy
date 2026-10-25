@@ -7,6 +7,7 @@ import { confirmPayment } from '@/lib/verifyPayment'
 import { formatUsd } from '@/lib/format'
 import toast from 'react-hot-toast'
 import { redirectToMfa } from '@/lib/clientApi'
+import { createClient } from '@/lib/supabase/client'
 import clsx from 'clsx'
 
 // /dashboard/proxies/new redirects here with ?reason=no_bandwidth when the
@@ -39,6 +40,15 @@ export default function BuyPage() {
   const [saveCard, setSaveCard] = useState(false)
   const [loading, setLoading] = useState(false)
   const [statusText, setStatusText] = useState<string | null>(null)
+  // A lost chargeback puts the account on hold (new purchases blocked) — say so before they fill in a payment.
+  const [onHold, setOnHold] = useState(false)
+  useEffect(() => {
+    const sb = createClient()
+    sb.auth.getUser().then(({ data: { user } }) => {
+      if (!user) return
+      sb.from('payment_holds').select('user_id').eq('user_id', user.id).maybeSingle().then(({ data }) => { if (data) setOnHold(true) })
+    }).catch(() => {})
+  }, [])
 
   const quote = resolveOrder(choice, choice === 'custom' ? Number(customGb) : undefined)
   const kesTotal = quote && kesRate ? kesFor(quote.total, kesRate) : null
@@ -190,6 +200,12 @@ export default function BuyPage() {
         <p className="text-muted text-sm mt-1">All bandwidth is non-expiring — yours until every byte is used.</p>
       </div>
 
+      {onHold && (
+        <div className="mb-5 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-4 py-3 text-sm">
+          New purchases are on hold on this account after a payment dispute. Your existing bandwidth keeps working. Write to support@globproxy.com and we will review it.
+        </div>
+      )}
+
       <div className="bg-white border border-border rounded-xl p-6 mb-5">
         <h2 className="font-display font-bold text-base text-ink mb-4">Select a plan</h2>
         <div className="grid grid-cols-2 gap-3">
@@ -277,11 +293,11 @@ export default function BuyPage() {
         </div>
       </div>
 
-      <button onClick={handleBuy} disabled={loading || !quote}
+      <button onClick={handleBuy} disabled={loading || !quote || onHold}
         className="w-full bg-accent text-white py-4 rounded-xl font-medium text-base shadow-[0_2px_12px_rgba(0,87,255,.25)] hover:-translate-y-0.5 hover:shadow-[0_4px_20px_rgba(0,87,255,.35)] transition-all disabled:opacity-60 disabled:transform-none">
         {loading
           ? (statusText || 'Please wait...')
-          : !quote ? 'Enter a valid amount'
+          : onHold ? 'Purchases are on hold' : !quote ? 'Enter a valid amount'
           : mpesaOn && kesTotal ? `Pay ${formatKes(kesTotal)} with M-Pesa →`
           : `Pay ${formatUsd(quote.total)} by card →`}
       </button>

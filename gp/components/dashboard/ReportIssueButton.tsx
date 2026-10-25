@@ -7,7 +7,7 @@ import { apiJson } from '@/lib/clientApi'
 // Sits in DashTopbar next to Sign out. Backend: app/api/support/report/route.ts
 // (writes to support_reports, migration 0036) + an immediate admin email —
 // doesn't require the @globproxy inbox to be active since it only sends.
-export default function ReportIssueButton({ variant = 'topbar' }: { variant?: 'topbar' | 'primary' }) {
+export default function ReportIssueButton({ variant = 'topbar', context }: { variant?: 'topbar' | 'primary' | 'link'; context?: string }) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
   const [message, setMessage] = useState('')
@@ -25,7 +25,7 @@ export default function ReportIssueButton({ variant = 'topbar' }: { variant?: 't
     if (!message.trim()) return
     setLoading(true)
     try {
-      await apiJson('POST', '/api/support/report', { message: message.trim(), page_url: window.location.pathname })
+      await apiJson('POST', '/api/support/report', { message: (context ? `[${context}]\n` : '') + message.trim(), page_url: window.location.pathname })
       toast.success('Thanks — we got it and will follow up by email.')
       setMessage('')
       setOpen(false)
@@ -45,10 +45,13 @@ export default function ReportIssueButton({ variant = 'topbar' }: { variant?: 't
         onClick={() => setOpen(true)}
         className={variant === 'primary'
           ? 'bg-accent text-white px-5 py-2.5 rounded-xl text-sm font-medium hover:opacity-90 transition-opacity'
+          : variant === 'link'
+          ? 'text-xs font-mono px-3 py-1.5 rounded-lg border border-border text-muted hover:border-accent hover:text-accent transition-all mr-2'
           : 'text-xs text-muted hover:text-ink border border-border px-2.5 sm:px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap'}
       >
         {variant === 'primary'
           ? 'Report an issue'
+          : variant === 'link' ? 'Report a problem'
           : <><span className="sm:hidden">Report</span><span className="hidden sm:inline">Report an issue</span></>}
       </button>
       {open && (
@@ -58,6 +61,7 @@ export default function ReportIssueButton({ variant = 'topbar' }: { variant?: 't
           <div role="dialog" aria-modal="true" aria-label="Report an issue" className="bg-white border border-border rounded-xl p-5 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
             <div className="text-sm font-medium text-ink mb-1">Report an issue</div>
             <div className="text-xs text-muted mb-3">Tell us what went wrong — a payment, a proxy, anything. We'll get an email right away.</div>
+            {context && <div className="text-[11px] font-mono text-muted bg-surface border border-border rounded-lg px-2.5 py-1.5 mb-3 break-all">About: {context}</div>}
             <textarea
               value={message}
               onChange={(e) => setMessage(e.target.value)}

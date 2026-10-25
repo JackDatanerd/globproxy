@@ -36,8 +36,16 @@ export async function GET(req: Request) {
     console.error('[auto-recharge] load failed', cErr ?? rErr)
     return NextResponse.json({ error: 'Could not load your auto-recharge settings.' }, { status: 500 })
   }
+  // What the rule has spent in the last 30 days (the cap's window) and when it last fired.
+  const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
+  const { data: recent } = await admin.from('orders')
+    .select('amount_usd, refunded_usd, created_at')
+    .eq('user_id', user.id).eq('auto_recharge', true).eq('payment_status', 'paid').gte('created_at', since)
+    .order('created_at', { ascending: false }).limit(500)
+  const spent30d = (recent ?? []).reduce((t: number, o: any) => t + Number(o.amount_usd ?? 0) - Number(o.refunded_usd ?? 0), 0)
   return NextResponse.json({
     card: card ?? null,
+    usage: { spent_30d_usd: Math.round(spent30d * 100) / 100, last_charge_at: recent?.[0]?.created_at ?? null },
     settings: rule ?? { enabled: false, threshold_gb: 5, plan_slug: 'starter', gb: null, monthly_cap_usd: RECHARGE_DEFAULT_CAP_USD, consecutive_failures: 0, disabled_reason: null },
   })
 }

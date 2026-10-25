@@ -60,7 +60,9 @@ export function toDashboardCredential(row: Record<string, any>): Record<string, 
     password: upstream_password ?? null,
   }
   if (leaksSupplier(out.host)) out.host = PROXY_HOST
-  if (leaksSupplier(out.username)) out.username = `gp_${out.id}`
+  // null, not a made-up name: a fabricated login would not exist upstream. The dashboard shows
+  // a session with no username/password as "details not available yet" instead.
+  if (leaksSupplier(out.username)) { out.username = null; out.password = null }
   if (leaksSupplier(out.password)) out.password = null
   if (leaksSupplier(out.label)) out.label = 'Session'
   for (const k of ['pending_reason', 'suspended_reason'] as const) {

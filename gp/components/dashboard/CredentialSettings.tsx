@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import toast from 'react-hot-toast'
-import { apiJson } from '@/lib/clientApi'
+import { apiJson, toastApiError } from '@/lib/clientApi'
 import {
   fetchCountryList, fetchCountryDetail,
   type CountryListItem, type CountryDetail,
@@ -70,7 +70,7 @@ export default function CredentialSettings({ cred }: { cred: any }) {
       toast.success('Session updated')
       router.refresh()
     } catch (err: any) {
-      toast.error(err.message)
+      toastApiError(err)
     } finally {
       setSaving(false)
     }
@@ -114,7 +114,7 @@ export default function CredentialSettings({ cred }: { cred: any }) {
         <div>
           <label className="block text-[10px] font-mono text-muted uppercase tracking-widest mb-1">Country</label>
           <select value={country}
-            onChange={e => { setCountry(e.target.value); setState(''); setCity('') }} className={field}>
+            onChange={e => { setCountry(e.target.value); setState(''); setCity(''); setAsn('') }} className={field}>
             <option value="">Any country</option>
             {countries.map(c => <option key={c.code} value={c.code}>{c.name}</option>)}
           </select>

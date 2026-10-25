@@ -1,7 +1,7 @@
 'use client'
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
-import { apiJson } from '@/lib/clientApi'
+import { apiFetch, apiJson } from '@/lib/clientApi'
 import { formatGb, formatDurationMinutes } from '@/lib/format'
 import {
   fetchCountryList, fetchCountryDetail, POPULAR_COUNTRY_CODES,
@@ -67,6 +67,19 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
   const [geoLoading, setGeoLoading] = useState(false)
   const [geoError, setGeoError] = useState<string | null>(null)
 
+  // Supplier-neutral capacity hint (see /api/dashboard/capacity).
+  const [capacityTight, setCapacityTight] = useState(false)
+  useEffect(() => {
+    let off = false
+    fetch('/api/dashboard/capacity').then(r => r.ok ? r.json() : null).then(d => { if (!off && d?.constrained) setCapacityTight(true) }).catch(() => {})
+    return () => { off = true }
+  }, [])
+
+  // One Idempotency-Key per distinct request: a retry of the SAME submit (timeout,
+  // dropped connection) replays the original answer instead of creating a second
+  // session; editing the form first mints a new key.
+  const idem = useRef<{ sig: string; key: string } | null>(null)
+
   useEffect(() => {
     fetchCountryList()
       .then(setCountryList)
@@ -80,7 +93,8 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
   const countryReq = useRef('')
   function setCountry(v: string) {
     countryReq.current = v
-    setForm(f => ({ ...f, country: v, state: '', city: '' }))
+    // asn too: an ISP belongs to one country, and its field is hidden while "Advanced" is collapsed.
+    setForm(f => ({ ...f, country: v, state: '', city: '', asn: '' }))
     setCountryDetail(null)
     setGeoError(null)
     if (!v) { setGeoLoading(false); return }
@@ -158,7 +172,7 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
       // rotating session (it used to be sent — and stored — anyway), and
       // endpoint_count is always 1: a rotating username carries no session id,
       // so extra "endpoints" were identical strings.
-      const data = await apiJson('POST', '/api/dashboard/proxies', {
+      const payload = {
         label: form.label.trim() || undefined,
         country: form.country || undefined,
         state: form.state || undefined,
@@ -172,8 +186,16 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
         auto_topup_enabled: form.auto_topup_enabled,
         auto_topup_threshold_gb: form.auto_topup_enabled ? form.auto_topup_threshold_gb : undefined,
         auto_topup_amount_gb: form.auto_topup_enabled ? form.auto_topup_amount_gb : undefined,
+      }
+      const sig = JSON.stringify(payload)
+      if (!idem.current || idem.current.sig !== sig) idem.current = { sig, key: crypto.randomUUID() }
+      const data = await apiFetch('/api/dashboard/proxies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idem.current.key },
+        body: sig,
       })
-      toast.success('Proxy session created!')
+      if (data.status === 'pending') toast('Session queued — the network is adding capacity. It activates on its own; your GB is reserved.', { icon: '⏳', duration: 7000 })
+      else toast.success('Proxy session created!')
       if (data.warning) toast(data.warning, { icon: '⚠️', duration: 6000 })
 
       // Optional, non-fatal: update the account-level default so future
@@ -216,6 +238,12 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup }: { availa
           Configure your proxy — <span className="text-accent font-medium">{formatGb(availableGb)} GB</span> available to allocate.
         </p>
       </div>
+
+      {capacityTight && (
+        <div className="mb-5 text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-xl px-4 py-3">
+          Network capacity is tight right now, so a new session may be queued for a short while before it activates. Your bandwidth is reserved the moment you create it, and the session activates automatically.
+        </div>
+      )}
 
       <form onSubmit={handleSubmit} className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-6 items-start">
 

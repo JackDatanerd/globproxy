@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
-import { apiFetch, apiJson } from '@/lib/clientApi'
+import { apiFetch, apiJson, toastApiError } from '@/lib/clientApi'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
@@ -65,7 +65,7 @@ export default function IpWhitelist({ credentialId }: Props) {
       setIp(data.ip)
       if (!description.trim()) setDescription(`My IP (${new Date().toLocaleDateString()})`)
     } catch (err: any) {
-      toast.error(err.message)
+      toastApiError(err)
     } finally {
       setDetectingIp(false)
     }
@@ -83,7 +83,7 @@ export default function IpWhitelist({ credentialId }: Props) {
       setDescription('')
       toast.success('IP whitelisted')
     } catch (err: any) {
-      if (err?.code !== 'mfa_required') toast.error(err.message)
+      if (err?.code !== 'mfa_required') toastApiError(err)
     } finally {
       setAdding(false)
     }
@@ -135,7 +135,7 @@ export default function IpWhitelist({ credentialId }: Props) {
         ? `${added} IP${added === 1 ? '' : 's'} added`
         : `${added} new IP${added === 1 ? '' : 's'} added (${items.length - added} already on the list or merged)`)
     } catch (err: any) {
-      toast.error(err.message)
+      toastApiError(err)
     } finally {
       setBulkAdding(false)
     }
@@ -152,7 +152,7 @@ export default function IpWhitelist({ credentialId }: Props) {
       setSelected(prev => { const n = new Set(prev); n.delete(target); return n })
       toast.success('IP removed')
     } catch (err: any) {
-      toast.error(err.message)
+      toastApiError(err)
     } finally {
       setRemoving(prev => { const n = new Set(prev); n.delete(target); return n })
     }
@@ -168,7 +168,7 @@ export default function IpWhitelist({ credentialId }: Props) {
       toast.success(`${count} IP${count > 1 ? 's' : ''} removed`)
       setSelected(new Set())
     } catch (err: any) {
-      toast.error(err.message)
+      toastApiError(err)
     } finally {
       setBulkRemoving(false)
     }

@@ -18,7 +18,7 @@ export default async function SupportPage() {
     .order('created_at', { ascending: false })
     .limit(50)
 
-  const fmt = (d: string) => new Date(d).toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  const fmt = (d: string) => new Date(d).toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + ' UTC'
 
   return (
     <div className="max-w-3xl">

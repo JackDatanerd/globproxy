@@ -5,6 +5,7 @@ import { createCredential } from '@/lib/credentials'
 import { rateLimited, rateLimitedUser } from '@/lib/rateLimit'
 import { NextResponse } from 'next/server'
 import { requireMfaVerified } from '@/lib/mfa'
+import { parseIdempotencyKey, claimIdempotencyKey, completeIdempotencyKey, releaseIdempotencyKey } from '@/lib/idempotency'
 
 export async function POST(req: Request) {
   const supabase = await createClient()
@@ -54,13 +55,32 @@ export async function POST(req: Request) {
   // Reserve/release are service_role-only (migration 0040), so this goes
   // through the admin client — the user's identity was verified above.
   const admin = await createAdminClient()
-  const result = await createCredential(admin, user.id, parsed.value, { source: 'dashboard', autoTopup })
-  if (!result.ok) return NextResponse.json({ error: result.message }, { status: result.status })
 
-  return NextResponse.json({
+  // The form sends an Idempotency-Key: a retry after a timeout or dropped
+  // connection returns the original answer instead of creating a second
+  // session and reserving the GB twice (same mechanism as POST /api/v1/sub-users).
+  const idem = parseIdempotencyKey(req)
+  if (!idem.ok) return NextResponse.json({ error: idem.error }, { status: 400 })
+  if (idem.key) {
+    const claim = await claimIdempotencyKey(admin, user.id, idem.key, JSON.stringify({ ...parsed.value, auto_topup: autoTopup }), 'POST /dashboard/proxies')
+    if (claim.kind === 'replay') return NextResponse.json(claim.body, { status: claim.status, headers: { 'Idempotent-Replayed': 'true' } })
+    if (claim.kind === 'mismatch') return NextResponse.json({ error: 'This request was already submitted with different settings. Reload the page and try again.' }, { status: 422 })
+    if (claim.kind === 'in_flight') return NextResponse.json({ error: 'Your session is still being created — give it a few seconds, then check My Proxies.' }, { status: 409, headers: { 'Retry-After': '2' } })
+    if (claim.kind === 'unknown_outcome') return NextResponse.json({ error: 'An earlier attempt did not finish. Check My Proxies before creating this session again.' }, { status: 409 })
+  }
+
+  const result = await createCredential(admin, user.id, parsed.value, { source: 'dashboard', autoTopup, idempotencyKey: idem.key })
+  if (!result.ok) {
+    if (idem.key) await releaseIdempotencyKey(admin, user.id, idem.key)
+    return NextResponse.json({ error: result.message }, { status: result.status })
+  }
+
+  const out = {
     success: true,
     id: result.data.cred.id,
     status: result.data.cred.status,
     warning: result.data.warning,
-  })
+  }
+  if (idem.key) await completeIdempotencyKey(admin, user.id, idem.key, 200, out)
+  return NextResponse.json(out)
 }
