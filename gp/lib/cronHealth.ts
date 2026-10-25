@@ -133,9 +133,21 @@ export async function checkUsageSyncFreshness(
     .in('key', ['usage_last_synced_at', 'usage_sync_stale_alerted_at'])
   const settings = Object.fromEntries((rows ?? []).map(r => [r.key, r.value]))
 
-  if (!settings.usage_last_synced_at) return { stale: false, reason: 'never_synced' }
+  // Never synced successfully: that used to be reported as "not stale" forever, so a sync
+  // that had NEVER worked (misconfigured trigger, provider key wrong) raised no alarm at all.
+  // Measure from the oldest live session's activation instead — if there is nothing to
+  // sync yet, there is nothing to be stale.
+  let lastGood: string | null = settings.usage_last_synced_at ?? null
+  if (!lastGood) {
+    const { data: oldest } = await supabase
+      .from('proxy_credentials').select('activated_at').eq('status', 'active')
+      .not('upstream_sub_user_id', 'is', null).not('activated_at', 'is', null)
+      .order('activated_at', { ascending: true }).limit(1)
+    lastGood = oldest?.[0]?.activated_at ?? null
+    if (!lastGood) return { stale: false, reason: 'never_synced' }
+  }
 
-  const ageMs = Date.now() - new Date(settings.usage_last_synced_at).getTime()
+  const ageMs = Date.now() - new Date(lastGood).getTime()
   if (!Number.isFinite(ageMs)) return { stale: false, reason: 'unreadable_timestamp' }
   const stale = ageMs > USAGE_SYNC_STALE_THRESHOLD_MS
 
@@ -157,7 +169,7 @@ export async function checkUsageSyncFreshness(
     subject: `[USAGE SYNC STALE] Last successful sync was ${Math.round(ageMs / 60000)} min ago`,
     html: `<p>Usage-sync (the 'usage' cron task) hasn't completed successfully in over
            ${Math.round(USAGE_SYNC_STALE_THRESHOLD_MS / 60000)} minutes.</p>
-           <p><strong>Last known good sync:</strong> ${escapeHtml(settings.usage_last_synced_at)}</p>
+           <p><strong>Last known good sync:</strong> ${escapeHtml(settings.usage_last_synced_at ?? 'never (measured from the oldest active session)')}</p>
            <p>gb_used and account balances are going stale until this recovers — check
            whether the cron trigger for the 'usage' task is still firing and whether the proxy provider is reachable.</p>`,
   }) : false

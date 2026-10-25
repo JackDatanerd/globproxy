@@ -1,8 +1,9 @@
 import { withApiAuth, readJsonBody } from '@/lib/apiHelpers'
 import { apiError } from '@/lib/apiAuth'
 import { bulkAddWhitelistedIps, bulkRemoveWhitelistedIps } from '@/lib/geonode'
-import { isValidIp, validateIpForAdd, validateDescription, whitelistErrorResponse, notifyWhitelistChanged, MAX_BULK_ITEMS } from '@/lib/ipWhitelist'
+import { isValidIp, validateIpForAdd, validateDescription, notifyWhitelistChanged, MAX_BULK_ITEMS } from '@/lib/ipWhitelist'
 import { getOwnedCredential } from '@/lib/credentials'
+import { mirrorWhitelist, whitelistFailure } from '@/lib/whitelistMirror'
 import { NextResponse } from 'next/server'
 
 // Mirrors app/api/dashboard/proxies/[id]/whitelist/bulk/route.ts. Same
@@ -11,6 +12,7 @@ import { NextResponse } from 'next/server'
 // POST /api/v1/sub-users/:id/whitelist/bulk  { "items": [{ "ip", "description" }, …] }
 export async function POST(req: Request, context: { params: Promise<{ id: string }> }) {
   return withApiAuth(req, 'POST whitelist bulk', async ({ user, supabase }) => {
+    let upstreamId = ''
     try {
       const { id } = await context.params
       const json = await readJsonBody(req)
@@ -32,13 +34,15 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
 
       const cred = await getOwnedCredential(supabase, user.id, id, 'id, upstream_sub_user_id')
       if (!cred) return apiError(404, 'not_found', 'Sub-user not found')
+      upstreamId = cred.upstream_sub_user_id ?? ''
       if (!cred.upstream_sub_user_id) return apiError(409, 'conflict', 'This sub-user is still being provisioned — try again shortly.')
 
       const added = await bulkAddWhitelistedIps(cred.upstream_sub_user_id, items)
+      await mirrorWhitelist(supabase, id, user.id, added)
       await notifyWhitelistChanged(user.id, id, 'added', items.length, 'api')
       return NextResponse.json({ ips: added }, { status: 201 })
     } catch (e) {
-      return whitelistErrorResponse(e)
+      return whitelistFailure(e, upstreamId)
     }
   })
 }
@@ -46,6 +50,7 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
 // DELETE /api/v1/sub-users/:id/whitelist/bulk  { "ips": ["203.0.113.7", …] }
 export async function DELETE(req: Request, context: { params: Promise<{ id: string }> }) {
   return withApiAuth(req, 'DELETE whitelist bulk', async ({ user, supabase }) => {
+    let upstreamId = ''
     try {
       const { id } = await context.params
       const json = await readJsonBody(req)
@@ -63,13 +68,15 @@ export async function DELETE(req: Request, context: { params: Promise<{ id: stri
 
       const cred = await getOwnedCredential(supabase, user.id, id, 'id, upstream_sub_user_id')
       if (!cred) return apiError(404, 'not_found', 'Sub-user not found')
+      upstreamId = cred.upstream_sub_user_id ?? ''
       if (!cred.upstream_sub_user_id) return apiError(409, 'conflict', 'This sub-user is still being provisioned — try again shortly.')
 
       const left = await bulkRemoveWhitelistedIps(cred.upstream_sub_user_id, ips)
+      await mirrorWhitelist(supabase, id, user.id, left)
       await notifyWhitelistChanged(user.id, id, 'removed', ips.length, 'api')
       return NextResponse.json({ ips: left })
     } catch (e) {
-      return whitelistErrorResponse(e)
+      return whitelistFailure(e, upstreamId)
     }
   })
 }

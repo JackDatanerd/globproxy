@@ -1,7 +1,7 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { leaksSupplier } from '@/lib/supplierGuard'
 import {
-  createSubUser, createOrAdoptSubUser, newUpstreamIdentity, deleteSubUser, getSubUserUsage, updateSubUserTrafficLimit, updateSubUserPassword,
+  createSubUser, createOrAdoptSubUser, memoizedSubUserLookup, newUpstreamIdentity, deleteSubUser, getSubUserUsage, updateSubUserTrafficLimit, updateSubUserPassword,
   classifyUpstreamError, GeonodeApiError, type UpstreamReason, type UpstreamIdentity, PROXY_HOST,
 } from '@/lib/geonode'
 import { sendEmail, escapeHtml } from '@/lib/email'
@@ -9,6 +9,9 @@ import { appUrl } from '@/lib/appUrl'
 import { buildProxyUsername, getProxyPort, deriveSessionId } from '@/lib/proxyEndpoint'
 import { dispatchWebhook } from '@/lib/webhooks'
 import { fetchAllRows } from '@/lib/dbPaging'
+import { isUuidString } from '@/lib/cursor'
+import { recordUsageDeltas } from '@/lib/usageLedger'
+import { replayWhitelist } from '@/lib/whitelistMirror'
 import { parseLabel, parseTargeting, parseSessionOptions, parseFiniteNumber, MAX_ENDPOINT_COUNT, type CreateCredentialInput } from '@/lib/apiValidation'
 
 // The single implementation of credential create / delete / top-up /
@@ -343,17 +346,34 @@ export async function deleteCredential(
     return fail(403, 'forbidden', 'This allocation was made by your reseller and cannot be deleted. Contact them directly.')
   }
 
-  // Live usage BEFORE deleting upstream — it may not be queryable afterward.
+  // Live usage BEFORE deleting upstream — it may not be queryable afterward. The session
+  // is FROZEN at what it has used first (cap = usage), then read again: traffic that
+  // flowed between a plain read and the delete used to vanish from both the archived
+  // total and the usage history. If the upstream delete then fails, the real cap is put back.
   let liveUsedGb: number | null = null
+  let frozen = false
   if (cred.upstream_sub_user_id) {
     try { liveUsedGb = await getSubUserUsage(cred.upstream_sub_user_id) }
     catch (e) { console.error('[credentials] live usage check failed, falling back to synced gb_used', e) }
+
+    if (liveUsedGb !== null) {
+      try {
+        await updateSubUserTrafficLimit(cred.upstream_sub_user_id, Math.max(1, Math.ceil(liveUsedGb * 1024)))
+        frozen = true
+        const settled = await getSubUserUsage(cred.upstream_sub_user_id).catch(() => null)
+        if (settled !== null && settled > liveUsedGb) liveUsedGb = settled
+      } catch (e) { console.error('[credentials] could not freeze the session before delete (continuing)', id, e) }
+    }
 
     try {
       await deleteSubUser(cred.upstream_sub_user_id)
     } catch (e) {
       if (!isGone(e)) {
         console.error('[credentials] upstream delete failed — nothing changed', id, e)
+        if (frozen) {
+          try { await updateSubUserTrafficLimit(cred.upstream_sub_user_id, expectedLimitMb(Number(cred.gb_allocated))) }
+          catch (e2) { console.error('[credentials] could not restore the cap after a failed delete', id, e2); await markLimitSyncNeeded(admin, id) }
+        }
         return fail(502, 'upstream_unavailable', 'Could not remove the proxy upstream. Nothing was changed — please retry shortly.')
       }
     }
@@ -370,6 +390,9 @@ export async function deleteCredential(
 
   const released = Number((result as any)?.released_gb ?? 0)
   const used = Number((result as any)?.archived_gb ?? 0)
+  // Usage the session consumed since its last sync is credited to the daily history now —
+  // the sync can no longer see it once the row is gone.
+  await recordUsageDeltas(admin, [{ user_id: userId, gb: used - Number(cred.gb_used ?? 0) }])
   await dispatchWebhook(userId, 'session_deleted', {
     credential_id: id, label: cred.label, gb_allocated: Number(cred.gb_allocated), gb_used: used, gb_released: released, source,
   })
@@ -444,6 +467,8 @@ export async function syncCredentialLimit(admin: Admin, credentialId: string): P
 export async function topupCredential(
   admin: Admin, userId: string, id: string, gb: number, source: 'api' | 'dashboard'
 ): Promise<CredResult<{ gb_allocated: number; gb_added: number; warning?: string }>> {
+  // A malformed id reached the RPC as a uuid parameter and came back as a 500.
+  if (!isUuidString(id)) return fail(404, 'not_found', 'Sub-user not found')
   const { data: rawNewTotal, error: topupErr } = await admin.rpc('topup_credential', {
     p_credential_id: id, p_user_id: userId, p_gb: gb,
   })
@@ -492,6 +517,8 @@ export async function provisionPendingCredentials(
 
   let activated = 0
   let failed = 0
+  // One supplier listing per run, shared by every adopted identity (was one full listing each).
+  const lookup = memoizedSubUserLookup()
   for (const cred of (claimed ?? []) as any[]) {
     try {
       // The upstream identity is decided and SAVED before the supplier is
@@ -520,7 +547,7 @@ export async function provisionPendingCredentials(
         asn: cred.asn ?? undefined,
         protocol: cred.protocol ?? 'http', session_type: cred.session_type ?? 'rotating',
         sticky_duration: cred.sticky_duration ?? undefined,
-      }, identity, { lookupFirst: hadIdentity })
+      }, identity, { lookupFirst: hadIdentity, lookup })
       if (gcred.adopted) console.warn('[provision] adopted an existing sub-user from an earlier ambiguous attempt', cred.id)
 
       // Guarded on status='pending': if the credential was deleted (or
@@ -562,6 +589,10 @@ export async function provisionPendingCredentials(
         try { await updateSubUserTrafficLimit(gcred.upstream_sub_user_id, nowAllocated * 1024) }
         catch { await markLimitSyncNeeded(admin, cred.id) }
       }
+
+      // A re-provisioned session gets its IP whitelist back from the local mirror.
+      await replayWhitelist(admin, cred.id, gcred.upstream_sub_user_id)
+        .catch((e) => console.error('[provision] whitelist replay failed', cred.id, e))
 
       activated++
       await dispatchWebhook(cred.user_id, 'session_activated', {
@@ -888,6 +919,19 @@ export async function rotateCredentialPassword(
       return { ok: true, data: { password: newPassword } }
     }
     console.error('[credentials] rotate: saving the new password failed', id, attempt, error.code)
+  }
+  // The new password could not be saved: put the OLD one back upstream so the customer's
+  // stored (and working) password stays valid, then re-check it end to end.
+  if (cred.upstream_password) {
+    try {
+      await updateSubUserPassword(cred.upstream_sub_user_id, cred.upstream_password)
+      const verdict = cred.upstream_username
+        ? await verifyRotation(cred.host || PROXY_HOST, cred.upstream_username, newPassword, cred.upstream_password)
+        : 'unknown'
+      if (verdict !== 'ignored') {
+        return fail(500, 'internal_error', 'The password could not be changed. Nothing was changed \u2014 please retry.')
+      }
+    } catch (e) { console.error('[credentials] rotate: could not restore the previous password', id, e) }
   }
   return fail(500, 'internal_error', 'The password was changed but could not be saved. Run the rotation again to finish \u2014 the previous password may no longer work.')
 }

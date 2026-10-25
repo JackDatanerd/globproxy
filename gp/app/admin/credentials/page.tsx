@@ -4,7 +4,9 @@ import { createAdminClient } from '@/lib/supabase/server'
 import AdminQueryError from '@/components/admin/AdminQueryError'
 import AdminPager, { parsePage, cleanSearch } from '@/components/admin/AdminPager'
 import AdminCredentialAction from '@/components/admin/AdminCredentialAction'
+import AdminCredentialRemediate from '@/components/admin/AdminCredentialRemediate'
 import { formatGb } from '@/lib/format'
+import { readOrphanReport } from '@/lib/usageSync'
 
 const PAGE_SIZE = 50
 const SEARCH_CAP = 200
@@ -52,12 +54,22 @@ export default async function AdminCredentialsPage({ searchParams }: { searchPar
     visible(supabase.from('proxy_credentials').select('*', { count: 'exact', head: true }).eq('status', 'suspended')),
   ])
 
+  // Sessions whose proxy vanished upstream, and untracked supplier-side proxies (both flagged
+  // by the usage sync, which used to e-mail the admin and point at a panel that had no action).
+  const { data: missingRows } = await supabase.from('proxy_credentials')
+    .select('id, user_id, label, gb_allocated, gb_used, upstream_missing_since, created_by')
+    .eq('status', 'active').not('upstream_missing_since', 'is', null)
+    .order('upstream_missing_since', { ascending: true }).limit(50)
+  const orphans = await readOrphanReport(supabase).catch(() => null)
+
   const userIds = Array.from(new Set((creds ?? []).map(c => c.user_id).filter(Boolean)))
   let emailMap: Record<string, string> = {}
   if (userIds.length > 0) {
     const { data: profiles } = await supabase.from('profiles').select('id, email').in('id', userIds)
     for (const p of profiles ?? []) emailMap[p.id] = p.email
   }
+
+  const missingMap = new Map((missingRows ?? []).map((m: any) => [m.id, m]))
 
   const chip = (on: boolean, cls: string) => `text-xs font-mono px-3 py-1.5 rounded-full transition-all ${cls} ${on ? 'ring-2 ring-ink/30' : ''}`
   const hrefFor = (s: string) => {
@@ -75,6 +87,23 @@ export default async function AdminCredentialsPage({ searchParams }: { searchPar
       {searchCapped && (
         <div className="mb-4 text-xs bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-4 py-2">
           “{q}” matches more than {SEARCH_CAP} accounts, so only the first {SEARCH_CAP} are searched and this list is incomplete. Use a longer part of the email or name.
+        </div>
+      )}
+      {(missingRows ?? []).length > 0 && (
+        <div className="mb-4 text-xs bg-red-50 border border-red-200 text-red-800 rounded-lg px-4 py-3">
+          <strong>{(missingRows ?? []).length} active session(s) have no live proxy behind them.</strong> Their customers cannot connect.
+          Use Re-provision or Refund on the flagged rows below (reseller-allocated ones must be handled with the reseller).
+          <ul className="mt-1 font-mono text-[11px]">
+            {(missingRows ?? []).slice(0, 10).map((m: any) => (
+              <li key={m.id}>{m.label || 'Unnamed'} · {formatGb(m.gb_allocated)} · since {new Date(m.upstream_missing_since).toLocaleString('en-GB')}{m.created_by ? ' · reseller-allocated' : ''}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {orphans && (
+        <div className="mb-4 text-xs bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-4 py-3">
+          <strong>{orphans.count} untracked proxy(ies) exist at the provider</strong> with no session behind them (zero-traffic ones are removed automatically after 24h; ones with usage stay for review).
+          <div className="mt-1 font-mono text-[11px] break-all">{orphans.ids.slice(0, 20).join(', ')}</div>
         </div>
       )}
       <div className="mb-8">
@@ -137,7 +166,7 @@ export default async function AdminCredentialsPage({ searchParams }: { searchPar
                 <td className="px-5 py-3 text-xs font-mono text-muted">
                   {new Date(c.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}
                 </td>
-                <td className="px-5 py-3">{c.suspended_reason === 'deleted' ? null : c.suspended_reason === 'customer' ? <span className="text-[10px] font-mono text-muted">only the customer can resume</span> : <AdminCredentialAction credentialId={c.id} status={c.status} />}</td>
+                <td className="px-5 py-3">{c.suspended_reason === 'deleted' ? null : c.suspended_reason === 'customer' ? <span className="text-[10px] font-mono text-muted">only the customer can resume</span> : <><AdminCredentialAction credentialId={c.id} status={c.status} />{missingMap.has(c.id) && !c.created_by && <AdminCredentialRemediate credentialId={c.id} />}</>}</td>
               </tr>
             ))}
           </tbody>

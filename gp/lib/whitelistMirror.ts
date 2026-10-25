@@ -1,0 +1,92 @@
+import { NextResponse } from 'next/server'
+import type { createAdminClient } from '@/lib/supabase/server'
+import {
+  listWhitelistedIps, bulkAddWhitelistedIps, subUserExists, GeonodeApiError, type WhitelistedIp,
+} from '@/lib/geonode'
+import { MAX_BULK_ITEMS, whitelistErrorResponse } from '@/lib/ipWhitelist'
+
+type Admin = Awaited<ReturnType<typeof createAdminClient>>
+
+// A local copy of every session's IP whitelist (proxy_whitelist_entries, migration 0079).
+// The whitelist used to live ONLY at the supplier, so a session that had to be re-created
+// (its sub-user vanished upstream) came back with an empty list — i.e. less restricted than
+// the customer had set it — and nobody was told. The mirror is rewritten from the
+// supplier's own answer after every successful change, so it never drifts by construction:
+// every write returns the full resulting list.
+
+// Replaces the mirror for one session with `ips` (the authoritative list). Never throws —
+// a failed mirror only means the backfill will redo it.
+export async function mirrorWhitelist(admin: Admin, credentialId: string, userId: string, ips: WhitelistedIp[]): Promise<void> {
+  try {
+    const rows = ips.slice(0, 1000).map((i) => ({
+      credential_id: credentialId, user_id: userId, ip: i.ip, description: (i.description ?? '').slice(0, 100),
+    }))
+    const { error: delErr } = await admin.from('proxy_whitelist_entries').delete().eq('credential_id', credentialId)
+    if (delErr) throw delErr
+    for (let i = 0; i < rows.length; i += 200) {
+      const { error } = await admin.from('proxy_whitelist_entries').insert(rows.slice(i, i + 200))
+      if (error) throw error
+    }
+    await admin.from('proxy_credentials').update({ whitelist_mirrored_at: new Date().toISOString() }).eq('id', credentialId)
+  } catch (e) {
+    console.error('[whitelist-mirror] could not mirror', credentialId, e)
+    // Leave whitelist_mirrored_at as it was; if it was current it is now stale, so clear it
+    // and the backfill rebuilds the copy from the supplier.
+    await admin.from('proxy_credentials').update({ whitelist_mirrored_at: null }).eq('id', credentialId)
+      .then(() => undefined, () => undefined)
+  }
+}
+
+// Puts the mirrored entries onto a freshly created sub-user. Only called for a session that
+// was just (re)activated. No-op when nothing is mirrored.
+export async function replayWhitelist(admin: Admin, credentialId: string, upstreamSubUserId: string): Promise<number> {
+  const { data: entries, error } = await admin
+    .from('proxy_whitelist_entries').select('ip, description').eq('credential_id', credentialId).order('created_at')
+  if (error) throw error
+  if (!entries?.length) return 0
+  let restored = 0
+  for (let i = 0; i < entries.length; i += MAX_BULK_ITEMS) {
+    const chunk = entries.slice(i, i + MAX_BULK_ITEMS).map((e: any) => ({ ip: e.ip, description: e.description || 'Restored' }))
+    await bulkAddWhitelistedIps(upstreamSubUserId, chunk)
+    restored += chunk.length
+  }
+  return restored
+}
+
+// Cron backfill: sessions created before the mirror existed (or whose mirror failed) have
+// whitelist_mirrored_at NULL. Bounded per run; the partial index keeps the scan cheap.
+export async function backfillWhitelistMirrors(admin: Admin, limit = 15): Promise<{ checked: number; mirrored: number }> {
+  const { data: rows, error } = await admin
+    .from('proxy_credentials').select('id, user_id, upstream_sub_user_id')
+    .eq('status', 'active').is('whitelist_mirrored_at', null).not('upstream_sub_user_id', 'is', null)
+    .order('created_at').limit(limit)
+  if (error) { console.error('[whitelist-mirror] backfill read failed', error); return { checked: 0, mirrored: 0 } }
+  let mirrored = 0
+  for (const r of rows ?? []) {
+    try {
+      const ips = await listWhitelistedIps(r.upstream_sub_user_id)
+      await mirrorWhitelist(admin, r.id, r.user_id, ips)
+      mirrored++
+    } catch (e) {
+      // 404 = sub-user missing upstream: the usage sync's missing-sub-user handling owns that.
+      if (!(e instanceof GeonodeApiError && e.status === 404)) console.error('[whitelist-mirror] backfill failed', r.id, e)
+    }
+  }
+  return { checked: rows?.length ?? 0, mirrored }
+}
+
+// A supplier 404 on a whitelist call can mean "that IP isn't listed" OR "this session's
+// proxy no longer exists upstream". The second used to be reported as the first. Ask once.
+export async function whitelistFailure(e: unknown, upstreamSubUserId: string): Promise<NextResponse> {
+  if (upstreamSubUserId && e instanceof GeonodeApiError && e.status === 404) {
+    const exists = await subUserExists(upstreamSubUserId).catch(() => true)
+    if (!exists) {
+      console.error('[whitelist] sub-user missing upstream', upstreamSubUserId)
+      return NextResponse.json({
+        error: 'This session’s proxy is being restored, so its whitelist can’t be changed right now. Please try again shortly or contact support.',
+        code: 'conflict',
+      }, { status: 409 })
+    }
+  }
+  return whitelistErrorResponse(e)
+}

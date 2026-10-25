@@ -1,8 +1,9 @@
 import { withApiAuth, readJsonBody } from '@/lib/apiHelpers'
 import { apiError } from '@/lib/apiAuth'
 import { listWhitelistedIps, addWhitelistedIp, removeWhitelistedIp } from '@/lib/geonode'
-import { isValidIp, validateIpForAdd, validateDescription, whitelistErrorResponse, notifyWhitelistChanged } from '@/lib/ipWhitelist'
+import { isValidIp, validateIpForAdd, validateDescription, notifyWhitelistChanged } from '@/lib/ipWhitelist'
 import { getOwnedCredential } from '@/lib/credentials'
+import { mirrorWhitelist, whitelistFailure } from '@/lib/whitelistMirror'
 import { NextResponse } from 'next/server'
 
 // Mirrors app/api/dashboard/proxies/[id]/whitelist/route.ts. Any owner
@@ -20,14 +21,16 @@ import { NextResponse } from 'next/server'
 // GET /api/v1/sub-users/:id/whitelist
 export async function GET(req: Request, context: { params: Promise<{ id: string }> }) {
   return withApiAuth(req, 'GET whitelist', async ({ user, supabase }) => {
+    let upstreamId = ''
     try {
       const { id } = await context.params
       const cred = await getOwnedCredential(supabase, user.id, id, 'id, upstream_sub_user_id')
       if (!cred) return apiError(404, 'not_found', 'Sub-user not found')
+      upstreamId = cred.upstream_sub_user_id ?? ''
       if (!cred.upstream_sub_user_id) return NextResponse.json({ ips: [], provisioning: true })
       return NextResponse.json({ ips: await listWhitelistedIps(cred.upstream_sub_user_id) })
     } catch (e) {
-      return whitelistErrorResponse(e)
+      return whitelistFailure(e, upstreamId)
     }
   })
 }
@@ -35,6 +38,7 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
 // POST /api/v1/sub-users/:id/whitelist  { "ip": "203.0.113.7", "description": "Office" }
 export async function POST(req: Request, context: { params: Promise<{ id: string }> }) {
   return withApiAuth(req, 'POST whitelist', async ({ user, supabase }) => {
+    let upstreamId = ''
     try {
       const { id } = await context.params
       const json = await readJsonBody(req)
@@ -51,13 +55,15 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
 
       const cred = await getOwnedCredential(supabase, user.id, id, 'id, upstream_sub_user_id')
       if (!cred) return apiError(404, 'not_found', 'Sub-user not found')
+      upstreamId = cred.upstream_sub_user_id ?? ''
       if (!cred.upstream_sub_user_id) return apiError(409, 'conflict', 'This sub-user is still being provisioned — try again shortly.')
 
       const ips = await addWhitelistedIp(cred.upstream_sub_user_id, ip, description)
+      await mirrorWhitelist(supabase, id, user.id, ips)
       await notifyWhitelistChanged(user.id, id, 'added', 1, 'api')
       return NextResponse.json({ ips }, { status: 201 })
     } catch (e) {
-      return whitelistErrorResponse(e)
+      return whitelistFailure(e, upstreamId)
     }
   })
 }
@@ -65,6 +71,7 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
 // DELETE /api/v1/sub-users/:id/whitelist?ip=203.0.113.7
 export async function DELETE(req: Request, context: { params: Promise<{ id: string }> }) {
   return withApiAuth(req, 'DELETE whitelist', async ({ user, supabase }) => {
+    let upstreamId = ''
     try {
       const { id } = await context.params
       const ip = (new URL(req.url).searchParams.get('ip') || '').trim()
@@ -72,13 +79,15 @@ export async function DELETE(req: Request, context: { params: Promise<{ id: stri
 
       const cred = await getOwnedCredential(supabase, user.id, id, 'id, upstream_sub_user_id')
       if (!cred) return apiError(404, 'not_found', 'Sub-user not found')
+      upstreamId = cred.upstream_sub_user_id ?? ''
       if (!cred.upstream_sub_user_id) return apiError(409, 'conflict', 'This sub-user is still being provisioned — try again shortly.')
 
       const ips = await removeWhitelistedIp(cred.upstream_sub_user_id, ip)
+      await mirrorWhitelist(supabase, id, user.id, ips)
       await notifyWhitelistChanged(user.id, id, 'removed', 1, 'api')
       return NextResponse.json({ ips })
     } catch (e) {
-      return whitelistErrorResponse(e)
+      return whitelistFailure(e, upstreamId)
     }
   })
 }

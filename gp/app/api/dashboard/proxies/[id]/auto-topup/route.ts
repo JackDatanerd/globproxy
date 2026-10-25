@@ -4,6 +4,7 @@ import { requireActiveUser } from '@/lib/apiAuth'
 import { parseAutoTopup } from '@/lib/apiValidation'
 import { dispatchWebhook } from '@/lib/webhooks'
 import { isUuidString } from '@/lib/cursor'
+import { rateLimitedUser } from '@/lib/rateLimit'
 import { NextResponse } from 'next/server'
 
 // Configures (or disables) auto-allocate on a credential the user owns.
@@ -24,6 +25,8 @@ export async function PATCH(
   if (mfaBlock) return mfaBlock
   const suspended = await requireActiveUser(user.id)
   if (suspended) return suspended
+  const throttled = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'auto-topup')
+  if (throttled) return throttled
 
   const { id } = await context.params
   if (!isUuidString(id)) return NextResponse.json({ error: 'Session not found' }, { status: 404 })

@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { rateLimitedUser } from '@/lib/rateLimit'
 import { genSessionId } from '@/lib/proxyEndpoint'
+import { isUuidString } from '@/lib/cursor'
 import { NextResponse } from 'next/server'
 
 // Mirrors enforce_proxy_session_limits() (migration 0059) and the v1 API's cap —
@@ -19,6 +20,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   if (mfaBlock) return mfaBlock
   const throttled = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'proxy-sessions')
   if (throttled) return throttled
+  // A malformed id reached the uuid column filter and came back as a 500.
+  if (!isUuidString(id)) return NextResponse.json({ error: 'Session not found' }, { status: 404 })
   const { data, error } = await supabase
     .from('proxy_sessions')
     .select('id, session_token, label, pinned, collapsed, terminated_at, created_at')

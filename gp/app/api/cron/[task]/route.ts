@@ -1,3 +1,4 @@
+import { backfillWhitelistMirrors } from '@/lib/whitelistMirror'
 import { appUrl } from '@/lib/appUrl'
 import { createAdminClient } from '@/lib/supabase/server'
 import { syncAllUsage } from '@/lib/usageSync'
@@ -777,7 +778,12 @@ async function runProvision() {
       console.error('[cron provision] stuck-limit alert failed:', e)
       return { alerted: 0 }
     })
-    return { provision, limits, stalled, stuck }
+    // Mirror whitelists not yet copied locally (migration 0079) — bounded, never throws.
+    const whitelist = await backfillWhitelistMirrors(await createAdminClient()).catch((e) => {
+      console.error('[cron provision] whitelist mirror backfill failed:', e)
+      return { checked: 0, mirrored: 0 }
+    })
+    return { provision, limits, stalled, stuck, whitelist }
   } catch (e: any) {
     console.error('[cron provision] failed:', e)
     return { error: String(e?.message ?? e) }

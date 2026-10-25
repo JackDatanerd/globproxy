@@ -2,6 +2,7 @@ import { createAdminClient } from '@/lib/supabase/server'
 import { listAllSubUsers, getSubUserUsage, updateSubUserTrafficLimit, deleteSubUser, type SubUserSnapshot } from '@/lib/geonode'
 import { runAutoTopups } from '@/lib/autoTopup'
 import { fetchAllRows } from '@/lib/dbPaging'
+import { recordUsageDeltas } from '@/lib/usageLedger'
 import { syncCredentialLimit, expectedLimitMb, suspendedCapMb, loadSuspendedUserIds } from '@/lib/credentials'
 import { dispatchWebhook } from '@/lib/webhooks'
 import { sendEmail, escapeHtml } from '@/lib/email'
@@ -50,39 +51,37 @@ function buildChanges(creds: CredRow[], usageMap: Map<string, number>): UsageCha
     .map(({ id, user_id, gb_used, prevGbUsed }) => ({ id, user_id, gb_used, delta: gb_used - prevGbUsed }))
 }
 
-// Credits GB consumed since the last sync to today's (UTC) account-level bucket
-// (usage_daily, migration 0062) — what lets usage history cover deleted sessions
-// and accounts with many sessions without a supplier call per session. Only
-// growth counts (a lower reading is a counter reset, not negative usage). Never throws.
-export async function recordUsageDeltas(supabase: AdminClient, rows: { user_id: string; gb: number }[]) {
-  const byUser = new Map<string, number>()
-  for (const r of rows) if (r.user_id && r.gb > 0) byUser.set(r.user_id, (byUser.get(r.user_id) ?? 0) + r.gb)
-  if (byUser.size === 0) return
-  try {
-    const { error } = await supabase.rpc('record_usage_deltas', {
-      p_rows: [...byUser].map(([user_id, gb]) => ({ user_id, gb: Math.round(gb * 10000) / 10000 })),
-    })
-    if (error) console.error('[usage-sync] record_usage_deltas failed:', error)
-  } catch (e) { console.error('[usage-sync] record_usage_deltas threw:', e) }
-}
+export { recordUsageDeltas }
+
+// Rows per bulk_update_credential_usage call. One giant jsonb payload for a big fleet
+// can exceed the statement timeout / request size and fail as a whole — every row's
+// usage then stays stale while the rest of the sync looks fine.
+const BULK_UPDATE_CHUNK = 500
 
 async function applyChanges(
   supabase: AdminClient,
   changes: UsageChange[]
 ) {
-  if (changes.length > 0) {
-    const { error } = await supabase.rpc('bulk_update_credential_usage', { updates: changes.map(({ id, gb_used }) => ({ id, gb_used })) })
-    if (error) console.error('bulk_update_credential_usage failed:', error)
-    else await recordUsageDeltas(supabase, changes.filter(c => c.user_id).map(c => ({ user_id: c.user_id as string, gb: c.delta })))
+  let bulkOk = true
+  for (let i = 0; i < changes.length; i += BULK_UPDATE_CHUNK) {
+    const chunk = changes.slice(i, i + BULK_UPDATE_CHUNK)
+    const { error } = await supabase.rpc('bulk_update_credential_usage', { updates: chunk.map(({ id, gb_used }) => ({ id, gb_used })) })
+    if (error) {
+      bulkOk = false
+      console.error('bulk_update_credential_usage failed:', error)
+    } else {
+      // Credited only for rows that were actually written.
+      await recordUsageDeltas(supabase, chunk.filter(c => c.user_id).map(c => ({ user_id: c.user_id as string, gb: c.delta })))
+    }
   }
   // Always recalc, even with zero changes — a previous partial failure
   // should still get corrected on the next call.
   const { error: recalcErr } = await supabase.rpc('recalculate_bandwidth_accounts')
   if (recalcErr) console.error('recalculate_bandwidth_accounts failed:', recalcErr)
-  // recalculate_bandwidth_accounts is the step that actually writes the
-  // numbers stock-exposure math and customer-facing balances depend on —
-  // its success (not bulk_update's) is what "usage sync is healthy" means.
-  return { recalcOk: !recalcErr }
+  // "Usage sync is healthy" means the per-credential usage WAS WRITTEN and the account
+  // totals were recalculated from it. The recalculation alone succeeding on top of a
+  // failed write used to stamp the freshness marker while every gb_used stayed stale.
+  return { recalcOk: !recalcErr, bulkOk, healthy: bulkOk && !recalcErr }
 }
 
 // Full sync — every active credential across every user. This is what the
@@ -104,7 +103,7 @@ export async function syncAllUsage(admin?: AdminClient) {
   const { rows: creds, error: credsErr } = await fetchAllRows<any>((from, to) =>
     supabase
       .from('proxy_credentials')
-      .select('id, user_id, label, status, upstream_sub_user_id, gb_used, gb_allocated, auto_topup_enabled, auto_topup_insufficient_alerted_at, exhausted_alerted_at, low_alerted_pct, upstream_missing_since')
+      .select('id, user_id, label, status, created_by, upstream_sub_user_id, gb_used, gb_allocated, auto_topup_enabled, auto_topup_insufficient_alerted_at, exhausted_alerted_at, low_alerted_pct, upstream_missing_since')
       .not('upstream_sub_user_id', 'is', null)
       .order('id')
       .range(from, to)
@@ -119,7 +118,7 @@ export async function syncAllUsage(admin?: AdminClient) {
 
   const active = creds.filter(c => c.status === 'active')
   const changes = buildChanges(active, usageMap)
-  const { recalcOk } = await applyChanges(supabase, changes)
+  const { recalcOk, bulkOk, healthy } = await applyChanges(supabase, changes)
 
   let limitsReconciled = 0
   let missingUpstream = 0
@@ -142,7 +141,7 @@ export async function syncAllUsage(admin?: AdminClient) {
     autoTopup = await runAutoTopups(undefined, supabase)
 
     // Stamp the freshness marker ONLY on a genuine, complete success.
-    if (recalcOk) {
+    if (healthy) {
       await supabase.from('platform_settings')
         .upsert({ key: 'usage_last_synced_at', value: new Date().toISOString() }, { onConflict: 'key' })
     }
@@ -151,6 +150,7 @@ export async function syncAllUsage(admin?: AdminClient) {
   const summary = {
     updated_credentials: changes.length,
     recalc_ok: recalcOk,
+    usage_write_ok: bulkOk,
     geonode_listing_complete: complete,
     limits_reconciled: limitsReconciled,
     missing_upstream: missingUpstream,
@@ -162,6 +162,9 @@ export async function syncAllUsage(admin?: AdminClient) {
 
   if (!complete) {
     throw new Error(`Geonode sub-user listing was incomplete — usage NOT marked fresh (applied ${changes.length} partial updates)`)
+  }
+  if (!healthy) {
+    throw new Error(`Usage sync could not write usage (${!bulkOk ? 'per-credential update failed' : 'account recalculation failed'}) — usage NOT marked fresh`)
   }
   return summary
 }
@@ -178,6 +181,13 @@ export async function syncAllUsage(admin?: AdminClient) {
 // Suspended owners get the opposite treatment: their cap is held at
 // (used + headroom), which is what makes admin suspension actually cut
 // traffic off for any credential lib/adminProxy.ts failed to disable.
+// Bounded by ATTEMPTS, not successes: a provider whose PATCH endpoint is failing (while
+// the listing still works) used to be hammered once per drifted credential — each failed
+// call can hold the Worker for the full request timeout — until the invocation died and
+// took the notices, auto-top-ups and the freshness stamp down with it. A few failures in
+// a row also end the pass: the next tick tries again.
+const MAX_CONSECUTIVE_LIMIT_FAILURES = 3
+
 async function reconcileLimits(
   supabase: AdminClient,
   active: any[],
@@ -185,8 +195,10 @@ async function reconcileLimits(
   suspendedUsers: Set<string>
 ): Promise<number> {
   let patched = 0
+  let attempts = 0
+  let consecutiveFailures = 0
   for (const c of active) {
-    if (patched >= MAX_LIMIT_PATCHES_PER_RUN) break
+    if (attempts >= MAX_LIMIT_PATCHES_PER_RUN || consecutiveFailures >= MAX_CONSECUTIVE_LIMIT_FAILURES) break
     const snap = subUsers.get(String(c.upstream_sub_user_id))
     if (!snap || snap.limitMb === null) continue // not on Geonode, or no limit reported — nothing to compare
 
@@ -195,8 +207,10 @@ async function reconcileLimits(
         if (snap.usedMb === null) continue // unknown usage — don't guess a cap
         const cap = suspendedCapMb(snap.usedMb)
         if (snap.limitMb > cap + 1) {
+          attempts++
           await updateSubUserTrafficLimit(c.upstream_sub_user_id, cap)
           patched++
+          consecutiveFailures = 0
         }
         continue
       }
@@ -204,17 +218,20 @@ async function reconcileLimits(
       const expected = expectedLimitMb(Number(c.gb_allocated))
       // ±1 MB tolerates rounding between GB (4dp) and whole MB.
       if (Math.abs(snap.limitMb - expected) > 1) {
+        attempts++
         // syncCredentialLimit re-reads gb_allocated immediately before the
         // PATCH, so a top-up that committed after this run's snapshot is not
         // overwritten with a stale number.
         const warning = await syncCredentialLimit(supabase, c.id)
-        if (!warning) patched++
+        if (!warning) { patched++; consecutiveFailures = 0 } else consecutiveFailures++
       }
     } catch (e) {
+      consecutiveFailures++
       console.error('[usage-sync] limit reconcile failed for', c.id, e)
     }
   }
   if (patched > 0) console.log(`[usage-sync] reconciled ${patched} Geonode limit(s)`)
+  if (consecutiveFailures >= MAX_CONSECUTIVE_LIMIT_FAILURES) console.error('[usage-sync] limit reconcile stopped after repeated failures — retrying next tick')
   return patched
 }
 
@@ -295,6 +312,7 @@ async function trackMissingUpstream(
 // platform_settings.geonode_orphan_candidates is { id: firstSeenISO } (older runs
 // stored a plain id array — still read). Results land in
 // platform_settings.geonode_orphans and the admin is emailed once per incident.
+const ORPHAN_REPORT_KEY = 'geonode_orphans'
 const ORPHAN_RECLAIM_AFTER_MS = 24 * 3_600_000
 const MAX_ORPHAN_RECLAIMS_PER_RUN = 5
 
@@ -354,7 +372,7 @@ async function sweepOrphans(
 
   await supabase.from('platform_settings').upsert([
     { key: 'geonode_orphan_candidates', value: JSON.stringify(Object.fromEntries(Object.entries(remainingCandidates).slice(0, 500))) },
-    { key: 'geonode_orphans', value: JSON.stringify({ count: stillPersistent.length, ids: stillPersistent.slice(0, 100), detected_at: nowIso, reclaimed_last_run: reclaimed.length }) },
+    { key: ORPHAN_REPORT_KEY, value: JSON.stringify({ count: stillPersistent.length, ids: stillPersistent.slice(0, 100), detected_at: nowIso, reclaimed_last_run: reclaimed.length }) },
   ], { onConflict: 'key' })
 
   if (stillPersistent.length === 0) {
@@ -413,6 +431,72 @@ async function firstName(supabase: AdminClient, userId: string) {
   }
 }
 
+// The two session notices share one e-mail path so a notice that was claimed in one
+// tick but not e-mailed (cap reached) can be sent by the next tick from the
+// *_email_due flag (migration 0079) with exactly the same wording.
+//
+// A reseller-allocated session (created_by set) cannot be topped up or have
+// auto-allocate turned on by its holder, so those two suggestions are replaced by
+// "contact your reseller" instead of pointing at buttons that answer 403.
+async function sendExhaustionEmail(supabase: AdminClient, c: any, used?: number) {
+  const { email, name } = await firstName(supabase, c.user_id)
+  if (!email) return
+  const reseller = !!c.created_by
+  const autoStuck = !reseller && !!c.auto_topup_enabled // enabled but flagged: it could not top this session up
+  await sendEmail({
+    to: email,
+    subject: `Your proxy session ran out of bandwidth — GlobProxy`,
+    html: `
+      <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px 24px;">
+        <h2 style="text-align:center;color:#111;">Session out of bandwidth</h2>
+        <p style="color:#444;text-align:center;">
+          Hi ${name}, your session
+          <strong>${escapeHtml(c.label || 'Unnamed')}</strong> has used its full
+          ${Number(c.gb_allocated).toFixed(2)} GB allocation and has stopped connecting.
+          ${reseller
+            ? 'This allocation was made by your reseller — contact them to have it increased.'
+            : autoStuck
+              ? 'Auto-allocate is on but your account balance has no bandwidth left to add — buy more and the session will be topped up automatically.'
+              : 'Top it up from your dashboard to resume, or turn on auto-allocate so this doesn\'t happen again.'}
+        </p>
+        <div style="text-align:center;margin:32px 0;">
+          <a href="${appUrl()}${autoStuck ? '/dashboard/buy' : '/dashboard/proxies'}"
+             style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">
+            ${autoStuck ? 'Buy bandwidth →' : 'Open my sessions →'}
+          </a>
+        </div>
+      </div>`,
+  }).catch((e) => console.error('[usage-sync] exhaustion email failed', c.id, e))
+}
+
+async function sendLowEmail(supabase: AdminClient, c: any, tier: number, usedGb: number) {
+  const { email, name, lowEmails } = await firstName(supabase, c.user_id)
+  if (!email || !lowEmails) return
+  const remaining = Math.max(0, Number(c.gb_allocated) - usedGb)
+  const reseller = !!c.created_by
+  await sendEmail({
+    to: email,
+    subject: `Your proxy session is ${tier}% used — GlobProxy`,
+    html: `
+      <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px 24px;">
+        <h2 style="text-align:center;color:#111;">Session running low</h2>
+        <p style="color:#444;text-align:center;">
+          Hi ${name}, your session <strong>${escapeHtml(c.label || 'Unnamed')}</strong> has used
+          ${tier}% of its ${Number(c.gb_allocated).toFixed(2)} GB allocation —
+          about ${remaining.toFixed(2)} GB left. ${reseller
+            ? 'This allocation was made by your reseller — contact them if you need more.'
+            : 'Top it up from your dashboard, or turn on auto-allocate so it never stops mid-job.'}
+        </p>
+        <div style="text-align:center;margin:32px 0;">
+          <a href="${appUrl()}/dashboard/proxies"
+             style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">
+            Open my sessions →
+          </a>
+        </div>
+      </div>`,
+  }).catch((e) => console.error('[usage-sync] low-bandwidth email failed', c.id, e))
+}
+
 // Per-credential exhaustion notice. The existing 80%/95% alerts are
 // account-level and run once a day; a single session hitting its cap with
 // auto-allocate OFF previously produced no signal at all — the customer's
@@ -440,45 +524,25 @@ async function notifyExhaustion(
   }
 
   if (rearm.length > 0) {
-    await supabase.from('proxy_credentials').update({ exhausted_alerted_at: null }).in('id', rearm.slice(0, 200))
+    await supabase.from('proxy_credentials')
+      .update({ exhausted_alerted_at: null, exhausted_email_due: false }).in('id', rearm.slice(0, 200))
   }
 
   let sent = 0
-  for (const [idx, c] of due.slice(0, MAX_WEBHOOK_EVENTS_PER_RUN).entries()) {
-    const emailDue = idx < MAX_EXHAUSTION_NOTICES_PER_RUN
+  let emailsSent = 0
+  for (const c of due.slice(0, MAX_WEBHOOK_EVENTS_PER_RUN)) {
+    const emailDue = emailsSent < MAX_EXHAUSTION_NOTICES_PER_RUN
     // Claim BEFORE sending (guarded on the flag still being empty), like the
     // low-bandwidth notice: the admin "sync all" button runs this outside the cron
     // lock, so two overlapping runs could otherwise both email and both fire the webhook.
+    // A session that gets no e-mail slot this tick is marked owed one (migration 0079):
+    // the flag that stops repeats is set either way, so without that mark it was
+    // never e-mailed at all.
     const { data: claimed } = await supabase.from('proxy_credentials')
-      .update({ exhausted_alerted_at: new Date().toISOString() })
+      .update({ exhausted_alerted_at: new Date().toISOString(), exhausted_email_due: !emailDue })
       .eq('id', c.id).is('exhausted_alerted_at', null).select('id')
     if (!claimed?.length) continue
-    const { email, name } = emailDue ? await firstName(supabase, c.user_id) : { email: null, name: '' }
-    const autoStuck = !!c.auto_topup_enabled // enabled but flagged: it could not top this session up
-    if (email) {
-      await sendEmail({
-        to: email,
-        subject: `Your proxy session ran out of bandwidth — GlobProxy`,
-        html: `
-          <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px 24px;">
-            <h2 style="text-align:center;color:#111;">Session out of bandwidth</h2>
-            <p style="color:#444;text-align:center;">
-              Hi ${name}, your session
-              <strong>${escapeHtml(c.label || 'Unnamed')}</strong> has used its full
-              ${Number(c.gb_allocated).toFixed(2)} GB allocation and has stopped connecting.
-              ${autoStuck
-                ? 'Auto-allocate is on but your account balance has no bandwidth left to add — buy more and the session will be topped up automatically.'
-                : 'Top it up from your dashboard to resume, or turn on auto-allocate so this doesn\'t happen again.'}
-            </p>
-            <div style="text-align:center;margin:32px 0;">
-              <a href="${appUrl()}${autoStuck ? '/dashboard/buy' : '/dashboard/proxies'}"
-                 style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">
-                ${autoStuck ? 'Buy bandwidth →' : 'Open my sessions →'}
-              </a>
-            </div>
-          </div>`,
-      }).catch((e) => console.error('[usage-sync] exhaustion email failed', c.id, e))
-    }
+    if (emailDue) { emailsSent++; await sendExhaustionEmail(supabase, c) }
     // defer: delivered by the 'webhooks' task, so a customer's slow endpoint
     // can't hold up this sync for everyone else.
     await dispatchWebhook(c.user_id, 'session_exhausted', {
@@ -489,6 +553,21 @@ async function notifyExhaustion(
     }, { defer: true }).catch((e) => console.error('[webhooks] session_exhausted dispatch threw', c.id, e))
     sent++
   }
+
+  // E-mails owed from earlier ticks, within what is left of this tick's allowance.
+  if (emailsSent < MAX_EXHAUSTION_NOTICES_PER_RUN) {
+    const { data: owed } = await supabase.from('proxy_credentials')
+      .select('id, user_id, label, created_by, gb_allocated, auto_topup_enabled')
+      .eq('status', 'active').eq('exhausted_email_due', true).not('exhausted_alerted_at', 'is', null)
+      .limit(MAX_EXHAUSTION_NOTICES_PER_RUN - emailsSent)
+    for (const c of owed ?? []) {
+      const { data: took } = await supabase.from('proxy_credentials')
+        .update({ exhausted_email_due: false }).eq('id', c.id).eq('exhausted_email_due', true).select('id')
+      if (!took?.length) continue
+      if (suspendedUsers.has(c.user_id)) continue
+      await sendExhaustionEmail(supabase, c)
+    }
+  }
   return sent
 }
 
@@ -496,9 +575,9 @@ async function notifyExhaustion(
 // session only produced a signal at 100% — too late for a scraper mid-job.
 // One notice per tier crossed (80 then 95); the flag re-arms when usage falls
 // back under 80% (a top-up / release). At most one EMAIL per customer per run
-// (others stay due for the next 5-minute tick), and the webhook carries every
-// crossing. Skipped for sessions auto-allocate is genuinely covering and for
-// suspended owners; 100% is notifyExhaustion's job.
+// (the rest are owed one — low_email_due — and go out on the following ticks), and
+// the webhook carries every crossing. Skipped for sessions auto-allocate is
+// genuinely covering and for suspended owners; 100% is notifyExhaustion's job.
 async function notifyLowBandwidth(
   supabase: AdminClient,
   active: any[],
@@ -525,7 +604,8 @@ async function notifyLowBandwidth(
   }
 
   if (rearm.length > 0) {
-    await supabase.from('proxy_credentials').update({ low_alerted_pct: null }).in('id', rearm.slice(0, 200))
+    await supabase.from('proxy_credentials')
+      .update({ low_alerted_pct: null, low_email_due: false }).in('id', rearm.slice(0, 200))
   }
 
   let sent = 0
@@ -536,36 +616,19 @@ async function notifyLowBandwidth(
     // E-mail: one per customer per tick and a capped number overall. The
     // webhook below is NOT subject to either limit.
     const emailDue = !emailed.has(c.user_id) && emailsSent < MAX_LOW_NOTICES_PER_RUN
-    if (emailDue) { emailed.add(c.user_id); emailsSent++ }
 
-    // Claim before sending: a duplicate notice is worse than a lost one.
-    const { data: claimed } = await supabase.from('proxy_credentials')
-      .update({ low_alerted_pct: c.tier }).eq('id', c.id).select('id')
+    // Claim before sending: a duplicate notice is worse than a lost one. Guarded on
+    // the tier still being the one this run saw, so two overlapping runs (the admin
+    // "sync all" button is outside the cron lock) cannot both claim the same crossing.
+    let claim = supabase.from('proxy_credentials')
+      .update({ low_alerted_pct: c.tier, low_email_due: !emailDue }).eq('id', c.id)
+    claim = c.low_alerted_pct ? claim.eq('low_alerted_pct', c.low_alerted_pct) : claim.is('low_alerted_pct', null)
+    const { data: claimed } = await claim.select('id')
     if (!claimed?.length) continue
 
-    const remaining = Math.max(0, Number(c.gb_allocated) - c.used)
-    const { email, name, lowEmails } = emailDue ? await firstName(supabase, c.user_id) : { email: null, name: '', lowEmails: false }
-    if (email && lowEmails) {
-      await sendEmail({
-        to: email,
-        subject: `Your proxy session is ${c.tier}% used — GlobProxy`,
-        html: `
-          <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px 24px;">
-            <h2 style="text-align:center;color:#111;">Session running low</h2>
-            <p style="color:#444;text-align:center;">
-              Hi ${name}, your session <strong>${escapeHtml(c.label || 'Unnamed')}</strong> has used
-              ${c.tier}% of its ${Number(c.gb_allocated).toFixed(2)} GB allocation —
-              about ${remaining.toFixed(2)} GB left. Top it up from your dashboard, or turn on auto-allocate
-              so it never stops mid-job.
-            </p>
-            <div style="text-align:center;margin:32px 0;">
-              <a href="${appUrl()}/dashboard/proxies"
-                 style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">
-                Open my sessions →
-              </a>
-            </div>
-          </div>`,
-      }).catch((e) => console.error('[usage-sync] low-bandwidth email failed', c.id, e))
+    if (emailDue) {
+      emailed.add(c.user_id); emailsSent++
+      await sendLowEmail(supabase, c, c.tier, c.used)
     }
     await dispatchWebhook(c.user_id, 'session_low', {
       credential_id: c.id,
@@ -574,9 +637,29 @@ async function notifyLowBandwidth(
       used_pct: Math.round(c.pct * 100) / 100,
       gb_allocated: Number(c.gb_allocated),
       gb_used: c.used,
-      gb_remaining: Math.round(remaining * 10000) / 10000,
+      gb_remaining: Math.round(Math.max(0, Number(c.gb_allocated) - c.used) * 10000) / 10000,
     }, { defer: true }).catch((e) => console.error('[webhooks] session_low dispatch threw', c.id, e))
     sent++
+  }
+
+  // Owed e-mails (claimed in an earlier tick without an e-mail slot), still one per
+  // customer per tick.
+  if (emailsSent < MAX_LOW_NOTICES_PER_RUN) {
+    const { data: owed } = await supabase.from('proxy_credentials')
+      .select('id, user_id, label, created_by, gb_allocated, gb_used, low_alerted_pct, upstream_sub_user_id')
+      .eq('status', 'active').eq('low_email_due', true).not('low_alerted_pct', 'is', null)
+      .limit(MAX_LOW_NOTICES_PER_RUN * 2)
+    for (const c of owed ?? []) {
+      if (emailsSent >= MAX_LOW_NOTICES_PER_RUN) break
+      if (emailed.has(c.user_id)) continue
+      const { data: took } = await supabase.from('proxy_credentials')
+        .update({ low_email_due: false }).eq('id', c.id).eq('low_email_due', true).select('id')
+      if (!took?.length) continue
+      if (suspendedUsers.has(c.user_id)) continue
+      emailed.add(c.user_id); emailsSent++
+      const used = usageMap.get(String(c.upstream_sub_user_id)) ?? Number(c.gb_used ?? 0)
+      await sendLowEmail(supabase, c, Number(c.low_alerted_pct), used)
+    }
   }
   return sent
 }
@@ -588,12 +671,15 @@ async function notifyLowBandwidth(
 // fine here.
 export async function syncUserUsage(userId: string) {
   const supabase = await createAdminClient()
-  const { data: creds } = await supabase
+  const { data: creds, error: credsErr } = await supabase
     .from('proxy_credentials')
     .select('id, user_id, upstream_sub_user_id, gb_used')
     .eq('status', 'active')
     .eq('user_id', userId)
     .not('upstream_sub_user_id', 'is', null)
+  // An unreadable list is not "this user has nothing to sync": say so instead of
+  // reporting a clean, empty run.
+  if (credsErr) throw new Error(`Could not load credentials for usage sync: ${credsErr.message}`)
 
   const usageMap = new Map<string, number>()
   let failures = 0
@@ -610,9 +696,18 @@ export async function syncUserUsage(userId: string) {
   }
 
   const changes = buildChanges(creds ?? [], usageMap)
-  const { recalcOk } = await applyChanges(supabase, changes)
+  const { recalcOk, bulkOk } = await applyChanges(supabase, changes)
   // Settles this user's auto-top-ups immediately rather than waiting for the
   // next full tick — but not on a partial read of their usage.
   const autoTopup = failures === 0 ? await runAutoTopups(userId) : null
-  return { updated_credentials: changes.length, recalc_ok: recalcOk, usage_fetch_failures: failures, auto_topup: autoTopup }
+  return { updated_credentials: changes.length, recalc_ok: recalcOk, usage_write_ok: bulkOk, usage_fetch_failures: failures, auto_topup: autoTopup }
+}
+
+// Untracked supplier-side proxies found by the orphan sweep, for the admin credentials page.
+export async function readOrphanReport(supabase: AdminClient): Promise<{ count: number; ids: string[] } | null> {
+  const { data } = await supabase.from('platform_settings').select('value').eq('key', ORPHAN_REPORT_KEY).maybeSingle()
+  try {
+    const o = data?.value ? JSON.parse(data.value) : null
+    return o && o.count > 0 ? { count: Number(o.count), ids: Array.isArray(o.ids) ? o.ids.map(String) : [] } : null
+  } catch { return null }
 }

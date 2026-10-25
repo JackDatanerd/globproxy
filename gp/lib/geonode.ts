@@ -215,11 +215,19 @@ function adoptedCred(id: string, identity: UpstreamIdentity, p: CreateSubUserPar
 // if the listing is incomplete the attempt is aborted as 'unavailable' rather
 // than risking a second sub-user. A duplicate-name rejection on create also
 // falls back to adoption.
+//
+// `lookup` lets a batch caller (provisionPendingCredentials, up to 5 sessions per
+// tick) share ONE listing between all its sessions instead of walking the whole
+// account once per session: each full listing is up to hundreds of subrequests. The
+// duplicate-name fallback always reads a FRESH listing — it exists precisely because
+// something was created a moment ago.
+export type SubUserLookup = (username: string) => Promise<{ id: string | null; complete: boolean }>
+
 export async function createOrAdoptSubUser(
-  p: CreateSubUserParams, identity: UpstreamIdentity, opts: { lookupFirst?: boolean } = {}
+  p: CreateSubUserParams, identity: UpstreamIdentity, opts: { lookupFirst?: boolean; lookup?: SubUserLookup } = {}
 ): Promise<GCred & { adopted: boolean }> {
   if (opts.lookupFirst) {
-    const found = await findSubUserByUsername(identity.username)
+    const found = await (opts.lookup ?? findSubUserByUsername)(identity.username)
     if (found.id) return { ...adoptedCred(found.id, identity, p), adopted: true }
     if (!found.complete) throw new GeonodeApiError('sub-user listing incomplete — not creating blind', 503, {})
   }
@@ -231,6 +239,19 @@ export async function createOrAdoptSubUser(
       if (found.id) return { ...adoptedCred(found.id, identity, p), adopted: true }
     }
     throw e
+  }
+}
+
+// A lookup that reads the account listing at most once, however many usernames are
+// asked for. The listing is a snapshot: fine for "was an EARLIER attempt's sub-user
+// created", never for anything that must see a sub-user created seconds ago.
+export function memoizedSubUserLookup(): SubUserLookup {
+  let listing: Promise<{ subUsers: Map<string, SubUserSnapshot>; complete: boolean }> | null = null
+  return async (username: string) => {
+    listing ??= listAllSubUsers()
+    const { subUsers, complete } = await listing
+    for (const [id, snap] of subUsers) if (snap.username === username) return { id, complete: true }
+    return { id: null, complete }
   }
 }
 
@@ -305,7 +326,10 @@ export function classifyUpstreamError(e: unknown): UpstreamReason {
   if (e instanceof GeonodeApiError) {
     if (e.status >= 500 || e.status === 408 || e.status === 429) return 'unavailable'
     const msg = String(e.body?.message ?? e.body?.error ?? e.message ?? '').toLowerCase()
-    if (e.status === 402 || /traffic|bandwidth|insufficient|not enough|allocat|balance|quota|capacity|stock|exceed/.test(msg)) {
+    // Not the bare words "traffic" / "bandwidth": the request field is trafficLimitMB, so a plain
+    // validation error naming it used to read as "no capacity" and promised the customer
+    // an activation that would never come.
+    if (e.status === 402 || /insufficient|not enough|allocat|balance|quota|capacity|stock|exceed|available/.test(msg)) {
       return 'capacity'
     }
     return 'error'
@@ -359,6 +383,18 @@ export async function getSubUserUsage(geonodeSubUserId: string): Promise<number>
   return mbToGb(usedMb)
 }
 
+// Does this sub-user still exist upstream? true / false (404) — anything else THROWS, so
+// "unknown" can never be mistaken for "gone" (admin re-provisioning acts on false).
+export async function subUserExists(subUserId: string): Promise<boolean> {
+  const res = await gfetch(
+    `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${subUserId}`,
+    { headers: headers() }
+  )
+  if (res.status === 404) return false
+  if (res.ok) return true
+  throw new GeonodeApiError(`Provider subUserExists failed: ${res.status}`, res.status, await res.json().catch(() => ({})))
+}
+
 // Bulk version — fetches usage for ALL sub-users in pages of 100 instead of
 // one call per credential. Fixes a real production bug: the cron usage-sync
 // job was making one Geonode API call per active credential in a loop,
@@ -382,7 +418,10 @@ export interface SubUserSnapshot {
   username: string | null
 }
 
-const MAX_LIST_PAGES = 100 // 10,000 sub-users — a runaway guard, not a real ceiling
+// 40,000 sub-users. This IS a ceiling (reaching it reports the listing as incomplete, which
+// stops usage sync from stamping freshness), so it is set far above any plausible fleet and
+// reaching it is logged loudly. Each page is one subrequest — see usageSync for the budget.
+const MAX_LIST_PAGES = 400
 
 export async function listAllSubUsers(): Promise<{ subUsers: Map<string, SubUserSnapshot>; complete: boolean }> {
   const subUsers = new Map<string, SubUserSnapshot>()
@@ -440,7 +479,7 @@ export async function listAllSubUsers(): Promise<{ subUsers: Map<string, SubUser
     if (docs.length < limit && Number.isFinite(total) && subUsers.size >= total) return { subUsers, complete: true }
     offset += docs.length
   }
-  console.error('Geonode listAllSubUsers hit MAX_LIST_PAGES — treating the listing as incomplete')
+  console.error(`Provider listAllSubUsers hit MAX_LIST_PAGES (${MAX_LIST_PAGES} pages) — treating the listing as incomplete. Usage sync cannot stamp freshness until this ceiling is raised or the listing is narrowed.`)
   return { subUsers, complete: false }
 }
 
@@ -466,10 +505,14 @@ export async function getAccountBalance(): Promise<{ available_gb: number; total
   // as "Available Bandwidth", and what our stock/exposure alerting needs
   // to match — using remainingMB here is what caused the admin panel to
   // read higher than Geonode's true available figure.
-  return {
-    available_gb: mbToGb(result.availableForAllocationMB ?? 0),
-    total_gb: mbToGb(result.totalMB ?? 0),
+  // A response without numeric figures (schema change, partial payload) must not read
+  // as "0 GB in stock": that raised a false exposure alert. Throw, like getSubUserUsage.
+  const avail = result?.availableForAllocationMB
+  const total = result?.totalMB
+  if (typeof avail !== 'number' || !Number.isFinite(avail) || typeof total !== 'number' || !Number.isFinite(total)) {
+    throw new Error('Provider getAccountBalance returned no usable traffic figures')
   }
+  return { available_gb: mbToGb(avail), total_gb: mbToGb(total) }
 }
 
 // IMPORTANT: the live OpenAPI spec for this API has no purchase/reload
