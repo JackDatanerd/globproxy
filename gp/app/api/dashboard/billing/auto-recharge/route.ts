@@ -4,7 +4,8 @@ import { requireActiveUser } from '@/lib/apiAuth'
 import { isCrossSiteRequest } from '@/lib/appUrl'
 import { rateLimitedUser } from '@/lib/rateLimit'
 import { resolveOrder } from '@/lib/plans'
-import { validThreshold, validCap, RECHARGE_DEFAULT_CAP_USD } from '@/lib/rechargeRules'
+import { validThreshold, validCap, RECHARGE_DEFAULT_CAP_USD, cardExpired, cardExpiresSoon, cardExpiryLabel } from '@/lib/rechargeRules'
+import { autoRechargeSpend } from '@/lib/autoRecharge'
 import { NextResponse } from 'next/server'
 
 // Auto-recharge settings (Billing → Auto-recharge). The saved card itself is never sent to
@@ -36,16 +37,24 @@ export async function GET(req: Request) {
     console.error('[auto-recharge] load failed', cErr ?? rErr)
     return NextResponse.json({ error: 'Could not load your auto-recharge settings.' }, { status: 500 })
   }
-  // What the rule has spent in the last 30 days (the cap's window) and when it last fired.
-  const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
-  const { data: recent } = await admin.from('orders')
-    .select('amount_usd, refunded_usd, created_at')
-    .eq('user_id', user.id).eq('auto_recharge', true).eq('payment_status', 'paid').gte('created_at', since)
-    .order('created_at', { ascending: false }).limit(500)
-  const spent30d = (recent ?? []).reduce((t: number, o: any) => t + Number(o.amount_usd ?? 0) - Number(o.refunded_usd ?? 0), 0)
+  // What the rule has spent in the last 30 days (the cap's window) and when it last fired —
+  // the very figure the cron enforces the cap with (lib/autoRecharge.ts autoRechargeSpend).
+  let spent = 0, lastChargeAt: string | null = null
+  try {
+    const u = await autoRechargeSpend(admin, user.id)
+    spent = u.spent; lastChargeAt = u.lastChargeAt
+  } catch (e) {
+    console.error('[auto-recharge] usage load failed', e)
+    return NextResponse.json({ error: 'Could not load your auto-recharge settings.' }, { status: 500 })
+  }
   return NextResponse.json({
-    card: card ?? null,
-    usage: { spent_30d_usd: Math.round(spent30d * 100) / 100, last_charge_at: recent?.[0]?.created_at ?? null },
+    card: card ? {
+      ...card,
+      expired: cardExpired(card.exp_month, card.exp_year),
+      expires_soon: cardExpiresSoon(card.exp_month, card.exp_year),
+      valid_through: cardExpiryLabel(card.exp_month, card.exp_year),
+    } : null,
+    usage: { spent_30d_usd: spent, last_charge_at: lastChargeAt },
     settings: rule ?? { enabled: false, threshold_gb: 5, plan_slug: 'starter', gb: null, monthly_cap_usd: RECHARGE_DEFAULT_CAP_USD, consecutive_failures: 0, disabled_reason: null },
   })
 }
@@ -87,9 +96,12 @@ export async function PUT(req: Request) {
 
   const admin = await createAdminClient()
   if (enabled) {
-    const { data: card, error: cErr } = await admin.from('saved_cards').select('user_id').eq('user_id', user.id).maybeSingle()
+    const { data: card, error: cErr } = await admin.from('saved_cards').select('user_id, exp_month, exp_year').eq('user_id', user.id).maybeSingle()
     if (cErr) return NextResponse.json({ error: 'Could not check your saved card. Please try again.' }, { status: 500 })
     if (!card) return NextResponse.json({ error: 'Save a card first: tick "Save this card for auto-recharge" the next time you pay by card.' }, { status: 409 })
+    if (cardExpired(card.exp_month, card.exp_year)) {
+      return NextResponse.json({ error: 'Your saved card has expired. Pay once by card with "Save this card for auto-recharge" ticked to replace it, then turn auto-recharge on.' }, { status: 409 })
+    }
   }
   const { error } = await admin.from('auto_recharge').upsert({
     user_id: user.id, enabled, threshold_gb: body.threshold_gb, plan_slug: quote.slug,

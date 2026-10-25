@@ -42,7 +42,7 @@ export async function GET(req: Request) {
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await supabase
       .from('orders')
-      .select('id, created_at, paid_at, invoice_number, plan_slug, gb_amount, amount_usd, refunded_usd, payment_status, paystack_reference, failure_reason, payment_method, pay_currency, pay_amount, tax_rate_pct, tax_label, dispute_status')
+      .select('id, created_at, paid_at, invoice_number, plan_slug, gb_amount, amount_usd, refunded_usd, payment_status, paystack_reference, failure_reason, payment_method, pay_currency, pay_amount, tax_rate_pct, tax_label, dispute_status, billing_details, auto_recharge')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false })
       .order('id', { ascending: false })
@@ -93,9 +93,14 @@ export async function GET(req: Request) {
     { header: 'tax_label', value: o => orderTax(o)?.label ?? '' },
     { header: 'tax_rate_pct', value: o => orderTax(o)?.rate ?? '' },
     { header: 'tax_included_usd', value: o => { const t = orderTax(o); return t ? taxIncluded(Number(o.amount_usd), t.rate).toFixed(2) : '' } },
+    // The buyer exactly as the invoice shows them (the snapshot taken when it was issued) —
+    // what an accountant needs to book the row without opening each invoice.
+    { header: 'billed_to', value: o => (o.billing_details?.name || o.billing_details?.email || '') },
+    { header: 'buyer_tax_id', value: o => o.billing_details?.tax_id ?? '' },
     { header: 'credit_notes', value: o => (notesByOrder.get(o.id) ?? []).join('; ') },
     { header: 'status', value: o => o.payment_status },
     { header: 'payment_method', value: o => o.payment_method ?? '' },
+    { header: 'auto_recharge', value: o => o.auto_recharge ? 'yes' : '' },
     { header: 'charged_currency', value: o => o.pay_currency ?? 'USD' },
     { header: 'charged_amount', value: o => o.pay_amount != null ? Number(o.pay_amount).toFixed(2) : Number(o.amount_usd).toFixed(2) },
     { header: 'refunded_charged_amount', value: o => refundedLocalByOrder.has(o.id) ? refundedLocalByOrder.get(o.id)!.toFixed(2) : '' },

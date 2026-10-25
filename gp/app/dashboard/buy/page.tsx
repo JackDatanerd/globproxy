@@ -68,12 +68,26 @@ export default function BuyPage() {
     if (q.get('method') === 'mpesa') setMethod('mpesa')
   }, [])
 
+  // A link that asked for M-Pesa (Billing's "Pay again" on an M-Pesa order) can arrive while
+  // M-Pesa is unavailable. The method picker is hidden then, so without this the page stays on
+  // 'mpesa' with no way to switch and every click answers "M-Pesa is unavailable".
+  function fallBackToCard() {
+    setMethod('card')
+    if (new URLSearchParams(window.location.search).get('method') === 'mpesa') {
+      toast('M-Pesa isn’t available right now — you can pay by card instead.', { icon: 'ℹ️' })
+    }
+  }
+
   useEffect(() => {
     let cancelled = false
     fetch('/api/checkout/options')
       .then(r => r.json())
-      .then(d => { if (!cancelled && d?.mpesa?.available && Number(d.mpesa.rate) > 0) setKesRate(Number(d.mpesa.rate)) })
-      .catch(() => { /* card always works; M-Pesa just stays hidden */ })
+      .then(d => {
+        if (cancelled) return
+        if (d?.mpesa?.available && Number(d.mpesa.rate) > 0) { setKesRate(Number(d.mpesa.rate)); return }
+        fallBackToCard()
+      })
+      .catch(() => { if (!cancelled) fallBackToCard() }) // card always works; M-Pesa just stays hidden
     return () => { cancelled = true }
   }, [])
 

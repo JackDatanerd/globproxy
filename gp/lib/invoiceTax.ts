@@ -31,3 +31,10 @@ export function orderTax(o: { tax_rate_pct?: number | string | null; tax_label?:
   if (!Number.isFinite(rate) || rate <= 0) return null
   return { rate, label: o.tax_label?.trim() || 'VAT' }
 }
+
+// The tax inside an order's (tax-inclusive) total, as the API reports it: null when none applies.
+export function orderTaxSummary(o: { amount_usd?: number | string | null; tax_rate_pct?: number | string | null; tax_label?: string | null }):
+  { label: string; rate_pct: number; included_usd: number } | null {
+  const t = orderTax(o)
+  return t ? { label: t.label, rate_pct: t.rate, included_usd: taxIncluded(Number(o.amount_usd), t.rate) } : null
+}

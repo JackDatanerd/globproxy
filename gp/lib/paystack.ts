@@ -54,6 +54,16 @@ export async function verifyTransaction(reference: string): Promise<PaystackTran
   return data.data as PaystackTransaction
 }
 
+// Paystack answered and said no (a 4xx with status:false — invalid authorization, bad
+// request). Nothing was charged, so the caller may treat it as a decline.
+export class ChargeRejectedError extends Error {}
+
+// We cannot tell whether the card was charged: the request timed out, the connection
+// dropped, Paystack answered 5xx / 429 or with something that is not JSON. The charge may
+// well have gone through, so the caller must NOT call it a decline — it leaves the order
+// pending and lets the webhook / reconcile cron settle it by reference.
+export class ChargeOutcomeUnknownError extends Error {}
+
 // Charges a previously-saved card via its Paystack authorization_code —
 // no checkout page, no human re-entering card details. Powers the
 // 'canary' cron task (app/api/cron/[task]/route.ts): once the canary
@@ -70,24 +80,38 @@ export async function chargeAuthorization(params: {
   authorization_code: string
   metadata: Record<string, string>
 }) {
-  const res = await fetch(`${BASE}/transaction/charge_authorization`, {
-    signal: AbortSignal.timeout(20000),
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${SECRET}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      email: params.email,
-      amount: Math.round(params.amount_usd * 100),
-      currency: 'USD',
-      reference: params.reference,
-      authorization_code: params.authorization_code,
-      metadata: params.metadata,
-    }),
-  })
-  const data = await res.json()
-  if (!data.status) throw new Error(data.message ?? 'Charge authorization failed')
+  let res: Response
+  try {
+    res = await fetch(`${BASE}/transaction/charge_authorization`, {
+      signal: AbortSignal.timeout(20000),
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${SECRET}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        email: params.email,
+        amount: Math.round(params.amount_usd * 100),
+        currency: 'USD',
+        reference: params.reference,
+        authorization_code: params.authorization_code,
+        metadata: params.metadata,
+      }),
+    })
+  } catch (e: any) {
+    throw new ChargeOutcomeUnknownError(`No answer from Paystack: ${e?.message ?? e}`)
+  }
+  if (res.status >= 500 || res.status === 429) {
+    throw new ChargeOutcomeUnknownError(`Paystack answered ${res.status}`)
+  }
+  let data: any
+  try {
+    data = await res.json()
+  } catch {
+    throw new ChargeOutcomeUnknownError(`Paystack answered ${res.status} with an unreadable body`)
+  }
+  if (!data || typeof data !== 'object') throw new ChargeOutcomeUnknownError('Paystack answered with an empty body')
+  if (!data.status) throw new ChargeRejectedError(data.message ?? 'Charge authorization failed')
   return data.data as { status: string; reference: string; gateway_response?: string }
 }
 

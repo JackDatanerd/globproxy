@@ -4,6 +4,9 @@ import { runIdempotent } from '@/lib/idempotency'
 import { resolveOrder, CUSTOM_MIN_GB, CUSTOM_MAX_GB } from '@/lib/plans'
 import { startCheckout, purchaseBlock } from '@/lib/checkout'
 import { rateLimited, rateLimitedUser } from '@/lib/rateLimit'
+import { ORDER_API_COLUMNS, shapeOrder } from '@/lib/orderApi'
+import { appUrl } from '@/lib/appUrl'
+import { orderTaxSummary } from '@/lib/invoiceTax'
 import { NextResponse } from 'next/server'
 
 // POST /api/v1/orders   { "plan": "growth" }  or  { "plan": "custom", "gb": 37 }
@@ -74,7 +77,7 @@ export async function GET(req: Request) {
 
     let q = supabase
       .from('orders')
-      .select('id, gb_amount, amount_usd, payment_status, invoice_number, refunded_usd, refunded_at, created_at, paid_at', { count: 'exact' })
+      .select(ORDER_API_COLUMNS, { count: 'exact' })
       .eq('user_id', user.id)
       .eq('is_canary', false)
       .order('created_at', { ascending: false })
@@ -90,12 +93,19 @@ export async function GET(req: Request) {
       return apiError(500, 'internal_error', 'Internal error. Please try again.')
     }
     const total = count ?? (data?.length ?? 0)
+    const ids = (data ?? []).map((o: any) => o.id)
+    let notes: any[] = []
+    if (ids.length) {
+      const { data: n, error: nErr } = await supabase.from('order_refunds')
+        .select('order_id, credit_note_number, amount_usd, created_at').in('order_id', ids).order('created_at', { ascending: true })
+      if (nErr) {
+        console.error('[v1 GET orders] credit-note query failed', nErr)
+        return apiError(500, 'internal_error', 'Internal error. Please try again.')
+      }
+      notes = n ?? []
+    }
     return NextResponse.json({
-      orders: (data ?? []).map((o) => ({
-        id: o.id, gb_amount: Number(o.gb_amount), amount_usd: Number(o.amount_usd), status: o.payment_status,
-        invoice_number: o.invoice_number, refunded_usd: Number(o.refunded_usd ?? 0), refunded_at: o.refunded_at,
-        created_at: o.created_at, paid_at: o.paid_at,
-      })),
+      orders: (data ?? []).map((o: any) => shapeOrder(o, { siteUrl: appUrl(), taxOf: orderTaxSummary }, notes)),
       total, limit, offset, has_more: offset + (data?.length ?? 0) < total,
     })
   })

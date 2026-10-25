@@ -202,18 +202,28 @@ export async function sendDisputeLostEmail(supabase: Admin, userId: string, p: {
 
 // Auto-recharge could not top the account up. `disabled` = it has been switched off.
 export async function sendAutoRechargeProblemEmail(supabase: Admin, userId: string, p: {
-  kind: 'failed' | 'disabled' | 'cap'; amountUsd: number; gb: number; reason?: string | null; capUsd?: number
+  kind: 'failed' | 'disabled' | 'cap' | 'expiring' | 'expired'; amountUsd: number; gb: number; reason?: string | null; capUsd?: number
+  last4?: string | null; expires?: string | null
 }) {
   const c = await customerEmail(supabase, userId)
   if (!c) return
-  const body = p.kind === 'cap'
+  const cardName = p.last4 ? `your saved card ending ${escapeHtml(p.last4)}` : 'your saved card'
+  const body = p.kind === 'expiring'
+    ? `<p style=\"color:#444;text-align:center;\">Hi ${escapeHtml(c.first)}, ${cardName} expires${p.expires ? ` on <strong>${escapeHtml(p.expires)}</strong>` : ' soon'}. Auto-recharge can't charge a card that has expired, so it would switch itself off. To keep it running, pay once by card with &ldquo;Save this card for auto-recharge&rdquo; ticked and your new card replaces this one. Nothing has been charged.</p>`
+    : p.kind === 'expired'
+    ? `<p style=\"color:#444;text-align:center;\">Hi ${escapeHtml(c.first)}, ${cardName} has expired, so auto-recharge has been switched off. Nothing was charged. Pay once by card with &ldquo;Save this card for auto-recharge&rdquo; ticked, then turn auto-recharge back on from Billing.</p>`
+    : p.kind === 'cap'
     ? `<p style="color:#444;text-align:center;">Hi ${escapeHtml(c.first)}, your balance is below your auto-recharge threshold, but topping up ${escapeHtml(p.gb)} GB (${money(p.amountUsd)}) would pass the ${money(p.capUsd ?? 0)} 30-day limit you set. Nothing was charged. Raise the limit or buy bandwidth yourself from your dashboard.</p>`
     : p.kind === 'disabled'
       ? `<p style="color:#444;text-align:center;">Hi ${escapeHtml(c.first)}, auto-recharge has been switched off because the last few charges to your saved card did not go through${p.reason ? ` (${escapeHtml(p.reason)})` : ''}. You have not been charged. Add a new card and turn it back on from Billing.</p>`
       : `<p style="color:#444;text-align:center;">Hi ${escapeHtml(c.first)}, we tried to top up ${escapeHtml(p.gb)} GB (${money(p.amountUsd)}) on your saved card and it did not go through${p.reason ? ` (${escapeHtml(p.reason)})` : ''}. You have not been charged. We will try again; after a few failures auto-recharge switches itself off.</p>`
   await sendEmailSafe({
     to: c.email,
-    subject: p.kind === 'cap' ? 'Auto-recharge paused — your limit was reached' : p.kind === 'disabled' ? 'Auto-recharge switched off — GlobProxy' : 'Auto-recharge payment didn’t go through',
+    subject: p.kind === 'cap' ? 'Auto-recharge paused — your limit was reached'
+      : p.kind === 'disabled' ? 'Auto-recharge switched off — GlobProxy'
+      : p.kind === 'expiring' ? 'Your saved card is about to expire — GlobProxy'
+      : p.kind === 'expired' ? 'Auto-recharge switched off — your saved card expired'
+      : 'Auto-recharge payment didn’t go through',
     html: shell('Auto-recharge', `${body}
       <div style="text-align:center;margin:28px 0;">
         <a href="${appUrl()}/dashboard/billing" style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">Open billing →</a>

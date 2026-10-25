@@ -6,7 +6,7 @@ import { PLANS, resolveOrder, CUSTOM_MIN_GB, CUSTOM_MAX_GB } from '@/lib/plans'
 import { formatUsd } from '@/lib/format'
 import { validThreshold, validCap } from '@/lib/rechargeRules'
 
-type Card = { brand: string | null; last4: string | null; exp_month: string | null; exp_year: string | null }
+type Card = { brand: string | null; last4: string | null; exp_month: string | null; exp_year: string | null; expired?: boolean; expires_soon?: boolean; valid_through?: string | null }
 type Settings = {
   enabled: boolean; threshold_gb: number; plan_slug: string; gb: number | null
   monthly_cap_usd: number; consecutive_failures: number; disabled_reason: string | null
@@ -17,6 +17,7 @@ const REASONS: Record<string, string> = {
   no_saved_card: 'No saved card was found.',
   invalid_plan: 'The selected top-up is no longer available.',
   account_closed: 'The account was closed.',
+  card_expired: 'The saved card expired.',
 }
 const reasonText = (r: string | null) => !r ? null : r.startsWith('payment_failed') ? 'The last few charges to your card did not go through.' : (REASONS[r] ?? null)
 
@@ -131,6 +132,11 @@ export default function AutoRechargePanel() {
           ) : (
             <div className="grid gap-4 max-w-lg">
               {why && <p className="text-sm text-amber-700 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2">Auto-recharge was switched off. {why}</p>}
+              {card.expired ? (
+                <p className="text-sm text-red-700 bg-red-50 border border-red-100 rounded-xl px-3 py-2">This card has expired, so it can&apos;t be charged. Pay once by card with &ldquo;Save this card for auto-recharge&rdquo; ticked to replace it, then turn auto-recharge on.</p>
+              ) : card.expires_soon ? (
+                <p className="text-sm text-amber-700 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2">This card is valid {card.valid_through ? `through ${card.valid_through}` : 'only a little longer'}. To keep auto-recharge running, pay once by card with &ldquo;Save this card for auto-recharge&rdquo; ticked and the new card replaces it.</p>
+              ) : null}
               <div className="flex items-center justify-between text-sm text-ink2">
                 <span>Saved card: <span className="font-mono">{card.brand ?? 'Card'} •••• {card.last4 ?? '????'}</span>{card.exp_month && card.exp_year ? <span className="text-muted"> · exp {card.exp_month}/{card.exp_year}</span> : null}</span>
                 <button onClick={removeCard} disabled={saving} className="text-xs text-muted hover:text-red-500 underline disabled:opacity-50">Remove card</button>
@@ -165,7 +171,7 @@ export default function AutoRechargePanel() {
                 )}
               </label>
               <div className="flex items-center gap-3">
-                <button onClick={() => save(true)} disabled={saving} className="bg-accent text-white px-5 py-2.5 rounded-xl text-sm font-medium disabled:opacity-60">
+                <button onClick={() => save(true)} disabled={saving || !!card.expired} className="bg-accent text-white px-5 py-2.5 rounded-xl text-sm font-medium disabled:opacity-60">
                   {saving ? 'Saving…' : enabled ? 'Update' : 'Turn on'}
                 </button>
                 {enabled

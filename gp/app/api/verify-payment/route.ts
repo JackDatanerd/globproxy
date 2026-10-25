@@ -64,17 +64,20 @@ export async function POST(req: Request) {
     }
     if (!order) return NextResponse.json({ error: 'Order not found' }, { status: 404 })
 
-    // Already processed — don't double credit
-    if (order.payment_status === 'paid' || order.bandwidth_credited) {
-      return NextResponse.json({ success: true, already_paid: true })
-    }
-
+    // A refunded order is final — and answered FIRST: a refunded order was credited before it
+    // was refunded, so the 'already processed' branch below would otherwise tell someone
+    // reopening an old callback link "payment successful" for money that was returned.
     // Only a refunded order is final. 'cancelled'/'failed' are local labels
     // (new checkout auto-cancel, Cancel button, a declined first attempt, the
     // 24h cleanup) — if Paystack confirms the money arrived, it is credited,
     // exactly as the webhook does.
     if (order.payment_status === 'refunded') {
       return NextResponse.json({ error: 'This order has been refunded.' }, { status: 400 })
+    }
+
+    // Already processed — don't double credit
+    if (order.payment_status === 'paid' || order.bandwidth_credited) {
+      return NextResponse.json({ success: true, already_paid: true })
     }
 
     let txn: Awaited<ReturnType<typeof verifyTransaction>>

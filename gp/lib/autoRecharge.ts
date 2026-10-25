@@ -1,12 +1,15 @@
 import { createAdminClient } from '@/lib/supabase/server'
-import { chargeAuthorization, generateReference, verifyTransaction, paymentMismatchReason } from '@/lib/paystack'
+import { chargeAuthorization, generateReference, verifyTransaction, paymentMismatchReason, ChargeRejectedError } from '@/lib/paystack'
 import { activateBandwidth } from '@/lib/bandwidth'
 import { resolveOrder } from '@/lib/plans'
 import { purchaseBlock } from '@/lib/checkout'
 import { currentTax } from '@/lib/invoiceTax'
 import { sendAutoRechargeProblemEmail } from '@/lib/billingEmails'
 import { alertAdminPayment } from '@/lib/paymentAlerts'
-import { isBelowThreshold, withinCap, cooldownElapsed, RECHARGE_COOLDOWN_MS, RECHARGE_MAX_FAILURES } from '@/lib/rechargeRules'
+import {
+  withinCap, RECHARGE_COOLDOWN_MS, RECHARGE_MAX_FAILURES, needsCustomerAction, NEEDS_CUSTOMER_REASON,
+  attemptStillOpen, orderSpend, cardExpired, cardExpiryLabel, CARD_WARN_DAYS,
+} from '@/lib/rechargeRules'
 
 type Admin = Awaited<ReturnType<typeof createAdminClient>>
 
@@ -18,7 +21,8 @@ type Admin = Awaited<ReturnType<typeof createAdminClient>>
 // confirmation e-mail and reconcile safety net as a checkout the customer paid by hand.
 
 const MAX_RECHARGES_PER_RUN = 5 // a charge + verify + credit is several subrequests; the rest wait for the next tick
-const CHUNK = 100
+const DUE_BATCH = 100 // rules read per tick; the database has already filtered them to the ones that are due
+const EXPIRY_BATCH = 50 // expiry notices sent per tick
 
 // Stores the reusable card behind a successful charge, when the customer agreed at checkout
 // (metadata.save_card — set only by our own /api/checkout, and signed by Paystack). Best-effort:
@@ -41,6 +45,7 @@ export async function captureSavedCard(supabase: Admin, userId: string, data: an
       signature: auth.signature ? String(auth.signature) : null,
       consent_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
+      expiry_warned_at: null, // a new card starts a new expiry warning cycle
     }, { onConflict: 'user_id' })
     if (error) { console.error('[auto-recharge] could not save the card', userId, error); return false }
     return true
@@ -50,30 +55,51 @@ export async function captureSavedCard(supabase: Admin, userId: string, data: an
   }
 }
 
+// What the rule has spent in the cap's rolling 30 days, and when it last paid. The cron
+// (cap enforcement) and the Billing page (what the customer is shown) both call this, so
+// they cannot disagree about how much headroom is left.
+export async function autoRechargeSpend(supabase: Admin, userId: string): Promise<{ spent: number; lastChargeAt: string | null }> {
+  const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
+  const PAGE = 1000
+  const rows: any[] = []
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase.from('orders')
+      .select('payment_status, amount_usd, refunded_usd, created_at')
+      .eq('user_id', userId).eq('auto_recharge', true).in('payment_status', ['pending', 'paid']).gte('created_at', since)
+      .order('created_at', { ascending: false }).order('id', { ascending: false })
+      .range(from, from + PAGE - 1)
+    if (error) throw error
+    rows.push(...(data ?? []))
+    if ((data?.length ?? 0) < PAGE) break
+  }
+  const lastPaid = rows.find(o => o.payment_status === 'paid')
+  return { spent: orderSpend(rows), lastChargeAt: lastPaid?.created_at ?? null }
+}
+
 export async function runAutoRecharge(): Promise<Record<string, unknown>> {
   try {
     const supabase = await createAdminClient()
-    const { data: rules, error } = await supabase.from('auto_recharge').select('*')
-      .eq('enabled', true).order('last_attempt_at', { ascending: true, nullsFirst: true }).limit(500)
-    if (error) return { error: `auto-recharge rules could not be read: ${error.message}` }
-    if (!rules?.length) return { enabled: 0 }
 
-    // One balance read per chunk, not one per customer.
-    const balance = new Map<string, number>()
-    for (let i = 0; i < rules.length; i += CHUNK) {
-      const ids = rules.slice(i, i + CHUNK).map(r => r.user_id)
-      const { data, error: bErr } = await supabase.from('bandwidth_accounts').select('user_id, available_gb').in('user_id', ids)
-      if (bErr) return { error: `bandwidth balances could not be read: ${bErr.message}` }
-      for (const b of data ?? []) balance.set(b.user_id, Number(b.available_gb))
-    }
+    // Tell customers whose saved card is about to lapse (or has) before it costs them a top-up.
+    const expiry = await warnExpiringCards(supabase).catch((e) => {
+      console.error('[auto-recharge] expiry sweep failed', e)
+      return { warned: 0, expired: 0 }
+    })
+
+    // The database picks the rules that are due: enabled, below their threshold, past their
+    // cooldown. (Reading "the 500 oldest attempts" and testing balances here let rules that
+    // never need a top-up crowd out the ones that do, once there were enough of them.)
+    const { data: due, error } = await supabase.rpc('auto_recharge_due', {
+      p_cooldown_seconds: Math.round(RECHARGE_COOLDOWN_MS / 1000), p_limit: DUE_BATCH,
+    })
+    if (error) return { error: `auto-recharge rules could not be read: ${error.message}`, expiry }
+    const rules = (due ?? []) as any[]
+    if (!rules.length) return { due: 0, expiry }
 
     let attempted = 0, recharged = 0, pending = 0, failed = 0, skipped = 0
     const errors: string[] = []
     for (const r of rules) {
       if (attempted >= MAX_RECHARGES_PER_RUN) break
-      // No balance row = nothing bought yet; auto-recharge tops up, it does not first-buy.
-      if (!balance.has(r.user_id) || !isBelowThreshold(balance.get(r.user_id)!, Number(r.threshold_gb))) continue
-      if (!cooldownElapsed(r.last_attempt_at)) continue
       try {
         const out = await rechargeOne(supabase, r)
         if (out === 'skipped') { skipped++; continue }
@@ -87,11 +113,35 @@ export async function runAutoRecharge(): Promise<Record<string, unknown>> {
         console.error('[auto-recharge] attempt threw', r.user_id, e)
       }
     }
-    return { enabled: rules.length, attempted, recharged, pending, failed, skipped, ...(errors.length ? { error: `${errors.length} auto-recharge attempt(s) threw: ${errors[0]}` } : {}) }
+    return { due: rules.length, attempted, recharged, pending, failed, skipped, expiry, ...(errors.length ? { error: `${errors.length} auto-recharge attempt(s) threw: ${errors[0]}` } : {}) }
   } catch (e: any) {
     console.error('[auto-recharge] run failed', e)
     return { error: e?.message ?? 'auto-recharge run failed' }
   }
+}
+
+// One notice per card: "expires on MM/YYYY" ahead of time, or "has expired" (and the rule is
+// switched off, since a lapsed card can only fail). A new card clears the mark.
+async function warnExpiringCards(supabase: Admin): Promise<{ warned: number; expired: number }> {
+  const { data, error } = await supabase.rpc('auto_recharge_expiring', { p_days: CARD_WARN_DAYS, p_limit: EXPIRY_BATCH })
+  if (error) throw error
+  let warned = 0, expired = 0
+  for (const row of (data ?? []) as Array<{ user_id: string }>) {
+    // Claim the notice first so two overlapping ticks cannot both send it.
+    const { data: claimed, error: clErr } = await supabase.from('saved_cards')
+      .update({ expiry_warned_at: new Date().toISOString() })
+      .eq('user_id', row.user_id).is('expiry_warned_at', null).select('last4, exp_month, exp_year')
+    if (clErr) { console.error('[auto-recharge] expiry claim failed', row.user_id, clErr); continue }
+    const card = claimed?.[0]
+    if (!card) continue
+    const gone = cardExpired(card.exp_month, card.exp_year)
+    if (gone) await disable(supabase, row.user_id, 'card_expired')
+    await sendAutoRechargeProblemEmail(supabase, row.user_id, {
+      kind: gone ? 'expired' : 'expiring', amountUsd: 0, gb: 0, last4: card.last4, expires: cardExpiryLabel(card.exp_month, card.exp_year),
+    })
+    if (gone) expired++; else warned++
+  }
+  return { warned, expired }
 }
 
 async function disable(supabase: Admin, userId: string, reason: string) {
@@ -102,35 +152,58 @@ async function disable(supabase: Admin, userId: string, reason: string) {
 
 type Outcome = 'skipped' | 'credited' | 'pending' | 'failed'
 
+// Pushes a rule that is not going to be charged this tick to the back of the queue, so a
+// few blocked accounts (open dispute, cap reached, an earlier attempt still settling) can
+// never sit at the front and hold up the rules behind them. It is looked at again after
+// the cooldown.
+async function defer(supabase: Admin, userId: string) {
+  const { error } = await supabase.from('auto_recharge').update({ last_attempt_at: new Date().toISOString() }).eq('user_id', userId)
+  if (error) console.error('[auto-recharge] could not defer', userId, error)
+}
+
 async function rechargeOne(supabase: Admin, r: any): Promise<Outcome> {
   const userId: string = r.user_id
 
   const { data: profile, error: pErr } = await supabase.from('profiles').select('is_deleted, is_suspended').eq('id', userId).maybeSingle()
   if (pErr) throw pErr
   if (!profile || profile.is_deleted) { await disable(supabase, userId, 'account_closed'); return 'skipped' }
-  if (profile.is_suspended) return 'skipped' // comes back by itself if the account does
-  if (await purchaseBlock(supabase, userId)) return 'skipped' // open dispute / payment hold
+  if (profile.is_suspended) { await defer(supabase, userId); return 'skipped' } // comes back by itself if the account does
+  if (await purchaseBlock(supabase, userId)) { await defer(supabase, userId); return 'skipped' } // open dispute / payment hold
 
-  const { data: card, error: cErr } = await supabase.from('saved_cards').select('authorization_code, email').eq('user_id', userId).maybeSingle()
+  const { data: card, error: cErr } = await supabase.from('saved_cards').select('authorization_code, email, last4, exp_month, exp_year').eq('user_id', userId).maybeSingle()
   if (cErr) throw cErr
   if (!card) { await disable(supabase, userId, 'no_saved_card'); return 'skipped' }
+  if (cardExpired(card.exp_month, card.exp_year)) {
+    // A lapsed card can only fail; say so once instead of failing three times.
+    await disable(supabase, userId, 'card_expired')
+    await sendAutoRechargeProblemEmail(supabase, userId, { kind: 'expired', amountUsd: 0, gb: 0, last4: card.last4, expires: cardExpiryLabel(card.exp_month, card.exp_year) })
+    return 'skipped'
+  }
 
   const quote = resolveOrder(r.plan_slug, r.gb ?? undefined)
   if (!quote) { await disable(supabase, userId, 'invalid_plan'); return 'skipped' }
 
+  // The previous top-up may still be settling (a slow charge, a webhook not landed, an
+  // answer we never saw). The balance is low only because it has not been credited yet:
+  // charging again would buy twice.
+  if (r.last_order_id) {
+    const { data: prev, error: prevErr } = await supabase.from('orders')
+      .select('payment_status, bandwidth_credited, created_at').eq('id', r.last_order_id).maybeSingle()
+    if (prevErr) throw prevErr
+    if (attemptStillOpen(prev)) { await defer(supabase, userId); return 'skipped' }
+  }
+
   // The customer's own ceiling, over a rolling 30 days (pending counts: it may yet be paid).
-  const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
-  const { data: past, error: sErr } = await supabase.from('orders').select('amount_usd')
-    .eq('user_id', userId).eq('auto_recharge', true).in('payment_status', ['pending', 'paid']).gte('created_at', since)
-  if (sErr) throw sErr
-  const spent = (past ?? []).reduce((s, o) => s + Number(o.amount_usd), 0)
+  const { spent } = await autoRechargeSpend(supabase, userId)
   if (!withinCap(spent, quote.total, Number(r.monthly_cap_usd))) {
     // Tell them once per cap period, then stay quiet until they raise it.
+    const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
     const { data: told } = await supabase.from('auto_recharge').update({ cap_notified_at: new Date().toISOString() })
       .eq('user_id', userId).or(`cap_notified_at.is.null,cap_notified_at.lt.${since}`).select('user_id')
     if ((told?.length ?? 0) > 0) {
       await sendAutoRechargeProblemEmail(supabase, userId, { kind: 'cap', amountUsd: quote.total, gb: quote.gb, capUsd: Number(r.monthly_cap_usd) })
     }
+    await defer(supabase, userId)
     return 'skipped'
   }
 
@@ -162,8 +235,19 @@ async function rechargeOne(supabase: Admin, r: any): Promise<Outcome> {
     status = String(res.status ?? '')
     gateway = res.gateway_response ?? null
   } catch (e: any) {
-    status = 'failed'
-    gateway = e?.message ?? 'charge failed'
+    if (e instanceof ChargeRejectedError) {
+      // Paystack refused the request outright: nothing was charged.
+      status = 'failed'
+      gateway = e.message || 'charge failed'
+    } else {
+      // We do not know whether the card was charged (timeout, dropped connection, 5xx, an
+      // unreadable answer). Not a decline: the order stays pending, no failure is counted
+      // and the customer is not told "you have not been charged". The webhook, or the
+      // reconcile cron looking the reference up, settles it; the open attempt blocks a
+      // second charge in the meantime.
+      console.error('[auto-recharge] charge outcome unknown — leaving the order pending for reconcile', order.id, e)
+      return 'pending'
+    }
   }
 
   if (status === 'success') {
@@ -184,6 +268,13 @@ async function rechargeOne(supabase: Admin, r: any): Promise<Outcome> {
     return 'pending' // money moved; the webhook / reconcile cron completes the credit
   }
 
+  // A card that wants an OTP / 3-D Secure cannot be topped up with nobody there. It is a
+  // failure now, not a pending order retried every cooldown.
+  if (needsCustomerAction(status)) {
+    status = 'failed'
+    gateway = NEEDS_CUSTOMER_REASON
+  }
+
   if (status === 'failed' || status === 'abandoned' || status === 'reversed') {
     await supabase.from('orders').update({
       payment_status: 'failed', failure_reason: (gateway ?? 'Declined').slice(0, 300), failed_at: new Date().toISOString(),
@@ -202,8 +293,7 @@ async function rechargeOne(supabase: Admin, r: any): Promise<Outcome> {
     return 'failed'
   }
 
-  // Anything else (a card that wants 3-D Secure / an OTP, still processing): the order stays
-  // pending and the reconcile cron settles it; a card that needs the customer present will
-  // simply never complete, and the customer is e-mailed by reconcile's failed-payment path.
+  // Anything else (still processing): the order stays pending and the reconcile cron
+  // settles it; the open attempt stops the next tick charging a second time.
   return 'pending'
 }

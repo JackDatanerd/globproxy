@@ -19,6 +19,7 @@ import { findReportedError, recordCronRun, checkCronFreshness, checkStockWatchdo
 import { runInviteNotices, runResellerMaintenance } from '@/lib/resellerCron'
 import { runAccountDeletions } from '@/lib/accountDeletionCron'
 import { runAutoRecharge } from '@/lib/autoRecharge'
+import { ATTEMPT_OPEN_MS } from '@/lib/rechargeRules'
 import { NextResponse } from 'next/server'
 
 // Secured with the CRON_SECRET Worker secret (pushed by .github/workflows/deploy.yml).
@@ -380,7 +381,7 @@ async function runReconcile() {
     const maxAge = new Date(now - 3 * 24 * 60 * 60 * 1000).toISOString()
     const recheck = new Date(now - 60 * 60 * 1000).toISOString()
 
-    const COLS = 'id, user_id, payment_status, amount_usd, gb_amount, paystack_reference, is_canary, pay_currency, pay_amount, created_at'
+    const COLS = 'id, user_id, payment_status, amount_usd, gb_amount, paystack_reference, is_canary, pay_currency, pay_amount, created_at, auto_recharge'
     const { data: fresh, error } = await supabase.from('orders')
       .select(COLS)
       .eq('bandwidth_credited', false)
@@ -462,6 +463,15 @@ async function runReconcile() {
         // for an abandoned checkout; anything else (outage, network) is
         // retried next run rather than deferred an hour.
         if (!/not found/i.test(String(e?.message))) { errors++; settled = false; backoff = true }
+        else if (o.auto_recharge && o.payment_status === 'pending' && Date.now() - Date.parse(o.created_at) > ATTEMPT_OPEN_MS) {
+          // An auto-recharge charge request that never reached Paystack (it timed out before
+          // registering): nothing was charged and nobody is waiting on this order, but a
+          // pending order counts against the customer's 30-day cap until cleanup. Close it now,
+          // quietly — no e-mail, because no payment was ever attempted from the customer's side.
+          await supabase.from('orders').update({
+            payment_status: 'failed', failure_reason: 'The automatic charge never went through.', failed_at: new Date().toISOString(),
+          }).eq('id', o.id).eq('payment_status', 'pending').eq('bandwidth_credited', false)
+        }
       }
       if (settled) {
         await supabase.from('orders').update({ reconcile_checked_at: new Date().toISOString() }).eq('id', o.id)

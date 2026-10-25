@@ -748,15 +748,28 @@ export default function ApiDocsPage() {
               Your bandwidth purchases, newest first (read-only). Query: <span className="font-mono text-ink">limit</span>,{' '}
               <span className="font-mono text-ink">offset</span>, and optional <span className="font-mono text-ink">status</span>{' '}
               (<span className="font-mono text-ink">pending, paid, failed, refunded, cancelled</span>), <span className="font-mono text-ink">created_after</span> and{' '}
-              <span className="font-mono text-ink">created_before</span> (ISO 8601). One order: <span className="font-mono text-ink">GET /api/v1/orders/:id</span> (same fields).
+              <span className="font-mono text-ink">created_before</span> (ISO 8601). One order: <span className="font-mono text-ink">GET /api/v1/orders/:id</span> (same fields, plus{' '}
+              <span className="font-mono text-ink">billed_to</span> — the buyer block printed on the invoice).
+            </p>
+            <p className="text-sm text-ink2 mb-4">
+              Each order carries what its invoice says: the <span className="font-mono text-ink">plan</span>, how it was paid
+              (<span className="font-mono text-ink">payment_method</span> <span className="font-mono text-ink">card</span> or <span className="font-mono text-ink">mpesa</span>, with{' '}
+              <span className="font-mono text-ink">charged_currency</span> / <span className="font-mono text-ink">charged_amount</span>), the{' '}
+              <span className="font-mono text-ink">tax</span> contained in the price (prices are tax-inclusive; <span className="font-mono text-ink">null</span> when none applies),{' '}
+              <span className="font-mono text-ink">invoice_number</span> and <span className="font-mono text-ink">invoice_url</span> (opens for the signed-in account owner, not for API keys),
+              and one entry in <span className="font-mono text-ink">credit_notes</span> per refund.
             </p>
             <Code>{`curl https://globproxy.com/api/v1/orders?status=paid \\
   -H "Authorization: Bearer YOUR_KEY"`}</Code>
             <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{
   "orders": [
-    { "id": "5d0b...", "gb_amount": 100, "amount_usd": 249, "status": "paid", "invoice_number": "INV-000123",
-      "refunded_usd": 0, "refunded_at": null, "created_at": "2026-10-01T08:00:00.000Z", "paid_at": "2026-10-01T08:01:10.000Z" }
+    { "id": "5d0b...", "gb_amount": 100, "amount_usd": 249, "status": "paid", "plan": "growth",
+      "payment_method": "card", "charged_currency": "USD", "charged_amount": 249,
+      "tax": { "label": "VAT", "rate_pct": 16, "included_usd": 34.34 }, "auto_recharge": false, "dispute": null,
+      "invoice_number": "INV-000123", "invoice_url": "https://globproxy.com/invoice/5d0b...",
+      "refunded_usd": 0, "refunded_at": null, "credit_notes": [],
+      "created_at": "2026-10-01T08:00:00.000Z", "paid_at": "2026-10-01T08:01:10.000Z" }
   ],
   "total": 1, "limit": 50, "offset": 0, "has_more": false
 }`}</Code>
