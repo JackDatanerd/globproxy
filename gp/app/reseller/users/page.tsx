@@ -56,7 +56,7 @@ export default async function ResellerUsersPage({
           <div className="font-display font-bold text-accent">{formatGb(bw?.available_gb)} GB</div>
         </div>
       </div>
-      {me?.role === 'reseller' && <ResellerStockAlert initialGb={me.reseller_low_stock_gb == null ? null : Number(me.reseller_low_stock_gb)} />}
+      {(me?.role === 'reseller' || me?.role === 'admin') && <ResellerStockAlert initialGb={me.reseller_low_stock_gb == null ? null : Number(me.reseller_low_stock_gb)} />}
       <ResellerUsersList
         clients={(clients as any[]) ?? []}
         availableGb={Number(bw?.available_gb ?? 0)}

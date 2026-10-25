@@ -836,7 +836,7 @@ export default function ApiDocsPage() {
               For an address with no confirmed account the call still succeeds: the GB is reserved out of your stock, the person is e-mailed an invitation, and you get
               <span className="font-mono text-ink"> "status": "pending_signup"</span> with a <span className="font-mono text-ink">pending_id</span> and an <span className="font-mono text-ink">expires_at</span> (30 days).
               When they sign up and confirm that address the bandwidth is added automatically and you receive a <span className="font-mono text-ink">bandwidth_allocated</span> webhook with the new <span className="font-mono text-ink">transfer_id</span>.
-              An unclaimed invitation returns to your stock when it expires; list your invitations with <span className="font-mono text-ink">GET /reseller/invitations</span> and withdraw one early with <span className="font-mono text-ink">DELETE /reseller/invitations/:id</span> (the <span className="font-mono text-ink">pending_id</span>), or cancel it from your dashboard's Transfers page.
+              An unclaimed invitation returns to your stock when it expires; list your invitations with <span className="font-mono text-ink">GET /reseller/invitations</span> lower it with <span className="font-mono text-ink">PATCH /reseller/invitations/:id</span> or withdraw it early with <span className="font-mono text-ink">DELETE /reseller/invitations/:id</span> (the <span className="font-mono text-ink">pending_id</span>), or do either from your dashboard's Transfers page.
             </p>
             <p className="text-sm text-ink2 mt-4"><span className="font-mono text-ink">402 insufficient_bandwidth</span> if your stock can't cover it. Shares the dashboard's per-reseller throttle.</p>
           </Endpoint>
@@ -891,6 +891,16 @@ export default function ApiDocsPage() {
   ],
   "total": 1, "limit": 50, "offset": 0, "has_more": false
 }`}</Code>
+          </Endpoint>
+
+          <Endpoint method="PATCH" path="/api/v1/reseller/invitations/:id" title="Lower an invitation (resellers)">
+            <p className="text-sm text-ink2 mb-4">Lowers the amount reserved on an invitation nobody has claimed; the difference returns to your available balance immediately. The expiry and reminder count are unchanged. To raise it, allocate to the address again; to remove it, use <span className="font-mono text-ink">DELETE</span>. Answers <span className="font-mono text-ink">400</span> if the new amount is not smaller, <span className="font-mono text-ink">404</span> once the invitation was claimed, cancelled or expired. Needs the <span className="font-mono text-ink">allocate</span> scope.</p>
+            <Code>{`curl -X PATCH https://globproxy.com/api/v1/reseller/invitations/PENDING_ID \\
+  -H "Authorization: Bearer YOUR_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"gb": 10}'`}</Code>
+            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <Code>{`{ "success": true, "gb": 10, "returned_gb": 15 }`}</Code>
           </Endpoint>
 
           <Endpoint method="DELETE" path="/api/v1/reseller/invitations/:id" title="Cancel an invitation (resellers)">
@@ -998,7 +1008,7 @@ export default function ApiDocsPage() {
             ['bandwidth_threshold_crossed', 'event', 'The share of your account that is COMMITTED (allocated into sub-users) crossed 80% or 95%. data: threshold_pct, allocated_pct (what triggers it), used_pct (GB actually consumed ÷ total), available_gb, total_gb, used_gb, allocated_gb. Checked every 5 minutes. Endpoints that do not also subscribe to bandwidth_exhausted get it once more at 100% (threshold_pct 100). (used_pct used to carry the allocated figure; it now means what it says.)'],
             ['bandwidth_exhausted', 'event', 'Available (unallocated) bandwidth reached zero. data: allocated_pct, used_pct, available_gb, total_gb, used_gb, allocated_gb.'],
             ['bandwidth_credited', 'event', 'Bandwidth was added to the account. data: gb_credited, source ("purchase", "reseller_allocation", "referral_bonus" or "admin_adjustment"), plus order_id and amount_usd for purchases, transfer_id for allocations, role ("referrer" / "referred") for referral bonuses.'],
-            ['bandwidth_debited', 'event', 'Unallocated bandwidth was removed from the account by a support adjustment. data: gb_debited, source ("admin_adjustment"), total_gb, available_gb. Refund clawbacks arrive as bandwidth_refunded and reseller reclaims as bandwidth_reclaimed.'],
+            ['bandwidth_debited', 'event', 'Unallocated bandwidth was removed from the account. data: gb_debited, source ("admin_adjustment", or "referral_bonus_reversed" with role referrer/referred when a refund took a referral GB bonus back), plus total_gb and available_gb for admin_adjustment. Purchase refund clawbacks arrive as bandwidth_refunded and reseller reclaims as bandwidth_reclaimed.'],
             ['bandwidth_allocated', 'event', 'You allocated bandwidth to a client (resellers). data: transfer_id, recipient_email, gb, note.'],
             ['reseller_invitation_created', 'event', 'You allocated to an address with no confirmed account yet (resellers); the stock is reserved. data: pending_id, recipient_email, gb, total_gb, expires_at, topped_up (true when added to an invitation already open for that address).'],
             ['reseller_invitation_expired', 'event', 'An invitation was not claimed within 30 days and its stock returned to you (resellers). data: pending_id, recipient_email, gb.'],

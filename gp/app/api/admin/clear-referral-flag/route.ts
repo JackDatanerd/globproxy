@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { authorizeAdmin, readJson, isUuid, badRequest } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
-import { REFERRAL_GB_BONUS, REFERRAL_MIN_ORDER_USD } from '@/lib/referrals'
+import { REFERRAL_GB_BONUS, REFERRAL_MIN_ORDER_USD, announceClearedReferral } from '@/lib/referrals'
 
 // A flagged referral (second signup from the same IP on one referrer's code)
 // earns nothing — no GB bonus, no commission — until an admin has looked at
@@ -28,6 +28,8 @@ export async function POST(req: Request) {
     if (!result) return NextResponse.json({ error: 'That referral is not flagged.' }, { status: 409 })
 
     await logAdminAction(auth.supabase, { adminId: auth.adminId, action: 'referral_flag_cleared', targetRef: body!.referralId, details: result as Record<string, unknown> })
+    // What the clearing paid out back-dated is announced like a normal conversion.
+    await announceClearedReferral(auth.supabase as any, body!.referralId, result as { bonus_credited?: boolean; commissions_backfilled?: number })
     return NextResponse.json({ success: true, backfill: result })
   } catch (err: any) {
     console.error('[admin/clear-referral-flag] unexpected error', err)

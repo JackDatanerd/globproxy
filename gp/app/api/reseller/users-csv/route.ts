@@ -1,5 +1,6 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
+import { rateLimited, rateLimitedUser } from '@/lib/rateLimit'
 import { requireMfaVerified } from '@/lib/mfa'
 import { toCsv, csvResponse } from '@/lib/csv'
 import { NextResponse } from 'next/server'
@@ -27,6 +28,11 @@ export async function GET(req: Request) {
   if (mfaCheck) return mfaCheck
   const inactive = await requireActiveUser(user.id)
   if (inactive) return inactive
+  // Up to tens of thousands of rows through the service role per call: bound repeats.
+  const limited = await rateLimited(req, 'RESELLER_RATE_LIMITER', `users-csv:${user.id}`)
+  if (limited) return limited
+  const perUser = await rateLimitedUser('RESELLER_RATE_LIMITER', user.id, 'users-csv')
+  if (perUser) return perUser
 
   const sp = new URL(req.url).searchParams
   const q = (sp.get('q') ?? '').trim().slice(0, 100)

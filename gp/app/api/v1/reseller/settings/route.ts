@@ -36,7 +36,7 @@ export async function GET(req: Request) {
 export async function PATCH(req: Request) {
   return withApiAuth(req, 'PATCH reseller settings', async ({ user, supabase }) => {
     const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).maybeSingle()
-    if (profile?.role !== 'reseller') return apiError(403, 'reseller_required', 'Reseller access required.')
+    if (!['reseller', 'admin'].includes(profile?.role ?? '')) return apiError(403, 'reseller_required', 'Reseller access required.')
     const json = await readJsonBody(req)
     if (!json.ok) return json.response
     const body = json.body

@@ -104,6 +104,7 @@ export async function allocateBandwidth(
     const msg = rpcError.message ?? ''
     if (msg.includes('Not enough bandwidth')) return fail(400, 'insufficient_bandwidth', 'Not enough bandwidth in your stock.')
     if (msg.includes('yourself')) return fail(400, 'invalid_request', 'Cannot allocate bandwidth to yourself.')
+    if (msg.includes('Too many new recipients')) return fail(429, 'rate_limited', NEW_RECIPIENTS_MESSAGE)
     if (msg.includes('Minimum allocation') || msg.includes('decimal places') || msg.includes('too large')) return fail(400, 'invalid_request', msg)
     console.error('[reseller/allocate] RPC failed', rpcError)
     return fail(500, 'internal_error', 'Failed to complete transfer.')
@@ -281,6 +282,32 @@ export async function cancelInvitation(
     pending_id: pendingId, recipient_email: before?.recipient_email ?? null, gb: Number(data), source,
   })
   return { ok: true, data: { returned_gb: Number(data) } }
+}
+
+// Lower the amount reserved on an open invitation (a typo'd figure) without cancelling it:
+// the difference goes straight back to the reseller's stock, the expiry and the reminder
+// count are untouched, and the 50-new-recipients budget is not spent again. To remove an
+// invitation altogether use cancelInvitation.
+export async function reduceInvitation(
+  admin: Admin, reseller: Reseller, pendingId: string, gb: unknown
+): Promise<AllocResult<{ gb: number; returned_gb: number }>> {
+  if (!isUuid(pendingId)) return fail(400, 'invalid_request', 'pending_id is required')
+  const n = cleanNumber(gb)
+  if (n === null || n < MIN_ALLOCATION_GB || n > 1_000_000 || Math.abs(n * 1000 - Math.round(n * 1000)) > 1e-6) {
+    return fail(400, 'invalid_request', `Enter the new amount: at least ${MIN_ALLOCATION_GB} GB, at most 3 decimal places`)
+  }
+  const newGb = Math.round(n * 1000) / 1000
+  const { data, error } = await admin.rpc('reduce_pending_reseller_transfer', { p_id: pendingId, p_reseller_id: reseller.id, p_gb: newGb })
+  if (error) {
+    const msg = error.message ?? ''
+    if (msg.includes('Minimum allocation') || msg.includes('decimal places')) return fail(400, 'invalid_request', msg)
+    console.error('[reseller/reduce-invite] RPC failed', error)
+    return fail(500, 'internal_error', 'Could not change this invitation.')
+  }
+  const row: any = Array.isArray(data) ? data[0] : data
+  if (!row || row.out_result === 'not_found') return fail(404, 'not_found', 'Invitation not found, or it has already been claimed, cancelled or expired.')
+  if (row.out_result === 'not_lower') return fail(400, 'invalid_request', `The invitation is for ${formatGb(Number(row.out_gb))} GB — enter a smaller amount, or send more to top it up.`)
+  return { ok: true, data: { gb: Number(row.out_gb), returned_gb: Number(row.out_returned_gb) } }
 }
 
 // Re-send the invitation e-mail for an invitation nobody has claimed yet. The

@@ -183,7 +183,7 @@ export async function processReferralForOrder(
 // One short "your referral converted" email to the referrer. Best-effort: the
 // reward is already recorded, so a mail failure must never fail or retry the
 // order. Never names the referred user.
-async function notifyReferrerConverted(
+export async function notifyReferrerConverted(
   admin: AdminClient,
   referrerId: string,
   what: { kind: 'commission'; usd: number; rate: number } | { kind: 'bonus'; gb: number }
@@ -213,4 +213,78 @@ async function notifyReferrerConverted(
   } catch (e) {
     console.error('[referrals] converted-notify failed — non-fatal', referrerId, e)
   }
+}
+
+// A referral that was held (flagged) and then cleared by an admin: whatever the clearing
+// paid out back-dated is announced exactly as it would have been at order time — the GB
+// bonus as `bandwidth_credited` webhooks to both accounts, and the "your referral
+// converted" e-mail to the referrer. `result` is clear_referral_flag()'s answer.
+export async function announceClearedReferral(
+  admin: AdminClient, referralId: string,
+  result: { bonus_credited?: boolean; commissions_backfilled?: number }
+): Promise<void> {
+  try {
+    const { data: ref } = await admin.from('referrals').select('referrer_id, referred_user_id').eq('id', referralId).maybeSingle()
+    if (!ref) return
+    if (result.bonus_credited) {
+      await Promise.all([
+        dispatchWebhook(ref.referred_user_id, 'bandwidth_credited', { gb_credited: REFERRAL_GB_BONUS, source: 'referral_bonus', role: 'referred' }),
+        dispatchWebhook(ref.referrer_id, 'bandwidth_credited', { gb_credited: REFERRAL_GB_BONUS, source: 'referral_bonus', role: 'referrer' }),
+      ]).catch((e) => console.error('[referrals] cleared-flag webhook failed (bonus already paid)', referralId, e))
+      await notifyReferrerConverted(admin, ref.referrer_id, { kind: 'bonus', gb: REFERRAL_GB_BONUS })
+    }
+    if (Number(result.commissions_backfilled ?? 0) > 0) {
+      const { data: first } = await admin.from('affiliate_commissions')
+        .select('commission_amount_usd, commission_rate').eq('referral_id', referralId)
+        .order('created_at', { ascending: true }).limit(1).maybeSingle()
+      if (first) await notifyReferrerConverted(admin, ref.referrer_id, { kind: 'commission', usd: Number(first.commission_amount_usd), rate: Number(first.commission_rate) })
+    }
+  } catch (e) {
+    console.error('[referrals] cleared-referral announcement failed — non-fatal', referralId, e)
+  }
+}
+
+// Sweep: tell both accounts when a refund took a referral GB bonus back. The database
+// trigger can only queue the event (referral_bonus_reversal_events); each row is
+// claimed (notified_at stamped) BEFORE it is sent so overlapping sweeps can never
+// double-send. Webhook: `bandwidth_debited`, source "referral_bonus_reversed".
+export async function sendReferralReversalNotices(admin: AdminClient): Promise<{ notified: number }> {
+  const out = { notified: 0 }
+  const { data: rows, error } = await admin.from('referral_bonus_reversal_events')
+    .select('referral_id, referrer_id, referred_user_id, gb_from_referrer, gb_from_referred')
+    .is('notified_at', null).order('created_at', { ascending: true }).limit(50)
+  if (error) { console.error('[referrals] reversal sweep query failed', error); return out }
+  for (const r of rows ?? []) {
+    try {
+      const { data: won } = await admin.from('referral_bonus_reversal_events')
+        .update({ notified_at: new Date().toISOString() }).eq('referral_id', r.referral_id).is('notified_at', null).select('referral_id')
+      if (!won?.length) continue
+      out.notified++
+      const sides: [string, number, 'referrer' | 'referred'][] = [
+        [r.referrer_id, Number(r.gb_from_referrer), 'referrer'], [r.referred_user_id, Number(r.gb_from_referred), 'referred'],
+      ]
+      for (const [userId, gb, role] of sides) {
+        if (!(gb > 0)) continue
+        await dispatchWebhook(userId, 'bandwidth_debited', { gb_debited: gb, source: 'referral_bonus_reversed', role })
+      }
+      if (Number(r.gb_from_referrer) > 0) {
+        const { data: ref } = await admin.from('profiles').select('email, full_name, is_deleted, is_suspended').eq('id', r.referrer_id).maybeSingle()
+        if (ref?.email && !ref.is_deleted && !ref.is_suspended && !String(ref.email).startsWith('[')) {
+          await sendEmail({
+            to: ref.email,
+            subject: 'A referral bonus was reversed',
+            html: `
+        <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
+          <h2 style="text-align:center;color:#111;">Referral bonus reversed</h2>
+          <p style="color:#444;text-align:center;">Hi ${escapeHtml(String(ref.full_name ?? '').split(' ')[0]) || 'there'}, the order behind one of your referral bonuses was refunded, so the ${escapeHtml(String(Number(r.gb_from_referrer)))} GB bonus was taken back (only unassigned bandwidth is ever removed).</p>
+          <p style="text-align:center;"><a href="${appUrl()}/dashboard/referrals" style="color:#0a7;">Open your referrals →</a></p>
+        </div>`,
+          }).catch((e) => console.error('[referrals] reversal email failed', r.referral_id, e))
+        }
+      }
+    } catch (e) {
+      console.error('[referrals] reversal notice failed for', r.referral_id, e)
+    }
+  }
+  return out
 }

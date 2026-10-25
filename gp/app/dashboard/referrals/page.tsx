@@ -10,6 +10,7 @@ import ExportButton from '@/components/dashboard/ExportButton'
 import { maskWallet, maskPhone, maskBank } from '@/lib/maskPayout'
 import { currentAccruingCycle, lastCompletedCycle, cycleIsPayable, formatCycleLabel } from '@/lib/payoutCycle'
 import { formatUsd } from '@/lib/format'
+import { getKesQuote } from '@/lib/fx'
 import {
   REFERRAL_GB_BONUS, REFERRAL_MIN_ORDER_USD, AFFILIATE_MIN_PAYOUT_USD, AFFILIATE_HOLD_HOURS,
   formatRatePct,
@@ -135,6 +136,16 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
     return 'payable'
   }
 
+  // M-Pesa affiliates are paid in KES at the market rate on the day it is sent; show an
+  // indicative figure so the USD amount is not the only thing they can see. Best-effort.
+  let kesPayable: number | null = null
+  if (isAffiliate && profile?.payout_method === 'mpesa' && payable > 0) {
+    try {
+      const q = await getKesQuote(admin)
+      if (q) kesPayable = Math.round(payable * q.market)
+    } catch { /* no rate right now: the USD figure stands alone */ }
+  }
+
   return (
     <div className="max-w-3xl">
       {loadFailed && (
@@ -162,7 +173,7 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
         <Tile label="Signed up" value={String(referralCount)} sub={`${convertedCount} purchased`} />
         {showMoney ? (
           <>
-            <Tile label="Payable" value={usd(Math.max(payable, 0))} accent sub={deductions > 0 ? `after ${usd(deductions)} of refund deductions` : 'awaiting the next payout run'} />
+            <Tile label="Payable" value={usd(Math.max(payable, 0))} accent sub={(deductions > 0 ? `after ${usd(deductions)} of refund deductions` : 'awaiting the next payout run') + (kesPayable !== null ? ` · ≈ KES ${kesPayable.toLocaleString('en-US')} today` : '')} />
             <Tile label="Paid to date" value={usd(paidTotal)} sub={inPayout > 0 ? `${usd(inPayout)} scheduled` : undefined} />
           </>
         ) : (

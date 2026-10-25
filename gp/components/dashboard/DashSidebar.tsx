@@ -21,7 +21,7 @@ const resellerNav = [
   { label: 'Transfers',     href: '/reseller/transfers' },
   { label: 'Buy Bandwidth', href: '/dashboard/buy' },
   { label: 'Usage',         href: '/dashboard/usage' },
-  { label: 'Earnings',      href: '/reseller/earnings' },
+  { label: 'Stock & Activity', href: '/reseller/earnings' },
   { label: 'Billing',       href: '/dashboard/billing' },
   { label: 'Referrals',     href: '/dashboard/referrals' },
   { label: 'Settings',      href: '/dashboard/settings' },

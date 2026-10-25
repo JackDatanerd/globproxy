@@ -15,6 +15,8 @@ import { NextResponse } from 'next/server'
 // Transfers page and CSV export).
 export async function GET(req: Request) {
   return withApiAuth(req, 'GET allocations', async ({ user, supabase }) => {
+    const { data: me } = await supabase.from('profiles').select('role').eq('id', user.id).maybeSingle()
+    if (!me || !['reseller', 'admin'].includes(me.role ?? '')) return apiError(403, 'reseller_required', 'Reseller access required.')
     const url = new URL(req.url)
     const r = await listTransfers(supabase, user.id, { limit: Number(url.searchParams.get('limit')) || undefined, before: url.searchParams.get('before'), beforeId: url.searchParams.get('before_id') })
     return r.ok ? NextResponse.json(r.data) : failFrom(r)

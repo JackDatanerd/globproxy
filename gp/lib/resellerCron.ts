@@ -5,6 +5,7 @@ import { lastCompletedCycle, formatCycleLabel } from '@/lib/payoutCycle'
 import { formatGb, formatUsd } from '@/lib/format'
 import { sendInviteResolutionNotices } from '@/lib/resellerAllocation'
 import { dispatchWebhook } from '@/lib/webhooks'
+import { sendReferralReversalNotices } from '@/lib/referrals'
 
 // Scheduled work for section 7 (resellers & affiliates). Both entry points
 // catch their own failures and report them as `{ error }` so the cron heartbeat
@@ -69,6 +70,8 @@ export async function runResellerMaintenance() {
       alerted++
     }
     out.low_stock_alerts = alerted
+
+    out.referral_reversals = await sendReferralReversalNotices(supabase)
 
     out.payout_reminder = await sendPayoutReminder(supabase)
   } catch (e: any) {

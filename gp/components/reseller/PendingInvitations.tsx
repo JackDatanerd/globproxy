@@ -29,6 +29,26 @@ export default function PendingInvitations({ invites }: { invites: PendingInvite
     }
   }
 
+  async function reduce(i: PendingInvite) {
+    const answer = window.prompt(`New amount in GB for ${i.email} (now ${formatGb(i.gb)} GB).\n\nThe difference goes back to your available stock. To raise it, send to this address again; to remove it, use Cancel.`, '')
+    if (answer === null) return
+    const n = Number(answer.trim())
+    if (!answer.trim() || !Number.isFinite(n) || n < 0.1 || n >= i.gb || Math.abs(n * 1000 - Math.round(n * 1000)) > 1e-6) {
+      toast.error(`Enter an amount from 0.1 up to just under ${formatGb(i.gb)} GB, with at most 3 decimals — nothing was changed`)
+      return
+    }
+    setBusy(`reduce:${i.id}`)
+    try {
+      const d = await apiJson('POST', '/api/reseller/invitations/reduce', { pending_id: i.id, gb: n })
+      toast.success(`Invitation lowered — ${formatGb(d.returned_gb)} GB returned to your stock`)
+      setTimeout(() => window.location.reload(), 600)
+    } catch (e: any) {
+      toast.error(e.message)
+    } finally {
+      setBusy(null)
+    }
+  }
+
   async function remind(i: PendingInvite) {
     setBusy(`remind:${i.id}`)
     try {
@@ -62,6 +82,11 @@ export default function PendingInvitations({ invites }: { invites: PendingInvite
                 {(reminded[i.id] ?? i.reminder_count ?? 0) < INVITE_REMINDER_MAX && (
                   <button onClick={() => remind(i)} disabled={busy !== null && busy.endsWith(i.id)} className="text-xs font-mono text-accent hover:underline disabled:opacity-50 mr-4">
                     {busy === `remind:${i.id}` ? 'Sending…' : 'Resend'}
+                  </button>
+                )}
+                {i.gb > 0.1 && (
+                  <button onClick={() => reduce(i)} disabled={busy !== null && busy.endsWith(i.id)} className="text-xs font-mono text-accent hover:underline disabled:opacity-50 mr-4">
+                    {busy === `reduce:${i.id}` ? 'Saving…' : 'Reduce'}
                   </button>
                 )}
                 <button onClick={() => cancel(i)} disabled={busy !== null && busy.endsWith(i.id)} className="text-xs font-mono text-accent hover:underline disabled:opacity-50">

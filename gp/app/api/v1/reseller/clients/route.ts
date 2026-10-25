@@ -13,6 +13,8 @@ import { ROSTER_MAX_PAGE, parseRosterFilter, parseRosterSort } from '@/lib/resel
 // capped at 100 — the most the roster query returns in one call.
 export async function GET(req: Request) {
   return withApiAuth(req, 'GET reseller clients', async ({ user, supabase }) => {
+    const { data: me } = await supabase.from('profiles').select('role').eq('id', user.id).maybeSingle()
+    if (!me || !['reseller', 'admin'].includes(me.role ?? '')) return apiError(403, 'reseller_required', 'Reseller access required.')
     const url = new URL(req.url)
     const { limit, offset } = parsePage(url, { limit: 50, max: ROSTER_MAX_PAGE })
     const q = (url.searchParams.get('q') ?? '').trim().slice(0, 100)

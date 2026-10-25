@@ -15,7 +15,7 @@ export async function POST(req: Request) {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single()
-    if (profile?.role !== 'reseller') return NextResponse.json({ error: 'Reseller access required' }, { status: 403 })
+    if (!['reseller', 'admin'].includes(profile?.role ?? '')) return NextResponse.json({ error: 'Reseller access required' }, { status: 403 })
     const mfa = await requireMfaVerified(req, user.id)
     if (mfa) return mfa
     const inactive = await requireActiveUser(user.id)
