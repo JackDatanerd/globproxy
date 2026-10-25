@@ -146,7 +146,7 @@ async function creditedGbFor(
 }
 
 // The Scale plan promises a dedicated account manager, white-label credentials
-// and custom geo allocation; nothing delivered them. Once, at the moment a Scale
+// and custom geo allocation; nothing delivered them. Once per customer, at the moment their first Scale
 // order is credited (this runs from activateBandwidth only — the post-credit
 // retry never calls it): tell the customer a person will be in touch, and tell
 // the admin there is someone to onboard.
@@ -154,8 +154,24 @@ async function notifyScaleOnboarding(
   supabase: Awaited<ReturnType<typeof createAdminClient>>,
   p: { order_id: string; user_id: string; gb_amount: number; amount_usd: number },
 ) {
-  const { data: order } = await supabase.from('orders').select('plan_slug').eq('id', p.order_id).maybeSingle()
+  const { data: order } = await supabase.from('orders').select('plan_slug, paid_at').eq('id', p.order_id).maybeSingle()
   if (order?.plan_slug !== 'scale') return
+  // Only the customer's FIRST credited Scale order starts onboarding. A repeat purchase
+  // (or a Scale auto-recharge) used to e-mail the customer "a person will be in touch"
+  // and give the admin another onboarding task every time. Ordered by (paid_at, id) so two
+  // Scale orders credited together still notify exactly once. If the lookup fails the
+  // notice is sent anyway: a duplicate is better than silence.
+  try {
+    let q = supabase.from('orders').select('id, paid_at')
+      .eq('user_id', p.user_id).eq('plan_slug', 'scale').eq('bandwidth_credited', true).eq('is_canary', false)
+      .neq('id', p.order_id)
+    if (order.paid_at) q = q.or(`paid_at.lt.${order.paid_at},and(paid_at.eq.${order.paid_at},id.lt.${p.order_id})`)
+    const { data: earlier, error } = await q.limit(1)
+    if (error) console.error('[bandwidth] Scale repeat check failed — notifying anyway', p.order_id, error)
+    else if ((earlier?.length ?? 0) > 0) return
+  } catch (e) {
+    console.error('[bandwidth] Scale repeat check threw — notifying anyway', p.order_id, e)
+  }
   const { data: profile } = await supabase.from('profiles').select('email, full_name').eq('id', p.user_id).maybeSingle()
   await alertAdminPayment('SCALE order — onboard this customer (account manager, white-label, geo allocation)', {
     order_id: p.order_id, customer: profile?.email ?? p.user_id, name: profile?.full_name ?? '',
