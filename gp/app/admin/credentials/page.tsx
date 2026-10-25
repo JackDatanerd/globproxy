@@ -7,6 +7,7 @@ import AdminCredentialAction from '@/components/admin/AdminCredentialAction'
 import { formatGb } from '@/lib/format'
 
 const PAGE_SIZE = 50
+const SEARCH_CAP = 200
 const STATUSES = ['active', 'pending', 'suspended'] as const
 
 export default async function AdminCredentialsPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
@@ -23,13 +24,17 @@ export default async function AdminCredentialsPage({ searchParams }: { searchPar
 
   // Owner search resolves to user ids first.
   let searchIds: string[] | null = null
+  let searchCapped = false
   if (q) {
     const { data: matches } = await supabase
       .from('profiles')
       .select('id')
       .or(`email.ilike.%${q}%,full_name.ilike.%${q}%`)
-      .limit(200)
+      .limit(SEARCH_CAP + 1)
     searchIds = (matches ?? []).map(m => m.id)
+    // The id list goes back into the query as ?in.(…), so it cannot grow without bound. Past the
+    // cap the results used to be silently incomplete; now the page says so.
+    if (searchIds.length > SEARCH_CAP) { searchCapped = true; searchIds = searchIds.slice(0, SEARCH_CAP) }
   }
 
   // Fetch credentials without an FK-hinted join — more resilient after migrations.
@@ -67,6 +72,11 @@ export default async function AdminCredentialsPage({ searchParams }: { searchPar
   return (
     <div className="max-w-6xl">
       {listErr && <AdminQueryError what="credentials" />}
+      {searchCapped && (
+        <div className="mb-4 text-xs bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-4 py-2">
+          “{q}” matches more than {SEARCH_CAP} accounts, so only the first {SEARCH_CAP} are searched and this list is incomplete. Use a longer part of the email or name.
+        </div>
+      )}
       <div className="mb-8">
         <h1 className="font-display font-bold text-2xl text-ink">All Credentials</h1>
         <p className="text-muted text-sm mt-1">{totalCount ?? 0} total proxy sessions across all users</p>
@@ -108,7 +118,10 @@ export default async function AdminCredentialsPage({ searchParams }: { searchPar
                 <td className="px-5 py-3 text-sm text-ink">{c.label || '—'}</td>
                 <td className="px-5 py-3 text-xs font-mono text-muted">{c.country || 'Any'}</td>
                 <td className="px-5 py-3 font-mono text-sm text-ink">{formatGb(c.gb_allocated)}</td>
-                <td className="px-5 py-3 font-mono text-sm text-ink">{formatGb(c.gb_used)}</td>
+                <td className="px-5 py-3 font-mono text-sm text-ink">
+                  {formatGb(c.gb_used)}
+                  {Number(c.gb_allocated) > 0 && Number(c.gb_used) >= Number(c.gb_allocated) && <span className="ml-2 text-[10px] font-mono bg-amber-50 text-amber-700 px-2 py-0.5 rounded-full">exhausted</span>}
+                </td>
                 <td className="px-5 py-3">
                   <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full ${
                     c.status === 'active' ? 'bg-accent2-light text-accent2' :

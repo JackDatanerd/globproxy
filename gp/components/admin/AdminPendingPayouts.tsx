@@ -89,6 +89,9 @@ export default function AdminPendingPayouts({ rows }: { rows: PendingPayoutRow[]
           </button>
         </div>
       )}
+      <p className="text-[11px] text-muted mb-2">
+        Destinations are masked here. The full wallet / phone / account details are in the payout CSV export (it asks you to re-authenticate).
+      </p>
       <div className="bg-white border border-border rounded-xl overflow-hidden">
         <table className="w-full">
           <thead>

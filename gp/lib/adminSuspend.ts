@@ -18,12 +18,20 @@ export async function suspendAccount(
   userId: string,
   reason: string
 ): Promise<SuspendResult> {
-  const { error } = await supabase.from('profiles').update({
+  const { data: flagged, error } = await supabase.from('profiles').update({
     is_suspended: true,
     suspended_at: new Date().toISOString(),
     suspension_reason: reason || 'Suspended by admin',
-  }).eq('id', userId).or('is_suspended.is.null,is_suspended.eq.false')
+  }).eq('id', userId).or('is_suspended.is.null,is_suspended.eq.false').select('id')
   if (error) return { ok: false, status: 500, error: error.message }
+  // Zero rows is not an error to PostgREST. It means "already suspended" (fine: carry on and
+  // make sure the ban and the proxies are in place too) or "no such account" (not fine: it
+  // used to go on to ban a user id that does not exist and report success).
+  if (!flagged?.length) {
+    const { data: exists, error: lookupErr } = await supabase.from('profiles').select('id').eq('id', userId).maybeSingle()
+    if (lookupErr) return { ok: false, status: 500, error: lookupErr.message }
+    if (!exists) return { ok: false, status: 404, error: 'Account not found' }
+  }
 
   // supabase-js resolves with { error } rather than throwing; roll the flag
   // back so state never claims a ban that was not applied.

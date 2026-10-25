@@ -17,7 +17,7 @@ export async function POST(req: Request) {
     const body = await readJson(req)
     if (!isUuid(body?.payoutId)) return badRequest('Payout ID missing')
     const reason = typeof body?.reason === 'string' ? body.reason.trim().slice(0, 300) : ''
-    if (!reason) return badRequest('A reason is required')
+    if (reason.length < 3) return badRequest('A reason (at least 3 characters) is required')
 
     const { data, error } = await auth.supabase.rpc('void_affiliate_payout', { p_payout_id: body!.payoutId })
     if (error) {

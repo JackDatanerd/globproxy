@@ -4,8 +4,30 @@ import AdminStockPanel from '@/components/admin/AdminStockPanel'
 import { formatGb } from '@/lib/format'
 import { upstreamCostPerGbUsd } from '@/lib/constants'
 import { CRON_MAX_AGE_SECONDS } from '@/lib/cronHealth'
+import { fetchAllRows } from '@/lib/dbPaging'
+import { VERIFIED_OPERATOR_REVIEW_DAYS } from '@/lib/rates'
 
 const money = (n: number) => `$${n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`
+
+// A Verified Operator is due a review VERIFIED_OPERATOR_REVIEW_DAYS after the later of the
+// grant and the last review (lib/rates.ts verifiedOperatorReviewDue). Same rule, computed
+// as a set difference so it needs no per-operator query: granted before the cutoff and not
+// reviewed since it. The affiliates page marks each due row; this puts the count on the
+// Overview, where nobody had to remember to look.
+async function countVerifiedOperatorsDueForReview(supabase: Awaited<ReturnType<typeof createAdminClient>>, now: Date): Promise<{ n: number }> {
+  const cutoff = new Date(now.getTime() - VERIFIED_OPERATOR_REVIEW_DAYS * 86_400_000).toISOString()
+  const [ops, reviewed] = await Promise.all([
+    fetchAllRows<{ id: string }>((from, to) => supabase.from('profiles').select('id')
+      .eq('is_verified_operator', true).eq('affiliate_status', 'approved').eq('is_deleted', false)
+      .lte('verified_operator_since', cutoff).order('id').range(from, to)),
+    fetchAllRows<{ user_id: string }>((from, to) => supabase.from('verified_operator_reviews').select('user_id')
+      .gte('reviewed_at', cutoff).order('id').range(from, to)),
+  ])
+  // If either read failed, show nothing rather than a wrong number.
+  if (ops.error || reviewed.error) return { n: 0 }
+  const recent = new Set(reviewed.rows.map(r => r.user_id))
+  return { n: ops.rows.filter(o => !recent.has(o.id)).length }
+}
 
 export default async function AdminPage() {
   const supabase = await createAdminClient()
@@ -37,6 +59,7 @@ export default async function AdminPage() {
     { count: unfulfilledOrders },
     { count: unconfirmedRefunds },
     { data: cronRuns },
+    voDue,
   ] = await Promise.all([
     supabase.from('profiles').select('*',{count:'exact',head:true}).eq('role','user').eq('is_deleted',false),
     supabase.from('profiles').select('*',{count:'exact',head:true}).eq('role','reseller').eq('is_deleted',false),
@@ -59,6 +82,7 @@ export default async function AdminPage() {
     supabase.from('admin_audit_log').select('*',{count:'exact',head:true}).eq('action','order.refund_unconfirmed')
       .gte('created_at', new Date(now.getTime() - 14 * 86_400_000).toISOString()),
     supabase.from('cron_task_runs').select('task, last_run_at, consecutive_failures'),
+    countVerifiedOperatorsDueForReview(supabase, now),
   ])
   // Scheduled tasks failing now, or silent for ~3 missed ticks (same rule as the Settings panel).
   const failingTasks = (cronRuns ?? []).filter((r: any) => {
@@ -81,6 +105,7 @@ export default async function AdminPage() {
     { label: 'Refund requests', n: openRefundRequests ?? 0, href: '/admin/orders?status=refund_requested' },
     { label: 'Paid, bandwidth not credited', n: unfulfilledOrders ?? 0, href: '/admin/orders?status=unfulfilled' },
     { label: 'Refunds to confirm (14 d)', n: unconfirmedRefunds ?? 0, href: '/admin/audit?q=order.refund_unconfirmed' },
+    { label: 'Verified Operator reviews due', n: voDue.n, href: '/admin/affiliates?vo=1' },
     { label: 'Scheduled tasks failing', n: failingTasks, href: '/admin/settings' },
   ]
 

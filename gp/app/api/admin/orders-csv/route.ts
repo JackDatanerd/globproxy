@@ -5,11 +5,11 @@ import { toCsv, csvResponse } from '@/lib/csv'
 import { fetchAllRows } from '@/lib/dbPaging'
 import { cleanSearch } from '@/components/admin/AdminPager'
 
-const STATUSES = ['paid', 'pending', 'failed', 'cancelled', 'refunded', 'refund', 'disputed', 'uncredited', 'unfulfilled'] as const
+const STATUSES = ['paid', 'pending', 'failed', 'cancelled', 'refunded', 'refund', 'disputed', 'refund_requested', 'uncredited', 'unfulfilled'] as const
 const DAY = /^\d{4}-\d{2}-\d{2}$/
 
 // Orders / refunds export for accounting. Filters mirror the Orders page:
-// ?status=paid|pending|failed|cancelled|refunded|refund (any refund)|disputed|uncredited|unfulfilled,
+// ?status=paid|pending|failed|cancelled|refunded|refund (any refund)|disputed|refund_requested (open customer refund requests)|uncredited|unfulfilled,
 // ?q=email-or-name, ?from=YYYY-MM-DD&to=YYYY-MM-DD (by order date, UTC, inclusive).
 // Canary (internal test) orders are excluded unless ?canary=1. Contains customer
 // email addresses, so — like the payout and audit exports — it needs a fresh step-up
@@ -29,25 +29,20 @@ export async function GET(req: Request) {
     const q = cleanSearch(url.searchParams.get('q') ?? undefined)
     const includeCanary = url.searchParams.get('canary') === '1'
 
-    let searchIds: string[] | null = null
-    if (q) {
-      const { data: matches, error } = await supabase.from('profiles').select('id').or(`email.ilike.%${q}%,full_name.ilike.%${q}%`).limit(500)
-      if (error) return NextResponse.json({ error: 'Export failed' }, { status: 500 })
-      searchIds = (matches ?? []).map(m => m.id)
-      if (!searchIds.length) searchIds = ['00000000-0000-0000-0000-000000000000']
-    }
-
     const { rows, error } = await fetchAllRows<any>((a, b) => {
+      // The customer search is an embedded filter (no id list, no cap); 'refund_requested'
+      // inner-joins the open request, exactly as the Orders page does.
       let query = supabase.from('orders')
-        .select('id, created_at, paid_at, gb_amount, amount_usd, pay_amount, pay_currency, payment_method, payment_status, refunded_usd, dispute_status, dispute_resolution, invoice_number, bandwidth_credited, is_canary, paystack_reference, user:user_id(email, full_name, is_deleted)')
+        .select('id, created_at, paid_at, gb_amount, amount_usd, pay_amount, pay_currency, payment_method, payment_status, refunded_usd, dispute_status, dispute_resolution, invoice_number, bandwidth_credited, is_canary, paystack_reference, user:user_id' + (q ? '!inner' : '') + '(email, full_name, is_deleted)' + (status === 'refund_requested' ? ', open_request:refund_requests!inner(id)' : ''))
         .order('created_at', { ascending: true }).order('id', { ascending: true }).range(a, b)
       if (!includeCanary) query = query.eq('is_canary', false)
       if (status === 'refund') query = query.gt('refunded_usd', 0)
       else if (status === 'disputed') query = query.eq('dispute_status', 'open')
+      else if (status === 'refund_requested') query = query.eq('open_request.status', 'open')
       else if (status === 'uncredited') query = query.eq('bandwidth_credited', false).in('payment_status', ['pending', 'failed', 'cancelled']).not('paystack_reference', 'is', null)
       else if (status === 'unfulfilled') query = query.eq('payment_status', 'paid').eq('bandwidth_credited', false)
       else if (status) query = query.eq('payment_status', status)
-      if (searchIds) query = query.in('user_id', searchIds)
+      if (q) query = query.or(`email.ilike.%${q}%,full_name.ilike.%${q}%`, { referencedTable: 'user' })
       if (from) query = query.gte('created_at', `${from}T00:00:00Z`)
       if (to) query = query.lt('created_at', new Date(Date.parse(`${to}T00:00:00Z`) + 86_400_000).toISOString())
       return query

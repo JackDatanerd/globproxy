@@ -31,31 +31,20 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
   const statsRes = await supabase.rpc('admin_order_stats')
   const stats = (statsRes.data?.[0] ?? null) as { revenue_usd: number; gb_sold: number; order_count: number } | null
 
-  // Email search resolves to user ids first (orders only store user_id).
-  let searchIds: string[] | null = null
-  if (q) {
-    const { data: matches } = await supabase
-      .from('profiles')
-      .select('id')
-      .or(`email.ilike.%${q}%,full_name.ilike.%${q}%`)
-      .limit(200)
-    searchIds = (matches ?? []).map(m => m.id)
-  }
-
-  let requestOrderIds: string[] = []
-  if (status === 'refund_requested') {
-    const { data: open } = await supabase.from('refund_requests').select('order_id').eq('status', 'open').limit(500)
-    requestOrderIds = (open ?? []).map(r => r.order_id)
-  }
-
-  let query = supabase.from('orders').select('*', { count: 'exact' })
+  // Customer search and the refund-request filter are embedded INNER joins, filtered by
+  // PostgREST itself. They used to be resolved to id lists first (the first 200 matching
+  // profiles / first 500 open requests) and passed back as a long ?in.() list — anything
+  // past the cap silently vanished from the results, and a few hundred uuids also
+  // approach the URL length limit.
+  const select = '*' + (q ? ', user:user_id!inner(id)' : '') + (status === 'refund_requested' ? ', open_request:refund_requests!inner(id)' : '')
+  let query = supabase.from('orders').select(select as '*', { count: 'exact' })
   if (status === 'refund') query = query.gt('refunded_usd', 0)
   else if (status === 'disputed') query = query.eq('dispute_status', 'open')
-  else if (status === 'refund_requested') query = requestOrderIds.length ? query.in('id', requestOrderIds) : query.in('id', ['00000000-0000-0000-0000-000000000000'])
+  else if (status === 'refund_requested') query = query.eq('open_request.status', 'open')
   else if (status === 'uncredited') query = query.eq('bandwidth_credited', false).in('payment_status', ['pending', 'failed', 'cancelled']).not('paystack_reference', 'is', null).eq('is_canary', false)
   else if (status === 'unfulfilled') query = query.eq('payment_status', 'paid').eq('bandwidth_credited', false).eq('is_canary', false)
   else if (status) query = query.eq('payment_status', status)
-  if (searchIds) query = searchIds.length ? query.in('user_id', searchIds) : query.in('user_id', ['00000000-0000-0000-0000-000000000000'])
+  if (q) query = query.or(`email.ilike.%${q}%,full_name.ilike.%${q}%`, { referencedTable: 'user' })
   const from = (page - 1) * PAGE_SIZE
   const { data: orders, count, error: listErr } = await query.order('created_at', { ascending: false }).range(from, from + PAGE_SIZE - 1)
 
@@ -122,7 +111,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
       </div>
 
       <div className="flex justify-end mb-3">
-        <AdminOrdersExport status={['paid', 'pending', 'failed', 'cancelled', 'refunded', 'refund', 'disputed', 'uncredited', 'unfulfilled'].includes(status) ? status : ''} q={q} />
+        <AdminOrdersExport status={status} q={q} />
       </div>
 
       <div className="bg-white border border-border rounded-xl overflow-hidden">

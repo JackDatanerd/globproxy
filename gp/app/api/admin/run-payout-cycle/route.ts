@@ -2,7 +2,7 @@ import { authorizeAdmin, readJson, badRequest, isIsoDate } from '@/lib/adminAuth
 import { logAdminAction } from '@/lib/adminAudit'
 import { adminNoticeHtml, appUrl } from '@/lib/adminEmail'
 import { sendEmailSafe, escapeHtml } from '@/lib/email'
-import { lastCompletedCycle, formatCycleLabel, currentAccruingCycle, cycleIsPayable } from '@/lib/payoutCycle'
+import { lastCompletedCycle, formatCycleLabel, currentAccruingCycle, cycleIsPayable, cycleFromStart } from '@/lib/payoutCycle'
 import { notifyPayoutQueued } from '@/lib/affiliateNotify'
 import { AFFILIATE_MIN_PAYOUT_USD, AFFILIATE_HOLD_HOURS } from '@/lib/referrals'
 import { NextResponse } from 'next/server'
@@ -29,6 +29,14 @@ export async function POST(req: Request) {
   // a future cycleEnd paid a cycle that hadn't finished accruing.
   if (!isIsoDate(cycleStart) || !isIsoDate(cycleEnd)) return badRequest('cycleStart and cycleEnd must be valid YYYY-MM-DD dates')
   if (cycleStart > cycleEnd) return badRequest('cycleStart must not be after cycleEnd')
+  // One WHOLE cycle only (1st–15th or 16th–end of a month). The payout RPC batches everything
+  // earned up to the end date, so an arbitrary start only changed the label — but that label is
+  // the (affiliate, cycle) slot a re-run is de-duplicated on, and it is what the affiliate and
+  // the CSV see. cycleFromStart derives the end from a 1st/16th start, so compare against it.
+  const startDay = Number(cycleStart.slice(8, 10))
+  if ((startDay !== 1 && startDay !== 16) || cycleFromStart(cycleStart).cycleEnd !== cycleEnd) {
+    return badRequest('A payout cycle is one whole half-month: 1st–15th, or 16th–end of the month.')
+  }
   const today = new Date().toISOString().slice(0, 10)
   if (cycleEnd >= today) return badRequest('That cycle has not finished yet — pick a cycle that ended before today (UTC).')
 

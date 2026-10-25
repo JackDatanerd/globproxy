@@ -4,6 +4,7 @@ import AdminAffiliateActions from '@/components/admin/AdminAffiliateActions'
 import RunPayoutCycleButton from '@/components/admin/RunPayoutCycleButton'
 import ExportPayoutsButton from '@/components/admin/ExportPayoutsButton'
 import { getKesQuote } from '@/lib/fx'
+import { maskWallet, maskPhone, maskBank } from '@/lib/maskPayout'
 import AdminPendingPayouts, { type PendingPayoutRow } from '@/components/admin/AdminPendingPayouts'
 import AdminPager, { parsePage, cleanSearch } from '@/components/admin/AdminPager'
 import { formatCycleLabel } from '@/lib/payoutCycle'
@@ -93,10 +94,15 @@ export default async function AdminAffiliatesPage({ searchParams }: { searchPara
     amountUsd: Number(p.amount_usd),
     method: p.payout_method,
     kesIndicative: p.payout_method === 'mpesa' && kesMarket ? Math.round(Number(p.amount_usd) * kesMarket) : null,
+    // MASKED on purpose: this object is serialised into the page, so a full wallet / phone /
+    // account number here was readable by an admin session that had passed the MFA check but
+    // never re-authenticated — while the payouts CSV (the place the full destination is
+    // needed to actually send the money) requires a fresh step-up. Same masks as the
+    // affiliate detail page and the customer's own referrals page (lib/maskPayout.ts).
     destination: p.referrer?.is_deleted ? null
-      : p.payout_method === 'usdt' ? { title: 'USDT (TRC20)', detail: p.payout_wallet_address ?? '' }
-      : p.payout_method === 'mpesa' ? { title: 'M-Pesa', detail: p.payout_mpesa_phone ?? '' }
-      : { title: p.payout_bank_details?.bankName ?? 'Bank transfer', detail: `${p.payout_bank_details?.accountName ?? ''} · ${p.payout_bank_details?.accountNumber ?? ''}` },
+      : p.payout_method === 'usdt' ? { title: 'USDT (TRC20)', detail: maskWallet(p.payout_wallet_address) ?? 'not recorded' }
+      : p.payout_method === 'mpesa' ? { title: 'M-Pesa', detail: maskPhone(p.payout_mpesa_phone) ?? 'not recorded' }
+      : { title: maskBank(p.payout_bank_details)?.bankName ?? 'Bank transfer', detail: maskBank(p.payout_bank_details)?.accountLast4 ? `····${maskBank(p.payout_bank_details)!.accountLast4}` : 'not recorded' },
   }))
 
   return (
