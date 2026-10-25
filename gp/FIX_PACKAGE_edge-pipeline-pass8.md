@@ -20,8 +20,8 @@ wrangler.jsonc, lib/rateLimit.ts, lib/ssrfGuard.ts, lib/supabase/*.
   scheduled tasks (503), read-only; the deploy smoke test does not send ?deep so it cannot roll back.
 - **F4 CSP_MODE_PROTECTED.** Promote the signed-in nonce policy to enforcing on its own
   (GitHub variable CSP_MODE_PROTECTED=enforce); unset it follows CSP_MODE as before.
-- **F1 supplier name, code side.** lib/geonode.ts -> lib/upstream.ts, GeonodeApiError ->
-  UpstreamApiError, /api/admin/debug-geonode -> /debug-upstream, comments and messages neutralised
+- **F1 supplier name, code side.** the old supplier-named module -> lib/upstream.ts, the old supplier-named error class ->
+  UpstreamApiError, the old supplier-named debug route -> /debug-upstream, comments and messages neutralised
   (93 -> 6 mentions in that file; credentials.ts -> 0). UPSTREAM_API_KEY / UPSTREAM_RESELLER_ID
   are read first, the legacy names still work. Baseline shrunk.
 - F3 (admin MFA required) was already shipped by another session; not touched.
