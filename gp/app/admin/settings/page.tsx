@@ -7,6 +7,7 @@ import { loadMpesaConfig, getKesQuote } from '@/lib/fx'
 import CronHealthPanel, { type CronRunRow } from '@/components/admin/CronHealthPanel'
 import CspReportsPanel, { type CspRow } from '@/components/admin/CspReportsPanel'
 import SecurityConfigPanel from '@/components/admin/SecurityConfigPanel'
+import DeletionQueuePanel, { type DeletionQueueRow } from '@/components/admin/DeletionQueuePanel'
 import { loadSecurityChecks } from '@/lib/securityConfig'
 
 export default async function AdminSettingsPage() {
@@ -57,6 +58,22 @@ export default async function AdminSettingsPage() {
     console.error('[admin/settings] cron/CSP panels failed to load', e)
   }
 
+  // Deletions scheduled, failing, or with cleanup left (migration 0075 / 0084).
+  let deletionRows: DeletionQueueRow[] = []
+  let deletionError = false
+  try {
+    const { data, error } = await admin.from('profiles')
+      .select('id, email, is_deleted, deletion_scheduled_at, deletion_attempts, deletion_last_error, deletion_cleanup_pending')
+      .or('and(is_deleted.eq.false,deletion_scheduled_at.not.is.null),and(is_deleted.eq.true,deletion_cleanup_pending.eq.true)')
+      .order('deletion_scheduled_at', { ascending: true, nullsFirst: false })
+      .limit(50)
+    if (error) throw error
+    deletionRows = (data ?? []) as DeletionQueueRow[]
+  } catch (e) {
+    deletionError = true
+    console.error('[admin/settings] deletion queue failed to load', e)
+  }
+
   const currentCredentialId = setting?.value || null
   let currentCredentialLabel: string | null = null
   if (currentCredentialId) {
@@ -97,6 +114,7 @@ export default async function AdminSettingsPage() {
 
       <SecurityConfigPanel checks={securityChecks} />
       <CronHealthPanel rows={cronRows} />
+      <DeletionQueuePanel rows={deletionRows} error={deletionError} />
       <CspReportsPanel rows={cspRows} />
 
       {/* Account & security — password + MFA management for the admin's

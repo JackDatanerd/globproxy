@@ -42,7 +42,7 @@ closed.** Confirmed: `release_credential_bandwidth()`'s caller
 (`dashboard/proxies/[id]` DELETE) always released the full `gb_allocated`
 regardless of `gb_used`. Buy 10GB → allocate a 10GB credential → use 9GB of
 real traffic → delete (reclaims the full 10GB) → recreate: ~19GB extracted
-from a 10GB purchase. Fixed by fetching **live** usage from Geonode
+from a 10GB purchase. Fixed by fetching **live** usage from upstream
 (`getSubUserUsage`) *before* deleting the sub-user, and releasing only
 `gb_allocated - usedGb`. Falls back to the last cron-synced `gb_used`
 column if the live call fails, rather than blocking the delete. Updated the

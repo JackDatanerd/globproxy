@@ -1,9 +1,9 @@
 // Used to render a proper dropdown for US state targeting instead of free
-// text — state names must match Geonode's expected format exactly (lowercase,
+// text — state names must match upstream's expected format exactly (lowercase,
 // no spaces) once passed through slug() in lib/proxyEndpoint.ts, so a
 // dropdown avoids typos/format mismatches customers would otherwise hit.
 export interface StateOption {
-  value: string   // matches Geonode's expected slug once lowercased/stripped
+  value: string   // matches upstream's expected slug once lowercased/stripped
   label: string
   popular?: boolean
 }

@@ -31,10 +31,10 @@
 --     must not be extendable.
 --
 -- Returns the credential's NEW gb_allocated total, so the caller knows
--- exactly what trafficLimitMB to PATCH into Geonode for 'active'
+-- exactly what trafficLimitMB to PATCH into upstream for 'active'
 -- credentials with a real sub-user already provisioned. For 'pending'
 -- credentials (no sub-user yet, provider was down at creation time), no
--- Geonode call is needed here — activateBandwidth()'s existing
+-- upstream call is needed here — activateBandwidth()'s existing
 -- retry-on-next-order logic already reads gb_allocated fresh when it
 -- eventually provisions them.
 

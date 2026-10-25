@@ -126,13 +126,13 @@ guard on `next`), `auth/reset` (no account-enumeration), `auth/signup`
 (server-side email validation, banned-email/existing-account checks,
 `intended_role` confirmed to never reach `profiles.role` — it's UI-redirect
 metadata only, no privilege-escalation path), all `admin/*` routes (role
-checks, suspend/unsuspend via `ban_duration`, delete-user's Geonode-cleanup-
+checks, suspend/unsuspend via `ban_duration`, delete-user's upstream-cleanup-
 before-cascade ordering), `reseller/allocate` (sender+recipient suspension,
 self-transfer guard, atomic RPC), `v1/*` API routes (`requireApiAccess`
 gating, ownership-scoped queries), `dashboard/api-keys` (hash-only storage,
-plaintext shown once), `user/delete-account` (Geonode cleanup, ban-not-
+plaintext shown once), `user/delete-account` (upstream cleanup, ban-not-
 delete to avoid cascading the anonymised tombstone), all RLS policies and
-column-protection triggers in `schema.sql`, `lib/geonode.ts` (port mapping,
+column-protection triggers in `schema.sql`, `lib/upstream.ts` (port mapping,
 username-suffix targeting format, bulk usage pagination against the
 Workers subrequest cap), `lib/proxyEndpoint.ts` (targeting validation,
 state+city-together format), dependency list (small, current, nothing

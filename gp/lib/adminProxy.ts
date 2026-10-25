@@ -4,15 +4,15 @@ import { syncUserUsage } from '@/lib/usageSync'
 import { dispatchWebhook } from '@/lib/webhooks'
 
 // Suspending an account used to block the dashboard and the API but leave
-// every live Geonode sub-user working — a suspended abuser kept proxying
-// until their bandwidth ran out. Geonode has no "disable" call, so the
+// every live upstream sub-user working — a suspended abuser kept proxying
+// until their bandwidth ran out. upstream has no "disable" call, so the
 // effective switch is capping the sub-user's traffic limit at what it has
 // already used (floored at 1 MB — 0 might read as "unlimited") and
 // marking the credential 'suspended' locally. Re-enabling restores the
 // limit from gb_allocated, which top-ups already keep equal to the limit.
 //
 // NOTE: the cap is applied to the sub-user's cumulative counter. It never
-// touches activeUntil (that would reset usage — see geonode.ts).
+// touches activeUntil (that would reset usage — see upstream.ts).
 
 type CredRow = { id: string; upstream_sub_user_id: string | null; gb_allocated: number | string | null; status: string; label?: string | null }
 

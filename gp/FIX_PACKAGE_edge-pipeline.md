@@ -14,7 +14,7 @@ lib/rateLimit.ts, lib/ssrfGuard.ts, lib/supabase/*, plus the routes they protect
 - next.config: CSP (Report-Only) + /api/csp-report, COOP, noindex on workers.dev, no X-Powered-By.
 - open-next.config: built with defineCloudflareConfig.
 - deploy.yml: NEXT_PUBLIC_TURNSTILE_SITE_KEY at build; optional Worker secrets step (Turnstile, MFA keys).
-- cron route: dead duplicate `reconcile` case removed. .gitignore: geonode-*.json.
+- cron route: dead duplicate `reconcile` case removed. .gitignore: supplier-*.json.
 
 ## Ops steps
 1. GitHub secrets: NEXT_PUBLIC_TURNSTILE_SITE_KEY, TURNSTILE_SECRET_KEY, MFA_ENCRYPTION_KEY (openssl rand -base64 32).

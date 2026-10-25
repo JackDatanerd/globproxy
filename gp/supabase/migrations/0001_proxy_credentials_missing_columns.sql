@@ -3,7 +3,7 @@
 -- bandwidth-activation code paths were written. Any insert/update touching
 -- these columns fails at the DB layer (PGRST204 "column not found in schema
 -- cache"), which is why credential creation and post-payment activation
--- have not been reliably persisting real Geonode credentials.
+-- have not been reliably persisting real upstream credentials.
 --
 -- Safe to run against the live DB as-is: every change is guarded so it can
 -- be re-run without erroring if partially applied already.

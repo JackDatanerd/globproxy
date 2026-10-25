@@ -5,7 +5,7 @@
 --
 -- 1. release_credential_bandwidth() / reserve_credential_bandwidth() were
 --    granted to `authenticated` and only checked auth.uid() = p_user_id.
---    A user could create a credential (reserving N GB, with a real Geonode
+--    A user could create a credential (reserving N GB, with a real upstream
 --    sub-user capped at N GB), then call release_credential_bandwidth
 --    directly with their own JWT to hand the reservation back, and create
 --    another one. Repeat forever.
@@ -14,7 +14,7 @@
 --    anon key. A user could insert rows with any gb_allocated /
 --    geonode_sub_user_id / gb_used / status, skipping the reservation
 --    entirely; the next order's activation then provisioned those rows at
---    Geonode with the forged cap, and forged sub-user ids pointed the
+--    upstream with the forged cap, and forged sub-user ids pointed the
 --    delete / top-up / whitelist routes at other customers' sub-users.
 --
 -- Fix: every write to proxy_credentials and to the reservation counters is
@@ -49,7 +49,7 @@
 --   from public.proxy_credentials
 --   where gb_allocated < 0 or gb_used < 0 or gb_allocated > 100000;
 --
---   -- the same Geonode sub-user referenced by more than one row:
+--   -- the same upstream sub-user referenced by more than one row:
 --   select geonode_sub_user_id, count(*) from public.proxy_credentials
 --   where geonode_sub_user_id is not null
 --   group by 1 having count(*) > 1;
@@ -67,7 +67,7 @@ drop policy if exists "Delete own unassigned credentials" on public.proxy_creden
 
 revoke insert, update, delete on public.proxy_credentials from anon, authenticated;
 
--- A Geonode sub-user belongs to exactly one credential row. Partial unique
+-- A upstream sub-user belongs to exactly one credential row. Partial unique
 -- index so the many NULL (pending) rows are unaffected. If this fails, the
 -- audit query above found duplicates: resolve those rows first.
 create unique index if not exists proxy_credentials_geonode_sub_user_key
@@ -87,7 +87,7 @@ alter table public.proxy_credentials
   check (gb_used is null or gb_used >= 0) not valid;
 
 -- 3. Atomic delete of a self-created credential ------------------------
--- p_live_used_gb is the live Geonode figure the route fetched before
+-- p_live_used_gb is the live upstream figure the route fetched before
 -- deleting the sub-user (NULL if that call failed). The larger of it and
 -- the last synced gb_used is treated as consumed, so a failed or stale
 -- live read can never under-count usage and hand back too much.

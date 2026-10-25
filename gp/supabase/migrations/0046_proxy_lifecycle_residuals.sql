@@ -17,7 +17,7 @@
 --    top-up and the whole balance drains into it on the 5-minute cadence.
 -- 3. Per-account cap of 100 active/pending credentials (trigger, advisory-
 --    locked like the api_keys / webhook limits in 0042). Each credential is
---    a real Geonode sub-user; nothing bounded them.
+--    a real upstream sub-user; nothing bounded them.
 -- 4. proxy_credentials.exhausted_alerted_at + the 'session_exhausted'
 --    webhook event: one notice per exhaustion of a single credential (the
 --    existing 80/95/100% alerts are account-level).

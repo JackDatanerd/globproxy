@@ -30,7 +30,7 @@ export default async function AdminSupportPage({ searchParams }: { searchParams:
   const reportIds = (reports ?? []).map((r: any) => r.id)
   const { data: replyRows } = reportIds.length
     ? await supabase.from('support_report_replies')
-        .select('report_id, message, created_at, admin:admin_id(email)').in('report_id', reportIds).order('created_at', { ascending: true })
+        .select('report_id, message, created_at, from_customer, admin:admin_id(email)').in('report_id', reportIds).order('created_at', { ascending: true })
     : { data: [] as any[] }
   const repliesByReport = new Map<string, any[]>()
   for (const x of (replyRows ?? []) as any[]) {
@@ -77,7 +77,7 @@ export default async function AdminSupportPage({ searchParams }: { searchParams:
               <p className="text-sm text-ink mt-3 whitespace-pre-wrap break-words">{r.message}</p>
               {(repliesByReport.get(r.id) ?? []).map((x: any, i: number) => (
                 <div key={i} className="mt-3 bg-surface border border-border rounded-lg px-3 py-2">
-                  <div className="text-[10px] font-mono text-muted mb-0.5">Sent to customer · {new Date(x.created_at).toLocaleString('en-GB')} · {x.admin?.email ?? 'admin'}</div>
+                  <div className="text-[10px] font-mono text-muted mb-0.5">{x.from_customer ? 'From the customer' : 'Sent to customer'} · {new Date(x.created_at).toLocaleString('en-GB')}{x.from_customer ? '' : ` · ${x.admin?.email ?? 'admin'}`}</div>
                   <p className="text-xs text-ink whitespace-pre-wrap break-words">{x.message}</p>
                 </div>
               ))}

@@ -2,9 +2,9 @@
 -- 0041 — Payments: retriable post-credit steps
 -- ============================================================
 -- After claim_and_credit_order() commits, activateBandwidth() runs the
--- follow-ups: provisioning pending credentials at Geonode and crediting the
+-- follow-ups: provisioning pending credentials at upstream and crediting the
 -- referral bonus / affiliate commission. They ran exactly once and were
--- never retried, so a Geonode or DB hiccup at that moment meant a referrer
+-- never retried, so a upstream or DB hiccup at that moment meant a referrer
 -- was never paid or a credential never provisioned, with nothing to notice.
 --
 -- orders.post_credit_done_at is stamped when those steps succeed. The

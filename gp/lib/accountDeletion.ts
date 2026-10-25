@@ -4,6 +4,7 @@ import { anonymisedProfilePatch, rollbackProfilePatch } from '@/lib/accountPatch
 import { BAN_FOREVER } from '@/lib/adminSuspend'
 import { sendEmailSafe } from '@/lib/email'
 import { appUrl } from '@/lib/appUrl'
+import { scrubSupplier } from '@/lib/supplierGuard'
 
 // Used by app/api/admin/delete-user. It deliberately leaves an account in
 // exactly the same end state as the self-service route
@@ -119,8 +120,11 @@ export type PurgeResult = {
 // and reported instead of silently ignored.
 export async function purgeAccountSecrets(supabase: AdminSupabase, userId: string, _hadCredentials?: boolean): Promise<PurgeResult> {
   const warnings: string[] = []
+  // `warnings` is persisted on the profile row (deletion_cleanup_notes), which the account's
+  // owner can read through their own row-level policy — so the supplier's name must never be
+  // in it (it is in the raw upstream error texts the console logs keep).
   const check = (step: string, error: { message: string } | null) => {
-    if (error) { warnings.push(`${step}: ${error.message}`); console.error('[accountDeletion]', step, userId, error) }
+    if (error) { warnings.push(scrubSupplier(`${step}: ${error.message}`)); console.error('[accountDeletion]', step, userId, error) }
   }
 
   // Second pass over the supplier side. The route released what it could see BEFORE
@@ -134,7 +138,7 @@ export async function purgeAccountSecrets(supabase: AdminSupabase, userId: strin
     const remaining = await listReleasableCredentials(supabase, userId)
     const { failed } = await releaseUpstreamSubUsers(supabase, remaining)
     stillLive = failed.map((f) => f.id)
-    for (const f of failed) warnings.push(`upstream_release ${f.id}: ${f.error}`)
+    for (const f of failed) warnings.push(scrubSupplier(`upstream_release ${f.id}: ${f.error}`))
   } catch (e: any) {
     check('upstream_release', { message: String(e?.message ?? e) })
   }
@@ -207,6 +211,11 @@ export async function purgeAccountSecrets(supabase: AdminSupabase, userId: strin
     const ids = (reportRows ?? []).map((r: any) => r.id)
     if (ids.length) check('support_report_replies', (await supabase.from('support_report_replies').delete().in('report_id', ids)).error)
   }
+  // What no foreign-key cascade reaches (the profile row is kept): whitelist mirror (the
+  // customer's IPs), free text on refund requests, labels, a reseller's open invitations
+  // (their reserved stock is handed back) and third-party invitee addresses — one database
+  // function, migration 0084. Safe to repeat.
+  check('account_data_purge', (await supabase.rpc('purge_deleted_account_data', { p_user_id: userId })).error)
   check('api_keys', (await supabase.from('api_keys')
     .update({ revoked_at: new Date().toISOString() })
     .eq('user_id', userId)
@@ -251,7 +260,7 @@ export type DeletionOutcome =
   | { ok: true; released: number; purge: PurgeResult; cleanupPending: boolean }
   | {
       ok: false
-      stage: 'claim' | 'already_deleted' | 'ban' | 'list' | 'release'
+      stage: 'claim' | 'already_deleted' | 'not_due' | 'ban' | 'list' | 'release'
       error: string
       released?: number
       total?: number
@@ -262,18 +271,29 @@ export type DeletionOutcome =
 export async function performAccountDeletion(
   supabase: AdminSupabase,
   userId: string,
-  opts: { before: Record<string, any>; accessToken?: string | null },
+  // onlyIfDue: the scheduled run. The claim itself then also requires the deletion to still
+  // be scheduled and due — a customer who cancelled while the run was busy with an earlier
+  // account (each one talks to the supplier) must not lose the account they were just told
+  // was safe.
+  opts: { before: Record<string, any>; accessToken?: string | null; onlyIfDue?: boolean },
 ): Promise<DeletionOutcome> {
   const { before } = opts
 
-  const { data: claimed, error: claimError } = await supabase
+  let claimQuery = supabase
     .from('profiles')
     .update(anonymisedProfilePatch())
     .eq('id', userId)
     .or('is_deleted.is.null,is_deleted.eq.false') // nullable column
-    .select('id')
+  if (opts.onlyIfDue) claimQuery = claimQuery.not('deletion_scheduled_at', 'is', null).lte('deletion_scheduled_at', new Date().toISOString())
+  const { data: claimed, error: claimError } = await claimQuery.select('id')
   if (claimError) return { ok: false, stage: 'claim', error: claimError.message }
-  if (!claimed?.length) return { ok: false, stage: 'already_deleted', error: 'Account already deleted.' }
+  if (!claimed?.length) {
+    if (opts.onlyIfDue) {
+      const { data: now } = await supabase.from('profiles').select('is_deleted').eq('id', userId).maybeSingle()
+      if (now && !now.is_deleted) return { ok: false, stage: 'not_due', error: 'The deletion was cancelled or is no longer scheduled.' }
+    }
+    return { ok: false, stage: 'already_deleted', error: 'Account already deleted.' }
+  }
 
   const { error: banError } = await supabase.auth.admin.updateUserById(userId, { ban_duration: BAN_FOREVER })
   if (banError) {
@@ -311,6 +331,11 @@ export async function performAccountDeletion(
     } catch (e) { console.error('[accountDeletion] global sign-out threw', userId, e) }
   }
 
+  // The scheduled run has no access token to sign out with, so end every session of the
+  // account in the database as well (an access token whose session is gone is refused).
+  const { error: sessErr } = await supabase.rpc('revoke_all_auth_sessions', { p_user_id: userId })
+  if (sessErr) console.error('[accountDeletion] could not end the account sessions', userId, sessErr.message)
+
   const purge = await purgeAccountSecrets(supabase, userId)
   if (purge.warnings.length) console.error('[accountDeletion] cleanup warnings', userId, purge.warnings)
 
@@ -322,6 +347,7 @@ export async function performAccountDeletion(
     deletion_cleanup_pending: cleanupPending,
     deletion_cleanup_notes: cleanupPending ? purge.warnings.join('\n').slice(0, 4000) : null,
     deletion_last_error: null,
+    deletion_last_attempt_at: null,
     deletion_attempts: 0, // from here on it counts CLEANUP retries
   }).eq('id', userId)
   if (markErr) console.error('[accountDeletion] could not record cleanup state', userId, markErr.message)
@@ -338,7 +364,7 @@ async function alertAdminCleanup(userId: string, warnings: string[]) {
     subject: '[ACCOUNT DELETION] finished with leftovers — will retry',
     html: `<p>An account (<code>${userId}</code>) was deleted, but ${warnings.length} cleanup step(s) failed.
            The hourly <strong>deletions</strong> task retries them and will e-mail again if they do not clear.</p>
-           <pre style="white-space:pre-wrap">${warnings.map((w) => w.replace(/</g, '&lt;')).join('\n')}</pre>
+           <pre style="white-space:pre-wrap">${warnings.map((w) => w.replace(/&/g, '&amp;').replace(/</g, '&lt;')).join('\n')}</pre>
            <a href="${appUrl()}/admin/settings">Admin → Settings → Scheduled tasks</a>`,
   })
 }

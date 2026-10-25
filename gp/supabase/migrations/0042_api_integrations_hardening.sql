@@ -173,11 +173,11 @@ alter table public.bandwidth_accounts add column if not exists wh_alerted_95_at 
 alter table public.bandwidth_accounts add column if not exists wh_alerted_100_at timestamptz;
 
 -- ── 4. Pending-credential provisioning retries ──────────────────────
--- A credential created while Geonode was unreachable stayed 'pending'
+-- A credential created while upstream was unreachable stayed 'pending'
 -- until the owner's next *purchase* (lib/bandwidth.ts) — API users who
 -- never buy again were stuck forever. The new 'provision' cron task
 -- retries them with backoff; this claim makes concurrent runs (cron +
--- purchase path) safe so one credential never gets two Geonode sub-users.
+-- purchase path) safe so one credential never gets two upstream sub-users.
 alter table public.proxy_credentials add column if not exists provisioning_claimed_at timestamptz;
 alter table public.proxy_credentials add column if not exists provision_attempts      integer not null default 0;
 alter table public.proxy_credentials add column if not exists last_provision_error    text;

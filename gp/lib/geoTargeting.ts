@@ -5,7 +5,7 @@
 // supports, instead of a free-text field a customer could mistype.
 //
 // codes returned here (country/state/city) are already in the exact format
-// buildProxyUsername()'s slug() expects (lowercase, no spaces) — Geonode's
+// buildProxyUsername()'s slug() expects (lowercase, no spaces) — upstream's
 // own codes are pre-slugged, confirmed against the source data, so no
 // transformation happens in this file or at submit time.
 

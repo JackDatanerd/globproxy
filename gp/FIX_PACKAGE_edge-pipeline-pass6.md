@@ -24,7 +24,7 @@ Percent-encoded and double-slash paths cannot bypass middleware or the Worker gu
 real Next 16 build); ssrfGuard handled 35 literal forms; edgeGuard origin/body rules correct.
 
 ## Left for the owner (not code)
-- Repo is public and names the upstream supplier in ~50 files (lib/geonode.ts, GEONODE_* secret
+- Repo is public and names the upstream supplier in ~50 files (lib/upstream.ts, supplier_* secret
   names, migration 0013, these FIX_PACKAGE notes). Making the repo private is the only complete fix.
 - `workers_dev` / `preview_urls` still on (second origin outside zone WAF/bot rules). Remove once
   Paystack webhook URL and Supabase redirect list are confirmed to use the custom domain.

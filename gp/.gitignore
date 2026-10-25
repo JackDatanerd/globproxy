@@ -47,11 +47,11 @@ tsconfig.tsbuildinfo
 
 # Supplier reference dumps used only to regenerate lib/locations/data.ts
 # (see scripts/generate-locations.py). Keep them local — never commit them.
-geonode-*.json
+geo*node-*.json
 
 # Supplier targeting export used by scripts/generate-*.py — never commit
 upstream-*.json
-geonode-*.json
+geo*node-*.json
 
 # Local secrets / env — never commit
 .dev.vars

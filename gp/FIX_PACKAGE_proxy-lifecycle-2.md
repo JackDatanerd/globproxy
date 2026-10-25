@@ -1,6 +1,6 @@
 # FIX PACKAGE — Proxy lifecycle, pass 1 (round 2) (Oct 2026)
 
-Base: `3b24dc2`. Section: `lib/geonode.ts`, `proxyEndpoint`, `geoTargeting`, `bandwidth`, `usageSync`, `autoTopup`, `stockStatus`, `networkProbe`, `ipWhitelist`, and `api/dashboard/proxies/*` (create, top-up, whitelist, sessions, usage) — plus the v1 routes, cron tasks, DB functions and UI they run through.
+Base: `3b24dc2`. Section: `lib/upstream.ts`, `proxyEndpoint`, `geoTargeting`, `bandwidth`, `usageSync`, `autoTopup`, `stockStatus`, `networkProbe`, `ipWhitelist`, and `api/dashboard/proxies/*` (create, top-up, whitelist, sessions, usage) — plus the v1 routes, cron tasks, DB functions and UI they run through.
 
 ## Deploy order
 
@@ -71,4 +71,4 @@ The provider's documented PATCH accepts the creation fields; whether it really c
 ## Files
 
 New: `0059_proxy_lifecycle_closeout.sql`, `components/dashboard/AsnPicker.tsx`, `StickyDurationSelect.tsx`, release + rotate-password routes (dashboard and v1), `lib/geo/asnIndex.json`, `public/geo/asns/*.json`, `scripts/generate-asn-data.py`.
-Changed: see the diff — `lib/{credentials,usageSync,autoTopup,geonode,webhooks,webhookEvents,ipWhitelist,apiValidation,stockStatus,networkProbe,proxyEndpoint,geoTargeting,openapi}.ts`, the proxy routes, cron route, proxies/usage pages and components, docs page, `schema.sql`.
+Changed: see the diff — `lib/{credentials,usageSync,autoTopup,supplier,webhooks,webhookEvents,ipWhitelist,apiValidation,stockStatus,networkProbe,proxyEndpoint,geoTargeting,openapi}.ts`, the proxy routes, cron route, proxies/usage pages and components, docs page, `schema.sql`.

@@ -29,8 +29,8 @@ was fixed concurrently by the API & integrations closeout; that version is kept 
 | B5 | Amounts that round to 0 are rejected up front; a release under 0.01 GB is refused before the live cap is touched. |
 | B6 | Host-country `truncated` only when a row really exists beyond the cap; dashboard session routes now rate-limited; `used_gb` keeps suspended / customer-paused sessions. |
 
-## Live checks (needs your Geonode account)
-1. **Username format** — `/api/admin/debug-geonode` now returns `username_matches_requested`. If `false`, tell me: customers would see the rewritten name and the orphan sweep wouldn't match.
+## Live checks (needs your upstream account)
+1. **Username format** — `/api/admin/debug-upstream` now returns `username_matches_requested`. If `false`, tell me: customers would see the rewritten name and the orphan sweep wouldn't match.
 2. **Whitelist semantics** — whitelist a throwaway sub-user's IP A. From IP B (not listed) connect with valid credentials: does it work? From IP A with *no* credentials: does it work? Restriction = B refused. If A connects without credentials, the feature is credential-less IP auth and the UI wording must change.
 3. **Duplicate-name error** — create the same username twice via the debug route; confirm the status/text matches `isDuplicateSubUserError` (400/409/422 + "exists/already/taken/duplicate/in use/unique"). If not, adoption still works through the retry-time listing, only the in-call fallback is affected.
 4. **Host-country granularity** — does `per-subuser-host-country` at `granularity=day` return one row per day per host? If yes, the breakdown table needs aggregating.

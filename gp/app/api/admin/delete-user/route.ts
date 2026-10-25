@@ -68,7 +68,7 @@ export async function POST(req: Request) {
     action: 'user.delete',
     targetUserId: user_id,
     details: {
-      role: tp.role, geonode_sub_users_released: released.length,
+      role: tp.role, upstream_sub_users_released: released.length,
       payouts_voided: purge.scrub?.voided_payouts ?? [],
       earnings_forfeited_usd: purge.scrub?.forfeited_usd ?? 0,
       ...(purge.warnings.length ? { cleanup_warnings: purge.warnings } : {}),

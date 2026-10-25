@@ -38,8 +38,8 @@ What this package adds on top: every function **it** creates (`run_affiliate_pay
 | B5 | Ban/unban errors were silently ignored (`.catch` never fires on supabase-js). | Checked. Suspend: profile rolled back if the ban fails. Unsuspend: ban lifted **first**; profile untouched if that fails. |
 | B6 | Any `action` other than the literal `'suspend'` unsuspended. | Must be exactly `suspend` / `unsuspend`; no-ops rejected. |
 | B7 | `approve-reseller` / `reject-reseller` could demote an admin (`reject` hard-set `role:'user'`). | Excluded admins; reject no longer touches `role`. |
-| B9 | `delete-user` swallowed Geonode failures (orphaned billable sub-user, no retry possible) and its rollback lost suspension state. | Aborts with 502 *before* anything local changes; 404 = already gone. Full-row rollback. |
-| B10b | Deletion left PII and secrets. | Brought to the same end state as the (concurrently improved) self-service route: payout details, applications, company, 2FA seeds/backup codes/trusted browsers, webhook URLs+secrets, proxy passwords/Geonode ids, support-report emails; API keys revoked; suspension preserved. Shared in `lib/accountDeletion.ts`. |
+| B9 | `delete-user` swallowed upstream failures (orphaned billable sub-user, no retry possible) and its rollback lost suspension state. | Aborts with 502 *before* anything local changes; 404 = already gone. Full-row rollback. |
+| B10b | Deletion left PII and secrets. | Brought to the same end state as the (concurrently improved) self-service route: payout details, applications, company, 2FA seeds/backup codes/trusted browsers, webhook URLs+secrets, proxy passwords/upstream ids, support-report emails; API keys revoked; suspension preserved. Shared in `lib/accountDeletion.ts`. |
 | B11 | Approve/reject "still pending?" check wasn't atomic. | Condition is part of the UPDATE (shared `lib/adminApplications.ts`). |
 | B19 | `toggle_api_access` flipped from a read value (double-click undid itself) and granted API access to non-resellers. | Explicit `grant_api_access` / `revoke_api_access` (idempotent, resellers only). `make_user` clears API access. |
 | B22 | `set-benchmark-credential` accepted any user's credential (would burn a customer's bandwidth) and silently no-op'd if the settings row was missing. | Own credential only; upsert. |
@@ -51,20 +51,20 @@ What this package adds on top: every function **it** creates (`run_affiliate_pay
 * **Revenue figures** now agree everywhere (Overview, Orders, Sales Cycles) via `admin_order_stats()` — server-side, **net of refunds**, canary excluded, and no longer truncated at PostgREST's 1000-row cap. Account counts / signup list exclude soft-deleted tombstones. (B12, B13)
 * Sales Cycles: affiliate cost is now **every** non-void commission earned in the window (held-back balances used to vanish from the liability); `?start=2026-13-01` no longer 500s. (B14, B23)
 * Resellers page: deleted accounts no longer listed; suspended badge + **Reinstate** button. (B15)
-* Stock panel: settings save reports failures; hard-coded `$0.49` removed; dead "Reload now" / unused "Reload amount" removed (Geonode has no purchase API). (B16, B17)
+* Stock panel: settings save reports failures; hard-coded `$0.49` removed; dead "Reload now" / unused "Reload amount" removed (upstream has no purchase API). (B16, B17)
 * `reload-stock` / `sync-stock` / `record-benchmark` input validation and error handling. (B20, B21)
 * Every admin button goes through `lib/adminFetch.ts`: no more `Bearer undefined`, no stuck spinners on network failure. Delete now needs the email typed (the old "Type OK" dialog couldn't take input). MFA-reset wording fixed (MFA is optional now). Users page no longer ships whole profile rows (payout details etc.) into a client component. (B25, B26, B31)
 * Settings page webhook note lists the events actually handled. (B29)
 * Concurrency/validation: `readJson` / `isUuid` on every rewritten route.
 
 Closed by the concurrent Auth & MFA pass (`23900ce`), not re-done here: apply-reseller/affiliate status guards (my B7/B8 root cause), server-side admin password change (B24), `sendEmailSafe`.
-Not changed: `debug-geonode` 401 (off by default; not distinguishing "not signed in" from "not admin" is fine).
+Not changed: `debug-upstream` 401 (off by default; not distinguishing "not signed in" from "not admin" is fine).
 
 ## Feature gaps closed
 
 * **Admin audit log** (`admin_audit_log` + `/admin/audit` + per-user "Admin activity" panel). Written by every state-changing admin route, plus system rows.
 * **Affiliate lifecycle:** approve with explicit rates, **edit rates**, **suspend / reinstate** (previously impossible), suspended section, "Awaiting payment" vs "Accruing", "Recently paid" with reference and payer.
-* **Suspending an account now shuts off live proxy traffic** (Geonode sub-user capped at what it has used; restored on reinstate) — previously it only blocked the dashboard. Per-credential **Disable / Enable** on `/admin/credentials` and the user page. Partial Geonode failures are reported, not swallowed.
+* **Suspending an account now shuts off live proxy traffic** (upstream sub-user capped at what it has used; restored on reinstate) — previously it only blocked the dashboard. Per-credential **Disable / Enable** on `/admin/credentials` and the user page. Partial upstream failures are reported, not swallowed.
 * **Payment visibility:** Orders page shows refunded amount, invoice number, status filters (incl. "has refund"), customer search.
 * **Pagination + search** on Users, Orders, Credentials (were hard 200-row / unbounded lists).
 * Suspend reason prompt (stored, shown in the email); confirmations on irreversible actions; "Needs attention" counters on the Overview.
@@ -76,7 +76,7 @@ Not changed: `debug-geonode` 401 (off by default; not distinguishing "not signed
 
 ## Not tested (be honest)
 
-* Not run against live Supabase / Geonode / Paystack. The Geonode traffic-cap shutoff (`updateSubUserTrafficLimit` to current usage, floored at 1 MB) follows the same call the app already uses for top-ups, but **try it once on a throwaway account** (suspend → confirm the proxy stops → reinstate → confirm it resumes).
+* Not run against live Supabase / upstream / Paystack. The upstream traffic-cap shutoff (`updateSubUserTrafficLimit` to current usage, floored at 1 MB) follows the same call the app already uses for top-ups, but **try it once on a throwaway account** (suspend → confirm the proxy stops → reinstate → confirm it resumes).
 * UI was type-checked and built, not clicked through.
 * Concurrency was reasoned about and enforced in SQL (atomic `UPDATE … WHERE status='pending'`, claim-then-size), not load-tested.
 

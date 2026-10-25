@@ -5,6 +5,8 @@ import { logSecurityEvent } from '@/lib/securityEvents'
 import { performAccountDeletion, countInFlightPayments, purgeAccountSecrets } from '@/lib/accountDeletion'
 import { deletionReminderEmail, deletionCompleteEmail } from '@/lib/accountDeletionEmail'
 import { DELETION_ALERT_AFTER_ATTEMPTS, DELETION_REMINDER_HOURS } from '@/lib/deletionSchedule'
+import { scrubSupplier } from '@/lib/supplierGuard'
+import { escapeHtml } from '@/lib/email'
 
 // Hourly 'deletions' task:
 //   1. runs deletions whose cool-off has ended (customer-scheduled, see
@@ -20,6 +22,35 @@ const MAX_DELETIONS_PER_RUN = 5
 const MAX_CLEANUPS_PER_RUN = 10
 const MAX_REMINDERS_PER_RUN = 50
 
+// One retry of the leftovers of a finished deletion (also what the admin's "retry cleanup now"
+// button runs). Records the outcome on the profile and tells the admin once, when the retries
+// reach DELETION_ALERT_AFTER_ATTEMPTS.
+export async function retryAccountCleanup(
+  supabase: Awaited<ReturnType<typeof createAdminClient>>,
+  userId: string,
+  attemptsSoFar: number,
+): Promise<{ cleared: boolean; warnings: string[] }> {
+  const purge = await purgeAccountSecrets(supabase, userId)
+  const attempts = attemptsSoFar + 1
+  if (purge.warnings.length === 0) {
+    await supabase.from('profiles').update({ deletion_cleanup_pending: false, deletion_cleanup_notes: null, deletion_attempts: 0, deletion_last_attempt_at: null }).eq('id', userId)
+    return { cleared: true, warnings: [] }
+  }
+  await supabase.from('profiles').update({
+    deletion_attempts: attempts, deletion_cleanup_notes: purge.warnings.join('\n').slice(0, 4000), deletion_last_attempt_at: new Date().toISOString(),
+  }).eq('id', userId)
+  if (attempts === DELETION_ALERT_AFTER_ATTEMPTS && process.env.ADMIN_EMAIL) {
+    await sendEmailSafe({
+      to: process.env.ADMIN_EMAIL,
+      subject: '[ACCOUNT DELETION] cleanup of a deleted account keeps failing',
+      html: `<p>Account <code>${userId}</code> was deleted, but ${purge.warnings.length} cleanup step(s) still fail after ${attempts} retries:</p>
+             <pre style="white-space:pre-wrap">${purge.warnings.map((w) => escapeHtml(w)).join('\n')}</pre>
+             <p><a href="${appUrl()}/admin/users/${userId}">Open the account</a></p>`,
+    })
+  }
+  return { cleared: false, warnings: purge.warnings }
+}
+
 export async function runAccountDeletions() {
   const out: Record<string, unknown> = { executed: 0, postponed: 0, failed: 0, reminded: 0, cleanup_retried: 0, cleanup_cleared: 0, settled: 0 }
   const problems: string[] = []
@@ -30,23 +61,34 @@ export async function runAccountDeletions() {
     // ── 1. Due deletions ──────────────────────────────────────────────
     const { data: due, error: dueErr } = await supabase.from('profiles')
       .select('id').eq('is_deleted', false).not('deletion_scheduled_at', 'is', null)
-      .lte('deletion_scheduled_at', nowIso).order('deletion_scheduled_at', { ascending: true }).limit(MAX_DELETIONS_PER_RUN)
+      .lte('deletion_scheduled_at', nowIso)
+      // Accounts not yet tried this cycle first, then the ones that failed longest ago: a
+      // deletion that keeps failing (a payment stuck in flight, a supplier error) used to sit
+      // at the front of the queue every hour, and MAX_DELETIONS_PER_RUN of them blocked every
+      // other customer's erasure.
+      .order('deletion_last_attempt_at', { ascending: true, nullsFirst: true })
+      .order('deletion_scheduled_at', { ascending: true }).limit(MAX_DELETIONS_PER_RUN)
     if (dueErr) problems.push(`could not read due deletions: ${dueErr.message}`)
 
     for (const { id } of due ?? []) {
       try {
         const { data: before } = await supabase.from('profiles').select('*').eq('id', id).maybeSingle()
         if (!before || before.is_deleted) continue
+        // Cancelled since the list above was read (each account before this one took a trip to
+        // the supplier). The claim below re-checks it atomically; this saves the round trips.
+        if (!before.deletion_scheduled_at || new Date(before.deletion_scheduled_at).getTime() > Date.now()) continue
 
         const recordFailure = async (reason: string) => {
           const attempts = Number(before.deletion_attempts ?? 0) + 1
-          await supabase.from('profiles').update({ deletion_attempts: attempts, deletion_last_error: reason.slice(0, 500) }).eq('id', id)
+          await supabase.from('profiles').update({
+            deletion_attempts: attempts, deletion_last_error: scrubSupplier(reason).slice(0, 500), deletion_last_attempt_at: new Date().toISOString(),
+          }).eq('id', id)
           if (attempts === DELETION_ALERT_AFTER_ATTEMPTS && process.env.ADMIN_EMAIL) {
             await sendEmailSafe({
               to: process.env.ADMIN_EMAIL,
               subject: '[ACCOUNT DELETION] a scheduled deletion keeps failing',
               html: `<p>The scheduled deletion of account <code>${id}</code> has failed ${attempts} hourly attempts in a row.</p>
-                     <p><strong>Latest reason:</strong> ${reason.replace(/</g, '&lt;')}</p>
+                     <p><strong>Latest reason:</strong> ${escapeHtml(scrubSupplier(reason))}</p>
                      <p>It keeps retrying every hour. <a href="${appUrl()}/admin/users/${id}">Open the user</a></p>`,
             })
           }
@@ -56,11 +98,11 @@ export async function runAccountDeletions() {
         if (flight.error) { out.postponed = Number(out.postponed) + 1; await recordFailure(`payment check failed: ${flight.error}`); continue }
         if (flight.count > 0) { out.postponed = Number(out.postponed) + 1; await recordFailure('a payment is still being processed'); continue }
 
-        const result = await performAccountDeletion(supabase, id, { before })
+        const result = await performAccountDeletion(supabase, id, { before, onlyIfDue: true })
         if (!result.ok) {
-          if (result.stage === 'already_deleted') continue
+          if (result.stage === 'already_deleted' || result.stage === 'not_due') continue
           out.failed = Number(out.failed) + 1
-          problems.push(`scheduled deletion of ${id} failed at ${result.stage}: ${result.error}`)
+          problems.push(scrubSupplier(`scheduled deletion of ${id} failed at ${result.stage}: ${result.error}`))
           await recordFailure(`${result.stage}: ${result.error}`)
           continue
         }
@@ -103,29 +145,16 @@ export async function runAccountDeletions() {
     // ── 3. Leftovers of finished deletions ────────────────────────────
     const { data: leftovers, error: leftErr } = await supabase.from('profiles')
       .select('id, deletion_attempts').eq('is_deleted', true).eq('deletion_cleanup_pending', true)
+      .order('deletion_last_attempt_at', { ascending: true, nullsFirst: true })
       .order('deleted_at', { ascending: true }).limit(MAX_CLEANUPS_PER_RUN)
     if (leftErr) problems.push(`could not read pending cleanups: ${leftErr.message}`)
     for (const l of leftovers ?? []) {
       try {
         out.cleanup_retried = Number(out.cleanup_retried) + 1
-        const purge = await purgeAccountSecrets(supabase, l.id)
-        const attempts = Number(l.deletion_attempts ?? 0) + 1
-        if (purge.warnings.length === 0) {
-          out.cleanup_cleared = Number(out.cleanup_cleared) + 1
-          await supabase.from('profiles').update({ deletion_cleanup_pending: false, deletion_cleanup_notes: null, deletion_attempts: 0 }).eq('id', l.id)
-        } else {
-          await supabase.from('profiles').update({ deletion_attempts: attempts, deletion_cleanup_notes: purge.warnings.join('\n').slice(0, 4000) }).eq('id', l.id)
-          problems.push(`cleanup of deleted account ${l.id} still has ${purge.warnings.length} problem(s)`)
-          if (attempts === DELETION_ALERT_AFTER_ATTEMPTS && process.env.ADMIN_EMAIL) {
-            await sendEmailSafe({
-              to: process.env.ADMIN_EMAIL,
-              subject: '[ACCOUNT DELETION] cleanup of a deleted account keeps failing',
-              html: `<p>Account <code>${l.id}</code> was deleted, but ${purge.warnings.length} cleanup step(s) still fail after ${attempts} retries:</p>
-                     <pre style="white-space:pre-wrap">${purge.warnings.map((w) => w.replace(/</g, '&lt;')).join('\n')}</pre>`,
-            })
-          }
-        }
-      } catch (e: any) { problems.push(`cleanup of ${l.id} threw: ${String(e?.message ?? e)}`) }
+        const r = await retryAccountCleanup(supabase, l.id, Number(l.deletion_attempts ?? 0))
+        if (r.cleared) out.cleanup_cleared = Number(out.cleanup_cleared) + 1
+        else problems.push(`cleanup of deleted account ${l.id} still has ${r.warnings.length} problem(s)`)
+      } catch (e: any) { problems.push(scrubSupplier(`cleanup of ${l.id} threw: ${String(e?.message ?? e)}`)) }
     }
 
     // ── 4. Released credentials whose accounting settle did not land ───

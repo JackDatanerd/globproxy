@@ -14,3 +14,12 @@ const SUPPLIER_NAME = /geo[\s_.\-]*node/i
 export function leaksSupplier(value: unknown): boolean {
   return typeof value === 'string' && SUPPLIER_NAME.test(value)
 }
+
+const SUPPLIER_NAME_GLOBAL = /geo[\s_.\-]*node/gi
+
+/** `text` with any spelling of the supplier's name replaced by a neutral word. For text that is
+ *  STORED somewhere the customer can read (their own profile row, an e-mail) and that may have
+ *  been built from a raw upstream error. */
+export function scrubSupplier(text: string): string {
+  return text.replace(SUPPLIER_NAME_GLOBAL, 'upstream')
+}

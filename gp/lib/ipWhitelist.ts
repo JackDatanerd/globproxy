@@ -16,11 +16,11 @@ export async function notifyWhitelistChanged(
   await dispatchWebhook(userId, 'whitelist_changed', { credential_id: credentialId, action, count, source })
 }
 
-// Validates the IP formats Geonode's Whitelisted IPs endpoints accept —
+// Validates the IP formats upstream's Whitelisted IPs endpoints accept —
 // individual IPv4 or IPv6 addresses only, no CIDR ranges (confirmed
 // against the live OpenAPI spec: the schema is `format: "ip"`, not
 // "cidr"/"ipv4net"/"ipv6net"). Validated here before ever reaching
-// Geonode, since their error for a malformed IP is just a generic 400
+// Upstream, since their error for a malformed IP is just a generic 400
 // with no field-level detail to relay back to the user — this lets the
 // UI point at the actual bad value instead.
 
@@ -28,7 +28,7 @@ const IPV4_RE = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1
 
 // Deliberately permissive full-form/compressed IPv6 matcher (not a strict
 // RFC 4291 parser) — good enough to catch obvious garbage, CIDR suffixes,
-// and non-IP strings; Geonode's own API remains the final authority on
+// and non-IP strings; upstream's own API remains the final authority on
 // validity.
 const IPV6_RE =
   /^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$|^([0-9a-fA-F]{1,4}:){1,7}:$|^([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}$|^([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}$|^([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}$|^([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}$|^([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}$|^[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})$|^:((:[0-9a-fA-F]{1,4}){1,7}|:)$/
@@ -130,13 +130,13 @@ export const MAX_BULK_ITEMS = 150
 // single-IP route and the bulk route.
 export function whitelistErrorResponse(e: unknown): NextResponse {
   if (e instanceof UpstreamApiError) {
-    // A 401/403 here means OUR reseller API key was rejected by Geonode,
-    // not anything the end user did — surfacing Geonode's raw status as
+    // A 401/403 here means OUR reseller API key was rejected by upstream,
+    // not anything the end user did — surfacing upstream's raw status as
     // the user's own response would read as "your session/permissions are
     // wrong," which is false. Collapse both to a generic upstream error
     // and log the real cause for us to look at.
     if (e.status === 401 || e.status === 403) {
-      console.error('Geonode rejected reseller API credentials on whitelist call:', e.status, e.body)
+      console.error('Upstream rejected reseller API credentials on whitelist call:', e.status, e.body)
       return NextResponse.json({ error: 'IP whitelist service is temporarily unavailable. Please try again shortly.', code: 'upstream_unavailable' }, { status: 502 })
     }
     // The provider's own `message` text is NEVER relayed: it is supplier-
@@ -155,7 +155,7 @@ export function whitelistErrorResponse(e: unknown): NextResponse {
       console.error('Whitelist upstream 400:', e.body)
       return NextResponse.json({ error: 'That request was rejected. Check the IP address and description and try again.', code: 'invalid_request' }, { status: 400 })
     }
-    console.error('Unexpected Geonode whitelist error:', e.status, e.body)
+    console.error('Unexpected upstream whitelist error:', e.status, e.body)
     return NextResponse.json({ error: 'IP whitelist service is temporarily unavailable.', code: 'upstream_unavailable' }, { status: 502 })
   }
   console.error('Unexpected whitelist error:', e)

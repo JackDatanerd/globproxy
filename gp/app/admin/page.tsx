@@ -59,6 +59,7 @@ export default async function AdminPage() {
     { count: unfulfilledOrders },
     { count: unconfirmedRefunds },
     { data: cronRuns },
+    { count: deletionsStuck },
     voDue,
   ] = await Promise.all([
     supabase.from('profiles').select('*',{count:'exact',head:true}).eq('role','user').eq('is_deleted',false),
@@ -82,6 +83,9 @@ export default async function AdminPage() {
     supabase.from('admin_audit_log').select('*',{count:'exact',head:true}).eq('action','order.refund_unconfirmed')
       .gte('created_at', new Date(now.getTime() - 14 * 86_400_000).toISOString()),
     supabase.from('cron_task_runs').select('task, last_run_at, consecutive_failures'),
+    // Account deletions that are failing, or finished with leftovers (migration 0075 / 0084).
+    supabase.from('profiles').select('*',{count:'exact',head:true})
+      .or('and(is_deleted.eq.false,deletion_attempts.gt.0,deletion_scheduled_at.not.is.null),and(is_deleted.eq.true,deletion_cleanup_pending.eq.true)'),
     countVerifiedOperatorsDueForReview(supabase, now),
   ])
   // Scheduled tasks failing now, or silent for ~3 missed ticks (same rule as the Settings panel).
@@ -107,6 +111,7 @@ export default async function AdminPage() {
     { label: 'Refunds to confirm (14 d)', n: unconfirmedRefunds ?? 0, href: '/admin/audit?q=order.refund_unconfirmed' },
     { label: 'Verified Operator reviews due', n: voDue.n, href: '/admin/affiliates?vo=1' },
     { label: 'Scheduled tasks failing', n: failingTasks, href: '/admin/settings' },
+    { label: 'Account deletions needing attention', n: deletionsStuck ?? 0, href: '/admin/settings' },
   ]
 
   return (

@@ -8,7 +8,7 @@ import { NextResponse } from 'next/server'
 
 // Only three ranges (7/30/90 days) are exposed in the UI — keeping the allowed set closed
 // (rather than accepting any integer) means every call this route ever
-// makes stays comfortably under Geonode's 720-unit-at-granularity=day cap
+// makes stays comfortably under upstream's 720-unit-at-granularity=day cap
 // and under Cloudflare Workers' per-invocation subrequest budget (see the
 // credential cap below).
 const ALLOWED_RANGE_DAYS = [7, 30, 90] as const
@@ -72,13 +72,13 @@ async function loadScopedCredentials(admin: Awaited<ReturnType<typeof createAdmi
 
 // Merges each credential's own per-period time series into a single
 // account-level series keyed by day. There's no ".all scoped to just this
-// user" option on Geonode's per-period endpoint — subUserFilter is either
+// user" option on upstream's per-period endpoint — subUserFilter is either
 // one username or every sub-user on the whole reseller account — so this
 // is the only way to get an account-scoped (not reseller-wide) daily
 // total across a user's multiple credentials.
 function mergeSeries(perCredential: PeriodStat[][], dateFrom: Date, dateTo: Date): { date: string; gb: number }[] {
   const byDate = new Map<string, number>()
-  // Zero-fill every UTC day in the requested range. Geonode only returns days
+  // Zero-fill every UTC day in the requested range. upstream only returns days
   // that had traffic, so the chart used to draw a straight line across the
   // gaps with evenly spaced points — a 3-day burst looked like a steady trend
   // and the x-axis dates skipped silently.
@@ -125,16 +125,16 @@ function buildBreakdown(rows: { label: string; stats: HostCountryStat[] }[]): Br
   return out.sort((a, b) => b.gb - a.gb)
 }
 
-function geonodeStatsErrorResponse(e: unknown): NextResponse {
+function upstreamStatsErrorResponse(e: unknown): NextResponse {
   if (e instanceof UpstreamApiError) {
     if (e.status === 401 || e.status === 403) {
-      console.error('Geonode rejected reseller API key on stats call:', e.status, e.body)
+      console.error('Upstream rejected reseller API key on stats call:', e.status, e.body)
       return NextResponse.json(
         { error: 'Usage history is temporarily unavailable. Please try again shortly.' },
         { status: 502 }
       )
     }
-    console.error('Unexpected Geonode stats error:', e.status, e.body)
+    console.error('Unexpected upstream stats error:', e.status, e.body)
     return NextResponse.json({ error: 'Usage history is temporarily unavailable.' }, { status: 502 })
   }
   console.error('Unexpected usage-history error:', e)
@@ -151,8 +151,8 @@ export async function GET(req: Request) {
   const inactive = await requireActiveUser(user.id)
   if (inactive) return inactive
 
-  // Each call fans out up to 30 Geonode requests on the one shared reseller
-  // API key, so an unthrottled loop here could exhaust Geonode's limits for
+  // Each call fans out up to 30 upstream requests on the one shared reseller
+  // API key, so an unthrottled loop here could exhaust upstream's limits for
   // every customer. 10/min per user+IP is far above what the UI needs.
   const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', `usage:${user.id}`)
   if (limited) return limited
@@ -204,7 +204,7 @@ export async function GET(req: Request) {
 
   // Per-credential calls, not a single ".all" call — each is independently
   // try/caught (mirrors syncUserUsage's per-credential loop in
-  // lib/usageSync.ts) so one credential erroring on Geonode's side (e.g. a
+  // lib/usageSync.ts) so one credential erroring on upstream's side (e.g. a
   // sub-user deleted upstream but not yet reconciled locally) doesn't blank
   // out the whole page for every other credential that's fine.
   const seriesResults = localCoversRange || creds.length === 0
@@ -242,7 +242,7 @@ export async function GET(req: Request) {
   // series is still good, so that case degrades to partial_data instead.
   if (creds.length > 0 && perCredentialSeries.length === 0 && perCredentialBreakdown.length === 0 && !localCoversRange && local.size === 0) {
     const firstError = seriesResults.find(r => r.status === 'rejected') as PromiseRejectedResult | undefined
-    return geonodeStatsErrorResponse(firstError?.reason)
+    return upstreamStatsErrorResponse(firstError?.reason)
   }
 
   // Supplier figures (top sessions, older days) and local figures (whole

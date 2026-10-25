@@ -1,4 +1,5 @@
 import { CRON_MAX_AGE_SECONDS } from '@/lib/cronHealth'
+import RunTaskButton from '@/components/admin/RunTaskButton'
 
 export type CronRunRow = {
   task: string
@@ -39,7 +40,8 @@ export default function CronHealthPanel({ rows }: { rows: CronRunRow[] }) {
                 <th className="py-1 pr-4">Last run</th>
                 <th className="py-1 pr-4">Last success</th>
                 <th className="py-1 pr-4">Failing runs</th>
-                <th className="py-1">Last error</th>
+                <th className="py-1 pr-4">Last error</th>
+                <th className="py-1"></th>
               </tr>
             </thead>
             <tbody>
@@ -53,7 +55,8 @@ export default function CronHealthPanel({ rows }: { rows: CronRunRow[] }) {
                     <td className={`py-2 pr-4 ${overdue ? 'text-amber-600 font-medium' : ''}`}>{ago(r.last_run_at)}{overdue ? ' (overdue)' : ''}</td>
                     <td className="py-2 pr-4">{ago(r.last_ok_at)}</td>
                     <td className={`py-2 pr-4 ${failing ? 'text-red-600 font-medium' : ''}`}>{r.consecutive_failures}</td>
-                    <td className="py-2 text-xs text-muted break-words max-w-xs">{failing ? r.last_error : ''}</td>
+                    <td className="py-2 pr-4 text-xs text-muted break-words max-w-xs">{failing ? r.last_error : ''}</td>
+                    <td className="py-2">{r.task === 'canary' ? null : <RunTaskButton task={r.task} />}</td>
                   </tr>
                 )
               })}

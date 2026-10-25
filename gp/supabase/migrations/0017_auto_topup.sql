@@ -2,7 +2,7 @@
 -- 0017 — Auto-allocate (auto top-up) for proxy credentials
 -- ============================================================
 -- Problem: once a credential's gb_used reaches gb_allocated, it stops
--- working (Geonode's own trafficLimitMB cap on the sub-user), and the
+-- working (upstream's own trafficLimitMB cap on the sub-user), and the
 -- only recovery was migration 0016's manual topup_credential — someone
 -- has to notice it's running low (or has already died) and top it up
 -- themselves. This lets a customer opt a credential into topping itself

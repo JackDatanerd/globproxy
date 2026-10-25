@@ -17,5 +17,5 @@ Run migration `supabase/migrations/0058_admin_section8_closeout.sql` in the Supa
 - Verified Operator grant/revoke history on admin affiliate detail page.
 
 ## Supplier exposure
-- Root geonode-*.json removed; generator scripts use neutral upstream-targeting.json (git-ignored).
+- Root supplier-*.json removed; generator scripts use neutral upstream-targeting.json (git-ignored).
 - Dead routes removed: reload-stock, mark-commission-paid.

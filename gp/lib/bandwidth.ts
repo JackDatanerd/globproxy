@@ -82,7 +82,7 @@ export async function activateBandwidth(p: {
   //
   // The follow-ups (activating pending credentials, referral / affiliate
   // crediting) used to run exactly once, here, and were never retried: a
-  // Geonode blip or DB error at this moment meant a referrer was never paid
+  // Upstream blip or DB error at this moment meant a referrer was never paid
   // or a credential never provisioned, with nothing to notice. Now the order
   // is stamped post_credit_done_at only when they succeed, and the reconcile
   // cron re-runs them for orders still unstamped (see retryPostCredit).
@@ -192,7 +192,7 @@ export async function retryPostCredit(order: {
   return done
 }
 
-// Provisions a real Geonode sub-user for every pending credential a user
+// Provisions a real upstream sub-user for every pending credential a user
 // owns. Returns false if any could not be activated (safe to call again).
 // The claim / persist / orphan-cleanup logic lives in lib/credentials.ts
 // (provisionPendingCredentials): an atomic claim (claim_pending_credentials,

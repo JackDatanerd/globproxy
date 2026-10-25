@@ -41,8 +41,8 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
   const cred = await loadOwnedCredential(supabase, id, user.id)
   if (!cred) return NextResponse.json({ error: 'Credential not found' }, { status: 404 })
 
-  // A credential with no Geonode sub-user yet (still provisioning, or
-  // Geonode was down at creation time) has nothing to list — return an
+  // A credential with no upstream sub-user yet (still provisioning, or
+  // Upstream was down at creation time) has nothing to list — return an
   // empty whitelist rather than an error so the tab doesn't show a scary
   // failure for a perfectly normal transient state.
   if (!cred.upstream_sub_user_id) {

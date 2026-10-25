@@ -1,4 +1,4 @@
-// Full ISO 3166-1 country list — all countries Geonode supports
+// Full ISO 3166-1 country list — all countries upstream supports
 export const COUNTRIES: { code: string; name: string; popular?: boolean }[] = [
   { code: 'AF', name: 'Afghanistan' },
   { code: 'AL', name: 'Albania' },

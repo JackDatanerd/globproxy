@@ -8,7 +8,7 @@ import { logAdminAction } from '@/lib/adminAudit'
 // platform settings, and nothing was audited. It now goes through here like
 // every other admin action, and migration 0052 drops the browser policy.
 
-const KEYS = ['geonode_stock', 'auto_reload_enabled', 'auto_reload_threshold_gb']
+const KEYS = ['upstream_stock', 'auto_reload_enabled', 'auto_reload_threshold_gb']
 
 function defaultThreshold(): number {
   const n = Number(process.env.STOCK_ALERT_THRESHOLD ?? 10)
@@ -24,7 +24,7 @@ export async function GET(req: Request) {
 
   const byKey = new Map((data ?? []).map(r => [r.key, r.value as string]))
   let stock: unknown = null
-  try { const raw = byKey.get('geonode_stock'); stock = raw ? JSON.parse(raw) : null } catch { stock = null }
+  try { const raw = byKey.get('upstream_stock'); stock = raw ? JSON.parse(raw) : null } catch { stock = null }
   const threshold = Number(byKey.get('auto_reload_threshold_gb'))
 
   return NextResponse.json({

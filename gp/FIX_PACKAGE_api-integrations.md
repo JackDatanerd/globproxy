@@ -22,7 +22,7 @@ No new env vars. No new wrangler bindings. `schema.sql` is in sync through 0054
 
 | Audit item | Closed by |
 |---|---|
-| Supplier name in API responses / docs (`geonode_username`) | Auth pass 2 (`upstream_*` rename); docs text removed |
+| Supplier name in API responses / docs (`supplier_username`) | Auth pass 2 (`upstream_*` rename); docs text removed |
 | Upstream error text relayed on whitelist routes | `whitelistErrorResponse` now returns fixed messages |
 | Cron chain starved by a failing usage sync | Proxy-lifecycle pass (usage wrapper swallows) — *plus* the independent-chain change below |
 | `auto_topup_failed` mislabelled for non-balance errors | Proxy-lifecycle pass (only "Insufficient" is classed as such) |
@@ -111,7 +111,7 @@ endpoints and payloads that were already validated; creating/changing/rotating *
   cooldown race, cron retry); `createCredential` incl. the concurrent-duplicate race; key
   create/rotate/revoke/expiry warnings/deletion cleanup. The OpenAPI document passes a real validator.
 
-**Not exercised:** a live Cloudflare/Geonode/Paystack/Supabase run, and true multi-connection
+**Not exercised:** a live Cloudflare/upstream/Paystack/Supabase run, and true multi-connection
 Postgres concurrency (the race tests are single-process interleavings plus the DB's own unique
 index). Please smoke-test once on a deploy: create a key with an IP allowlist, allocate with
 and without an `Idempotency-Key`, rotate a webhook secret with a grace window, and send a test

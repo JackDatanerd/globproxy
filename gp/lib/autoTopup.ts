@@ -8,7 +8,7 @@ import { MAX_GB_PER_CREDENTIAL } from '@/lib/apiValidation'
 
 // Runs right after usage-sync writes fresh gb_used for every active
 // credential (see lib/usageSync.ts) — this is deliberately NOT a
-// separate cron task: it needs gb_used to already reflect real Geonode
+// separate cron task: it needs gb_used to already reflect real upstream
 // consumption, and piggybacking on the ~5-minute usage-sync cadence means
 // a credential is topped up well before it actually runs dry.
 //

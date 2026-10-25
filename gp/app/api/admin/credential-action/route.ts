@@ -7,7 +7,7 @@ import { NextResponse } from 'next/server'
 
 // Per-credential kill switch. Until now the only way to stop one abusive
 // credential was to suspend the customer's whole account (and that didn't
-// stop live proxy traffic either). Disabling caps the Geonode sub-user at
+// stop live proxy traffic either). Disabling caps the upstream sub-user at
 // what it has already used and marks the credential 'suspended';
 // enabling restores the limit from gb_allocated.
 export async function POST(req: Request) {

@@ -14,7 +14,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
   // whole row was then handed to a client component.
   const { data: profile, error: profileError } = await supabase
     .from('profiles')
-    .select('role, email, is_deleted, is_suspended, mfa_enabled, is_verified_operator')
+    .select('role, email, is_deleted, is_suspended, mfa_enabled, is_verified_operator, deletion_scheduled_at')
     .eq('id', user.id)
     .single()
 
@@ -49,6 +49,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
       email={profile.email ?? user.email ?? null}
       showMfaBanner={!profile.mfa_enabled}
       verifiedOperator={!!profile.is_verified_operator}
+      deletionScheduledAt={profile.deletion_scheduled_at ?? null}
     >
       {children}
     </DashShell>

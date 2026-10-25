@@ -1,4 +1,4 @@
-// Geonode encodes geo-targeting and sticky-session info directly in the
+// Upstream encodes geo-targeting and sticky-session info directly in the
 // username field — it is NOT accepted by the reseller API's sub-user
 // creation endpoint (confirmed against the live OpenAPI spec: that endpoint
 // only takes username/password/trafficLimitMB/activeUntil/email). Targeting
@@ -23,7 +23,7 @@ export interface TargetingOptions {
   asn?: string | number | null
   protocol?: string | null
   session_type?: string | null
-  sticky_duration?: number | null // minutes — sent as-is, Geonode's lifetime is in minutes, not seconds
+  sticky_duration?: number | null // minutes — sent as-is, upstream's lifetime is in minutes, not seconds
 }
 
 const PORTS = {
@@ -51,7 +51,7 @@ function slug(v: string): string {
   return v.trim().toLowerCase().replace(/[^a-z0-9]/g, '')
 }
 
-// Geonode's own dashboard generates mixed-case alphanumeric session IDs
+// Upstream's own dashboard generates mixed-case alphanumeric session IDs
 // (e.g. "mBXMRo") — likely just an opaque token, but matching their own
 // pattern rather than the lowercase-only guess from generic docs.
 const SESSION_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
@@ -106,8 +106,8 @@ export function deriveSessionId(seed: string, index = 0): string {
 // at the write path — see validateTargeting() below — so a caller can never
 // get this combination persisted in the first place.
 export function buildProxyUsername(baseUsername: string, opts: TargetingOptions, sessionId?: string): string {
-  // Confirmed from a live Geonode dashboard export (2026-07):
-  // geonode_xxx-type-residential-country-us-state-southcarolina-city-fountaininn-asn-13868-lifetime-1440-session-mBXMRo
+  // Confirmed from a live upstream dashboard export (2026-07):
+  // prefix_xxx-type-residential-country-us-state-southcarolina-city-fountaininn-asn-13868-lifetime-1440-session-mBXMRo
   // Order: type, country, state|city, asn, then (sticky only) lifetime, session.
   let u = `${baseUsername}-type-residential`
 
@@ -147,13 +147,13 @@ export function buildProxyUsername(baseUsername: string, opts: TargetingOptions,
 // country/state/city/asn were previously only checked for *presence*
 // (state/city require a country) — never for content. Nothing stopped a
 // caller bypassing the dashboard's dropdowns (which only ever submit real
-// Geonode-sourced codes from /public/geo — see lib/geoTargeting.ts) and
+// Upstream-sourced codes from /public/geo — see lib/geoTargeting.ts) and
 // hitting POST /api/dashboard/proxies or POST /api/v1/sub-users directly
 // with arbitrary strings. Those get concatenated straight into the
-// Geonode-facing connection username in buildProxyUsername() above, so an
+// Upstream-facing connection username in buildProxyUsername() above, so an
 // unvalidated country/state/city/asn was a way to inject extra
 // "-key-value" segments into a caller's own username (forged lifetime,
-// forged session id, malformed data sent to Geonode). slug()'s character
+// forged session id, malformed data sent to upstream). slug()'s character
 // stripping (above) already closes the injection at the builder itself,
 // but rejecting bad input here — loudly, with a clear 400 — is the actual
 // gate: it stops silently-mangled input from ever being accepted as if it
@@ -162,12 +162,12 @@ export function buildProxyUsername(baseUsername: string, opts: TargetingOptions,
 // Format matches what /public/geo actually serves (see lib/geoTargeting.ts
 // header comment — codes are pre-slugged: lowercase, no spaces, no
 // punctuation) rather than an exact whitelist lookup against the full
-// Geonode dataset — that dataset is 210 countries x nested states/cities,
+// Upstream dataset — that dataset is 210 countries x nested states/cities,
 // not something worth loading per-request just to reject the injection
 // case. A syntactically-valid-but-nonexistent code (e.g. "zz") still fails
-// safely: Geonode's own API rejects it or returns no matching peers, same
+// safely: upstream's own API rejects it or returns no matching peers, same
 // as it always would have for a typo.
-// Cap is 64 chars, not an eyeballed round number — the actual Geonode
+// Cap is 64 chars, not an eyeballed round number — the actual upstream
 // dataset (public/geo) has real state codes up to 56 chars long (e.g.
 // Transnistria's "administrativeterritorialunitsoftheleftbankofthedniester"),
 // so a tighter cap would have rejected legitimate targeting. 64 gives

@@ -47,7 +47,7 @@ Built on origin/main aaa733a. Migration: **0055_edge_pipeline_closeout.sql** (sc
    INVOICE_SELLER_TAX_ID, SUPABASE_CAPTCHA_ENABLED (only together with the Supabase CAPTCHA toggle),
    REFERRAL_IP_SALT, PASSWORD_BREACH_CHECK.
 3. Make the GitHub repo private (it is publicly readable and names the supplier throughout). Untrack the
-   supplier dump files: `git rm --cached ../geonode-*.json` (history keeps them until the repo is private).
+   supplier dump files: `git rm --cached ../supplier-*.json` (history keeps them until the repo is private).
 4. After the first deploy: open /api/health, and Admin → Settings to see the new panels.
 
 ## Verified

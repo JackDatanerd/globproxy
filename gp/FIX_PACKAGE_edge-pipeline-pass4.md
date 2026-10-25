@@ -13,4 +13,4 @@ Until it is applied the CSP table keeps its old drop-when-full behaviour and nev
 - **G3 `wrangler.jsonc`** — `upload_source_maps: true`, so persisted Worker log stack traces are readable.
 
 ## Not code
-- The repository is public, so the supplier name in `lib/geonode.ts`, `app/api/admin/debug-geonode/`, the `GEONODE_*` secret names in `deploy.yml` and many comments is readable by anyone. Making the repo private is the fix (renaming files would not remove git history).
+- The repository is public, so the supplier name in `lib/upstream.ts`, `app/api/admin/debug-upstream/`, the `supplier_*` secret names in `deploy.yml` and many comments is readable by anyone. Making the repo private is the fix (renaming files would not remove git history).

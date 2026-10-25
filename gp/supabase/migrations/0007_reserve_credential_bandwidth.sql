@@ -5,10 +5,10 @@
 -- app/api/v1/sub-users) only *soft-checked* available_gb against the
 -- requested gb_allocated — nothing was actually deducted. available_gb only
 -- drops once the ~15-minute cron usage-sync job pulls real consumption back
--- from Geonode. That left a window where a user could burst-create many
+-- from upstream. That left a window where a user could burst-create many
 -- credentials in quick succession, each individually passing the balance
 -- check (since nothing had been reserved yet) and each hard-capped at
--- Geonode by its own gb_allocated — meaning actual provider consumption
+-- upstream by its own gb_allocated — meaning actual provider consumption
 -- could run to (credentials created before the next cron tick) × (their
 -- individual caps), far beyond what was ever purchased.
 --

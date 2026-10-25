@@ -87,7 +87,7 @@ async function runStockCheck() {
   await supabase.from('platform_settings').delete().eq('key', 'upstream_api_alert_at')
 
   await supabase.from('platform_settings')
-    .upsert({ key: 'geonode_stock', value: JSON.stringify(stock) }, { onConflict: 'key' })
+    .upsert({ key: 'upstream_stock', value: JSON.stringify(stock) }, { onConflict: 'key' })
 
   // Two distinct alert conditions — either can fire independently:
   // 1. Exposure alert: stock can't cover what's currently promised to
@@ -101,7 +101,7 @@ async function runStockCheck() {
   // ever read those back — STOCK_ALERT_THRESHOLD was the only value in
   // effect and the panel was pure UI theater. When auto_reload is enabled,
   // its threshold now takes over from the env var. auto_reload_amount_gb is
-  // still not consumed anywhere — there's no automatic Geonode purchase
+  // still not consumed anywhere — there's no automatic upstream purchase
   // pipeline in this codebase yet, so "auto-reload" today only means "alert
   // me earlier," not "buy more automatically." That's a separate feature.
   const { data: settingsRows } = await supabase
@@ -153,7 +153,7 @@ async function runStockCheck() {
            <p><strong>Sessions waiting to be provisioned:</strong> ${stock.pending_allocated_gb.toFixed(1)}GB</p>
            <p><strong>Unused GB in customer-paused sessions (re-taken on resume):</strong> ${stock.paused_resume_gb.toFixed(1)}GB</p>
            <p><strong>Exposure (the three above):</strong> ${stock.exposure_gb.toFixed(1)}GB</p>
-           <p style="color:#666">Already inside live sessions: ${stock.committed_unused_gb.toFixed(1)}GB unused of ${stock.total_allocated_gb.toFixed(1)}GB allocated — already deducted from Geonode's available figure, so not counted as exposure.</p>
+           <p style="color:#666">Already inside live sessions: ${stock.committed_unused_gb.toFixed(1)}GB unused of ${stock.total_allocated_gb.toFixed(1)}GB allocated — already deducted from upstream's available figure, so not counted as exposure.</p>
            ${exposureBreach ? '<p style="color:#e24b4a"><strong>If customers turned all their unallocated balance into sessions right now, you would run short.</strong></p>' : ''}
            <p><a href="${appUrl()}/admin/settings">Go to Admin Panel →</a></p>`,
   }) : false
@@ -168,13 +168,13 @@ async function runStockCheck() {
 // ── Usage sync ───────────────────────────────────────────────────
 // Implementation lives in lib/usageSync.ts — shared with the admin
 // "sync now" button (app/api/admin/sync-usage) so there is exactly one
-// place that decides how gb_used gets reconciled from Geonode, not two
+// place that decides how gb_used gets reconciled from upstream, not two
 // that can quietly diverge.
-// syncAllUsage() THROWS when Geonode's sub-user listing is incomplete (so an
+// syncAllUsage() THROWS when upstream's sub-user listing is incomplete (so an
 // outage can't masquerade as a healthy sync). In the */5 chain a non-OK task
 // stops every task after it (custom-worker.ts), and 'provision' + 'webhooks'
 // run after 'usage' — webhook delivery retries and threshold events have
-// nothing to do with Geonode and must keep running during its outage. So the
+// nothing to do with upstream and must keep running during its outage. So the
 // cron wrapper logs the failure and reports it in the body instead; the
 // freshness marker is deliberately NOT stamped, which is what the staleness
 // watchdog in 'stock' alerts on. (The admin "sync now" button still surfaces
@@ -225,7 +225,8 @@ async function runBandwidthAlerts() {
   for (const acc of accounts) {
    try {
     if (!acc.total_gb) continue
-    // Was (used_gb / total_gb) — but the email below reports available_gb,
+    // This measures how much of the purchased bandwidth is ALLOCATED (reserved into sessions
+    // or handed to clients), not how much has been consumed — the e-mails say so. Was (used_gb / total_gb) — but the email below reports available_gb,
     // which also subtracts allocated_gb (GB reserved into credentials, not
     // yet consumed). An account with heavy allocated_gb could have
     // available_gb near zero while used_gb stayed low, so it would never
@@ -279,9 +280,10 @@ async function runBandwidthAlerts() {
     if (due95) {
       await sendAlertEmail({
         to: profile.email,
-        subject: `🚨 Only ${avail.toFixed(1)}GB remaining — GlobProxy`,
-        html: `<p>Hi ${firstName}, you've used ${pct.toFixed(0)}% of your bandwidth. Only ${avail.toFixed(1)}GB remains.</p>
-               <a href="${appUrl()}/dashboard/buy">Top up now →</a>
+        subject: `Only ${avail.toFixed(1)}GB left to allocate — GlobProxy`,
+        html: `<p>Hi ${firstName}, ${pct.toFixed(0)}% of the bandwidth you bought is now set aside for your proxy sessions (and any clients you allocated to). Only ${avail.toFixed(1)}GB is left to allocate to a new session or top-up.</p>
+               <p style="color:#666;font-size:13px;">Allocated bandwidth is reserved for those sessions — it is not used up until traffic actually flows through them.</p>
+               <a href="${appUrl()}/dashboard/buy">Buy more bandwidth →</a>
                ${referralLine}`,
       })
       // (The bandwidth_threshold_crossed WEBHOOK no longer fires from this
@@ -294,8 +296,9 @@ async function runBandwidthAlerts() {
     } else if (due80) {
       await sendAlertEmail({
         to: profile.email,
-        subject: `Heads up: ${avail.toFixed(1)}GB bandwidth remaining`,
-        html: `<p>Hi ${firstName}, you've used ${pct.toFixed(0)}% of your bandwidth. ${avail.toFixed(1)}GB remains.</p>
+        subject: `Heads up: ${avail.toFixed(1)}GB left to allocate`,
+        html: `<p>Hi ${firstName}, ${pct.toFixed(0)}% of the bandwidth you bought is now set aside for your proxy sessions (and any clients you allocated to). ${avail.toFixed(1)}GB is left to allocate to a new session or top-up.</p>
+               <p style="color:#666;font-size:13px;">Allocated bandwidth is reserved for those sessions — it is not used up until traffic actually flows through them.</p>
                <a href="${appUrl()}/dashboard/buy">Buy more →</a>
                ${referralLine}`,
       })
@@ -763,7 +766,7 @@ async function runBenchmark() {
 }
 
 // ── Pending-credential provisioning (public API + dashboard) ───────
-// A credential created while Geonode was unreachable stays 'pending'. This
+// A credential created while upstream was unreachable stays 'pending'. This
 // retries them with backoff (claim_pending_credentials, migration 0042) —
 // previously the ONLY thing that ever activated one was the owner's next
 // purchase, so an API user who never bought again was stuck forever. Also

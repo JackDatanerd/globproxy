@@ -9,7 +9,7 @@
 -- app/api/cron/[task]/route.ts) is the live sum of gb_used across a user's
 -- currently-active credentials — which, by construction, is always a
 -- subset of what's already sitting in allocated_gb for those same
--- credentials (Geonode enforces gb_allocated as the hard cap per sub-user).
+-- credentials (upstream enforces gb_allocated as the hard cap per sub-user).
 -- Subtracting both double-counts the same GB. Concretely: buy 20GB,
 -- create one credential with gb_allocated=10 (available correctly reads
 -- 10), use 6GB of it -> available reads 20-6-10=4 instead of the correct
@@ -30,7 +30,7 @@
 -- release_credential_bandwidth regardless of gb_used, letting delete then
 -- recreate reclaim already-consumed GB. Fixed in
 -- app/api/dashboard/proxies/[id]/route.ts, which now releases only the
--- unused portion (gb_allocated minus a live Geonode usage check, falling
+-- unused portion (gb_allocated minus a live upstream usage check, falling
 -- back to the synced gb_used column). No further schema change needed —
 -- release_credential_bandwidth already took the release amount as a
 -- caller-supplied parameter, so the fix lives entirely in the caller.

@@ -23,7 +23,7 @@ async function loadOwnedCredential(_supabase: Awaited<ReturnType<typeof createCl
 // Bulk add — mirrors POST /whitelisted-ips/bulk-create. Kept as a
 // separate route (rather than overloading the single-IP POST above with
 // an "array or object" body) so each endpoint's request/response shape
-// matches its Geonode counterpart 1:1.
+// matches its upstream counterpart 1:1.
 export async function POST(req: Request, context: { params: Promise<{ id: string }> }) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -76,7 +76,7 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
 
 // Bulk delete — mirrors POST /whitelisted-ips/bulk-delete. This is
 // deliberately a POST-shaped body (not query params) so it can carry an
-// arbitrary-length IP list; Geonode's own bulk-delete endpoint is a POST
+// arbitrary-length IP list; upstream's own bulk-delete endpoint is a POST
 // for the same reason despite being a delete operation.
 export async function DELETE(req: Request, context: { params: Promise<{ id: string }> }) {
   const supabase = await createClient()

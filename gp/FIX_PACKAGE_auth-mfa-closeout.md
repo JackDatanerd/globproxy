@@ -29,8 +29,8 @@ Apply order: **run `supabase/migrations/0045_auth_mfa_closeout.sql` in Supabase 
 - 0044's payout-hold trigger now also restarts on `email_changed` and `mfa_recovery_completed`.
 
 ## Cross-section (traced): supplier name shown to customers
-- Public API docs no longer mention `geonode_username`; v1 credential JSON no longer returns the `geonode_username` alias (**breaking for any integrator who used it — `username` / `connection_username` are unchanged**); dashboard proxies page no longer ships `geonode_*` keys to the browser.
-- Not changed: the DB column names themselves (`proxy_credentials.geonode_*`) — only visible to someone querying PostgREST by hand; renaming them is a wide migration, say the word.
+- Public API docs no longer mention `supplier_username`; v1 credential JSON no longer returns the `supplier_username` alias (**breaking for any integrator who used it — `username` / `connection_username` are unchanged**); dashboard proxies page no longer ships `supplier_*` keys to the browser.
+- Not changed: the DB column names themselves (`proxy_credentials.supplier_*`) — only visible to someone querying PostgREST by hand; renaming them is a wide migration, say the word.
 
 ## Config / env
 - `SUPABASE_CAPTCHA_ENABLED=true` — set **together with** Supabase Dashboard → Authentication → Attack Protection → CAPTCHA (Turnstile secret). Then GoTrue verifies the token itself and the routes stop calling siteverify.

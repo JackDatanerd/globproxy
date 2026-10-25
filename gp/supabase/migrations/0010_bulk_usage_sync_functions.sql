@@ -2,7 +2,7 @@
 -- 0010 — Bulk usage-sync functions
 -- ============================================================
 -- Fixes the cron usage-sync 500 crash: runUsageSync() (app/api/cron/[task]
--- /route.ts) was making one Geonode API call per active credential AND one
+-- /route.ts) was making one upstream API call per active credential AND one
 -- Supabase update per changed credential AND one select+update per user
 -- account — all counting against Cloudflare Workers' 50-subrequest-per-
 -- invocation cap (Free plan). Once enough credentials existed from testing,
@@ -11,8 +11,8 @@
 -- intercept, so the per-credential try/catch in the old code couldn't save
 -- it. cron-job.org auto-disabled the job after 26 consecutive failures.
 --
--- Fix pairs with listAllSubUsersUsage() in lib/geonode.ts, which replaces
--- N individual Geonode calls with ceil(N/100) paginated list calls. These
+-- Fix pairs with listAllSubUsersUsage() in lib/upstream.ts, which replaces
+-- N individual upstream calls with ceil(N/100) paginated list calls. These
 -- two functions do the same for the database side: one round trip each
 -- instead of one per credential / one per account.
 --

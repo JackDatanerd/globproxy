@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
-import { createClient } from '@/lib/supabase/server'
+import { createClient, createAdminClient } from '@/lib/supabase/server'
 import ReportIssueButton from '@/components/dashboard/ReportIssueButton'
+import SupportFollowUp from '@/components/dashboard/SupportFollowUp'
 
 // The "Report an issue" dialog used to be write-only: a customer who sent a
 // report had no way to see it again, whether it was still open, or what they
@@ -17,6 +18,20 @@ export default async function SupportPage() {
     .eq('user_id', user.id)
     .order('created_at', { ascending: false })
     .limit(50)
+
+  // What support wrote back, and the customer's own follow-ups (migration 0073 / 0084). The table
+  // has no customer policy, so it is read with the service role — scoped to report ids that
+  // the row-level policy above just proved belong to this user. A failure only hides the thread.
+  type Msg = { report_id: string; message: string; created_at: string; from_customer: boolean }
+  const threads = new Map<string, Msg[]>()
+  const ids = (reports ?? []).map((r) => r.id)
+  if (ids.length) {
+    try {
+      const { data: msgs } = await (await createAdminClient()).from('support_report_replies')
+        .select('report_id, message, created_at, from_customer').in('report_id', ids).order('created_at', { ascending: true })
+      for (const m of (msgs ?? []) as Msg[]) { const l = threads.get(m.report_id) ?? []; l.push(m); threads.set(m.report_id, l) }
+    } catch (e) { console.error('[dashboard/support] could not load replies', e) }
+  }
 
   const fmt = (d: string) => new Date(d).toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + ' UTC'
 
@@ -52,12 +67,19 @@ export default async function SupportPage() {
                 </div>
                 <p className="text-sm text-ink2 whitespace-pre-wrap break-words">{r.message}</p>
                 {r.page_url && <p className="text-[11px] text-muted font-mono mt-1.5">From {r.page_url}</p>}
+                {(threads.get(r.id) ?? []).map((m, i) => (
+                  <div key={i} className={`mt-3 rounded-lg px-3 py-2 border ${m.from_customer ? 'bg-white border-border' : 'bg-surface border-border'}`}>
+                    <div className="text-[10px] font-mono text-muted mb-0.5">{m.from_customer ? 'You' : 'GlobProxy support'} · {fmt(m.created_at)}</div>
+                    <p className="text-sm text-ink2 whitespace-pre-wrap break-words">{m.message}</p>
+                  </div>
+                ))}
+                <SupportFollowUp reportId={r.id} resolved={r.status === 'resolved'} />
               </li>
             ))}
           </ul>
         )}
       </div>
-      <p className="text-[11px] text-muted mt-3">Replies come by email, so check your spam folder if you&apos;re expecting one.</p>
+      <p className="text-[11px] text-muted mt-3">We reply here and by email — check your spam folder if you&apos;re expecting one.</p>
     </div>
   )
 }

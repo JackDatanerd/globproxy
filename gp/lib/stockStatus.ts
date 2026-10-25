@@ -2,13 +2,13 @@ import { getAccountBalance } from '@/lib/upstream'
 import { fetchAllRows } from '@/lib/dbPaging'
 
 export interface StockStatus {
-  available_gb: number              // Geonode availableForAllocationMB — what can still be carved out for new sub-users
+  available_gb: number              // Upstream availableForAllocationMB — what can still be carved out for new sub-users
   total_gb: number
   total_allocated_gb: number        // Σ gb_allocated over active credentials (informational)
   total_used_gb: number             // Σ gb_used over active credentials (informational)
-  committed_unused_gb: number       // Σ max(0, allocated - used) — ALREADY deducted from available_gb by Geonode
+  committed_unused_gb: number       // Σ max(0, allocated - used) — ALREADY deducted from available_gb by upstream
   unallocated_balances_gb: number   // customer balances not yet given to any credential
-  pending_allocated_gb: number      // reserved by credentials that have no Geonode sub-user yet
+  pending_allocated_gb: number      // reserved by credentials that have no upstream sub-user yet
   paused_resume_gb: number          // headroom of customer-paused sessions: released upstream while paused, re-taken from available_gb on resume
   exposure_gb: number               // unallocated_balances + pending + paused_resume — the GB still to be carved out of available_gb
   covered: boolean
@@ -17,7 +17,7 @@ export interface StockStatus {
 
 // WHAT "EXPOSURE" MEANS HERE (changed — the old formula was wrong).
 //
-// available_gb is Geonode's availableForAllocationMB = totalMB minus what is
+// available_gb is upstream's availableForAllocationMB = totalMB minus what is
 // ALREADY allocated to sub-users (see getAccountBalance). Every GB inside an
 // active credential's limit has therefore already been taken out of that
 // figure. The old exposure was Σ(allocated - used) over active credentials —
@@ -29,7 +29,7 @@ export interface StockStatus {
 //      into new sessions at any moment (bandwidth_accounts.available_gb:
 //      total_gb - allocated_gb), and
 //   2. pending credentials — GB reserved against a customer's balance whose
-//      Geonode sub-user hasn't been created yet; provisioning will have to
+//      Upstream sub-user hasn't been created yet; provisioning will have to
 //      carve them out of available_gb.
 //
 //   3. customer-paused sessions — pausing caps the live limit at what was used, which
@@ -37,7 +37,7 @@ export interface StockStatus {
 //      moment and the full allocation has to be carved out again. Admin- and
 //      account-suspended sessions only return through an admin action, so they are not counted.
 //
-// Exposure = (1) + (2) + (3). `covered` means the remaining unsold-to-Geonode pool
+// Exposure = (1) + (2) + (3). `covered` means the remaining unsold-to-upstream pool
 // can honour every one of them.
 export async function computeStockStatus(supabase: any): Promise<StockStatus> {
   const balance = await getAccountBalance()
@@ -74,7 +74,7 @@ export async function computeStockStatus(supabase: any): Promise<StockStatus> {
   const sum = (xs: number[]) => xs.reduce((s, n) => s + n, 0)
   const totalAllocated = sum(active.rows.map(c => Number(c.gb_allocated ?? 0)))
   const totalUsed = sum(active.rows.map(c => Number(c.gb_used ?? 0)))
-  // Clamped PER CREDENTIAL: a credential over its own cap (Geonode's
+  // Clamped PER CREDENTIAL: a credential over its own cap (upstream's
   // trafficUsedMB can exceed trafficLimitMB) must not offset another's headroom.
   const committedUnused = sum(active.rows.map(c => Math.max(0, Number(c.gb_allocated ?? 0) - Number(c.gb_used ?? 0))))
   const unallocatedBalances = sum(accounts.rows.map(a => Number(a.available_gb ?? 0)))

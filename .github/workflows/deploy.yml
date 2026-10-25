@@ -163,6 +163,23 @@ jobs:
             echo "::warning::Could not read the live version before deploying (first deploy, or the API call failed) - an automatic rollback will have no target and must be done by hand."
           fi
 
+      # The wrangler action's own failure for an empty secret is a one-line "missing value".
+      # Say which GitHub secret to add, before anything is built or changed. (Names are neutral on
+      # purpose: this log is public for a public repository.)
+      - name: Verify the required GitHub secrets are set
+        env:
+          UPSTREAM_API_KEY: ${{ secrets.UPSTREAM_API_KEY }}
+          UPSTREAM_RESELLER_ID: ${{ secrets.UPSTREAM_RESELLER_ID }}
+        run: |
+          missing=""
+          for n in UPSTREAM_API_KEY UPSTREAM_RESELLER_ID; do
+            [ -z "${!n}" ] && missing="$missing $n"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::These repository secrets are empty or missing:$missing — add them (Settings → Secrets and variables → Actions) and re-run."
+            exit 1
+          fi
+
       - name: Deploy to Cloudflare Workers
         timeout-minutes: 15
         uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.15.0
@@ -180,8 +197,8 @@ jobs:
             NEXT_PUBLIC_SUPABASE_URL
             NEXT_PUBLIC_SUPABASE_ANON_KEY
             SUPABASE_SERVICE_ROLE_KEY
-            GEONODE_API_KEY
-            GEONODE_RESELLER_ID
+            UPSTREAM_API_KEY
+            UPSTREAM_RESELLER_ID
             PAYSTACK_SECRET_KEY
             RESEND_API_KEY
             CRON_SECRET
@@ -193,8 +210,8 @@ jobs:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          GEONODE_API_KEY: ${{ secrets.GEONODE_API_KEY }}
-          GEONODE_RESELLER_ID: ${{ secrets.GEONODE_RESELLER_ID }}
+          UPSTREAM_API_KEY: ${{ secrets.UPSTREAM_API_KEY }}
+          UPSTREAM_RESELLER_ID: ${{ secrets.UPSTREAM_RESELLER_ID }}
           PAYSTACK_SECRET_KEY: ${{ secrets.PAYSTACK_SECRET_KEY }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}

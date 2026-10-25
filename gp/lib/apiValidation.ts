@@ -6,14 +6,14 @@ import asnIndex from '@/lib/geo/asnIndex.json'
 
 // Shared by POST /api/v1/sub-users and POST /api/dashboard/proxies so the
 // two entry points can never drift apart on what they accept. Everything is
-// checked BEFORE bandwidth is reserved or Geonode is touched: previously an
+// checked BEFORE bandwidth is reserved or upstream is touched: previously an
 // unknown protocol / non-integer sticky_duration only failed at the DB CHECK
-// or column type, after a reservation and a real Geonode sub-user already
+// or column type, after a reservation and a real upstream sub-user already
 // existed, and surfaced as a 500 carrying the raw Postgres message.
 
 export const MAX_GB_PER_CREDENTIAL = 100_000
 export const MIN_GB_PER_CREDENTIAL = 0.01
-export const MAX_STICKY_MINUTES = 1440 // 24h — the longest lifetime Geonode's own dashboard produces
+export const MAX_STICKY_MINUTES = 1440 // 24h — the longest lifetime upstream's own dashboard produces
 export const MAX_ENDPOINT_COUNT = 100
 export const MAX_LABEL_LENGTH = 100
 

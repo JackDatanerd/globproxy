@@ -18,7 +18,7 @@ type AdminClient = Awaited<ReturnType<typeof createAdminClient>>
 type CredRow = { id: string; user_id?: string | null; upstream_sub_user_id: string | null; gb_used: number | null }
 
 // Per-run ceilings. Cloudflare Workers caps subrequests per invocation and
-// every Geonode PATCH / Supabase write / email counts against it, so each
+// every upstream PATCH / Supabase write / email counts against it, so each
 // optional side-effect is bounded; whatever is left over is picked up on the
 // next 5-minute tick.
 const MAX_LIMIT_PATCHES_PER_RUN = 15
@@ -43,7 +43,7 @@ function buildChanges(creds: CredRow[], usageMap: Map<string, number>): UsageCha
       gb_used: cred.upstream_sub_user_id ? usageMap.get(cred.upstream_sub_user_id) : undefined,
       prevGbUsed: cred.gb_used ?? 0,
     }))
-    // Only write rows that actually changed (skip both "Geonode didn't
+    // Only write rows that actually changed (skip both "Upstream didn't
     // return this sub-user" and "unchanged within float noise").
     .filter((c): c is { id: string; user_id: string | null; gb_used: number; prevGbUsed: number } =>
       c.gb_used !== undefined && Math.abs(c.gb_used - c.prevGbUsed) > 0.0005
@@ -88,12 +88,12 @@ async function applyChanges(
 // cron task runs every ~5 minutes, and what the admin "sync all" button
 // triggers on demand.
 //
-// If Geonode's listing is INCOMPLETE (outage, revoked key, timeout) this
+// If upstream's listing is INCOMPLETE (outage, revoked key, timeout) this
 // still applies whatever it did get — that is safe, absence just means "no
 // update" — but it does NOT stamp the freshness marker, does NOT run
 // auto-top-ups on stale usage, and finishes by THROWING so the cron/admin
 // caller sees a failure. It used to return normally with recalcOk=true, so a
-// total Geonode outage looked healthy and the staleness watchdog (which
+// total upstream outage looked healthy and the staleness watchdog (which
 // reads that marker) never fired.
 // `admin` is injectable only so tests can drive this with a fake client; callers omit it.
 export async function syncAllUsage(admin?: AdminClient) {
@@ -151,7 +151,7 @@ export async function syncAllUsage(admin?: AdminClient) {
     updated_credentials: changes.length,
     recalc_ok: recalcOk,
     usage_write_ok: bulkOk,
-    geonode_listing_complete: complete,
+    upstream_listing_complete: complete,
     limits_reconciled: limitsReconciled,
     missing_upstream: missingUpstream,
     orphan_sub_users: orphanCount,
@@ -161,7 +161,7 @@ export async function syncAllUsage(admin?: AdminClient) {
   }
 
   if (!complete) {
-    throw new Error(`Geonode sub-user listing was incomplete — usage NOT marked fresh (applied ${changes.length} partial updates)`)
+    throw new Error(`Upstream sub-user listing was incomplete — usage NOT marked fresh (applied ${changes.length} partial updates)`)
   }
   if (!healthy) {
     throw new Error(`Usage sync could not write usage (${!bulkOk ? 'per-credential update failed' : 'account recalculation failed'}) — usage NOT marked fresh`)
@@ -170,10 +170,10 @@ export async function syncAllUsage(admin?: AdminClient) {
 }
 
 // ─── Limit reconciliation ────────────────────────────────────────────────
-// Brings Geonode's live trafficLimitMB back in line with what the database
+// Brings upstream's live trafficLimitMB back in line with what the database
 // says the customer owns. Drift comes from: a top-up whose PATCH failed or
 // landed out of order, auto-top-up PATCH failures, a credential created
-// before a top-up finished provisioning, or a manual change on Geonode's
+// before a top-up finished provisioning, or a manual change on upstream's
 // dashboard. Before this existed, a failed PATCH was only logged
 // ("needs manual reconciliation") and nothing ever retried — and auto-top-up
 // couldn't self-heal because the DB already showed plenty of remaining GB.
@@ -200,7 +200,7 @@ async function reconcileLimits(
   for (const c of active) {
     if (attempts >= MAX_LIMIT_PATCHES_PER_RUN || consecutiveFailures >= MAX_CONSECUTIVE_LIMIT_FAILURES) break
     const snap = subUsers.get(String(c.upstream_sub_user_id))
-    if (!snap || snap.limitMb === null) continue // not on Geonode, or no limit reported — nothing to compare
+    if (!snap || snap.limitMb === null) continue // not on upstream, or no limit reported — nothing to compare
 
     try {
       if (suspendedUsers.has(c.user_id)) {
@@ -230,7 +230,7 @@ async function reconcileLimits(
       console.error('[usage-sync] limit reconcile failed for', c.id, e)
     }
   }
-  if (patched > 0) console.log(`[usage-sync] reconciled ${patched} Geonode limit(s)`)
+  if (patched > 0) console.log(`[usage-sync] reconciled ${patched} upstream limit(s)`)
   if (consecutiveFailures >= MAX_CONSECUTIVE_LIMIT_FAILURES) console.error('[usage-sync] limit reconcile stopped after repeated failures — retrying next tick')
   return patched
 }
@@ -295,7 +295,7 @@ async function trackMissingUpstream(
   return missing.length
 }
 
-// Sub-users that exist on Geonode, carry our naming prefix, and have no row
+// Sub-users that exist on upstream, carry our naming prefix, and have no row
 // in the database under ANY status. They are real, working, untracked
 // proxies (a crash between the upstream create and the DB insert, a failed
 // cleanup, or a create whose response we never saw). Each one holds a full
@@ -309,10 +309,10 @@ async function trackMissingUpstream(
 //    ZERO traffic is deleted upstream (no customer was ever handed it), a few per
 //    run, which returns its limit to the pool. One with any usage is left for a human.
 //
-// platform_settings.geonode_orphan_candidates is { id: firstSeenISO } (older runs
+// platform_settings.upstream_orphan_candidates is { id: firstSeenISO } (older runs
 // stored a plain id array — still read). Results land in
-// platform_settings.geonode_orphans and the admin is emailed once per incident.
-const ORPHAN_REPORT_KEY = 'geonode_orphans'
+// platform_settings.upstream_orphans and the admin is emailed once per incident.
+const ORPHAN_REPORT_KEY = 'upstream_orphans'
 const ORPHAN_RECLAIM_AFTER_MS = 24 * 3_600_000
 const MAX_ORPHAN_RECLAIMS_PER_RUN = 5
 
@@ -334,14 +334,14 @@ async function sweepOrphans(
   const { data: rows } = await supabase
     .from('platform_settings')
     .select('key, value')
-    .in('key', ['geonode_orphan_candidates', 'geonode_orphans_alerted_at'])
+    .in('key', ['upstream_orphan_candidates', 'upstream_orphans_alerted_at'])
   const settings = Object.fromEntries((rows ?? []).map((r: any) => [r.key, r.value]))
 
   const nowMs = Date.now()
   const nowIso = new Date(nowMs).toISOString()
   let previous: Record<string, string> = {}
   try {
-    const parsed = JSON.parse(settings.geonode_orphan_candidates ?? '{}')
+    const parsed = JSON.parse(settings.upstream_orphan_candidates ?? '{}')
     if (Array.isArray(parsed)) for (const id of parsed) previous[String(id)] = nowIso
     else if (parsed && typeof parsed === 'object') previous = parsed
   } catch { /* reset */ }
@@ -371,33 +371,33 @@ async function sweepOrphans(
   const stillPersistent = persistent.filter(id => !reclaimedSet.has(id))
 
   await supabase.from('platform_settings').upsert([
-    { key: 'geonode_orphan_candidates', value: JSON.stringify(Object.fromEntries(Object.entries(remainingCandidates).slice(0, 500))) },
+    { key: 'upstream_orphan_candidates', value: JSON.stringify(Object.fromEntries(Object.entries(remainingCandidates).slice(0, 500))) },
     { key: ORPHAN_REPORT_KEY, value: JSON.stringify({ count: stillPersistent.length, ids: stillPersistent.slice(0, 100), detected_at: nowIso, reclaimed_last_run: reclaimed.length }) },
   ], { onConflict: 'key' })
 
   if (stillPersistent.length === 0) {
-    if (settings.geonode_orphans_alerted_at) {
-      await supabase.from('platform_settings').delete().eq('key', 'geonode_orphans_alerted_at')
+    if (settings.upstream_orphans_alerted_at) {
+      await supabase.from('platform_settings').delete().eq('key', 'upstream_orphans_alerted_at')
     }
     return 0
   }
 
-  console.error(`[usage-sync] ${stillPersistent.length} orphan Geonode sub-user(s) with no local record:`, stillPersistent.slice(0, 20))
-  if (!settings.geonode_orphans_alerted_at && process.env.ADMIN_EMAIL) {
+  console.error(`[usage-sync] ${stillPersistent.length} orphan upstream sub-user(s) with no local record:`, stillPersistent.slice(0, 20))
+  if (!settings.upstream_orphans_alerted_at && process.env.ADMIN_EMAIL) {
     await sendEmail({
       to: process.env.ADMIN_EMAIL,
-      subject: `[ORPHAN SUB-USERS] ${stillPersistent.length} Geonode sub-user(s) have no local record`,
-      html: `<p>${stillPersistent.length} sub-user(s) on Geonode carry the <code>gp_</code> prefix but have no
+      subject: `[ORPHAN SUB-USERS] ${stillPersistent.length} upstream sub-user(s) have no local record`,
+      html: `<p>${stillPersistent.length} sub-user(s) on upstream carry the <code>gp_</code> prefix but have no
              <code>proxy_credentials</code> row (seen on two consecutive usage syncs). They are live,
-             untracked proxies — usually the result of a crash between the Geonode create and the database insert,
+             untracked proxies — usually the result of a crash between the upstream create and the database insert,
              or a create whose response was never received.</p>
              <p>Ones with zero traffic are deleted automatically after ${ORPHAN_RECLAIM_AFTER_MS / 3_600_000}h (their limit returns to your pool);
              ones with any usage stay for you to review.</p>
-             <p><strong>Geonode sub-user ids (first 20):</strong> ${escapeHtml(stillPersistent.slice(0, 20).join(', '))}</p>
-             <p>Full list: <code>platform_settings.geonode_orphans</code>.</p>`,
+             <p><strong>upstream sub-user ids (first 20):</strong> ${escapeHtml(stillPersistent.slice(0, 20).join(', '))}</p>
+             <p>Full list: <code>platform_settings.upstream_orphans</code>.</p>`,
     }).catch((e) => console.error('[usage-sync] orphan alert email failed', e))
     await supabase.from('platform_settings')
-      .upsert({ key: 'geonode_orphans_alerted_at', value: nowIso }, { onConflict: 'key' })
+      .upsert({ key: 'upstream_orphans_alerted_at', value: nowIso }, { onConflict: 'key' })
   }
   return stillPersistent.length
 }

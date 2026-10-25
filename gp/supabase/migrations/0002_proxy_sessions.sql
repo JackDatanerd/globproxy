@@ -9,11 +9,11 @@ create table if not exists public.proxy_sessions (
   id              uuid default uuid_generate_v4() primary key,
   credential_id   uuid references public.proxy_credentials(id) on delete cascade not null,
   user_id         uuid references public.profiles(id) on delete cascade not null,
-  session_token   text not null, -- the actual Geonode session id, e.g. "mBXMRo" — fixed at creation, not regenerated
+  session_token   text not null, -- the actual upstream session id, e.g. "mBXMRo" — fixed at creation, not regenerated
   label           text not null default 'Session',
   pinned          boolean not null default false,
   collapsed       boolean not null default false,
-  terminated_at   timestamp with time zone, -- soft "forget" — Geonode has no endpoint to force-expire early,
+  terminated_at   timestamp with time zone, -- soft "forget" — upstream has no endpoint to force-expire early,
                                              -- so this just stops it from showing in the active list
   created_at      timestamp with time zone default now()
 );

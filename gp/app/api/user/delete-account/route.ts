@@ -72,6 +72,7 @@ export async function DELETE(req: Request) {
         deletion_reminder_sent_at: null,
         deletion_attempts: 0,
         deletion_last_error: null,
+        deletion_last_attempt_at: null,
       }).eq('id', user.id).eq('is_deleted', false).is('deletion_scheduled_at', null).select('deletion_scheduled_at')
       if (setErr) {
         console.error('delete-account: could not schedule', setErr)

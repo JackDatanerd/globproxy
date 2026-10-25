@@ -9,7 +9,7 @@ name: Targeting data drift
 # Needs two repository secrets; without them the run is a no-op (not a failure):
 #   UPSTREAM_TARGETING_URL   the supplier's targeting-options endpoint (https). Not recorded
 #                            in the repo on purpose, and NOT verified from here.
-#   GEONODE_API_KEY          already set for deploy.yml (passed below as UPSTREAM_API_KEY).
+#   UPSTREAM_API_KEY         already set for deploy.yml.
 #
 # Must live at .github/workflows/ at the repo root, not inside gp/.
 
@@ -30,13 +30,15 @@ jobs:
         working-directory: gp
     env:
       UPSTREAM_TARGETING_URL: ${{ secrets.UPSTREAM_TARGETING_URL }}
-      UPSTREAM_API_KEY: ${{ secrets.GEONODE_API_KEY }}
+      UPSTREAM_API_KEY: ${{ secrets.UPSTREAM_API_KEY }}
     steps:
       - name: Skip when not configured
         id: gate
         run: |
           if [ -z "$UPSTREAM_TARGETING_URL" ] || [ -z "$UPSTREAM_API_KEY" ]; then
-            echo "::notice::UPSTREAM_TARGETING_URL / the API key are not set as repository secrets — nothing to check."
+            echo "::warning::UPSTREAM_TARGETING_URL / the API key are not set as repository secrets — this weekly check is NOT checking anything."
+            echo "### Targeting drift check did not run" >> "$GITHUB_STEP_SUMMARY"
+            echo "Set the repository secrets UPSTREAM_TARGETING_URL and UPSTREAM_API_KEY to turn it on." >> "$GITHUB_STEP_SUMMARY"
             echo "run=false" >> "$GITHUB_OUTPUT"
           else
             echo "run=true" >> "$GITHUB_OUTPUT"

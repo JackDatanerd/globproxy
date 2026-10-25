@@ -28,6 +28,7 @@ export async function POST(req: Request) {
       deletion_reminder_sent_at: null,
       deletion_attempts: 0,
       deletion_last_error: null,
+      deletion_last_attempt_at: null,
     }).eq('id', user.id).eq('is_deleted', false).not('deletion_scheduled_at', 'is', null).select('email, full_name')
     if (error) {
       console.error('delete-account/cancel failed', error)

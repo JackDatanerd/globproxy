@@ -6,6 +6,7 @@ import { createAdminClient } from '@/lib/supabase/server'
 import AdminSyncUsageButton from '@/components/admin/AdminSyncUsageButton'
 import AdminMfaResetButton from '@/components/admin/AdminMfaResetButton'
 import AdminDeleteUserButton from '@/components/admin/AdminDeleteUserButton'
+import AdminDeletionPanel from '@/components/admin/AdminDeletionPanel'
 import AdminUserControls from '@/components/admin/AdminUserControls'
 import AdminCredentialAction from '@/components/admin/AdminCredentialAction'
 import AdminUserSecurityPanel, { type PanelSession, type PanelKey } from '@/components/admin/AdminUserSecurityPanel'
@@ -138,6 +139,17 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
           {profile.role !== 'admin' && <AdminDeleteUserButton userId={id} email={profile.email} />}
         </div>}
       </div>
+
+      <AdminDeletionPanel userId={id} state={{
+        is_deleted: !!profile.is_deleted,
+        deletion_requested_at: profile.deletion_requested_at ?? null,
+        deletion_scheduled_at: profile.deletion_scheduled_at ?? null,
+        deletion_attempts: profile.deletion_attempts ?? null,
+        deletion_last_error: profile.deletion_last_error ?? null,
+        deletion_last_attempt_at: profile.deletion_last_attempt_at ?? null,
+        deletion_cleanup_pending: profile.deletion_cleanup_pending ?? null,
+        deletion_cleanup_notes: profile.deletion_cleanup_notes ?? null,
+      }} />
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
         {stats.map(([label, value, color]) => (

@@ -1,0 +1,67 @@
+name: Uptime and scheduler watch
+
+# The app watches its own scheduled tasks (cron_task_runs, the stale-task and usage-sync
+# alerts) — but those run on the same Worker, cron triggers and mail provider they are
+# watching, so if any of them stops, every alert stops with it. This runs somewhere else:
+# every 30 minutes GitHub asks /api/health?deep=1 (the deep check needs the cron secret) and
+# FAILS the run — which GitHub e-mails to the repo owner — when the site does not answer,
+# reports itself degraded, or a scheduled task has not run inside its window.
+#
+# Needs the repository secrets deploy.yml already uses: NEXT_PUBLIC_APP_URL and CRON_SECRET.
+# Without them the run is a no-op with a warning, not a failure.
+#
+# Must live at .github/workflows/ at the repo root, not inside gp/.
+
+on:
+  schedule:
+    - cron: '7,37 * * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: uptime
+  cancel-in-progress: true
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL }}
+      CRON_SECRET: ${{ secrets.CRON_SECRET }}
+    steps:
+      - name: Check the site and the scheduler
+        run: |
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "::warning::NEXT_PUBLIC_APP_URL / CRON_SECRET are not set as repository secrets — the uptime watch is not checking anything."
+            exit 0
+          fi
+          base="${APP_URL%/}"
+          code=000
+          for i in 1 2 3; do
+            code=$(curl -s -o /tmp/health.json -w '%{http_code}' --max-time 20 -H "x-cron-secret: $CRON_SECRET" "$base/api/health?deep=1" || true)
+            [ "$code" = "200" ] && break
+            sleep 20
+          done
+          echo "health?deep=1 -> HTTP $code"
+          cat /tmp/health.json 2>/dev/null; echo
+          if [ "$code" = "200" ]; then exit 0; fi
+          # Cloudflare challenge / rate-limit pages are not "down": report them without paging.
+          if [ "$code" = "403" ] || [ "$code" = "429" ]; then
+            echo "::warning::The health check was refused (HTTP $code) — a bot-protection or rate-limit rule may be blocking GitHub's runners."
+            exit 0
+          fi
+          if [ "$code" = "503" ] && [ -s /tmp/health.json ]; then
+            node -e '
+              try {
+                const b = JSON.parse(require("fs").readFileSync("/tmp/health.json", "utf8"))
+                if (Array.isArray(b.stale_tasks) && b.stale_tasks.length) console.log("::error::Scheduled tasks have stopped running: " + b.stale_tasks.join(", "))
+                else console.log("::error::The app reports itself degraded: " + JSON.stringify(b.checks ?? b))
+              } catch {}
+            '
+          else
+            echo "::error::The site did not answer (HTTP $code)."
+          fi
+          exit 1

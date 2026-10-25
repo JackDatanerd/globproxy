@@ -12,7 +12,7 @@ export async function POST(req: Request) {
     // showed fresh stock even when nothing had been saved.
     const { error } = await auth.supabase
       .from('platform_settings')
-      .upsert({ key: 'geonode_stock', value: JSON.stringify(stock) }, { onConflict: 'key' })
+      .upsert({ key: 'upstream_stock', value: JSON.stringify(stock) }, { onConflict: 'key' })
     if (error) return NextResponse.json({ error: `Stock computed but could not be saved: ${error.message}` }, { status: 500 })
     return NextResponse.json({ stock })
   } catch (err: any) {

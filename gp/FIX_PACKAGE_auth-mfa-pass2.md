@@ -2,7 +2,7 @@
 
 Apply order: **run `supabase/migrations/0050_auth_mfa_pass2.sql` in Supabase, then deploy immediately.**
 (`schema.sql` already includes it.) Between the two steps, requests using the old
-`geonode_*` column names fail.
+`supplier_*` column names fail.
 
 ## Feature gap closed
 - **G1** `POST /api/auth/reauth` did not exist (lib + dialog were built, route never committed). Every
@@ -16,7 +16,7 @@ Apply order: **run `supabase/migrations/0050_auth_mfa_pass2.sql` in Supabase, th
 | B1 | Signup pre-hijack race: password was replaced BEFORE the new confirmation e-mail was accepted, so a rate-limited re-signup replaced it while the owner's old link stayed valid. Now `signUp()` first, then `auth_replace_unconfirmed_password()` (atomic, only while unconfirmed). `resend()` fallback removed. |
 | B2 | `verifyCurrentPassword` signed in through GoTrue: always failed with Supabase CAPTCHA on, created a session per check, used the shared per-IP sign-in limit. Now `auth_verify_password()` (bcrypt in SQL). Fails closed. |
 | B3 | 2FA step-up added to ~20 routes that lacked it: checkout, proxy topup/delete/patch/retry/sessions, whitelist (+bulk), auto-topup (both), billing details/export, referrals export, claim-referral, apply-affiliate/reseller/api-access, webhook test/redeliver/deliveries, usage history, proxy-session routes. |
-| B4 | Supplier name visible to customers via PostgREST column names. `proxy_credentials.geonode_{sub_user_id,username,password}` renamed `upstream_*` (migration + 21 code files + schema.sql + index). |
+| B4 | Supplier name visible to customers via PostgREST column names. `proxy_credentials.supplier_{sub_user_id,username,password}` renamed `upstream_*` (migration + 21 code files + schema.sql + index). |
 | B5 | 2FA recovery: completion is one transaction (`mfa_complete_recovery`); a confirmed request expires 7 days after the wait ends; a new request can no longer cancel a confirmed one; confirm is an audit event; completing recovery and admin MFA reset sign out other sessions (`revoke_other_auth_sessions`). |
 | B6 | Password change uses the admin API after our own verification, so Supabase "Secure password change" can't block sessions older than 24 h. |
 | B7 | `account_deleted` event is written only after the deletion commits (was logged on every failed/502/repeat attempt). |
