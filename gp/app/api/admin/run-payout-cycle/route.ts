@@ -88,7 +88,9 @@ export async function POST(req: Request) {
   const cycleLabel = formatCycleLabel({ cycle_start: cycleStart, cycle_end: cycleEnd })
   // A net-negative balance (a clawback bigger than the new commissions) isn't
   // "earnings ready" — nothing to tell them yet.
-  const allNotify = rows.filter(r => (r.out_status === 'held_recent_method' || r.out_status === 'no_payout_method') && Number(r.out_amount_usd) > 0)
+  // Only balances that would actually have been paid: a $0.50 balance with no payout
+  // method is not "ready" and used to get this e-mail every cycle, forever.
+  const allNotify = rows.filter(r => (r.out_status === 'held_recent_method' || r.out_status === 'no_payout_method') && Number(r.out_amount_usd) > 0 && Number(r.out_amount_usd) >= minPayoutUsd)
   // One notice per affiliate, cycle and reason: re-running a cycle used to
   // re-send this to everyone still waiting. The primary key on
   // affiliate_rollover_notices decides — only rows that were NEWLY inserted

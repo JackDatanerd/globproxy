@@ -8,12 +8,19 @@ export async function POST(req: Request) {
   const auth = await authorizeAdmin(req)
   if (!auth.ok) return auth.response
 
-  const body = await readJson<{ payoutId?: string; reference?: unknown; overrideSuspended?: unknown }>(req)
+  const body = await readJson<{ payoutId?: string; reference?: unknown; overrideSuspended?: unknown; kesAmount?: unknown }>(req)
   if (!body || !isUuid(body.payoutId)) return badRequest('Payout ID missing or invalid')
   if (body.reference != null && typeof body.reference !== 'string') return badRequest('reference must be text')
   const reference = (body.reference ?? '').toString().trim().slice(0, 200)
 
-  const result = await markPayoutPaid(auth.supabase, auth.adminId, body.payoutId, reference, { allowSuspended: body.overrideSuspended === true })
+  // Optional: the shillings actually sent for an M-Pesa payout.
+  let kesAmount: number | null = null
+  if (body.kesAmount != null && body.kesAmount !== '') {
+    kesAmount = Number(body.kesAmount)
+    if (!Number.isFinite(kesAmount) || kesAmount <= 0 || kesAmount > 100_000_000) return badRequest('kesAmount must be a positive number of shillings')
+  }
+
+  const result = await markPayoutPaid(auth.supabase, auth.adminId, body.payoutId, reference, { allowSuspended: body.overrideSuspended === true, kesAmount })
   if (!result.ok) return NextResponse.json({ error: result.error, ...(result.code ? { code: result.code } : {}) }, { status: result.status })
   return NextResponse.json({ success: true })
 }

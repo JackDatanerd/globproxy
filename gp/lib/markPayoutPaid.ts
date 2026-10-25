@@ -3,6 +3,7 @@ import { logAdminAction } from '@/lib/adminAudit'
 import { adminNoticeHtml, appUrl } from '@/lib/adminEmail'
 import { sendEmailSafe, escapeHtml } from '@/lib/email'
 import { formatCycleLabel } from '@/lib/payoutCycle'
+import { getKesQuote } from '@/lib/fx'
 
 export type MarkPaidResult = { ok: true } | { ok: false; status: number; error: string; code?: 'affiliate_suspended' }
 
@@ -15,7 +16,7 @@ export async function markPayoutPaid(
   adminId: string,
   payoutId: string,
   reference: string,
-  opts: { allowSuspended?: boolean } = {}
+  opts: { allowSuspended?: boolean; kesAmount?: number | null } = {}
 ): Promise<MarkPaidResult> {
   // A payout for a deleted account can never be paid (its destination was
   // erased on deletion). Deletion now removes pending payouts itself; this
@@ -59,9 +60,31 @@ export async function markPayoutPaid(
     .eq('id', payoutId)
     .single()
 
+  // M-Pesa pays out in shillings. Record what was actually sent (the admin's figure for a
+  // single payout) or, failing that, the market rate at this moment — never the checkout
+  // rate with its markup, which would shortchange the affiliate. Without this the
+  // affiliate saw only a USD figure and nobody could reconcile the KES that left.
+  let kes: { amount: number; rate: number } | null = null
+  if (payout && payout.payout_method === 'mpesa') {
+    const usd = Number(payout.amount_usd)
+    if (opts.kesAmount && Number.isFinite(opts.kesAmount) && opts.kesAmount > 0 && usd > 0) {
+      kes = { amount: Math.round(opts.kesAmount), rate: Math.round((opts.kesAmount / usd) * 10000) / 10000 }
+    } else {
+      try {
+        const q = await getKesQuote(supabase as any)
+        if (q && usd > 0) kes = { amount: Math.round(usd * q.market), rate: q.market }
+      } catch (e) { console.error('[markPayoutPaid] could not fetch a KES rate', e) }
+    }
+    if (kes) {
+      const { error: kesErr } = await supabase.from('affiliate_payouts')
+        .update({ payout_local_currency: 'KES', payout_local_amount: kes.amount, payout_fx_rate: kes.rate }).eq('id', payoutId)
+      if (kesErr) { console.error('[markPayoutPaid] could not record the KES amount', payoutId, kesErr.message); kes = null }
+    }
+  }
+
   await logAdminAction(supabase, {
     adminId, action: 'payout.mark_paid', targetUserId: payout?.referrer_id ?? null, targetRef: payoutId,
-    details: { amount_usd: payout ? Number(payout.amount_usd) : undefined, method: payout?.payout_method, reference: reference || undefined, ...(opts.allowSuspended && (ref?.is_suspended || ref?.affiliate_status === 'suspended') ? { paid_while_suspended: true } : {}) },
+    details: { amount_usd: payout ? Number(payout.amount_usd) : undefined, method: payout?.payout_method, reference: reference || undefined, ...(kes ? { kes_amount: kes.amount, kes_rate: kes.rate } : {}), ...(opts.allowSuspended && (ref?.is_suspended || ref?.affiliate_status === 'suspended') ? { paid_while_suspended: true } : {}) },
   })
 
   const referrer = payout?.referrer as any
@@ -72,7 +95,7 @@ export async function markPayoutPaid(
       subject: 'Your GlobProxy affiliate payout has been sent',
       html: adminNoticeHtml({
         heading: 'Payout sent ✓',
-        bodyHtml: `Hi ${escapeHtml(referrer.full_name?.split(' ')[0]) || 'there'}, your affiliate payout of <strong>$${Number(payout.amount_usd).toFixed(2)}</strong> for ${escapeHtml(formatCycleLabel(payout))} has been sent via ${methodLabel}.${reference ? `<br/><span style="font-size:12px;color:#888;">Reference: ${escapeHtml(reference)}</span>` : ''}`,
+        bodyHtml: `Hi ${escapeHtml(referrer.full_name?.split(' ')[0]) || 'there'}, your affiliate payout of <strong>$${Number(payout.amount_usd).toFixed(2)}</strong> for ${escapeHtml(formatCycleLabel(payout))} has been sent via ${methodLabel}${kes ? ` as <strong>KES ${kes.amount.toLocaleString('en-US')}</strong> (at ${kes.rate.toFixed(2)} KES per USD)` : ''}.${reference ? `<br/><span style="font-size:12px;color:#888;">Reference: ${escapeHtml(reference)}</span>` : ''}`,
         cta: { href: `${appUrl()}/dashboard/referrals`, label: 'View your payout history →' },
       }),
     })

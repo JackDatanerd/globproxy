@@ -24,6 +24,15 @@ function SignupForm() {
   // of a bare dashboard. Only a known slug is carried.
   const planParam = params.get('plan')
   const chosenPlan = !isReseller && planParam && PLANS.some(pl => pl.slug === planParam && !pl.custom) ? planParam : null
+  // A reseller's invitation e-mail links here with the invited address (?email=&invited=1):
+  // prefilling it means the account is created with the exact address the bandwidth was
+  // reserved for. Only a well-formed address is taken; the visitor can still edit it.
+  const invited = params.get('invited') === '1'
+  useEffect(() => {
+    const e = (params.get('email') ?? '').trim().toLowerCase().slice(0, 254)
+    if (e && validateEmail(e).valid) setEmail(e)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   const [referralCode, setReferralCode] = useState(urlRef ?? '')
   // The campaign tag must come from the SAME place as the code it belongs to: a tag from
   // the URL next to a code from the cookie (or the reverse) would credit one affiliate's
@@ -117,6 +126,11 @@ function SignupForm() {
         {isReseller && <div className="bg-accent2-light text-accent2 text-xs font-mono tracking-wider px-3 py-1.5 rounded-lg mb-5 inline-block">Reseller application</div>}
         <h1 className="font-display font-bold text-2xl text-ink mb-1">{isReseller ? 'Apply to resell' : 'Create your account'}</h1>
         <p className="text-muted text-sm mb-8">{isReseller ? 'No minimum commitment to join.' : 'Get started today.'}</p>
+        {invited && (
+          <p className="text-xs text-accent2 bg-accent2-light rounded-lg px-3 py-2 mb-5">
+            A reseller has reserved bandwidth for this email address. Create your account with it and confirm it — the bandwidth is added automatically. Using a different address won&apos;t receive it.
+          </p>
+        )}
         <form onSubmit={handle} className="flex flex-col gap-5">
           <div>
             <label className="block text-[10px] font-mono text-muted uppercase tracking-wider mb-1.5">Full name</label>

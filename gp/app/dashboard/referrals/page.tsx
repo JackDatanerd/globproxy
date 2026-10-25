@@ -1,6 +1,7 @@
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
+import CancelPayoutButton from '@/components/dashboard/CancelPayoutButton'
 import ReferralLinkCard from '@/components/dashboard/ReferralLinkCard'
 import AffiliateApplyForm from '@/components/dashboard/AffiliateApplyForm'
 import PayoutMethodForm from '@/components/dashboard/PayoutMethodForm'
@@ -61,8 +62,8 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
     // longer read (migration 0070).
     showMoney
       ? admin.from('affiliate_payouts')
-          .select('id, cycle_start, cycle_end, amount_usd, status, payout_method, paid_at, payment_reference', { count: 'exact' })
-          .eq('referrer_id', user.id).order('created_at', { ascending: false }).limit(PAYOUT_PAGE)
+          .select('id, cycle_start, cycle_end, amount_usd, status, payout_method, paid_at, payment_reference, payout_local_amount, payout_local_currency, payout_fx_rate', { count: 'exact' })
+          .eq('referrer_id', user.id).order('created_at', { ascending: false }).order('id', { ascending: false }).limit(PAYOUT_PAGE)
       : Promise.resolve({ data: [] as any[], error: null, count: 0 as number | null }),
     // The referred user can't read their own `referrals` row through RLS
     // (policies are referrer/admin only), so this one existence check uses the
@@ -87,6 +88,15 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
   const tags = ((tagsRes.data as any[]) ?? [])
   const payable = Number(s.accruing_usd ?? 0) - deductions
   const inPayout = Number(s.in_payout_usd ?? 0)
+  // What each payout is made of (commissions, deductions netted off). Best-effort: the
+  // page works without it.
+  const breakdown = new Map<string, { commissions: number; count: number; deductions: number }>()
+  if (showMoney && payouts && payouts.length > 0) {
+    const { data: bd, error: bdErr } = await admin.rpc('my_payout_breakdown', { p_user_id: user.id })
+    if (bdErr) console.error('[referrals] payout breakdown failed', bdErr.message)
+    for (const b of (bd as any[]) ?? []) breakdown.set(b.payout_id, { commissions: Number(b.commissions_usd), count: Number(b.commission_count), deductions: Number(b.deductions_usd) })
+  }
+
   const paidTotal = Number(s.paid_usd ?? 0)
   const thisCycle = Number(s.this_cycle_usd ?? 0)
   const referralCount = Number(s.referral_count ?? 0)
@@ -96,6 +106,13 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
   const flaggedCount = Number(s.flagged_count ?? 0)
 
   const lc = lastCompletedCycle()
+  // Payouts are created when a run is made, not on the payable date itself. Once the last
+  // completed cycle is payable and this affiliate has a payable balance, a method on file
+  // and no hold, their money is simply waiting for that run — saying "next run: <the
+  // following cycle>" made it look skipped.
+  const holdPending = !!profile?.payout_method_updated_at && !!profile?.payout_method
+    && new Date(profile.payout_method_updated_at).getTime() + AFFILIATE_HOLD_HOURS * 3600 * 1000 > Date.now()
+  const awaitingRun = cycleIsPayable(lc) && isAffiliate && !!profile?.payout_method && !holdPending && payable >= AFFILIATE_MIN_PAYOUT_USD
   const nextPayoutDate = cycleIsPayable(lc) ? accruing.payableFrom : lc.payableFrom
   const holdEndsAt = profile?.payout_method_updated_at
     ? new Date(new Date(profile.payout_method_updated_at).getTime() + AFFILIATE_HOLD_HOURS * 3600 * 1000)
@@ -135,7 +152,7 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
       </div>
 
       {profile?.referral_code && (
-        <ReferralLinkCard code={profile.referral_code} baseUrl={baseUrl} isAffiliate={isAffiliate}
+        <ReferralLinkCard code={profile.referral_code} baseUrl={baseUrl} isAffiliate={isAffiliate} suspended={status === 'suspended'}
           bonusGb={REFERRAL_GB_BONUS} minOrderUsd={REFERRAL_MIN_ORDER_USD} />
       )}
 
@@ -158,7 +175,7 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
             <span className="text-ink font-medium">
               {belowMin ? `${usd(Math.max(payable, 0))} of ${usd(AFFILIATE_MIN_PAYOUT_USD)} minimum` : 'Above the payout minimum'}
             </span>
-            <span className="text-muted">Next payout run: {shortDate(nextPayoutDate + 'T00:00:00Z')} · this cycle so far {usd(thisCycle)}</span>
+            <span className="text-muted">{awaitingRun ? `Payable since ${shortDate(lc.payableFrom + 'T00:00:00Z')} — your payout is created at the next payout run` : `Next payout run: ${shortDate(nextPayoutDate + 'T00:00:00Z')}`} · this cycle so far {usd(thisCycle)}</span>
           </div>
           <div className="h-1.5 bg-surface rounded-full overflow-hidden">
             <div className="h-full bg-accent2 rounded-full" style={{ width: `${minProgress}%` }} />
@@ -166,12 +183,12 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
           <ul className="text-[11px] text-muted mt-3 space-y-1 list-disc pl-4">
             <li>If a referred order is refunded, its commission is reduced to match. If that commission was already paid out, the amount is deducted from your next payout{deductions > 0 ? ` (${usd(deductions)} is waiting to be deducted now)` : ''} — you are never billed separately.</li>
             <li>Anything under the {usd(AFFILIATE_MIN_PAYOUT_USD)} minimum, or earned before you add a payout method, stays in your balance and is paid in the first run where it qualifies.</li>
-            {flaggedCount > 0 && <li>Some referrals are still being verified and aren&apos;t earning yet.</li>}
+            {flaggedCount > 0 && <li>Referrals marked “under review” in the table below are being verified and aren&apos;t earning yet. If you think one was held by mistake, email support@globproxy.com with the signup address.</li>}
           </ul>
         </div>
       )}
 
-      {isAffiliate && holdActive && (
+      {isAffiliate && holdActive && !!profile?.payout_method && (
         <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 text-xs rounded-xl p-4 mt-4">
           {profile?.payout_hold_reason === 'security_event'
             ? 'A recent change to your account security (password, email address or two-step verification)'
@@ -229,6 +246,16 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
                       {p.status === 'paid' && p.payment_reference && (
                         <div className="text-[10px] font-mono text-muted mt-0.5 break-all">ref {p.payment_reference}</div>
                       )}
+                      {p.payout_method === 'mpesa' && p.status === 'paid' && p.payout_local_amount != null && (
+                        <div className="text-[10px] font-mono text-muted mt-0.5">sent as KES {Number(p.payout_local_amount).toLocaleString('en-US')} at {Number(p.payout_fx_rate).toFixed(2)} KES per USD</div>
+                      )}
+                      {breakdown.get(p.id) && (
+                        <div className="text-[10px] text-muted mt-0.5">
+                          {breakdown.get(p.id)!.count} commission{breakdown.get(p.id)!.count === 1 ? '' : 's'} {usd(breakdown.get(p.id)!.commissions)}
+                          {breakdown.get(p.id)!.deductions > 0 ? ` − ${usd(breakdown.get(p.id)!.deductions)} refund deductions` : ''}
+                        </div>
+                      )}
+                      {p.status === 'pending' && isAffiliate && <div className="mt-1"><CancelPayoutButton payoutId={p.id} /></div>}
                     </div>
                   ))}
                   {Number(payoutsCount ?? 0) > PAYOUT_PAGE && (
@@ -367,7 +394,10 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
               <tbody>
                 {funnelRows.map((r: any, i: number) => (
                   <tr key={i} className="border-t border-border">
-                    <td className="py-2 pr-3 font-mono text-ink">{r.referred_label}</td>
+                    <td className="py-2 pr-3 font-mono text-ink">
+                      {r.referred_label}
+                      {r.flagged && <span className="ml-2 text-[9px] font-mono bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded-full">under review</span>}
+                    </td>
                     <td className="py-2 pr-3 text-muted whitespace-nowrap">{shortDate(r.joined_at)}</td>
                     {isAffiliate && <td className="py-2 pr-3 font-mono text-muted">{r.sub_id ?? '—'}</td>}
                     <td className="py-2 pr-3 text-muted whitespace-nowrap">{r.first_purchase_at ? shortDate(r.first_purchase_at) : '—'}</td>

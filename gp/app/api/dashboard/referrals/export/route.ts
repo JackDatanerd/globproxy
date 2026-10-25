@@ -48,7 +48,7 @@ export async function GET(req: Request) {
   try {
     if (dataset === 'payouts') {
       // Service role scoped to the caller: affiliate_payouts is not readable from the session (0070).
-      const rows = await fetchAll(await createAdminClient(), 'affiliate_payouts', 'id, created_at, cycle_start, cycle_end, amount_usd, status, payout_method, paid_at, payment_reference', user.id)
+      const rows = await fetchAll(await createAdminClient(), 'affiliate_payouts', 'id, created_at, cycle_start, cycle_end, amount_usd, status, payout_method, paid_at, payment_reference, payout_local_amount, payout_fx_rate', user.id)
       return csvResponse(toCsv(rows, [
         { header: 'Created', value: r => r.created_at },
         { header: 'Cycle start', value: r => r.cycle_start },
@@ -58,6 +58,8 @@ export async function GET(req: Request) {
         { header: 'Method', value: r => r.payout_method },
         { header: 'Paid at', value: r => r.paid_at },
         { header: 'Reference', value: r => r.payment_reference },
+        { header: 'KES sent (M-Pesa)', value: r => r.payout_local_amount ?? '' },
+        { header: 'KES per USD', value: r => r.payout_fx_rate ?? '' },
       ]), 'globproxy-payouts')
     }
     const rows = await fetchAll(supabase, 'affiliate_commissions', 'id, created_at, gross_amount_usd, commission_rate, commission_amount_usd, status, payout_id', user.id)

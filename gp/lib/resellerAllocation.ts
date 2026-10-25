@@ -1,6 +1,6 @@
 import { applyCursor, cursorTs } from '@/lib/cursor'
 import { createAdminClient } from '@/lib/supabase/server'
-import { sendEmail, escapeHtml } from '@/lib/email'
+import { sendEmail, sendEmailSafe, escapeHtml } from '@/lib/email'
 import { dispatchWebhook } from '@/lib/webhooks'
 import { cleanText, cleanNumber } from '@/lib/validation'
 import { isUuid } from '@/lib/adminAuth'
@@ -239,7 +239,7 @@ async function inviteRecipient(
             heading: 'Bandwidth is waiting for you',
             bodyHtml: `${resellerLabel} has reserved <strong>${escapeHtml(formatGb(gbAmount))}</strong> of residential proxy bandwidth on GlobProxy for this email address.
               Create an account with <strong>${escapeHtml(recipientEmail)}</strong> and confirm it — the bandwidth is added automatically. The offer expires in 30 days.`,
-            cta: { href: `${appUrl}/auth/signup`, label: 'Create your account →' },
+            cta: { href: `${appUrl}/auth/signup?email=${encodeURIComponent(recipientEmail)}&invited=1`, label: 'Create your account →' },
           }),
         })
       : Promise.resolve(),
@@ -319,19 +319,28 @@ export async function remindInvitation(
   const gb = Number(row.out_gb)
   const daysLeft = Math.max(1, Math.ceil((new Date(row.out_expires_at).getTime() - Date.now()) / 86_400_000))
   const resellerLabel = escapeHtml(reseller.full_name) || escapeHtml(reseller.email) || 'A GlobProxy reseller'
+  // sendEmail never throws on a provider rejection (it logs and returns the response),
+  // so use the variant that says whether the message really went out. When it did
+  // not, the reminder slot is handed back and the reseller is told the truth.
+  let delivered = false
   try {
-    await sendEmail({
+    delivered = await sendEmailSafe({
       to: row.out_email,
       subject: `Reminder: ${reseller.full_name || 'a GlobProxy reseller'} has bandwidth waiting for you`,
       html: adminNoticeHtml({
         heading: 'Your bandwidth is still waiting',
         bodyHtml: `${resellerLabel} reserved <strong>${escapeHtml(formatGb(gb))}</strong> of residential proxy bandwidth on GlobProxy for this email address.
           Create an account with <strong>${escapeHtml(row.out_email)}</strong> and confirm it — the bandwidth is added automatically. The offer expires in ${daysLeft} day${daysLeft === 1 ? '' : 's'}.`,
-        cta: { href: `${getAppUrl()}/auth/signup`, label: 'Create your account →' },
+        cta: { href: `${getAppUrl()}/auth/signup?email=${encodeURIComponent(String(row.out_email))}&invited=1`, label: 'Create your account →' },
       }),
     })
   } catch (e) {
-    console.error('[reseller/remind] reminder email failed (reminder already counted)', pendingId, e)
+    console.error('[reseller/remind] reminder email threw', pendingId, e)
+  }
+  if (!delivered) {
+    const { error: refundErr } = await admin.rpc('refund_pending_reseller_reminder', { p_id: pendingId, p_reseller_id: reseller.id, p_prev_at: row.out_prev_reminded_at ?? null })
+    if (refundErr) console.error('[reseller/remind] could not hand the reminder slot back', pendingId, refundErr)
+    return fail(502, 'internal_error', 'We could not send the reminder email just now, so it was not counted. Try again in a few minutes.')
   }
   const { data: after } = await admin.from('reseller_pending_transfers').select('reminder_count').eq('id', pendingId).maybeSingle()
   return { ok: true, data: { reminders_left: Math.max(0, INVITE_REMINDER_MAX - Number(after?.reminder_count ?? 0)), expires_at: row.out_expires_at ?? null } }

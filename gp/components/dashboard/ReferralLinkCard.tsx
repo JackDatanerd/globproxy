@@ -8,8 +8,8 @@ import { copyText } from '@/lib/clientApi'
 // the server vs the client (hydration mismatch) and made the shared link
 // depend on which hostname the owner happened to be browsing from.
 export default function ReferralLinkCard({
-  code, baseUrl, isAffiliate, bonusGb, minOrderUsd,
-}: { code: string; baseUrl: string; isAffiliate: boolean; bonusGb: number; minOrderUsd: number }) {
+  code, baseUrl, isAffiliate, suspended = false, bonusGb, minOrderUsd,
+}: { code: string; baseUrl: string; isAffiliate: boolean; suspended?: boolean; bonusGb: number; minOrderUsd: number }) {
   const [copied, setCopied] = useState(false)
   const [sub, setSub] = useState('')
   const cleanSub = /^[A-Za-z0-9_-]{1,32}$/.test(sub) ? sub : ''
@@ -28,7 +28,9 @@ export default function ReferralLinkCard({
     <div className="bg-white border border-border rounded-xl p-5">
       <div className="text-sm font-medium text-ink mb-1">Your referral link</div>
       <div className="text-xs text-muted mb-3">
-        {isAffiliate
+        {suspended
+          ? 'Your affiliate access is suspended, so people who sign up through this link aren’t earning you commission or bandwidth right now.'
+          : isAffiliate
           ? 'Share it — you earn commission on every order from people who sign up through it.'
           : `Share it — when someone you refer makes their first purchase of $${minOrderUsd}+, you both get ${bonusGb} GB free.`}
       </div>

@@ -10,7 +10,7 @@ import { formatRatePct, ratePctValue, VERIFIED_OPERATOR_INTRO_RATE, VERIFIED_OPE
 type Props =
   | { userId: string; action: 'approve' | 'reject' | 'suspendAffiliate' | 'reinstateAffiliate' | 'grantVerifiedOperator' | 'revokeVerifiedOperator'; payoutId?: never }
   | { userId: string; action: 'editRates'; currentIntro: number; currentLifetime: number; payoutId?: never }
-  | { payoutId: string; action: 'markPaid' | 'voidPayout' | 'reversePayout'; amountUsd?: number; userId?: never }
+  | { payoutId: string; action: 'markPaid' | 'voidPayout' | 'reversePayout'; amountUsd?: number; mpesaKesDefault?: number | null; isMpesa?: boolean; userId?: never }
 
 // Prompts take whole percentages ("30"), the API takes fractions (0.30).
 // `def` is pre-filled EXACTLY (ratePctValue) — it used to be Math.round()ed, so
@@ -62,7 +62,17 @@ export default function AdminAffiliateActions(props: Props) {
         const amount = props.amountUsd != null ? ` of $${props.amountUsd.toFixed(2)}` : ''
         const ref = window.prompt(`Mark this payout${amount} as PAID.\n\nOnly continue once the money has actually been sent. Payment reference (txn hash / M-Pesa code — optional, shown to the affiliate):`, '')
         if (ref === null) return
-        path = '/api/admin/mark-payout-paid'; body = { payoutId: props.payoutId, reference: ref }; success = 'Marked as paid'
+        let kesAmount: number | undefined
+        if (props.isMpesa) {
+          const k = window.prompt(`Shillings (KES) actually sent by M-Pesa — recorded and shown to the affiliate. Prefilled with the market-rate figure; change it if you sent a different amount:`, props.mpesaKesDefault ? String(props.mpesaKesDefault) : '')
+          if (k === null) return
+          if (k.trim()) {
+            const n = Number(k.replace(/,/g, '').trim())
+            if (!Number.isFinite(n) || n <= 0) { toast.error('Enter the KES amount as a number'); return }
+            kesAmount = n
+          }
+        }
+        path = '/api/admin/mark-payout-paid'; body = { payoutId: props.payoutId, reference: ref, ...(kesAmount ? { kesAmount } : {}) }; success = 'Marked as paid'
         break
       }
       case 'voidPayout': {

@@ -30,9 +30,14 @@ export default async function TransfersPage({ searchParams }: { searchParams: Pr
   if (clientId) tq = tq.eq('recipient_id', clientId)
   // `id` breaks ties between transfers created in the same instant, so a row
   // can neither repeat nor vanish across pages.
-  const { data: transfers, count } = await tq
+  const { data: transfers, count, error: transfersErr } = await tq
     .order('created_at', { ascending: false }).order('id', { ascending: false })
     .range(from, from + PAGE_SIZE - 1)
+
+  // A page past the end (a stale bookmark, a shrunk list) makes PostgREST answer with a
+  // range error rather than an empty list; send the reseller back to the first page
+  // instead of telling them they have no transfers. Any other failure is said out loud.
+  if (transfersErr && page > 1) redirect(clientId ? `/reseller/transfers?client=${clientId}` : '/reseller/transfers')
 
   const { data: invites } = clientId ? { data: [] as any[] } : await admin
     .from('reseller_pending_transfers')
@@ -77,7 +82,7 @@ export default async function TransfersPage({ searchParams }: { searchParams: Pr
         {rows.length > 0 ? (
           <TransfersTable transfers={rows} />
         ) : (
-          <div className="text-center py-16"><p className="text-muted text-sm font-light">No transfers yet.</p></div>
+          <div className="text-center py-16"><p className="text-muted text-sm font-light">{transfersErr ? 'Your transfers could not be loaded just now — reload to try again.' : 'No transfers yet.'}</p></div>
         )}
       </div>
       {totalPages > 1 && (

@@ -32,6 +32,7 @@ export async function GET(req: Request) {
       .select('id, gb_amount, reclaimed_gb, status, note, created_at, recipient:recipient_id(email, full_name)')
       .eq('reseller_id', user.id)
       .order('created_at', { ascending: false })
+      .order('id', { ascending: false }) // stable paging: bulk claims share one created_at
       .range(from, from + PAGE - 1)
     if (error) return NextResponse.json({ error: 'Export failed' }, { status: 500 })
     rows.push(...(data ?? []))

@@ -1,8 +1,8 @@
 import { requireMfaVerified } from '@/lib/mfa'
 import { NextResponse } from 'next/server'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { requireActiveUser } from '@/lib/apiAuth'
-import { rateLimited } from '@/lib/rateLimit'
+import { requireActiveUser, rejectCrossSite } from '@/lib/apiAuth'
+import { rateLimited, rateLimitedUser } from '@/lib/rateLimit'
 import { recordReferralSignup, REFERRAL_MIN_ORDER_USD } from '@/lib/referrals'
 import { cleanReferralCode, hashIp } from '@/lib/referralAttribution'
 
@@ -23,6 +23,8 @@ const MESSAGES: Record<string, { status: number; error?: string }> = {
 }
 
 export async function POST(req: Request) {
+  const cross = rejectCrossSite(req)
+  if (cross) return cross
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -31,6 +33,8 @@ export async function POST(req: Request) {
   if (mfaBlock) return mfaBlock
   const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', 'claim-referral')
   if (limited) return limited
+  const perUser = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'claim-referral')
+  if (perUser) return perUser
   const inactive = await requireActiveUser(user.id)
   if (inactive) return inactive
 

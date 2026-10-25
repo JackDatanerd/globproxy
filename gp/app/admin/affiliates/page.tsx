@@ -3,6 +3,7 @@ import { createAdminClient } from '@/lib/supabase/server'
 import AdminAffiliateActions from '@/components/admin/AdminAffiliateActions'
 import RunPayoutCycleButton from '@/components/admin/RunPayoutCycleButton'
 import ExportPayoutsButton from '@/components/admin/ExportPayoutsButton'
+import { getKesQuote } from '@/lib/fx'
 import AdminPendingPayouts, { type PendingPayoutRow } from '@/components/admin/AdminPendingPayouts'
 import AdminPager, { parsePage, cleanSearch } from '@/components/admin/AdminPager'
 import { formatCycleLabel } from '@/lib/payoutCycle'
@@ -76,6 +77,11 @@ export default async function AdminAffiliatesPage({ searchParams }: { searchPara
   }
   // formatRatePct keeps fractional rates exact (12.5% used to print as 13%).
   const rate = (v: unknown, def: number) => formatRatePct(Number(v ?? def))
+  // One market-rate lookup for the whole table (M-Pesa payouts are paid in shillings).
+  // null when the rate is unavailable — the table then simply shows USD.
+  const hasMpesa = (pendingPayouts ?? []).some((p: any) => p.payout_method === 'mpesa')
+  let kesMarket: number | null = null
+  if (hasMpesa) { try { kesMarket = (await getKesQuote(supabase as any))?.market ?? null } catch { kesMarket = null } }
   const payoutRows: PendingPayoutRow[] = (pendingPayouts ?? []).map((p: any) => ({
     id: p.id,
     referrerId: p.referrer_id,
@@ -85,6 +91,8 @@ export default async function AdminAffiliatesPage({ searchParams }: { searchPara
     suspended: !!(p.referrer?.is_suspended || p.referrer?.affiliate_status === 'suspended'),
     cycle: formatCycleLabel(p),
     amountUsd: Number(p.amount_usd),
+    method: p.payout_method,
+    kesIndicative: p.payout_method === 'mpesa' && kesMarket ? Math.round(Number(p.amount_usd) * kesMarket) : null,
     destination: p.referrer?.is_deleted ? null
       : p.payout_method === 'usdt' ? { title: 'USDT (TRC20)', detail: p.payout_wallet_address ?? '' }
       : p.payout_method === 'mpesa' ? { title: 'M-Pesa', detail: p.payout_mpesa_phone ?? '' }

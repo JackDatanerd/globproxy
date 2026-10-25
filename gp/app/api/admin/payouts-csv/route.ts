@@ -4,6 +4,7 @@ import { logAdminAction } from '@/lib/adminAudit'
 import { toCsv, csvResponse } from '@/lib/csv'
 import { formatCycleLabel } from '@/lib/payoutCycle'
 import { fetchAllRows } from '@/lib/dbPaging'
+import { getKesQuote } from '@/lib/fx'
 
 // Bulk-pay sheet. ?status=pending (default) | paid | all, optional ?method=usdt|mpesa|bank.
 // Contains the SNAPSHOTTED destination from payout time — exactly what should
@@ -25,7 +26,7 @@ export async function GET(req: Request) {
     const { rows: data, error } = await fetchAllRows<any>((from, to) => {
       let q = auth.supabase
         .from('affiliate_payouts')
-        .select('id, cycle_start, cycle_end, amount_usd, status, payout_method, payout_wallet_address, payout_bank_details, payout_mpesa_phone, payment_reference, paid_at, created_at, referrer:referrer_id(email, full_name, is_deleted, affiliate_status)')
+        .select('id, cycle_start, cycle_end, amount_usd, status, payout_method, payout_wallet_address, payout_bank_details, payout_mpesa_phone, payment_reference, paid_at, created_at, payout_local_amount, payout_local_currency, payout_fx_rate, referrer:referrer_id(email, full_name, is_deleted, affiliate_status)')
         .order('created_at', { ascending: true })
         .order('id', { ascending: true })
         .range(from, to)
@@ -35,6 +36,9 @@ export async function GET(req: Request) {
     })
     if (error) return NextResponse.json({ error: 'Export failed' }, { status: 500 })
     const rows = data as any[]
+    // Indicative shillings for M-Pesa rows that are still to be paid (market rate now).
+    let kesMarket: number | null = null
+    if (rows.some(r => r.payout_method === 'mpesa' && r.status === 'pending')) { try { kesMarket = (await getKesQuote(auth.supabase as any))?.market ?? null } catch { kesMarket = null } }
 
     await logAdminAction(auth.supabase, { adminId: auth.adminId, action: 'payouts_exported', details: { status, method, rows: rows.length } })
 
@@ -46,6 +50,8 @@ export async function GET(req: Request) {
       { header: 'Cycle', value: r => formatCycleLabel(r) },
       { header: 'Amount USD', value: r => Number(r.amount_usd).toFixed(2) },
       { header: 'Method', value: r => r.payout_method },
+      { header: 'KES (sent, or indicative if pending)', value: r => r.payout_method !== 'mpesa' ? '' : r.payout_local_amount != null ? String(r.payout_local_amount) : kesMarket && r.status === 'pending' ? String(Math.round(Number(r.amount_usd) * kesMarket)) : '' },
+      { header: 'KES per USD', value: r => r.payout_fx_rate != null ? String(r.payout_fx_rate) : '' },
       { header: 'USDT TRC20 address', value: r => r.payout_wallet_address ?? '' },
       { header: 'M-Pesa phone', value: r => r.payout_mpesa_phone ?? '' },
       { header: 'Bank name', value: r => r.payout_bank_details?.bankName ?? '' },

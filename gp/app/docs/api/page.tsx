@@ -902,7 +902,7 @@ export default function ApiDocsPage() {
           </Endpoint>
 
           <Endpoint method="POST" path="/api/v1/reseller/invitations/:id/remind" title="Remind an invitee (resellers)">
-            <p className="text-sm text-ink2 mb-4">E-mails the invitee again about an invitation nobody has claimed. One reminder every 24 hours (<span className="font-mono text-ink">429</span> until then) and at most three per invitation (<span className="font-mono text-ink">409</span> after that). Only addresses without a usable account are mailed. Needs the <span className="font-mono text-ink">allocate</span> scope.</p>
+            <p className="text-sm text-ink2 mb-4">E-mails the invitee again about an invitation nobody has claimed. One reminder every 24 hours (<span className="font-mono text-ink">429</span> until then) and at most three per invitation (<span className="font-mono text-ink">409</span> after that). Only addresses without a usable account are mailed. If the e-mail provider rejects the message the call returns <span className="font-mono text-ink">502</span> and the reminder is not counted. Needs the <span className="font-mono text-ink">allocate</span> scope.</p>
             <Code>{`curl -X POST https://globproxy.com/api/v1/reseller/invitations/PENDING_ID/remind \\
   -H "Authorization: Bearer YOUR_KEY"`}</Code>
             <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>

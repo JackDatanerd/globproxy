@@ -14,6 +14,9 @@ export type PendingPayoutRow = {
   suspended: boolean
   cycle: string
   amountUsd: number
+  method: 'usdt' | 'mpesa' | 'bank'
+  // Indicative shillings at the current market rate (M-Pesa payouts only).
+  kesIndicative: number | null
   // Already-formatted destination lines (null when the account was deleted).
   destination: { title: string; detail: string } | null
 }
@@ -115,7 +118,10 @@ export default function AdminPendingPayouts({ rows }: { rows: PendingPayoutRow[]
                   <Link href={`/admin/affiliates/${p.referrerId}`} className="text-[10px] font-mono text-accent hover:underline">Details →</Link>
                 </td>
                 <td className="px-6 py-4 text-xs font-mono text-muted">{p.cycle}</td>
-                <td className="px-6 py-4 font-mono text-sm text-accent">${p.amountUsd.toFixed(2)}</td>
+                <td className="px-6 py-4 font-mono text-sm text-accent">
+                  ${p.amountUsd.toFixed(2)}
+                  {p.method === 'mpesa' && p.kesIndicative != null && <div className="text-[10px] text-muted">≈ KES {p.kesIndicative.toLocaleString('en-US')}</div>}
+                </td>
                 <td className="px-6 py-4 text-xs font-mono text-ink">
                   {p.destination
                     ? <>{p.destination.title}<br /><span className="text-muted">{p.destination.detail}</span></>
@@ -123,7 +129,7 @@ export default function AdminPendingPayouts({ rows }: { rows: PendingPayoutRow[]
                 </td>
                 <td className="px-6 py-4">
                   <div className="flex gap-2">
-                    {!p.deleted && <AdminAffiliateActions payoutId={p.id} action="markPaid" amountUsd={p.amountUsd} />}
+                    {!p.deleted && <AdminAffiliateActions payoutId={p.id} action="markPaid" amountUsd={p.amountUsd} isMpesa={p.method === 'mpesa'} mpesaKesDefault={p.kesIndicative} />}
                     <AdminAffiliateActions payoutId={p.id} action="voidPayout" amountUsd={p.amountUsd} />
                   </div>
                 </td>
