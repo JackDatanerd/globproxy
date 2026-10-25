@@ -4,7 +4,7 @@ import { safeNextPath } from '@/lib/safeNext'
 import { RECOVERY_COOKIE_NAME, RECOVERY_TTL_S, makeRecoveryCookieValue } from '@/lib/recoveryCookie'
 import { recordSessionDevice, sessionIdFromJwt } from '@/lib/sessionDevices'
 import { bindVerifiedSessionToAuthSession, getMfaCookieFromRequest } from '@/lib/mfa'
-import { recordLogin, sendNewDeviceNotice } from '@/lib/securityEvents'
+import { recordLogin } from '@/lib/securityEvents'
 
 // Marks THIS session as having just arrived via an emailed recovery link, so /api/auth/password lets it set a new password without the
 // current one. See lib/recoveryCookie.ts.
@@ -48,8 +48,12 @@ export async function GET(request: Request) {
       // so the email is very likely already confirmed even though this
       // browser can't pick up the session. The login page says so.
       console.error('[auth/callback] exchangeCodeForSession failed', { type, error: error.message })
+      // Each link type gets its own explanation on the login page: the signup wording ("opening it
+      // usually already confirmed your email … resend the confirmation") is wrong for an
+      // email-change link.
       const dest = type === 'recovery' ? '/auth/reset' : '/auth/login'
-      return NextResponse.redirect(`${origin}${dest}?error=link_expired${type === 'recovery' ? '' : '&kind=confirm'}`)
+      const kind = type === 'recovery' ? '' : type === 'email_change' ? '&kind=email_change' : '&kind=confirm'
+      return NextResponse.redirect(`${origin}${dest}?error=link_expired${kind}`)
     }
 
     // `type` is just a query parameter anyone can add to a link. It only
@@ -100,11 +104,7 @@ export async function GET(request: Request) {
       // gets the same notice a password sign-in would.
       try {
         const via = type === 'recovery' ? 'recovery_link' : type === 'email_change' ? 'email_change_link' : 'email_link'
-        const { newDevice, ip, ua } = await recordLogin(data.user.id, request, { via })
-        if (newDevice && data.user.email) {
-          const fullName = typeof data.user.user_metadata?.full_name === 'string' ? data.user.user_metadata.full_name : null
-          await sendNewDeviceNotice(data.user.email, fullName, ip, ua)
-        }
+        await recordLogin(data.user.id, request, { via })
       } catch (e) {
         console.error('[auth/callback] login audit failed (non-fatal)', e)
       }
@@ -144,12 +144,6 @@ export async function GET(request: Request) {
     // `new_email` set until both addresses have confirmed. Don't announce a change
     // that hasn't happened yet.
     return NextResponse.redirect(`${origin}/dashboard/settings?success=${emailChangePending ? 'email_pending' : 'email_updated'}`)
-  }
-
-  if (type === 'invite') {
-    // An invited user is setting their very first password — same
-    // email-proof situation as a recovery link.
-    return withEmailProofCookie(NextResponse.redirect(`${origin}/auth/update-password`), recoveryUserId)
   }
 
   // A bare hit with neither a code nor a type is what the implicit-flow

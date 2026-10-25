@@ -4,6 +4,13 @@ import { sendEmailSafe, securityNoticeHtml, escapeHtml } from '@/lib/email'
 import { logSecurityEvent } from '@/lib/securityEvents'
 import { appUrl } from '@/lib/appUrl'
 
+/**
+ * An error whose message is written for the person using the page and is safe to show as-is.
+ * Anything else thrown while handling a recovery request (a missing service key, a database
+ * error, ...) is an operator problem: the route logs it and answers generically.
+ */
+export class RecoveryUserError extends Error {}
+
 // Self-service recovery for someone who lost BOTH their authenticator and
 // every backup code. Until now the only way back in was a support ticket and
 // an admin with out-of-band identity checks, which doesn't scale and is
@@ -70,7 +77,7 @@ async function findByToken(token: string): Promise<Row | null> {
     .select('id, user_id, created_at, expires_at, confirmed_at, ready_at, cancelled_at, completed_at')
     .eq('token_hash', await sha256Hex(token))
     .maybeSingle()
-  if (error) throw new Error('Could not look up that recovery request right now.')
+  if (error) throw new RecoveryUserError('Could not look up that recovery request right now.')
   return (data as Row) ?? null
 }
 
@@ -94,7 +101,7 @@ export async function pendingRecoveryFor(userId: string): Promise<{ state: 'wait
     .select('id, user_id, created_at, expires_at, confirmed_at, ready_at, cancelled_at, completed_at')
     .eq('user_id', userId).is('cancelled_at', null).is('completed_at', null).not('confirmed_at', 'is', null)
     .order('created_at', { ascending: false }).limit(3)
-  if (error) throw new Error('Could not check for a pending recovery right now.')
+  if (error) throw new RecoveryUserError('Could not check for a pending recovery right now.')
   for (const r of (data ?? []) as Row[]) {
     const st = stateOf(r)
     if ((st === 'waiting' || st === 'ready') && r.ready_at) return { state: st, ready_at: r.ready_at }
@@ -104,7 +111,7 @@ export async function pendingRecoveryFor(userId: string): Promise<{ state: 'wait
 
 /** Step 1 — the signed-in owner (password already verified by the route) asks for recovery. */
 export async function requestRecovery(userId: string, email: string, fullName: string | null | undefined, req?: Request): Promise<void> {
-  if (!(await isMfaEnrolled(userId))) throw new Error('Two-factor authentication is not turned on for this account.')
+  if (!(await isMfaEnrolled(userId))) throw new RecoveryUserError('Two-factor authentication is not turned on for this account.')
   const admin = await createAdminClient()
 
   // A request that is already CONFIRMED (waiting or ready) is never replaced
@@ -119,7 +126,7 @@ export async function requestRecovery(userId: string, email: string, fullName: s
   const active = (live ?? []).some((r: any) =>
     r.ready_at && Date.now() - new Date(r.ready_at).getTime() <= RECOVERY_READY_WINDOW_MS)
   if (active) {
-    throw new Error('A recovery request is already in progress for this account. Use the link in its e-mails to cancel or finish it.')
+    throw new RecoveryUserError('A recovery request is already in progress for this account. Use the link in its e-mails to cancel or finish it.')
   }
   await admin.from('mfa_recovery_requests')
     .update({ cancelled_at: new Date().toISOString() })
@@ -133,11 +140,11 @@ export async function requestRecovery(userId: string, email: string, fullName: s
   })
   if (error?.code === '23505') {
     // Another request for this account was created at the same moment (unique open-request index, migration 0077).
-    throw new Error('A recovery request is already in progress for this account. Use the link in its e-mails, or try again in a moment.')
+    throw new RecoveryUserError('A recovery request is already in progress for this account. Use the link in its e-mails, or try again in a moment.')
   }
   if (error) {
     console.error('[mfaRecovery] insert failed', error.message)
-    throw new Error('Could not start recovery. Please try again.')
+    throw new RecoveryUserError('Could not start recovery. Please try again.')
   }
   await logSecurityEvent({ userId, event: 'mfa_recovery_requested', req, admin })
 
@@ -156,7 +163,7 @@ export async function requestRecovery(userId: string, email: string, fullName: s
       ${button(link(token), 'Continue recovery →')}
       <p style="color:#444;text-align:center;">If it wasn't you, ignore this e-mail — nothing will happen — and consider changing your password.</p>`),
   })
-  if (!ok) throw new Error('We could not send the confirmation e-mail. Please try again in a moment.')
+  if (!ok) throw new RecoveryUserError('We could not send the confirmation e-mail. Please try again in a moment.')
 }
 
 export async function recoveryStatus(token: string): Promise<{ state: RecoveryState; ready_at: string | null }> {
@@ -168,11 +175,11 @@ export async function recoveryStatus(token: string): Promise<{ state: RecoverySt
 /** Step 2 — the owner opened the e-mailed link while signed in as the same account: the clock starts. */
 export async function confirmRecovery(userId: string, email: string, fullName: string | null | undefined, token: string, req?: Request): Promise<{ ready_at: string }> {
   const r = await findByToken(token)
-  if (!r || r.user_id !== userId) throw new Error('This recovery link is not valid for the account you are signed in to.')
+  if (!r || r.user_id !== userId) throw new RecoveryUserError('This recovery link is not valid for the account you are signed in to.')
   const state = stateOf(r)
-  if (state === 'expired') throw new Error('This link has expired. Start recovery again.')
-  if (state === 'cancelled') throw new Error('This recovery request was cancelled.')
-  if (state === 'completed') throw new Error('This recovery request was already completed.')
+  if (state === 'expired') throw new RecoveryUserError('This link has expired. Start recovery again.')
+  if (state === 'cancelled') throw new RecoveryUserError('This recovery request was cancelled.')
+  if (state === 'completed') throw new RecoveryUserError('This recovery request was already completed.')
   if (state !== 'awaiting_confirmation') return { ready_at: r.ready_at! }
 
   const readyAt = new Date(Date.now() + RECOVERY_WAIT_MS).toISOString()
@@ -181,7 +188,7 @@ export async function confirmRecovery(userId: string, email: string, fullName: s
     .update({ confirmed_at: new Date().toISOString(), ready_at: readyAt })
     .eq('id', r.id).is('confirmed_at', null).is('cancelled_at', null)
     .select('id').maybeSingle()
-  if (!updated) throw new Error('This recovery request is no longer active.')
+  if (!updated) throw new RecoveryUserError('This recovery request is no longer active.')
   await logSecurityEvent({ userId, event: 'mfa_recovery_confirmed', req, admin })
 
   await sendEmailSafe({
@@ -216,10 +223,10 @@ export async function cancelRecovery(token: string, req?: Request): Promise<bool
 /** Step 3 — after the waiting period, signed in as the same account: 2FA is removed. */
 export async function completeRecovery(userId: string, email: string, fullName: string | null | undefined, token: string, req?: Request, keepSessionId?: string | null): Promise<void> {
   const r = await findByToken(token)
-  if (!r || r.user_id !== userId) throw new Error('This recovery link is not valid for the account you are signed in to.')
+  if (!r || r.user_id !== userId) throw new RecoveryUserError('This recovery link is not valid for the account you are signed in to.')
   const state = stateOf(r)
-  if (state === 'waiting') throw new Error('The waiting period has not ended yet.')
-  if (state !== 'ready') throw new Error('This recovery request is not active.')
+  if (state === 'waiting') throw new RecoveryUserError('The waiting period has not ended yet.')
+  if (state !== 'ready') throw new RecoveryUserError('This recovery request is not active.')
 
   // Claim the request AND remove 2FA in one transaction (mfa_complete_recovery,
   // migration 0050): two concurrent calls can't both proceed, and a failure
@@ -230,9 +237,9 @@ export async function completeRecovery(userId: string, email: string, fullName: 
   })
   if (error) {
     console.error('[mfaRecovery] mfa_complete_recovery failed', error.message)
-    throw new Error('Could not finish recovery right now. Please try again.')
+    throw new RecoveryUserError('Could not finish recovery right now. Please try again.')
   }
-  if (!done) throw new Error('This recovery request is no longer active.')
+  if (!done) throw new RecoveryUserError('This recovery request is no longer active.')
   // 2FA is gone; end every OTHER login session so whoever else may be signed
   // in must sign in again (and the owner can immediately re-enrol).
   await revokeOtherSessions(userId, keepSessionId)

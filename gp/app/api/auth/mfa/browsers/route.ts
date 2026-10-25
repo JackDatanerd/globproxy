@@ -18,8 +18,9 @@ export async function GET(req: Request) {
   if (mfaBlock) return mfaBlock
   try {
     return NextResponse.json({ browsers: await listTrustedBrowsers(user.id, getMfaCookieFromRequest(req)) })
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message ?? 'Could not load your trusted browsers.' }, { status: 503 })
+  } catch (e) {
+    console.error('[mfa/browsers] list failed', e)
+    return NextResponse.json({ error: 'Could not load your trusted browsers.' }, { status: 503 })
   }
 }
 
@@ -43,7 +44,8 @@ export async function DELETE(req: Request) {
     const removed = await revokeTrustedBrowser(user.id, id)
     if (removed) await logSecurityEvent({ userId: user.id, event: 'mfa_browser_revoked', req, admin: await createAdminClient() })
     return NextResponse.json({ success: true, removed })
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message ?? 'Could not revoke that browser.' }, { status: 500 })
+  } catch (e) {
+    console.error('[mfa/browsers] revoke failed', e)
+    return NextResponse.json({ error: 'Could not revoke that browser.' }, { status: 500 })
   }
 }

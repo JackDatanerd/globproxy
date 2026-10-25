@@ -14,6 +14,9 @@ function MfaSetupFlow() {
   const params = useSearchParams()
   // `next` is a raw query param — validated so setup can't be used as an open redirect.
   const next = safeNextPath(params.get('next'))
+  // Set by the middleware when the account's role requires 2FA (administrators): the page
+  // explains why the visitor was sent here, since there is nothing else they can open yet.
+  const required = params.get('required') === '1'
 
   const [step, setStep] = useState<Step>('loading')
   const [secret, setSecret] = useState('')
@@ -145,6 +148,11 @@ function MfaSetupFlow() {
   return (
     <div className="w-full max-w-md bg-white border border-border rounded-2xl p-10 shadow-sm">
       <h1 className="font-display font-bold text-2xl text-ink mb-1">Set up two-factor authentication</h1>
+      {required && (
+        <p className="text-xs text-accent bg-accent-light rounded-lg px-3 py-2 mb-4">
+          Two-factor authentication is required for administrator accounts. Set it up to continue — it takes about a minute.
+        </p>
+      )}
       <p className="text-muted text-sm mb-6">
         Adds a second step when you sign in, so a stolen password alone isn’t enough. Scan this with an authenticator app —
         {' '}Google Authenticator, Authy, 1Password, or similar.

@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { SECURITY_EVENT_LABELS } from '@/lib/securityEventLabels'
+import { SECURITY_EVENT_LABELS, countryName } from '@/lib/securityEventLabels'
 import toast from 'react-hot-toast'
 import { shortUa } from '@/lib/userAgent'
 import { fetchWithReauth } from '@/lib/reauthPrompt'
@@ -141,6 +141,7 @@ interface SecurityEventRow {
   ip: string | null
   user_agent: string | null
   created_at: string
+  country?: string | null
 }
 
 export function SecurityActivityCard({ className = 'mb-5' }: { className?: string }) {
@@ -152,7 +153,7 @@ export function SecurityActivityCard({ className = 'mb-5' }: { className?: strin
     // RLS ("Own security events", migration 0039) limits this to the caller's own rows.
     const { data, error } = await createClient()
       .from('security_events')
-      .select('id, event, ip, user_agent, created_at')
+      .select('id, event, ip, user_agent, created_at, country:meta->>country')
       .order('created_at', { ascending: false })
       .limit(100)
     if (error) { setLoadFailed(true); return }
@@ -206,7 +207,7 @@ export function SecurityActivityCard({ className = 'mb-5' }: { className?: strin
             <li key={r.id} className="py-2.5 flex items-center justify-between gap-3 text-sm">
               <span className="text-ink2">{SECURITY_EVENT_LABELS[r.event] ?? r.event}</span>
               <span className="text-[11px] font-mono text-muted text-right">
-                {[shortUa(r.user_agent), r.ip].filter(Boolean).join(' · ')}
+                {[shortUa(r.user_agent), r.ip, countryName(r.country)].filter(Boolean).join(' · ')}
                 {' · '}{new Date(r.created_at).toLocaleString()}
               </span>
             </li>

@@ -3,7 +3,7 @@ import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { rateLimited, clientKey } from '@/lib/rateLimit'
 import { verifyTurnstile, captchaOptions } from '@/lib/turnstile'
 import { throttleHit, throttleClear, THROTTLE_MSG, THROTTLE_ACCOUNT_MSG } from '@/lib/authThrottle'
-import { recordLogin, sendNewDeviceNotice, sendLoginThrottleNotice, logSecurityEvent, isKnownLoginIp, requestMeta } from '@/lib/securityEvents'
+import { recordLogin, recordAndNotify, isKnownLoginIp, requestMeta } from '@/lib/securityEvents'
 import { recordSessionDevice, sessionIdFromJwt } from '@/lib/sessionDevices'
 import { bindVerifiedSessionToAuthSession, getMfaCookieFromRequest } from '@/lib/mfa'
 import { NextResponse } from 'next/server'
@@ -58,8 +58,7 @@ export async function POST(req: Request) {
         const adm = await createAdminClient()
         const { data: owner } = await adm.from('profiles').select('id, email, full_name').eq('email', norm).maybeSingle()
         if (owner?.id && owner.email && owner.email !== '[deleted]') {
-          await logSecurityEvent({ userId: owner.id, event: 'login_throttled', req, admin: adm })
-          await sendLoginThrottleNotice(owner.email, owner.full_name, req.headers.get('cf-connecting-ip'))
+          await recordAndNotify({ userId: owner.id, event: 'login_throttled', req, admin: adm })
         }
       } catch (e) { console.error('[auth/login] throttle alert failed', e) }
     }
@@ -117,10 +116,9 @@ export async function POST(req: Request) {
   // this new login session — remember that, so signing this device out from
   // Settings later also ends its 2FA trust.
   await bindVerifiedSessionToAuthSession(data.user.id, getMfaCookieFromRequest(req), sessionIdFromJwt(data.session?.access_token))
-  const { newDevice, ip, ua } = await recordLogin(data.user.id, req)
-  if (newDevice && data.user.email) {
-    await sendNewDeviceNotice(data.user.email, profile?.full_name, ip, ua)
-  }
+  // A device / country the account hasn't signed in from lately is e-mailed to the owner
+  // (durably — see recordAndNotify) from inside recordLogin.
+  await recordLogin(data.user.id, req)
 
   return NextResponse.json({ ok: true })
 }

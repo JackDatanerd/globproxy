@@ -4,6 +4,7 @@ export const SECURITY_EVENT_LABELS: Record<string, string> = {
   password_changed: 'Password changed',
   email_change_requested: 'Email change requested',
   mfa_enabled: 'Two-factor authentication enabled',
+  mfa_rekeyed: 'Two-factor authenticator changed',
   mfa_disabled: 'Two-factor authentication disabled',
   mfa_backup_regenerated: 'Backup codes regenerated',
   mfa_backup_code_used: 'Backup code used to sign in',
@@ -34,4 +35,10 @@ export const SECURITY_EVENT_LABELS: Record<string, string> = {
   mfa_verified: 'Two-factor code accepted',
   mfa_failed: 'Incorrect two-factor code entered',
   mfa_recovery_completed: 'Two-factor authentication removed through recovery',
+}
+
+/** "KE" -> "Kenya" (falls back to the code). Display only; safe on server and client. */
+export function countryName(code: string | null | undefined): string | null {
+  if (!code || !/^[A-Z]{2}$/.test(code)) return null
+  try { return new Intl.DisplayNames(['en'], { type: 'region' }).of(code) ?? code } catch { return code }
 }

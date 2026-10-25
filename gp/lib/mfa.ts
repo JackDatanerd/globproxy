@@ -5,7 +5,7 @@ import {
   encryptSecret, decryptSecret, secretNeedsRewrite, MfaConfigError,
   hashBackupCode, backupCodeHashCandidates,
 } from '@/lib/mfaCrypto'
-import { sendLockoutNotice, sendBackupCodesLowNotice, logSecurityEvent } from '@/lib/securityEvents'
+import { recordAndNotify, sendBackupCodesLowNotice, logSecurityEvent } from '@/lib/securityEvents'
 import { NextResponse } from 'next/server'
 
 type AdminClient = Awaited<ReturnType<typeof createAdminClient>>
@@ -255,15 +255,8 @@ async function checkCode(
 }
 
 async function announceLockout(supabase: AdminClient, userId: string, req?: Request) {
-  try {
-    await logSecurityEvent({ userId, event: 'mfa_locked', req, admin: supabase })
-    const { data: profile } = await supabase.from('profiles').select('email, full_name').eq('id', userId).maybeSingle()
-    if (profile?.email && profile.email !== '[deleted]') {
-      await sendLockoutNotice(profile.email, profile.full_name, req?.headers.get('cf-connecting-ip') ?? null)
-    }
-  } catch (e) {
-    console.error('[mfa] announceLockout failed', e)
-  }
+  // Durable: stored with notify = true, sent now, retried by the cron sweep if the provider is down.
+  await recordAndNotify({ userId, event: 'mfa_locked', req, admin: supabase })
 }
 
 async function consumeTotp(supabase: AdminClient, userId: string, counter: number): Promise<boolean> {
@@ -394,6 +387,94 @@ export interface VerifyResult {
   session_ttl_s: number
   used_backup_code: boolean
   backup_codes_remaining?: number
+}
+
+// ── Change authenticator (in place) ──────────────────────────────────
+// Moving to a new phone used to mean disableMfa() then startEnrollment(): an account with no
+// second factor in between, and a "2FA disabled" alert for a routine action. Here the account
+// stays protected throughout: the person proves the CURRENT factor (an authenticator code, or a
+// backup code when the old phone is gone), a NEW seed is parked beside the live one
+// (migration 0082: pending_secret), and it replaces the live secret only when a code from the new
+// authenticator has been proven — one atomic UPDATE (mfa_rekey_confirm). Backup codes are
+// unchanged. Every other trusted browser then loses its 2FA trust (the old authenticator may be
+// the reason for the change — a lost or stolen phone).
+const REKEY_WINDOW_MS = 15 * 60 * 1000
+const REKEY_UNAVAILABLE_MSG = 'Changing the authenticator is temporarily unavailable. Please try again shortly.'
+const REKEY_NONE_MSG = 'No authenticator change is in progress, or it timed out. Start again.'
+const NOT_ENROLLED_MSG = 'Two-factor authentication is not set up on this account.'
+
+export async function startRekey(userId: string, email: string, code: string, req?: Request): Promise<EnrollmentStart> {
+  const supabase = await createAdminClient()
+  const factor = await getFactor(supabase, userId)
+  if (!factor?.confirmed) throw new Error(NOT_ENROLLED_MSG)
+
+  await checkCode(supabase, userId, email, factor, code, {
+    totp: 'Incorrect code. Enter the current code from your existing authenticator, or a backup code.',
+    backup: 'That backup code is invalid or has already been used.',
+  }, { req })
+
+  const secret = new OTPAuth.Secret({ size: 20 })
+  const { data: started, error } = await supabase.rpc('mfa_rekey_start', {
+    p_user_id: userId,
+    p_secret: await encryptSecret(secret.base32, userId),
+  })
+  if (error) {
+    // Most likely migration 0082 is not applied yet.
+    console.error('[mfa] mfa_rekey_start failed', userId, error)
+    throw new Error(REKEY_UNAVAILABLE_MSG)
+  }
+  if (started !== true) throw new Error(NOT_ENROLLED_MSG)
+
+  const uri = buildTotp(email, secret.base32).toString()
+  return { secret: secret.base32, otpauth_uri: uri, qr_svg: renderQrSvg(uri, { width: 220, margin: 1 }) }
+}
+
+export async function confirmRekey(userId: string, email: string, code: string, req?: Request, keepToken?: string): Promise<void> {
+  const parsed = parseMfaCode(code)
+  if (!parsed || parsed.kind !== 'totp') throw new Error('Enter the 6-digit code from your NEW authenticator app.')
+
+  const supabase = await createAdminClient()
+  const factor = await getFactor(supabase, userId)
+  if (!factor?.confirmed) throw new Error(NOT_ENROLLED_MSG)
+
+  const { data: pend, error: pendErr } = await supabase
+    .from('mfa_totp_factors').select('pending_secret, pending_created_at').eq('user_id', userId).maybeSingle()
+  if (pendErr) {
+    console.error('[mfa] reading pending authenticator failed', userId, pendErr)
+    throw new Error(REKEY_UNAVAILABLE_MSG)
+  }
+  const pendingSecret = (pend as { pending_secret: string | null } | null)?.pending_secret
+  const pendingAt = (pend as { pending_created_at: string | null } | null)?.pending_created_at
+  if (!pendingSecret || !pendingAt || Date.now() - new Date(pendingAt).getTime() > REKEY_WINDOW_MS) throw new Error(REKEY_NONE_MSG)
+
+  const gate = await beginAttempt(supabase, userId)
+  let counter: number | null
+  try {
+    counter = await matchTotpCounter({ ...factor, secret: pendingSecret }, email, parsed.code)
+  } catch (e) {
+    await refundAttempt(supabase, userId, gate)
+    throw e
+  }
+  if (counter === null) {
+    if (gate === 'ok_last') await announceLockout(supabase, userId, req)
+    throw new Error('Incorrect code. Check the NEW authenticator app and try again.')
+  }
+
+  const { data: swapped, error } = await supabase.rpc('mfa_rekey_confirm', {
+    p_user_id: userId,
+    p_counter: counter,
+    p_max_age: '15 minutes',
+  })
+  if (error) {
+    await refundAttempt(supabase, userId, gate)
+    console.error('[mfa] mfa_rekey_confirm failed', userId, error)
+    throw new Error('Could not switch authenticator. Please try again.')
+  }
+  if (swapped !== true) {
+    await refundAttempt(supabase, userId, gate)
+    throw new Error(REKEY_NONE_MSG)
+  }
+  await revokeOtherVerifiedSessions(userId, keepToken)
 }
 
 export async function verifyFactor(
@@ -831,6 +912,18 @@ export async function revokeOtherVerifiedSessions(userId: string, keepToken?: st
   if (error) console.error('[mfa] revokeOtherVerifiedSessions failed', userId, error)
 }
 
+export const ADMIN_2FA_REQUIRED_MSG = 'Two-factor authentication is required for administrator accounts and cannot be turned off. To move to a new phone, use "Change authenticator".'
+
+async function isAdminAccount(supabase: AdminClient, userId: string): Promise<boolean> {
+  const { data, error } = await supabase.from('profiles').select('role').eq('id', userId).maybeSingle()
+  if (error) {
+    console.error('[mfa] role lookup failed', userId, error.message)
+    // Fail toward keeping 2FA on: an unreadable role is treated as "admin" for a disable request.
+    return true
+  }
+  return data?.role === 'admin'
+}
+
 // ── Disable / reset ──────────────────────────────────────────────────
 // Self-service disable requires proof of a currently-valid code (TOTP or
 // backup), so a hijacked already-authenticated browser can't unilaterally
@@ -839,6 +932,11 @@ export async function disableMfa(userId: string, email: string, code: string, re
   const supabase = await createAdminClient()
   const factor = await getFactor(supabase, userId)
   if (!factor?.confirmed) throw new Error('Two-factor authentication is not currently enabled.')
+
+  // Administrator accounts must keep a second factor (middleware + authorizeAdmin enforce it);
+  // switching devices goes through "Change authenticator" instead. Checked before the code so
+  // a refused request costs no attempt.
+  if (await isAdminAccount(supabase, userId)) throw new Error(ADMIN_2FA_REQUIRED_MSG)
 
   await checkCode(supabase, userId, email, factor, code, { totp: 'Incorrect code.', backup: 'Incorrect code.' }, { req })
   await wipeMfa(supabase, userId)

@@ -2,6 +2,8 @@ import { createAdminClient } from '@/lib/supabase/server'
 import { sendEmailSafe, securityNoticeHtml, escapeHtml } from '@/lib/email'
 import { appUrl } from '@/lib/appUrl'
 import { normalizeClientIp } from '@/lib/rateLimit'
+import { isNewSignIn } from '@/lib/signInNovelty'
+import { APP_URL, resetButton, supportLine, renderSecurityNotice, DURABLE_NOTICE_EVENTS, type NoticeRow } from '@/lib/securityNotices'
 
 type AdminClient = Awaited<ReturnType<typeof createAdminClient>>
 
@@ -12,6 +14,7 @@ export type SecurityEventType =
   | 'payout_method_changed'
   | 'email_change_requested'
   | 'mfa_enabled'
+  | 'mfa_rekeyed'
   | 'mfa_disabled'
   | 'mfa_backup_regenerated'
   | 'mfa_backup_code_used'
@@ -51,6 +54,12 @@ export function requestMeta(req?: Request): { ip: string | null; ua: string | nu
   return { ip, ua }
 }
 
+/** Two-letter country of the caller as Cloudflare saw it ('XX' = unknown); null when absent or malformed. */
+export function requestCountry(req?: Request): string | null {
+  const c = req?.headers.get('cf-ipcountry')?.trim().toUpperCase()
+  return c && /^[A-Z]{2}$/.test(c) && c !== 'XX' ? c : null
+}
+
 async function sha256Hex(input: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input))
   return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('')
@@ -63,7 +72,7 @@ export async function uaFingerprint(ua: string | null): Promise<string> {
   return (await sha256Hex(normalized)).slice(0, 24)
 }
 
-/** Best-effort audit write. Never throws. */
+/** Best-effort audit write. Never throws. Resolves true when the row was stored. */
 export async function logSecurityEvent(p: {
   userId: string
   event: SecurityEventType
@@ -72,35 +81,62 @@ export async function logSecurityEvent(p: {
   meta?: Record<string, unknown>
   notify?: boolean
   admin?: AdminClient
-}): Promise<void> {
+}): Promise<boolean> {
   try {
     const admin = p.admin ?? (await createAdminClient())
     const { ip, ua } = requestMeta(p.req)
+    const country = requestCountry(p.req)
     const { error } = await admin.from('security_events').insert({
       user_id: p.userId,
       actor_id: p.actorId ?? null,
       event: p.event,
       ip,
       user_agent: ua,
-      meta: p.meta ?? {},
+      meta: { ...(country ? { country } : {}), ...(p.meta ?? {}) },
       notify: p.notify ?? false,
     })
-    if (error) console.error('[security_events] insert failed', p.event, error.message)
+    if (error) { console.error('[security_events] insert failed', p.event, error.message); return false }
+    return true
   } catch (e) {
     console.error('[security_events] insert threw', p.event, e)
+    return false
+  }
+}
+
+/**
+ * Records an event AND makes sure the owner is told, durably: the row is stored with
+ * notify = true, delivered now, and — if the provider is down at this moment — retried by
+ * the 'security' cron sweep for 24 h (flushSecurityNotices). If even the audit write fails
+ * the notice is still sent directly. Never throws.
+ */
+export async function recordAndNotify(p: Parameters<typeof logSecurityEvent>[0]): Promise<void> {
+  try {
+    const stored = await logSecurityEvent({ ...p, notify: true })
+    if (stored) { await flushSecurityNotices(p.userId); return }
+    const admin = p.admin ?? (await createAdminClient())
+    const { data: profile } = await admin.from('profiles').select('email, full_name, is_deleted').eq('id', p.userId).maybeSingle()
+    if (!profile?.email || profile.email === '[deleted]' || profile.is_deleted) return
+    const { ip, ua } = requestMeta(p.req)
+    const msg = renderSecurityNotice({ event: p.event, ip, user_agent: ua, meta: { country: requestCountry(p.req), ...(p.meta ?? {}) } }, profile)
+    if (msg) await sendEmailSafe(msg)
+  } catch (e) {
+    console.error('[security_events] recordAndNotify failed', p.event, e)
   }
 }
 
 /**
  * Records a successful sign-in and reports whether it came from a device this
- * account hasn't used in the last 180 days. The very first sign-in ever
- * recorded for an account is never "new" (nothing to compare against).
+ * account hasn't used in the last 180 days — or from a country it has not signed in
+ * from in that time (once the account has any country on record). The very first
+ * sign-in ever recorded for an account is never "new" (nothing to compare against).
+ * A new device / country is e-mailed to the owner durably (see recordAndNotify).
  */
 export async function recordLogin(userId: string, req: Request, extraMeta: Record<string, unknown> = {}): Promise<{ newDevice: boolean; ip: string | null; ua: string | null }> {
   const { ip, ua } = requestMeta(req)
   try {
     const admin = await createAdminClient()
     const hash = await uaFingerprint(ua)
+    const country = requestCountry(req)
     const since = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString()
 
     const { data: anyPrior } = await admin
@@ -109,8 +145,30 @@ export async function recordLogin(userId: string, req: Request, extraMeta: Recor
       .from('security_events').select('id').eq('user_id', userId).eq('event', 'login')
       .eq('meta->>ua_hash', hash).gte('created_at', since).limit(1)
 
-    await logSecurityEvent({ userId, event: 'login', req, meta: { ua_hash: hash, ...extraMeta }, admin })
-    return { newDevice: (anyPrior?.length ?? 0) > 0 && (sameDevice?.length ?? 0) === 0, ip, ua }
+    // Countries this account has signed in from lately. Sign-ins from before countries
+    // were recorded carry none, so an account with no country on record is never flagged
+    // for one (otherwise every long-standing customer's next login would alert).
+    const seen = new Set<string>()
+    if (country) {
+      const { data: recent } = await admin
+        .from('security_events').select('meta').eq('user_id', userId).eq('event', 'login')
+        .gte('created_at', since).order('created_at', { ascending: false }).limit(200)
+      for (const r of recent ?? []) {
+        const c = (r.meta as { country?: unknown } | null)?.country
+        if (typeof c === 'string') seen.add(c)
+      }
+    }
+
+    const newDevice = isNewSignIn({
+      hadPriorLogin: (anyPrior?.length ?? 0) > 0,
+      sameDeviceSeen: (sameDevice?.length ?? 0) > 0,
+      country,
+      countriesSeen: seen,
+    })
+    const ev = { userId, event: 'login' as const, req, meta: { ua_hash: hash, ...extraMeta }, admin }
+    if (newDevice) await recordAndNotify(ev)
+    else await logSecurityEvent(ev)
+    return { newDevice, ip, ua }
   } catch (e) {
     console.error('[security_events] recordLogin failed', e)
     return { newDevice: false, ip, ua }
@@ -151,26 +209,6 @@ export async function isKnownLoginIp(email: string, ip: string | null): Promise<
 }
 
 // ── Email templates ─────────────────────────────────────────────────────
-const APP_URL = () => appUrl()
-
-function resetButton(): string {
-  return `
-    <div style="text-align:center;margin:32px 0;">
-      <a href="${APP_URL()}/auth/reset"
-         style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">
-        Reset your password →
-      </a>
-    </div>`
-}
-
-function supportLine(): string {
-  return `
-    <p style="color:#888;font-size:13px;text-align:center;">
-      Still locked out, or think something else is wrong?
-      <a href="mailto:support@globproxy.com" style="color:#2563eb;">Contact support</a>.
-    </p>`
-}
-
 export function passwordChangedHtml(fullName: string | null | undefined, email: string): string {
   return securityNoticeHtml({
     heading: 'Password changed',
@@ -188,50 +226,6 @@ export function passwordChangedHtml(fullName: string | null | undefined, email: 
   })
 }
 
-export async function sendLockoutNotice(to: string, fullName: string | null | undefined, ip: string | null) {
-  await sendEmailSafe({
-    to,
-    subject: 'Too many incorrect two-factor codes on your GlobProxy account',
-    html: securityNoticeHtml({
-      heading: '2FA temporarily locked',
-      bodyHtml: `
-        <p style="color:#444;text-align:center;">
-          Hi ${escapeHtml(fullName) || 'there'}, several incorrect two-factor codes were entered for your
-          GlobProxy account${ip ? ` (most recently from ${escapeHtml(ip)})` : ''}, so code entry is paused for 15 minutes.
-        </p>
-        <p style="color:#444;text-align:center;">
-          If that was you, just wait and try again. If it wasn't, someone may know your password —
-          reset it now.
-        </p>
-        ${resetButton()}
-        ${supportLine()}`,
-    }),
-  })
-}
-
-export async function sendNewDeviceNotice(to: string, fullName: string | null | undefined, ip: string | null, ua: string | null) {
-  await sendEmailSafe({
-    to,
-    subject: 'New sign-in to your GlobProxy account',
-    html: securityNoticeHtml({
-      heading: 'New sign-in',
-      bodyHtml: `
-        <p style="color:#444;text-align:center;">
-          Hi ${escapeHtml(fullName) || 'there'}, your GlobProxy account (${escapeHtml(to)}) was just signed in to
-          from a device we haven't seen recently.
-        </p>
-        <p style="color:#444;text-align:center;font-size:13px;">
-          ${ip ? `IP address: ${escapeHtml(ip)}<br/>` : ''}${ua ? `Browser: ${escapeHtml(ua.slice(0, 120))}` : ''}
-        </p>
-        <p style="color:#444;text-align:center;">
-          If this was you, no action is needed. If not, reset your password right away.
-        </p>
-        ${resetButton()}
-        ${supportLine()}`,
-    }),
-  })
-}
-
 export async function sendEmailChangeNotice(oldEmail: string, fullName: string | null | undefined, newEmailMasked: string) {
   await sendEmailSafe({
     to: oldEmail,
@@ -246,27 +240,6 @@ export async function sendEmailChangeNotice(oldEmail: string, fullName: string |
         </p>
         <p style="color:#444;text-align:center;">
           If you didn't request this, reset your password right away and turn on two-factor authentication.
-        </p>
-        ${resetButton()}
-        ${supportLine()}`,
-    }),
-  })
-}
-
-export async function sendLoginThrottleNotice(to: string, fullName: string | null | undefined, ip: string | null) {
-  await sendEmailSafe({
-    to,
-    subject: 'Repeated failed sign-in attempts on your GlobProxy account',
-    html: securityNoticeHtml({
-      heading: 'Sign-in paused',
-      bodyHtml: `
-        <p style="color:#444;text-align:center;">
-          Hi ${escapeHtml(fullName) || 'there'}, there were many failed attempts to sign in to your GlobProxy account
-          (${escapeHtml(to)})${ip ? `, most recently from ${escapeHtml(ip)}` : ''}. Sign-in is paused for 15 minutes.
-        </p>
-        <p style="color:#444;text-align:center;">
-          If that was you, wait and try again. If it wasn't, someone is guessing your password —
-          reset it now and consider turning on two-factor authentication.
         </p>
         ${resetButton()}
         ${supportLine()}`,
@@ -348,7 +321,7 @@ export async function flushSecurityNoticesDetailed(userId?: string, minAgeMs = 0
   const admin = await createAdminClient()
   let q = admin
     .from('security_events')
-    .select('id, user_id, event, created_at, meta')
+    .select('id, user_id, event, created_at, meta, ip, user_agent')
     .eq('notify', true)
     .is('notified_at', null)
     .order('created_at', { ascending: true })
@@ -394,6 +367,13 @@ export async function flushSecurityNoticesDetailed(userId?: string, minAgeMs = 0
         // false, which must send the event back to the queue (it is the
         // old address's only warning that the login email changed).
         ok = await sendEmailChangedNotice(meta.old_email, profile?.full_name, meta.new_email_masked ?? 'your new address')
+      }
+    }
+    if (DURABLE_NOTICE_EVENTS.has(ev.event) && !stale) {
+      const { data: profile } = await admin.from('profiles').select('email, full_name, is_deleted').eq('id', ev.user_id).maybeSingle()
+      if (profile?.email && profile.email !== '[deleted]' && !profile.is_deleted) {
+        const msg = renderSecurityNotice(ev as NoticeRow, profile)
+        if (msg) ok = await sendEmailSafe(msg)
       }
     }
     if (ok) {

@@ -1,10 +1,10 @@
 import { rejectCrossSite } from '@/lib/apiAuth'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
-import { rateLimited } from '@/lib/rateLimit'
+import { rateLimited, rateLimitedUser } from '@/lib/rateLimit'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { verifyCurrentPassword, PASSWORD_THROTTLED_MSG } from '@/lib/passwordCheck'
 import {
-  requestRecovery, recoveryStatus, confirmRecovery, cancelRecovery, completeRecovery, pendingRecoveryFor,
+  requestRecovery, recoveryStatus, confirmRecovery, cancelRecovery, completeRecovery, pendingRecoveryFor, RecoveryUserError,
 } from '@/lib/mfaRecovery'
 import { sessionIdFromJwt } from '@/lib/sessionDevices'
 import { requireMfaVerified, cancelOpenRecoveryRequests } from '@/lib/mfa'
@@ -67,6 +67,11 @@ export async function POST(req: Request) {
       const pw = await verifyCurrentPassword(user.id, user.email, body.password, req)
       if (pw === 'throttled') return NextResponse.json({ error: PASSWORD_THROTTLED_MSG }, { status: 429 })
       if (pw !== 'ok') return NextResponse.json({ error: 'That password is incorrect.' }, { status: 400 })
+      // Each request sends the owner an e-mail, and a correct password clears the password-check
+      // counters — so the account itself needs a cap, or anyone holding the password and a session
+      // could mail-bomb the owner (and keep superseding their open recovery link).
+      const emailLimited = await rateLimitedUser('USER_EMAIL_RATE_LIMITER', user.id, 'mfa-recovery-request')
+      if (emailLimited) return emailLimited
       await requestRecovery(user.id, user.email, profile?.full_name, req)
       return NextResponse.json({ success: true })
     }
@@ -79,7 +84,11 @@ export async function POST(req: Request) {
       return clearMfaCookie(NextResponse.json({ success: true }))
     }
     return NextResponse.json({ error: 'Unknown action.' }, { status: 400 })
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? 'Something went wrong. Please try again.' }, { status: 400 })
+  } catch (e) {
+    // Only messages written for the user are shown; anything else (a missing key, a database
+    // error) is logged and answered generically instead of leaking internals.
+    if (e instanceof RecoveryUserError) return NextResponse.json({ error: e.message }, { status: 400 })
+    console.error('[mfa/recovery] unexpected error', e)
+    return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
   }
 }

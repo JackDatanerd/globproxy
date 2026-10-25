@@ -117,7 +117,7 @@ function SignupForm() {
     }
 
     toast.success('Check your email to confirm your account!')
-    router.push(`/auth/verify?email=${encodeURIComponent(email)}`)
+    router.push(`/auth/verify?email=${encodeURIComponent(email)}${chosenPlan ? `&plan=${encodeURIComponent(chosenPlan)}` : ''}`)
   }
 
   return (

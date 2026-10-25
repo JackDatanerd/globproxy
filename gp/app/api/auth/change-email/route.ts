@@ -2,7 +2,7 @@ import { rejectCrossSite } from '@/lib/apiAuth'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { validateEmail } from '@/lib/email-validation'
-import { rateLimited } from '@/lib/rateLimit'
+import { rateLimited, rateLimitedUser } from '@/lib/rateLimit'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { mfaGate } from '@/lib/mfa'
 import { readCookie, verifySudoCookieValue, SUDO_COOKIE_NAME } from '@/lib/reauth'
@@ -56,6 +56,13 @@ export async function POST(req: Request) {
   const pw = await verifyCurrentPassword(user.id, user.email, current_password, req)
   if (pw === 'throttled') return NextResponse.json({ error: PASSWORD_THROTTLED_MSG }, { status: 429 })
   if (pw !== 'ok') return NextResponse.json({ error: 'Your current password is incorrect.' }, { status: 400 })
+
+  // A correct password clears the password-check counters, so on its own that limiter doesn't
+  // bound how often a session holder can start this flow — and every start e-mails the owner's
+  // current address and the target. Cap it per ACCOUNT (and count banned / already-registered
+  // targets too: they answer identically, but must not be free to probe).
+  const emailLimited = await rateLimitedUser('USER_EMAIL_RATE_LIMITER', user.id, 'change-email')
+  if (emailLimited) return emailLimited
 
   const admin = await createAdminClient()
   const generic = NextResponse.json({

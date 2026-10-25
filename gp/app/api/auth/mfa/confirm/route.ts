@@ -1,11 +1,10 @@
 import { rejectCrossSite } from '@/lib/apiAuth'
-import { createClient, createAdminClient } from '@/lib/supabase/server'
+import { createClient } from '@/lib/supabase/server'
 import { confirmEnrollment, publicMfaError, sessionIdFromJwt } from '@/lib/mfa'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { rateLimited } from '@/lib/rateLimit'
 import { withMfaCookie } from '../_cookie'
-import { sendEmailSafe, securityNoticeHtml, escapeHtml } from '@/lib/email'
-import { logSecurityEvent } from '@/lib/securityEvents'
+import { recordAndNotify } from '@/lib/securityEvents'
 import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
@@ -31,35 +30,8 @@ export async function POST(req: Request) {
   try {
     const { backup_codes, session_token, session_ttl_s } = await confirmEnrollment(user.id, user.email, code, req, sessionIdFromJwt(session?.access_token))
 
-    await logSecurityEvent({ userId: user.id, event: 'mfa_enabled', req })
-
-    // Security-relevant account change. If this wasn't the account owner,
-    // someone else already has the password AND now controls the second
-    // factor, so a password reset alone won't lock them out — point to
-    // support. Awaited (not fire-and-forget): on Workers an un-awaited
-    // fetch can be cancelled when the response returns.
-    const admin = await createAdminClient()
-    const { data: profile } = await admin.from('profiles').select('full_name').eq('id', user.id).maybeSingle()
-    await sendEmailSafe({
-      to: user.email,
-      subject: 'Two-factor authentication was enabled',
-      html: securityNoticeHtml({
-        heading: '2FA enabled',
-        bodyHtml: `
-          <p style="color:#444;text-align:center;">
-            Hi ${escapeHtml(profile?.full_name) || 'there'}, this confirms two-factor authentication was just
-            turned on for your GlobProxy account (${escapeHtml(user.email)}). If you made this change, no action is needed —
-            keep your backup codes somewhere safe.
-          </p>
-          <p style="color:#444;text-align:center;">
-            If you didn't make this change, contact support immediately — someone else may already have both your
-            password and control of the authenticator now attached to your account.
-          </p>
-          <p style="color:#888;font-size:13px;text-align:center;">
-            <a href="mailto:support@globproxy.com" style="color:#2563eb;">Contact support</a>.
-          </p>`,
-      }),
-    })
+    // Security-relevant account change: the owner is told durably (stored, sent now, retried by the cron sweep if the provider is down) — if this wasn't the owner, someone else now controls the second factor.
+    await recordAndNotify({ userId: user.id, event: 'mfa_enabled', req })
     const res = NextResponse.json({ backup_codes })
     // session_token is empty only if the verified-browser row couldn't be
     // written after enrollment committed — the codes are still returned and

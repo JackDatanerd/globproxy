@@ -70,7 +70,7 @@ function htmlToText(html: string): string {
     .trim()
 }
 
-export async function sendEmail(p: { to: string; subject: string; html: string; replyTo?: string }) {
+export async function sendEmail(p: { to: string; subject: string; html: string; replyTo?: string; idempotencyKey?: string }) {
   // Enforced here, not just at each call site, so a future caller that
   // interpolates user input into `subject` can't reintroduce this by
   // forgetting to sanitize it themselves.
@@ -82,7 +82,12 @@ export async function sendEmail(p: { to: string; subject: string; html: string; 
   }
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+    headers: {
+      'Authorization': `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json',
+      // Lets a retry of the SAME message (sendEmailSafe) be recognised by the provider, so a
+      // first attempt that timed out after being accepted is not delivered twice.
+      ...(p.idempotencyKey ? { 'Idempotency-Key': p.idempotencyKey } : {}),
+    },
     // A plain-text alternative alongside the HTML: mail clients that block
     // images/HTML still show something readable, and HTML-only mail scores worse with spam filters.
     body: JSON.stringify({
@@ -116,11 +121,19 @@ export async function sendEmail(p: { to: string; subject: string; html: string; 
 // must never fail or roll back the account change it describes — and reports
 // whether the provider accepted the message.
 export async function sendEmailSafe(p: { to: string; subject: string; html: string; replyTo?: string }): Promise<boolean> {
-  try {
-    const res = await sendEmail(p)
-    return res.ok
-  } catch (e) {
-    console.error('[email] send threw', { to: p.to, subject: p.subject }, e)
-    return false
+  // One retry on the failures that are the provider's, not ours: a network error / timeout,
+  // 429, or 5xx. A 4xx (bad key, rejected recipient) is not retried — it would fail the same
+  // way. The Idempotency-Key makes the retry safe if the first attempt was actually accepted.
+  const idempotencyKey = crypto.randomUUID()
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await sendEmail({ ...p, idempotencyKey })
+      if (res.ok) return true
+      if (!(res.status === 429 || res.status >= 500)) return false
+    } catch (e) {
+      console.error('[email] send threw', { to: p.to, subject: p.subject, attempt }, e)
+    }
+    if (attempt === 0) await new Promise((r) => setTimeout(r, 700))
   }
+  return false
 }

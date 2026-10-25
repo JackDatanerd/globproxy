@@ -22,10 +22,16 @@ async function authedFetch(path: string, body?: object) {
   })
 }
 
-export default function TwoFactorSettings({ role: _role }: { role?: string } = {}) {
+export default function TwoFactorSettings({ role }: { role?: string } = {}) {
+  // Administrator accounts must keep 2FA: no Disable button (the server refuses it too).
+  const isAdmin = role === 'admin'
   const router = useRouter()
   const [status, setStatus] = useState<Status | null>(null)
-  const [mode, setMode] = useState<'idle' | 'disable' | 'regenerate'>('idle')
+  const [mode, setMode] = useState<'idle' | 'disable' | 'regenerate' | 'rekey'>('idle')
+  // Change authenticator: step 1 proves the CURRENT factor, step 2 scans the NEW seed and proves it.
+  const [rekey, setRekey] = useState<{ secret: string; qr_svg: string } | null>(null)
+  const [newCode, setNewCode] = useState('')
+  const [codesAck, setCodesAck] = useState(false)
   const [code, setCode] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [newCodes, setNewCodes] = useState<string[] | null>(null)
@@ -117,6 +123,48 @@ export default function TwoFactorSettings({ role: _role }: { role?: string } = {
     }
   }
 
+  async function handleRekeyStart(e: React.FormEvent) {
+    e.preventDefault()
+    setSubmitting(true)
+    try {
+      const res = await authedFetch('/api/auth/mfa/rekey', { action: 'start', code })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error)
+      setRekey({ secret: data.secret, qr_svg: data.qr_svg })
+      setCode(''); setNewCode('')
+    } catch (e: any) {
+      toast.error(e.message ?? 'Could not start the change.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function handleRekeyConfirm(e: React.FormEvent) {
+    e.preventDefault()
+    setSubmitting(true)
+    try {
+      const res = await authedFetch('/api/auth/mfa/rekey', { action: 'confirm', code: newCode })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error)
+      toast.success('Authenticator changed. Other trusted browsers will ask for a code again.')
+      cancelRekey()
+      await loadStatus()
+    } catch (e: any) {
+      toast.error(e.message ?? 'Could not change the authenticator.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  function cancelRekey() {
+    setMode('idle'); setRekey(null); setCode(''); setNewCode('')
+  }
+
+  async function copyCodes(codes: string[]) {
+    try { await navigator.clipboard.writeText(codes.join('\n')); toast.success('Backup codes copied') }
+    catch { toast.error('Couldn’t copy — use Download instead.') }
+  }
+
   function downloadCodes(codes: string[]) {
     const text = `GlobProxy backup codes\nGenerated ${new Date().toISOString()}\n\n${codes.join('\n')}\n`
     saveTextFile(text, 'globproxy-backup-codes.txt')
@@ -153,10 +201,16 @@ export default function TwoFactorSettings({ role: _role }: { role?: string } = {
         <div className="bg-surface border border-border rounded-xl p-4 mb-4 grid grid-cols-2 gap-x-4 gap-y-2 font-mono text-sm text-ink">
           {newCodes.map(c => <div key={c}>{c}</div>)}
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 mb-4">
           <button onClick={() => downloadCodes(newCodes)} className="text-xs font-mono border border-border rounded-lg px-4 py-2 hover:border-accent hover:text-accent transition-colors">Download .txt</button>
-          <button onClick={() => setNewCodes(null)} className="text-xs font-mono bg-accent text-white rounded-lg px-4 py-2 hover:opacity-90 transition-opacity">Done</button>
+          <button onClick={() => copyCodes(newCodes)} className="text-xs font-mono border border-border rounded-lg px-4 py-2 hover:border-accent hover:text-accent transition-colors">Copy to clipboard</button>
         </div>
+        <label className="flex items-start gap-2.5 mb-4 cursor-pointer">
+          <input type="checkbox" checked={codesAck} onChange={e => setCodesAck(e.target.checked)} className="mt-0.5" />
+          <span className="text-xs text-muted">I’ve saved these codes somewhere safe. I understand GlobProxy can’t show them to me again.</span>
+        </label>
+        <button disabled={!codesAck} onClick={() => { setNewCodes(null); setCodesAck(false) }}
+          className="text-xs font-mono bg-accent text-white rounded-lg px-4 py-2 hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed">Done</button>
       </div>
     )
   }
@@ -198,7 +252,9 @@ export default function TwoFactorSettings({ role: _role }: { role?: string } = {
 
       {!status.confirmed && (
         <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 mb-4">
-          Recommended. Two-factor authentication means a stolen password alone can’t get into your proxies, billing or API keys.
+          {isAdmin
+            ? 'Required for administrator accounts. Turn it on to keep using the admin area.'
+            : 'Recommended. Two-factor authentication means a stolen password alone can’t get into your proxies, billing or API keys.'}
         </p>
       )}
 
@@ -218,12 +274,63 @@ export default function TwoFactorSettings({ role: _role }: { role?: string } = {
             <button onClick={() => setMode('regenerate')} className="text-xs font-mono border border-border rounded-lg px-4 py-2.5 hover:border-accent hover:text-accent transition-colors">
               Regenerate backup codes
             </button>
-            <button onClick={() => setMode('disable')} className="text-xs font-mono border border-border rounded-lg px-4 py-2.5 text-red-500 hover:border-red-300 hover:bg-red-50 transition-colors">
-              Disable
+            <button onClick={() => setMode('rekey')} className="text-xs font-mono border border-border rounded-lg px-4 py-2.5 hover:border-accent hover:text-accent transition-colors">
+              Change authenticator
             </button>
+            {!isAdmin && (
+              <button onClick={() => setMode('disable')} className="text-xs font-mono border border-border rounded-lg px-4 py-2.5 text-red-500 hover:border-red-300 hover:bg-red-50 transition-colors">
+                Disable
+              </button>
+            )}
           </div>
+          {isAdmin && <p className="text-xs text-muted mt-3">Two-factor authentication is required for administrator accounts, so it can’t be turned off. Moving to a new phone? Use “Change authenticator”.</p>}
           <TrustedBrowsers />
         </>
+      ) : mode === 'rekey' ? (
+        !rekey ? (
+          <form onSubmit={handleRekeyStart} className="flex flex-col gap-3">
+            <p className="text-sm text-ink2">
+              Moving to a new phone or app? Confirm with your current authenticator code — or a backup code if the old phone is gone.
+              Two-factor stays on the whole time; the old authenticator keeps working until you finish.
+            </p>
+            <input
+              type="text" autoFocus required value={code}
+              onChange={e => setCode(e.target.value.trim())}
+              placeholder="6-digit code or backup code"
+              className="w-full bg-surface border border-border text-ink placeholder-muted px-4 py-2.5 rounded-xl text-sm font-mono focus:outline-none focus:border-accent transition-colors"
+            />
+            <div className="flex gap-2">
+              <button type="submit" disabled={submitting || !code} className="text-xs font-mono px-4 py-2 rounded-lg text-white bg-accent transition-opacity hover:opacity-90 disabled:opacity-60">
+                {submitting ? 'Checking…' : 'Continue'}
+              </button>
+              <button type="button" onClick={cancelRekey} className="text-xs font-mono border border-border rounded-lg px-4 py-2 hover:text-ink transition-colors">Cancel</button>
+            </div>
+          </form>
+        ) : (
+          <form onSubmit={handleRekeyConfirm} className="flex flex-col gap-3">
+            <p className="text-sm text-ink2">Scan this with your NEW authenticator app, then enter the 6-digit code it shows.</p>
+            <div className="flex justify-center">
+              <div className="bg-white border border-border rounded-xl p-3" dangerouslySetInnerHTML={{ __html: rekey.qr_svg }} />
+            </div>
+            <details>
+              <summary className="text-xs text-muted cursor-pointer hover:text-ink transition-colors">Can’t scan? Enter this code manually</summary>
+              <div className="mt-2 bg-surface border border-border rounded-lg px-3 py-2 font-mono text-xs text-ink break-all select-all">{rekey.secret}</div>
+            </details>
+            <input
+              type="text" inputMode="numeric" autoComplete="one-time-code" autoFocus required maxLength={6} value={newCode}
+              onChange={e => setNewCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              placeholder="6-digit code from the new app"
+              className="w-full bg-surface border border-border text-ink placeholder-muted px-4 py-2.5 rounded-xl text-sm font-mono tracking-widest focus:outline-none focus:border-accent transition-colors"
+            />
+            <p className="text-xs text-muted">Finishing signs your other trusted browsers out of 2FA trust. Your backup codes stay the same.</p>
+            <div className="flex gap-2">
+              <button type="submit" disabled={submitting || newCode.length !== 6} className="text-xs font-mono px-4 py-2 rounded-lg text-white bg-accent transition-opacity hover:opacity-90 disabled:opacity-60">
+                {submitting ? 'Switching…' : 'Switch authenticator'}
+              </button>
+              <button type="button" onClick={cancelRekey} className="text-xs font-mono border border-border rounded-lg px-4 py-2 hover:text-ink transition-colors">Cancel</button>
+            </div>
+          </form>
+        )
       ) : (
         <form onSubmit={mode === 'disable' ? handleDisable : handleRegenerate} className="flex flex-col gap-3">
           <p className="text-sm text-ink2">

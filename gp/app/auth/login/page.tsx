@@ -21,6 +21,7 @@ function LoginForm() {
   const deleted = params.get('deleted')
   const linkExpired = params.get('error') === 'link_expired'
   const confirmLink = params.get('kind') === 'confirm'
+  const emailChangeLink = params.get('kind') === 'email_change'
   const justConfirmed = params.get('notice') === 'confirmed'
   // Where to go after signing in. Validated: `next` comes straight off the URL.
   const next = safeNextPath(params.get('next'))
@@ -75,7 +76,13 @@ function LoginForm() {
         </div>
       )}
       {linkExpired && (
-        confirmLink ? (
+        emailChangeLink ? (
+          <div className="bg-amber-50 border border-amber-200 text-amber-800 text-sm px-4 py-3 rounded-xl mb-5">
+            That email-change link couldn’t be completed on this browser. Opening it may still have counted — sign in below
+            (with your old or new address, whichever your account now uses) and check Settings. A change needs BOTH the link sent to your
+            old address and the one sent to the new address; if it hasn’t finished, open the other link too, or start the change again.
+          </div>
+        ) : confirmLink ? (
           <div className="bg-amber-50 border border-amber-200 text-amber-800 text-sm px-4 py-3 rounded-xl mb-5">
             That link couldn’t finish signing you in on this browser — but opening it usually already confirmed your email.
             Try signing in below. If it says your email isn’t confirmed, <Link href="/auth/verify" className="underline">resend the confirmation email</Link>.

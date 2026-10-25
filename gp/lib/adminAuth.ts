@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
-import { requireMfaVerified } from '@/lib/mfa'
+import { requireMfaVerified, isMfaEnrolled } from '@/lib/mfa'
 import { requireStepUp } from '@/lib/reauth'
 
 export type AdminSupabase = Awaited<ReturnType<typeof createAdminClient>>
@@ -16,8 +16,8 @@ export type AdminAuthResult =
 //
 // `opts.stepUp` demands the full step-up on a GET too. Use it for reads that
 // hand over bulk sensitive data (CSV exports of payout destinations / the audit
-// log): a plain read only needs the verified 2FA cookie, which an admin who never
-// enrolled doesn't have to present, so a stolen session alone could export them.
+// log): a plain read only needs the verified 2FA cookie; the full step-up asks for a
+// fresh code on top, so a stolen session alone can't export them.
 export async function authorizeAdmin(req: Request, opts: { stepUp?: boolean } = {}): Promise<AdminAuthResult> {
   const token = req.headers.get('authorization')?.replace('Bearer ', '')
   if (!token) return { ok: false, response: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) }
@@ -35,11 +35,25 @@ export async function authorizeAdmin(req: Request, opts: { stepUp?: boolean } = 
     return { ok: false, response: NextResponse.json({ error: 'Forbidden' }, { status: 403 }) }
   }
 
-  // Reads need the verified second factor (when enrolled). Anything that
-  // changes state needs the full step-up: 2FA for enrolled admins, and for
-  // admins who haven't turned 2FA on (it is optional) a password re-entry in
-  // the last 10 minutes — otherwise a stolen admin session alone could change
-  // roles, mark payouts paid or reset someone's 2FA with no further proof.
+  // 2FA is REQUIRED for administrators (middleware.ts sends an unenrolled admin to setup; this
+  // is the API-side backstop, e.g. for a Bearer token minted before the rule). Fails closed: if
+  // enrollment can't be read, the request is refused rather than waved through.
+  let enrolled = false
+  try { enrolled = await isMfaEnrolled(user.id, supabase) } catch (e) {
+    console.error('[adminAuth] could not read 2FA enrollment — refusing', user.id, e)
+    return { ok: false, response: NextResponse.json({ error: 'Could not verify your account right now. Please try again in a moment.' }, { status: 503 }) }
+  }
+  if (!enrolled) {
+    return { ok: false, response: NextResponse.json(
+      { error: 'Two-factor authentication is required for administrator accounts. Turn it on to continue.', code: 'mfa_enrollment_required' },
+      { status: 403 }
+    ) }
+  }
+
+  // Reads need the verified second factor. Anything that
+  // changes state needs the full step-up: a fresh authenticator code (every
+  // admin is enrolled, see above) — otherwise a stolen admin session alone could
+  // change roles, mark payouts paid or reset someone's 2FA with no further proof.
   const isRead = req.method === 'GET' || req.method === 'HEAD'
   const mfaCheck = isRead && !opts.stepUp ? await requireMfaVerified(req, user.id) : await requireStepUp(req, user.id)
   if (mfaCheck) return { ok: false, response: mfaCheck }

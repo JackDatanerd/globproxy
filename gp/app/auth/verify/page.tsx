@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import Turnstile, { turnstileConfigured } from '@/components/auth/Turnstile'
 import toast from 'react-hot-toast'
+import { PLANS } from '@/lib/plans'
 
 const COOLDOWN_S = 60
 
@@ -15,6 +16,11 @@ function VerifyForm() {
   const [cooldown, setCooldown] = useState(0)
   const [captcha, setCaptcha] = useState<string | null>(null)
   const [captchaReset, setCaptchaReset] = useState(0)
+  // The plan the visitor picked before signing up (signup passes it along). Without it a resend
+  // produced a link that lands on the bare dashboard instead of the checkout they chose. Only a
+  // known, non-custom slug is carried — same rule as the signup page.
+  const planParam = params.get('plan')
+  const plan = planParam && PLANS.some(pl => pl.slug === planParam && !pl.custom) ? planParam : null
 
   useEffect(() => {
     if (cooldown <= 0) return
@@ -30,7 +36,9 @@ function VerifyForm() {
       const res = await fetch('/api/auth/resend-confirmation', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password: password || undefined, emailRedirectTo: `${location.origin}/auth/callback`, turnstileToken: captcha }),
+        body: JSON.stringify({ email, password: password || undefined, emailRedirectTo: plan
+          ? `${location.origin}/auth/callback?next=${encodeURIComponent(`/dashboard/buy?plan=${plan}`)}`
+          : `${location.origin}/auth/callback`, turnstileToken: captcha }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {

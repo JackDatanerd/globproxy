@@ -230,9 +230,13 @@ export async function POST(req: Request) {
     })()
 
     const result = await holdUntil(startedAt, RESPONSE_FLOOR_MS, work)
-    if (result?.rateLimited) {
-      return NextResponse.json({ error: 'We are sending a lot of emails right now. Please try again in a few minutes.' }, { status: 429 })
-    }
+    // The email provider's own rate limit used to be surfaced here as a 429. That made this the
+    // one branch with a different answer: addresses that already have an account never reach
+    // signUp(), so while the provider was limited a visitor could tell new addresses (429) from
+    // existing ones (200) — and could induce the limit by signing up throwaway addresses first.
+    // Every branch now answers the same; the verify page's resend button covers a mail that
+    // never arrives, and the limit is logged for operators.
+    if (result?.rateLimited) console.error('[auth/signup] email provider rate limit reached — confirmation e-mail was NOT sent')
     return genericResponse()
   } catch (err: any) {
     console.error('[auth/signup] unexpected error', err)

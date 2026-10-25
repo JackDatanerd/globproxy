@@ -346,10 +346,20 @@ export async function middleware(request: NextRequest) {
         return redirectTo(new URL('/dashboard', request.url))
       }
 
+      // ── MFA enrollment: REQUIRED for administrators ──────────────────
+      // An admin session can refund, pay out, change roles and reset other people's 2FA, so a
+      // password alone must never be enough to hold one. An admin without 2FA is sent to the
+      // setup page from every signed-in area (the setup and verify pages themselves are
+      // excluded, or this would loop). Resellers and customers stay optional + recommended
+      // (MfaRecommendBanner). API side: authorizeAdmin() refuses an unenrolled admin too.
+      if (isProtected && !isMfaFlowPath && profile?.role === 'admin' && !profile.mfa_enabled) {
+        return redirectTo(new URL(`/auth/mfa-setup?required=1&next=${encodeURIComponent(here)}`, request.url))
+      }
+
       // ── MFA step-up ──────────────────────────────────────────────────
-      // MFA is OPTIONAL for every role (admin and reseller included): the app
-      // recommends it (see MfaRecommendBanner) but never forces enrollment.
-      // What IS enforced is the other direction — once an account has turned
+      // MFA is optional for customers and resellers (the app recommends it, see
+      // MfaRecommendBanner) and required for admins (above). What IS enforced for
+      // everyone is the other direction — once an account has turned
       // it on, a password alone no longer gets into any protected page: the
       // browser must hold a valid verified-session cookie, else it is sent to
       // /auth/mfa-verify.
