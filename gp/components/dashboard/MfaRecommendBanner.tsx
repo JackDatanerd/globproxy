@@ -8,9 +8,11 @@ import Link from 'next/link'
 // dashboard for anyone who hasn't turned it on. Dismissal is remembered per
 // browser — a day for admin/reseller accounts (which can move money / touch
 // other users' data), two weeks for everyone else.
-const KEY = 'gp_mfa_nudge_until'
+// Keyed per account: a shared browser must not carry one user's "Not now" over to another.
+const keyFor = (userId?: string | null) => `gp_mfa_nudge_until${userId ? ':' + userId : ''}`
 
-export default function MfaRecommendBanner({ role }: { role: string }) {
+export default function MfaRecommendBanner({ role, userId }: { role: string; userId?: string | null }) {
+  const KEY = keyFor(userId)
   const [hidden, setHidden] = useState(true)
   const privileged = role === 'admin' || role === 'reseller'
 
@@ -21,7 +23,7 @@ export default function MfaRecommendBanner({ role }: { role: string }) {
     } catch {
       setHidden(false)
     }
-  }, [])
+  }, [KEY])
 
   if (hidden) return null
 

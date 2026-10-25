@@ -37,7 +37,7 @@ export default function BillingDetailsForm() {
 
   return (
     <div className="bg-white border border-border rounded-xl mb-8">
-      <button onClick={() => setOpen(o => !o)} className="w-full flex items-center justify-between px-6 py-4 text-left">
+      <button onClick={() => setOpen(o => !o)} aria-expanded={open} className="w-full flex items-center justify-between px-6 py-4 text-left">
         <div>
           <h2 className="font-display font-bold text-base text-ink">Invoice details</h2>
           <p className="text-xs text-muted mt-0.5">Add your company address and tax / VAT ID so they appear on invoices.</p>

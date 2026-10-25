@@ -45,8 +45,9 @@ export default function AffiliateApplyForm() {
         </div>
       </div>
       <div>
-        <label className="text-[10px] font-mono text-muted uppercase tracking-wider">Where do you promote?</label>
+        <label htmlFor="aff-channel" className="text-[10px] font-mono text-muted uppercase tracking-wider">Where do you promote?</label>
         <input
+          id="aff-channel"
           value={channel}
           onChange={(e) => setChannel(e.target.value)}
           maxLength={120}
@@ -55,8 +56,9 @@ export default function AffiliateApplyForm() {
         />
       </div>
       <div>
-        <label className="text-[10px] font-mono text-muted uppercase tracking-wider">Audience size / description</label>
+        <label htmlFor="aff-audience" className="text-[10px] font-mono text-muted uppercase tracking-wider">Audience size / description</label>
         <input
+          id="aff-audience"
           value={audience}
           onChange={(e) => setAudience(e.target.value)}
           maxLength={600}
@@ -65,8 +67,9 @@ export default function AffiliateApplyForm() {
         />
       </div>
       <div>
-        <label className="text-[10px] font-mono text-muted uppercase tracking-wider">How will you promote GlobProxy?</label>
+        <label htmlFor="aff-plan" className="text-[10px] font-mono text-muted uppercase tracking-wider">How will you promote GlobProxy?</label>
         <textarea
+          id="aff-plan"
           value={plan}
           onChange={(e) => setPlan(e.target.value)}
           maxLength={1200}

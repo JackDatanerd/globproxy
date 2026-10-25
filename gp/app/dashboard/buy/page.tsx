@@ -1,12 +1,12 @@
 'use client'
-import { Suspense, useEffect, useState } from 'react'
+import { Suspense, useEffect, useRef, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { PLANS, resolveOrder, CUSTOM_MIN_GB, CUSTOM_MAX_GB } from '@/lib/plans'
 import { kesFor } from '@/lib/fx'
 import { confirmPayment } from '@/lib/verifyPayment'
 import { formatUsd } from '@/lib/format'
 import toast from 'react-hot-toast'
-import { redirectToMfa } from '@/lib/clientApi'
+import { redirectToMfa, apiFetch } from '@/lib/clientApi'
 import { createClient } from '@/lib/supabase/client'
 import clsx from 'clsx'
 
@@ -38,6 +38,11 @@ export default function BuyPage() {
   // KES per USD from /api/checkout/options; null = M-Pesa not offered right now.
   const [kesRate, setKesRate] = useState<number | null>(null)
   const [saveCard, setSaveCard] = useState(false)
+  // The card saved at an earlier checkout, for one-click pay (brand / last four / expiry only).
+  const [savedCard, setSavedCard] = useState<{ brand: string | null; last4: string | null; expired: boolean; valid_through: string | null } | null>(null)
+  // One Idempotency-Key per purchase intent: a double click or a retry after a dropped answer
+  // replays the first result instead of charging again.
+  const savedKey = useRef<{ intent: string; key: string } | null>(null)
   const [loading, setLoading] = useState(false)
   const [statusText, setStatusText] = useState<string | null>(null)
   // A lost chargeback puts the account on hold (new purchases blocked) — say so before they fill in a payment.
@@ -48,6 +53,14 @@ export default function BuyPage() {
       if (!user) return
       sb.from('payment_holds').select('user_id').eq('user_id', user.id).maybeSingle().then(({ data }) => { if (data) setOnHold(true) })
     }).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    apiFetch('/api/checkout/saved-card')
+      .then(d => { if (!cancelled) setSavedCard(d?.card ?? null) })
+      .catch(() => { /* one-click is a convenience; the normal checkout always works */ })
+    return () => { cancelled = true }
   }, [])
 
   const quote = resolveOrder(choice, choice === 'custom' ? Number(customGb) : undefined)
@@ -90,6 +103,52 @@ export default function BuyPage() {
       .catch(() => { if (!cancelled) fallBackToCard() }) // card always works; M-Pesa just stays hidden
     return () => { cancelled = true }
   }, [])
+
+  async function handleSavedCardPay() {
+    if (!quote || !savedCard || loading) return
+    const label = `${savedCard.brand ?? 'card'} •••• ${savedCard.last4 ?? '????'}`
+    if (!window.confirm(`Charge ${formatUsd(quote.total)} to your saved ${label} for ${quote.gb} GB?`)) return
+    const intent = `${quote.slug}:${quote.gb}`
+    if (!savedKey.current || savedKey.current.intent !== intent) savedKey.current = { intent, key: crypto.randomUUID() }
+    setLoading(true)
+    setStatusText('Charging your saved card...')
+    try {
+      const data = await apiFetch('/api/checkout/saved-card', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': savedKey.current.key },
+        body: JSON.stringify({ plan: quote.slug, ...(quote.custom ? { gb: quote.gb } : {}) }),
+      })
+      if (data?.status === 'credited') {
+        savedKey.current = null
+        toast.success('Bandwidth credited to your account!')
+        router.push('/dashboard'); router.refresh()
+        return
+      }
+      // 202: the charge went out but is not confirmed yet. Poll — never charge again.
+      setStatusText('Confirming payment...')
+      const result = await confirmPayment(data.reference)
+      if (result.success) {
+        savedKey.current = null
+        toast.success('Bandwidth credited to your account!')
+      } else if (result.pending || result.delayed) {
+        toast("Your payment is still being processed. It'll appear on your dashboard shortly — contact support if it doesn't.", { duration: 10000, icon: '⏳' })
+      } else {
+        savedKey.current = null
+        toast.error(result.error || 'Payment verification failed')
+        setLoading(false); setStatusText(null); return
+      }
+      router.push('/dashboard'); router.refresh()
+    } catch (e: any) {
+      // A decline or "needs extra verification" frees the key (fresh attempt next time); the
+      // normal card checkout below is always available.
+      if (e?.code !== 'mfa_required' && e?.code !== 'reauth_required') {
+        if (e?.status === 402 || e?.status === 409) savedKey.current = null
+        toast.error(e?.message || 'Could not charge your saved card. You can pay with a different card below.', { duration: 7000 })
+      }
+    }
+    setLoading(false)
+    setStatusText(null)
+  }
 
   async function handleBuy() {
     if (!quote) { toast.error(`Enter a whole number of GB between ${CUSTOM_MIN_GB} and ${CUSTOM_MAX_GB}.`); return }
@@ -307,12 +366,27 @@ export default function BuyPage() {
         </div>
       </div>
 
+      {savedCard && !savedCard.expired && !mpesaOn && (
+        <button onClick={handleSavedCardPay} disabled={loading || !quote || onHold}
+          className="w-full mb-3 bg-accent text-white py-4 rounded-xl font-medium text-base shadow-[0_2px_12px_rgba(0,87,255,.25)] hover:-translate-y-0.5 hover:shadow-[0_4px_20px_rgba(0,87,255,.35)] transition-all disabled:opacity-60 disabled:transform-none">
+          {loading ? (statusText || 'Please wait...')
+            : !quote ? 'Enter a valid amount'
+            : `Pay ${formatUsd(quote.total)} with ${savedCard.brand ?? 'saved card'} •••• ${savedCard.last4 ?? '????'}`}
+        </button>
+      )}
+      {savedCard?.expired && !mpesaOn && (
+        <p className="text-center text-xs text-amber-700 mb-3">Your saved card has expired — pay below and tick &ldquo;Save this card&rdquo; to replace it.</p>
+      )}
       <button onClick={handleBuy} disabled={loading || !quote || onHold}
-        className="w-full bg-accent text-white py-4 rounded-xl font-medium text-base shadow-[0_2px_12px_rgba(0,87,255,.25)] hover:-translate-y-0.5 hover:shadow-[0_4px_20px_rgba(0,87,255,.35)] transition-all disabled:opacity-60 disabled:transform-none">
+        className={clsx('w-full py-4 rounded-xl font-medium text-base transition-all disabled:opacity-60 disabled:transform-none',
+          savedCard && !savedCard.expired && !mpesaOn
+            ? 'bg-white text-ink border border-border hover:border-accent/50'
+            : 'bg-accent text-white shadow-[0_2px_12px_rgba(0,87,255,.25)] hover:-translate-y-0.5 hover:shadow-[0_4px_20px_rgba(0,87,255,.35)]')}>
         {loading
           ? (statusText || 'Please wait...')
           : onHold ? 'Purchases are on hold' : !quote ? 'Enter a valid amount'
           : mpesaOn && kesTotal ? `Pay ${formatKes(kesTotal)} with M-Pesa →`
+          : savedCard && !savedCard.expired ? `Use a different card — pay ${formatUsd(quote.total)} →`
           : `Pay ${formatUsd(quote.total)} by card →`}
       </button>
       {!mpesaOn && (

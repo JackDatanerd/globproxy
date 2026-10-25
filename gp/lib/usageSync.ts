@@ -573,8 +573,8 @@ async function notifyExhaustion(
 
 // Per-session "running low" notice at 80% and 95% used. Before this a single
 // session only produced a signal at 100% — too late for a scraper mid-job.
-// One notice per tier crossed (80 then 95); the flag re-arms when usage falls
-// back under 80% (a top-up / release). At most one EMAIL per customer per run
+// One notice per tier crossed (warn then urgent — 80 then 95 unless the customer chose
+// others); the flag re-arms when usage falls back under the warn level (a top-up / release). At most one EMAIL per customer per run
 // (the rest are owed one — low_email_due — and go out on the following ticks), and
 // the webhook carries every crossing. Skipped for sessions auto-allocate is
 // genuinely covering and for suspended owners; 100% is notifyExhaustion's job.
@@ -587,12 +587,30 @@ async function notifyLowBandwidth(
   const rearm: string[] = []
   const due: any[] = []
 
+  // Each customer picks their own heads-up / about-to-stop levels (Settings → E-mail
+  // notifications; defaults 80 / 95). Unreadable rows (column not migrated, query error) fall
+  // back to the defaults so alerts never go silent.
+  const limits = new Map<string, { warn: number; urgent: number }>()
+  const owners = [...new Set(active.map((c) => String(c.user_id)))]
+  for (let i = 0; i < owners.length; i += 200) {
+    const { data, error } = await supabase.from('profiles')
+      .select('id, usage_warn_pct, usage_urgent_pct').in('id', owners.slice(i, i + 200))
+    if (error) { console.error('[usage-sync] could not read alert thresholds, using defaults', error); break }
+    for (const r of data ?? []) {
+      const warn = Number((r as any).usage_warn_pct), urgent = Number((r as any).usage_urgent_pct)
+      if (Number.isFinite(warn) && Number.isFinite(urgent) && warn >= 50 && warn < urgent && urgent <= 99) {
+        limits.set(String((r as any).id), { warn, urgent })
+      }
+    }
+  }
+
   for (const c of active) {
     const allocated = Number(c.gb_allocated)
     if (!(allocated > 0)) continue
     const used = usageMap.get(String(c.upstream_sub_user_id)) ?? Number(c.gb_used ?? 0)
     const pct = (used / allocated) * 100
-    const tier = pct >= 95 ? 95 : pct >= 80 ? 80 : 0
+    const lim = limits.get(String(c.user_id)) ?? { warn: 80, urgent: 95 }
+    const tier = pct >= lim.urgent ? lim.urgent : pct >= lim.warn ? lim.warn : 0
     if (tier === 0) {
       if (c.low_alerted_pct) rearm.push(c.id)
       continue

@@ -19,6 +19,7 @@ interface HistoryResponse {
   series: SeriesPoint[]
   breakdown: BreakdownRow[]
   breakdown_row_count: number
+  breakdown_truncated?: boolean
   credentials_truncated: boolean
   partial_data: boolean
 }
@@ -212,6 +213,9 @@ export default function UsageHistoryChart({ sessions = [] }: { sessions?: { id: 
               Where your bandwidth went, by target host and country
               {data && data.breakdown_row_count > data.breakdown.length && (
                 <> — showing top {data.breakdown.length} of {data.breakdown_row_count}</>
+              )}
+              {data?.breakdown_truncated && (
+                <> — this range has more hosts than we can list, so the rows are the heaviest ones and the total count is a lower bound</>
               )}
             </p>
           </div>

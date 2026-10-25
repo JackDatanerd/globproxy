@@ -114,15 +114,15 @@ export default function PayoutMethodForm({ currentMethod, currentWalletAddress, 
         )}
       </div>
       <div className="flex gap-2">
-        <button type="button" onClick={() => setMethod('usdt')}
+        <button type="button" onClick={() => setMethod('usdt')} aria-pressed={method === 'usdt'}
           className={`text-xs font-mono px-3 py-1.5 rounded-lg border ${method === 'usdt' ? 'bg-accent2 text-white border-accent2' : 'border-border text-muted'}`}>
           USDT (TRC20)
         </button>
-        <button type="button" onClick={() => setMethod('mpesa')}
+        <button type="button" onClick={() => setMethod('mpesa')} aria-pressed={method === 'mpesa'}
           className={`text-xs font-mono px-3 py-1.5 rounded-lg border ${method === 'mpesa' ? 'bg-accent2 text-white border-accent2' : 'border-border text-muted'}`}>
           M-Pesa
         </button>
-        <button type="button" onClick={() => setMethod('bank')}
+        <button type="button" onClick={() => setMethod('bank')} aria-pressed={method === 'bank'}
           className={`text-xs font-mono px-3 py-1.5 rounded-lg border ${method === 'bank' ? 'bg-accent2 text-white border-accent2' : 'border-border text-muted'}`}>
           Bank transfer
         </button>
@@ -130,8 +130,9 @@ export default function PayoutMethodForm({ currentMethod, currentWalletAddress, 
 
       {method === 'usdt' && (
         <div>
-          <label className="text-[10px] font-mono text-muted uppercase tracking-wider">USDT wallet address (TRC20 / Tron network only)</label>
+          <label htmlFor="payout-wallet" className="text-[10px] font-mono text-muted uppercase tracking-wider">USDT wallet address (TRC20 / Tron network only)</label>
           <input
+            id="payout-wallet"
             value={walletAddress}
             onChange={(e) => setWalletAddress(e.target.value)}
             placeholder="T..."
@@ -142,8 +143,9 @@ export default function PayoutMethodForm({ currentMethod, currentWalletAddress, 
 
       {method === 'mpesa' && (
         <div>
-          <label className="text-[10px] font-mono text-muted uppercase tracking-wider">M-Pesa phone number (Safaricom)</label>
+          <label htmlFor="payout-mpesa" className="text-[10px] font-mono text-muted uppercase tracking-wider">M-Pesa phone number (Safaricom)</label>
           <input
+            id="payout-mpesa"
             value={mpesaPhone}
             onChange={(e) => setMpesaPhone(e.target.value)}
             placeholder="07XX XXX XXX"
@@ -154,15 +156,15 @@ export default function PayoutMethodForm({ currentMethod, currentWalletAddress, 
 
       {method === 'bank' && (
         <div className="flex flex-col gap-2">
-          <input value={bankName} onChange={(e) => setBankName(e.target.value)} placeholder="Bank name"
+          <input value={bankName} onChange={(e) => setBankName(e.target.value)} placeholder="Bank name" aria-label="Bank name"
             className="text-sm text-ink bg-surface border border-border rounded-lg px-3 py-2" />
-          <input value={accountName} onChange={(e) => setAccountName(e.target.value)} placeholder="Account holder name"
+          <input value={accountName} onChange={(e) => setAccountName(e.target.value)} placeholder="Account holder name" aria-label="Account holder name"
             className="text-sm text-ink bg-surface border border-border rounded-lg px-3 py-2" />
-          <input value={accountNumber} onChange={(e) => setAccountNumber(e.target.value)} placeholder="Account number / IBAN"
+          <input value={accountNumber} onChange={(e) => setAccountNumber(e.target.value)} placeholder="Account number / IBAN" aria-label="Account number / IBAN"
             className="text-sm text-ink bg-surface border border-border rounded-lg px-3 py-2" />
-          <input value={country} onChange={(e) => setCountry(e.target.value)} placeholder="Country"
+          <input value={country} onChange={(e) => setCountry(e.target.value)} placeholder="Country" aria-label="Country"
             className="text-sm text-ink bg-surface border border-border rounded-lg px-3 py-2" />
-          <input value={swift} onChange={(e) => setSwift(e.target.value)} placeholder="SWIFT/BIC (optional)"
+          <input value={swift} onChange={(e) => setSwift(e.target.value)} placeholder="SWIFT/BIC (optional)" aria-label="SWIFT/BIC (optional)"
             className="text-sm text-ink bg-surface border border-border rounded-lg px-3 py-2" />
         </div>
       )}

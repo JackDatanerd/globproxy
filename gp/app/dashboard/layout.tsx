@@ -47,6 +47,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
     <DashShell
       role={profile.role ?? 'user'}
       email={profile.email ?? user.email ?? null}
+      userId={user.id}
       showMfaBanner={!profile.mfa_enabled}
       verifiedOperator={!!profile.is_verified_operator}
       deletionScheduledAt={profile.deletion_scheduled_at ?? null}

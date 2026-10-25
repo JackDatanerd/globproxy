@@ -123,7 +123,7 @@ export default async function DashboardPage() {
       {profile?.referral_code && (
         <div className="mb-4">
           <ReferralLinkCard code={profile.referral_code} baseUrl={process.env.NEXT_PUBLIC_APP_URL ?? 'https://globproxy.com'}
-            isAffiliate={profile.affiliate_status === 'approved'} bonusGb={REFERRAL_GB_BONUS} minOrderUsd={REFERRAL_MIN_ORDER_USD} />
+            isAffiliate={profile.affiliate_status === 'approved'} suspended={profile.affiliate_status === 'suspended'} bonusGb={REFERRAL_GB_BONUS} minOrderUsd={REFERRAL_MIN_ORDER_USD} />
         </div>
       )}
 

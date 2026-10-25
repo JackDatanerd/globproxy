@@ -52,6 +52,15 @@ export default async function ProxiesPage() {
   // toDashboardCredential also applies the supplier guard (see lib/credentials).
   const safeCreds = (creds ?? []).map((row: Record<string, any>) => toDashboardCredential(row))
 
+  // The customer's own alert levels (Settings → E-mail notifications). Tolerant: if the columns
+  // aren't there yet or the read fails, the original 80 / 95 apply.
+  let warnPct = 80, urgentPct = 95
+  try {
+    const { data: lv } = await supabase.from('profiles').select('usage_warn_pct, usage_urgent_pct').eq('id', user.id).maybeSingle()
+    const w = Number((lv as any)?.usage_warn_pct), u = Number((lv as any)?.usage_urgent_pct)
+    if (Number.isFinite(w) && Number.isFinite(u) && w < u) { warnPct = w; urgentPct = u }
+  } catch { /* defaults */ }
+
   const total     = bw?.total_gb     ?? 0
   const used      = bw?.used_gb      ?? 0
   const available = bw?.available_gb ?? 0
@@ -132,7 +141,7 @@ export default async function ProxiesPage() {
 
       {/* Proxy list */}
       {creds && creds.length > 0 ? (
-        <ProxyList creds={safeCreds as unknown as React.ComponentProps<typeof ProxyList>["creds"]} availableGb={available} rotationEnabled={passwordRotationEnabled()} />
+        <ProxyList creds={safeCreds as unknown as React.ComponentProps<typeof ProxyList>["creds"]} availableGb={available} rotationEnabled={passwordRotationEnabled()} warnPct={warnPct} urgentPct={urgentPct} />
       ) : total > 0 ? (
         <div className="bg-white border border-border rounded-xl p-12 text-center">
           <div className="text-3xl mb-3">⬡</div>

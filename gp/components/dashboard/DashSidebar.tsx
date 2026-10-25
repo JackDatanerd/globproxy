@@ -91,13 +91,19 @@ export default function DashSidebar({ role, email, open = false, onClose }: Prop
   // focus should land inside it rather than stay on the hidden-behind menu button.
   useEffect(() => {
     if (!open) return
-    const isDrawer = window.matchMedia('(max-width: 767px)').matches
-    if (!isDrawer) return
+    const mql = window.matchMedia('(max-width: 767px)')
+    if (!mql.matches) return
     const prev = document.body.style.overflow
+    const restore = () => { document.body.style.overflow = prev }
     document.body.style.overflow = 'hidden'
     asideRef.current?.querySelector<HTMLElement>('a[href]')?.focus()
-    return () => { document.body.style.overflow = prev }
-  }, [open])
+    // Rotating a tablet / resizing past the md breakpoint while the drawer is open turns it
+    // into the normal in-flow column: release the lock and close the now-meaningless open
+    // state, or the page stays unscrollable until a reload.
+    const onChange = (e: MediaQueryListEvent) => { if (!e.matches) { restore(); onClose?.() } }
+    mql.addEventListener('change', onChange)
+    return () => { mql.removeEventListener('change', onChange); restore() }
+  }, [open, onClose])
 
   let nav: NavItem[] = role === 'admin' ? adminNav : role === 'reseller' ? resellerNav : userNav
 

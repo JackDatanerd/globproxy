@@ -79,7 +79,7 @@ export default async function SupportPage() {
           </ul>
         )}
       </div>
-      <p className="text-[11px] text-muted mt-3">We reply here and by email — check your spam folder if you&apos;re expecting one.</p>
+      <p className="text-[11px] text-muted mt-3">Something not working for everyone? <a href="/status" className="text-accent hover:underline">Check service status</a>. We reply here and by email — check your spam folder if you&apos;re expecting one.</p>
     </div>
   )
 }

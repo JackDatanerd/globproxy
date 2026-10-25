@@ -10,10 +10,11 @@ import DeletionScheduledBanner from '@/components/dashboard/DeletionScheduledBan
 // sidebar can talk to each other while the layout itself stays a server
 // component (page content arrives as `children`).
 export default function DashShell({
-  role, email, showMfaBanner, verifiedOperator = false, deletionScheduledAt = null, children,
+  role, email, userId = null, showMfaBanner, verifiedOperator = false, deletionScheduledAt = null, children,
 }: {
   role: string
   email: string | null
+  userId?: string | null
   showMfaBanner: boolean
   verifiedOperator?: boolean
   deletionScheduledAt?: string | null
@@ -34,7 +35,7 @@ export default function DashShell({
         <DashSidebar role={role} email={email} open={navOpen} onClose={closeNav} />
         <main className="flex-1 min-w-0 p-4 sm:p-6 md:p-8">
           {deletionScheduledAt && <DeletionScheduledBanner when={deletionScheduledAt} />}
-          {showMfaBanner && <MfaRecommendBanner role={role} />}
+          {showMfaBanner && <MfaRecommendBanner role={role} userId={userId} />}
           {children}
         </main>
       </div>

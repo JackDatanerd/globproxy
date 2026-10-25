@@ -7,13 +7,18 @@ import { formatGb } from '@/lib/format'
 import { buildProxyUsername, getProxyPort, deriveSessionId } from '@/lib/proxyEndpoint'
 import toast from 'react-hot-toast'
 import { saveTextFile, apiFetch, apiJson } from '@/lib/clientApi'
+import { fetchCountryList, type CountryListItem } from '@/lib/geoTargeting'
 
 interface Props {
   creds: any[]
   availableGb: number
   rotationEnabled?: boolean
+  // The customer's own alert levels (Settings); 80 / 95 unless changed.
+  warnPct?: number
+  urgentPct?: number
 }
 
+type SortKey = 'newest' | 'oldest' | 'most_used' | 'nearly_full' | 'least_left' | 'label'
 type StatusFilter = 'all' | 'active' | 'pending' | 'suspended'
 
 const DISMISS_KEY = 'gp_usage_banner_dismissed'
@@ -45,12 +50,12 @@ function autoAllocateCovering(cred: any): boolean {
   return !!cred.auto_topup_enabled && !cred.auto_topup_insufficient_alerted_at
 }
 
-function usageTier(cred: any): 'urgent' | 'warn' | null {
+function usageTier(cred: any, warnPct = 80, urgentPct = 95): 'urgent' | 'warn' | null {
   if (cred.status !== 'active' || autoAllocateCovering(cred)) return null
   if (!cred.gb_allocated || cred.gb_allocated <= 0) return null
   const pct = ((cred.gb_used ?? 0) / cred.gb_allocated) * 100
-  if (pct >= 95) return 'urgent'
-  if (pct >= 80) return 'warn'
+  if (pct >= urgentPct) return 'urgent'
+  if (pct >= warnPct) return 'warn'
   return null
 }
 
@@ -58,7 +63,7 @@ function usageTier(cred: any): 'urgent' | 'warn' | null {
 // once someone has more than a handful of sessions to scan through. Only
 // one row is expanded at a time so opening a new one doesn't leave a wall
 // of open cards behind.
-export default function ProxyList({ creds, availableGb, rotationEnabled }: Props) {
+export default function ProxyList({ creds, availableGb, rotationEnabled, warnPct = 80, urgentPct = 95 }: Props) {
   const router = useRouter()
   const [exporting, setExporting] = useState(false)
   // Bulk actions: pause / resume / delete many sessions in one go.
@@ -67,6 +72,11 @@ export default function ProxyList({ creds, availableGb, rotationEnabled }: Props
   const [bulkBusy, setBulkBusy] = useState(false)
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const [panel, setPanel] = useState<null | 'topup' | 'retarget'>(null)
+  const [topupGb, setTopupGb] = useState('1')
+  const [retargetCountry, setRetargetCountry] = useState('')
+  const [countries, setCountries] = useState<CountryListItem[]>([])
+  const [sort, setSort] = useState<SortKey>('newest')
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [dismissed, setDismissed] = useState<Record<string, boolean>>({})
   // Warnings stay hidden until the stored dismissals are read: showing them
@@ -77,10 +87,10 @@ export default function ProxyList({ creds, availableGb, rotationEnabled }: Props
 
   const nearLimit = useMemo(() => {
     return creds
-      .map(c => ({ cred: c, tier: usageTier(c) }))
+      .map(c => ({ cred: c, tier: usageTier(c, warnPct, urgentPct) }))
       .filter((x): x is { cred: any; tier: 'urgent' | 'warn' } => x.tier !== null)
       .sort((a, b) => (a.tier === b.tier ? 0 : a.tier === 'urgent' ? -1 : 1))
-  }, [creds])
+  }, [creds, warnPct, urgentPct])
 
   // Dismissal key includes the tier, so escalating from warn -> urgent on
   // the same credential is treated as a new thing to dismiss, not still
@@ -128,14 +138,26 @@ export default function ProxyList({ creds, availableGb, rotationEnabled }: Props
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    return creds.filter((c) => {
+    const left = (c: any) => Math.max(0, Number(c.gb_allocated ?? 0) - Number(c.gb_used ?? 0))
+    const pctUsed = (c: any) => Number(c.gb_allocated) > 0 ? Number(c.gb_used ?? 0) / Number(c.gb_allocated) : -1
+    const cmp: Record<SortKey, ((a: any, b: any) => number) | null> = {
+      newest: null,   // `creds` already arrives newest-first
+      oldest: (a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0),
+      most_used: (a, b) => Number(b.gb_used ?? 0) - Number(a.gb_used ?? 0),
+      nearly_full: (a, b) => pctUsed(b) - pctUsed(a),
+      least_left: (a, b) => left(a) - left(b),
+      label: (a, b) => String(a.label || '\uffff').localeCompare(String(b.label || '\uffff'), undefined, { sensitivity: 'base', numeric: true }),
+    }
+    const rows = creds.filter((c) => {
       if (statusFilter !== 'all' && c.status !== statusFilter) return false
       if (!q) return true
       const haystack = [c.label, c.country, c.state, c.city, c.asn, c.session_type, c.protocol, c.status]
         .filter(Boolean).join(' ').toLowerCase()
       return haystack.includes(q)
     })
-  }, [creds, query, statusFilter])
+    const fn = cmp[sort]
+    return fn ? [...rows].sort(fn) : rows
+  }, [creds, query, statusFilter, sort])
 
   // One file with every active session's connection details — for loading a
   // scraper fleet or a proxy manager without opening 30 cards. A sticky session
@@ -215,10 +237,30 @@ export default function ProxyList({ creds, availableGb, rotationEnabled }: Props
   }
   function exitSelecting() { setSelecting(false); setSelected(new Set()) }
 
-  async function runBulk(kind: 'pause' | 'resume' | 'delete') {
+  // Opening the location panel is the first time the country list is needed.
+  useEffect(() => {
+    if (panel === 'retarget' && countries.length === 0) fetchCountryList().then(setCountries).catch(() => toast.error('Couldn’t load the country list.'))
+  }, [panel, countries.length])
+
+  async function runBulk(kind: 'pause' | 'resume' | 'delete' | 'topup' | 'retarget') {
     if (bulkBusy) return
-    const targets = kind === 'pause' ? canPause : kind === 'resume' ? canResume : selectedCreds
+    const targets = kind === 'pause' ? canPause : kind === 'resume' ? canResume : kind === 'topup' || kind === 'retarget' ? selectedCreds.filter(c => c.status === 'active' || c.status === 'pending' || (kind === 'topup' && c.status === 'suspended' && c.suspended_reason === 'customer')) : selectedCreds
     if (targets.length === 0) return
+    const extra: Record<string, unknown> = {}
+    if (kind === 'topup') {
+      const gb = Number(topupGb)
+      if (!Number.isFinite(gb) || gb <= 0) { toast.error('Enter how many GB to add to each session.'); return }
+      const total = gb * targets.length
+      if (total > availableGb) { toast.error(`That is ${formatGb(total)} GB in total but you have ${formatGb(availableGb)} GB unassigned.`); return }
+      if (!window.confirm(`Add ${formatGb(gb)} GB to each of ${targets.length} session${targets.length === 1 ? '' : 's'}? ${formatGb(total)} GB comes out of your unassigned balance.`)) return
+      extra.gb_amount = gb
+    }
+    if (kind === 'retarget') {
+      const name = countries.find(c => c.code === retargetCountry)?.name ?? 'any country'
+      if (!retargetCountry) { toast.error('Choose a country.'); return }
+      if (!window.confirm(`Move ${targets.length} session${targets.length === 1 ? '' : 's'} to ${name}? Their state, city and ASN settings are cleared.`)) return
+      extra.country = retargetCountry
+    }
     if (kind === 'delete') {
       const unused = targets.reduce((sum, c) => sum + Math.max(0, Number(c.gb_allocated ?? 0) - Number(c.gb_used ?? 0)), 0)
       if (!window.confirm(`Delete ${targets.length} session${targets.length === 1 ? '' : 's'}? About ${formatGb(unused)} GB of unused bandwidth returns to your balance; GB already used isn't refunded. This can't be undone.`)) return
@@ -226,28 +268,43 @@ export default function ProxyList({ creds, availableGb, rotationEnabled }: Props
     setBulkBusy(true)
     let ok = 0
     const failed: string[] = []
+    // Ids that did not go through (failed or never attempted): they stay selected so the
+    // user can retry exactly those instead of rebuilding the selection.
+    const leftIds = new Set<string>()
     let stop = false
+    let throttled = false
     // Chunks of 20 per request: one usage sync per chunk instead of one per session, and one
     // rate-limit hit per chunk (see /api/dashboard/proxies/bulk-action).
     const labelOf = new Map(targets.map(c => [c.id, c.label || c.id.slice(0, 8)]))
-    for (let i = 0; i < targets.length && !stop; i += 20) {
-      const chunk = targets.slice(i, i + 20)
+    const size = kind === 'topup' ? 10 : 20
+    for (let i = 0; i < targets.length && !stop; i += size) {
+      const chunk = targets.slice(i, i + size)
       try {
-        const res = await apiJson('POST', '/api/dashboard/proxies/bulk-action', { action: kind, ids: chunk.map(c => c.id) })
+        const res = await apiJson('POST', '/api/dashboard/proxies/bulk-action', { action: kind, ids: chunk.map(c => c.id), ...extra })
         for (const r of res.results ?? []) {
           if (r.ok) ok++
-          else failed.push(labelOf.get(r.id) ?? String(r.id).slice(0, 8))
+          else { failed.push(labelOf.get(r.id) ?? String(r.id).slice(0, 8)); leftIds.add(String(r.id)) }
         }
       } catch (err: any) {
         if (err?.code === 'mfa_required') { stop = true; break }   // redirected to verify
-        for (const c of chunk) failed.push(c.label || c.id.slice(0, 8))
+        for (const c of chunk) { failed.push(c.label || c.id.slice(0, 8)); leftIds.add(c.id) }
+        if (err?.status === 429) {
+          // Rate-limited: hammering the remaining chunks would only fail them too.
+          throttled = true
+          for (const c of targets.slice(i + size)) leftIds.add(c.id)
+          break
+        }
       }
     }
     setBulkBusy(false)
-    const verb = kind === 'pause' ? 'paused' : kind === 'resume' ? 'resumed' : 'deleted'
+    const verb = kind === 'pause' ? 'paused' : kind === 'resume' ? 'resumed' : kind === 'topup' ? 'topped up' : kind === 'retarget' ? 'moved' : 'deleted'
     if (ok > 0) toast.success(`${ok} session${ok === 1 ? '' : 's'} ${verb}`)
-    if (failed.length > 0) toast.error(`Couldn’t ${kind} ${failed.length}: ${failed.slice(0, 3).join(', ')}${failed.length > 3 ? '…' : ''}`, { duration: 6000 })
-    if (!stop) exitSelecting()
+    if (throttled) toast.error(`Too many requests — wait a minute, then retry the ${leftIds.size} session${leftIds.size === 1 ? '' : 's'} still selected.`, { duration: 7000 })
+    else if (failed.length > 0) toast.error(`Couldn’t ${kind} ${failed.length}: ${failed.slice(0, 3).join(', ')}${failed.length > 3 ? '…' : ''} — still selected so you can retry.`, { duration: 6000 })
+    if (!stop) {
+      if (leftIds.size === 0) { setPanel(null); exitSelecting() }
+      else setSelected(new Set(leftIds))   // keep selection mode open on just the unfinished ones
+    }
     router.refresh()
   }
 
@@ -325,6 +382,18 @@ export default function ProxyList({ creds, availableGb, rotationEnabled }: Props
             </button>
           ))}
         </div>
+        <label className="flex items-center gap-1.5 text-[11px] font-mono text-muted">
+          Sort
+          <select value={sort} onChange={e => setSort(e.target.value as SortKey)} aria-label="Sort sessions"
+            className="bg-white border border-border rounded-lg px-2 py-1.5 text-[11px] text-ink2 focus:outline-none focus:border-accent">
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="most_used">Most data used</option>
+            <option value="nearly_full">Closest to limit</option>
+            <option value="least_left">Least data left</option>
+            <option value="label">Label A–Z</option>
+          </select>
+        </label>
         <span className="ml-auto text-[11px] font-mono text-muted">{filtered.length} shown</span>
         <div className="flex gap-1.5">
           <button onClick={() => selecting ? exitSelecting() : setSelecting(true)} aria-pressed={selecting}
@@ -362,11 +431,45 @@ export default function ProxyList({ creds, availableGb, rotationEnabled }: Props
               className="text-[11px] font-mono px-3 py-1.5 rounded-lg border border-border text-muted hover:border-accent hover:text-accent transition-all disabled:opacity-40">
               Resume{canResume.length > 0 ? ` (${canResume.length})` : ''}
             </button>
+            <button onClick={() => setPanel(p => p === 'topup' ? null : 'topup')} disabled={bulkBusy || selectedCreds.length === 0} aria-expanded={panel === 'topup'}
+              className="text-[11px] font-mono px-3 py-1.5 rounded-lg border border-border text-muted hover:border-accent hover:text-accent transition-all disabled:opacity-40">
+              Add GB
+            </button>
+            <button onClick={() => setPanel(p => p === 'retarget' ? null : 'retarget')} disabled={bulkBusy || selectedCreds.length === 0} aria-expanded={panel === 'retarget'}
+              className="text-[11px] font-mono px-3 py-1.5 rounded-lg border border-border text-muted hover:border-accent hover:text-accent transition-all disabled:opacity-40">
+              Change country
+            </button>
             <button onClick={() => runBulk('delete')} disabled={bulkBusy || selectedCreds.length === 0}
               className="text-[11px] font-mono px-3 py-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 transition-all disabled:opacity-40">
               {bulkBusy ? 'Working…' : `Delete${selectedCreds.length > 0 ? ` (${selectedCreds.length})` : ''}`}
             </button>
           </span>
+          {panel === 'topup' && (
+            <div className="basis-full flex items-center gap-2 flex-wrap pt-2 border-t border-border">
+              <label className="text-[11px] font-mono text-muted" htmlFor="bulk-topup-gb">GB to add to each selected session</label>
+              <input id="bulk-topup-gb" value={topupGb} onChange={e => setTopupGb(e.target.value)} inputMode="decimal"
+                className="w-24 bg-white border border-border rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-accent" />
+              <span className="text-[11px] font-mono text-muted">{formatGb(availableGb)} GB unassigned</span>
+              <button onClick={() => runBulk('topup')} disabled={bulkBusy}
+                className="text-[11px] font-mono px-3 py-1.5 rounded-lg border border-accent2 bg-accent2 text-white hover:opacity-90 disabled:opacity-50">
+                {bulkBusy ? 'Working…' : 'Add'}
+              </button>
+            </div>
+          )}
+          {panel === 'retarget' && (
+            <div className="basis-full flex items-center gap-2 flex-wrap pt-2 border-t border-border">
+              <label className="text-[11px] font-mono text-muted" htmlFor="bulk-retarget-country">Move selected sessions to</label>
+              <select id="bulk-retarget-country" value={retargetCountry} onChange={e => setRetargetCountry(e.target.value)}
+                className="bg-white border border-border rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-accent">
+                <option value="">Choose a country…</option>
+                {countries.map(c => <option key={c.code} value={c.code}>{c.name}</option>)}
+              </select>
+              <button onClick={() => runBulk('retarget')} disabled={bulkBusy || !retargetCountry}
+                className="text-[11px] font-mono px-3 py-1.5 rounded-lg border border-accent2 bg-accent2 text-white hover:opacity-90 disabled:opacity-50">
+                {bulkBusy ? 'Working…' : 'Move'}
+              </button>
+            </div>
+          )}
         </div>
       )}
 

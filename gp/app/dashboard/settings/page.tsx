@@ -75,6 +75,9 @@ function SettingsPageInner() {
   const [rotateGrace, setRotateGrace] = useState<'1440' | '0'>('1440')
   const [rotatingSecret, setRotatingSecret] = useState(false)
   const [lowEmails, setLowEmails] = useState(true)
+  const [warnPct, setWarnPct] = useState('80')
+  const [urgentPct, setUrgentPct] = useState('95')
+  const [savingPcts, setSavingPcts] = useState(false)
   const [savingLowEmails, setSavingLowEmails] = useState(false)
   const [testingId, setTestingId] = useState<string | null>(null)
   // Delivery log: one endpoint's log open at a time.
@@ -155,6 +158,9 @@ function SettingsPageInner() {
       // and the page must still load (the toggle then just shows its default).
       const { data: prefs } = await sb.from('profiles').select('low_bandwidth_emails').eq('id', user.id).maybeSingle()
       if (prefs && typeof (prefs as any).low_bandwidth_emails === 'boolean') setLowEmails((prefs as any).low_bandwidth_emails)
+      // Alert levels (migration 0086) — tolerant for the same reason: defaults stay if it errors.
+      const { data: lv } = await sb.from('profiles').select('usage_warn_pct, usage_urgent_pct').eq('id', user.id).maybeSingle()
+      if (lv && (lv as any).usage_warn_pct != null) { setWarnPct(String((lv as any).usage_warn_pct)); setUrgentPct(String((lv as any).usage_urgent_pct)) }
       // Tolerant for the same reason (migration 0075).
       const { data: sched } = await sb.from('profiles').select('deletion_scheduled_at').eq('id', user.id).maybeSingle()
       if (sched && (sched as any).deletion_scheduled_at) setDeletionScheduledAt((sched as any).deletion_scheduled_at)
@@ -189,6 +195,21 @@ function SettingsPageInner() {
     setSavingLowEmails(false)
     if (error) { setLowEmails(prev); toast.error('Couldn\u2019t save that preference. Please try again.'); return }
     toast.success(next ? 'Low-bandwidth e-mails on' : 'Low-bandwidth e-mails off')
+  }
+
+  async function saveAlertLevels() {
+    if (savingPcts || !profile) return
+    const warn = Number(warnPct), urgent = Number(urgentPct)
+    // Same rules as the database constraint (migration 0086).
+    if (!Number.isInteger(warn) || !Number.isInteger(urgent) || warn < 50 || warn > 98 || urgent < 51 || urgent > 99 || warn >= urgent) {
+      toast.error('Use whole numbers: the first alert between 50 and 98, the second higher than it and at most 99.')
+      return
+    }
+    setSavingPcts(true)
+    const { error } = await createClient().from('profiles').update({ usage_warn_pct: warn, usage_urgent_pct: urgent }).eq('id', profile.id)
+    setSavingPcts(false)
+    if (error) { toast.error('Couldn\u2019t save those alert levels. Please try again.'); return }
+    toast.success('Alert levels saved')
   }
 
   async function saveProfile(e: React.FormEvent) {
@@ -516,11 +537,33 @@ function SettingsPageInner() {
           <span>
             <span className="block text-sm text-ink">E-mail me when my bandwidth is running low</span>
             <span className="block text-xs text-muted mt-0.5">
-              A heads-up when your account balance or a session reaches 80% and 95%. We&apos;ll always e-mail you when a session runs out, and
+              A heads-up when a session is running low (levels below), and when your account balance reaches 80% and 95%. We&apos;ll always e-mail you when a session runs out, and
               for security events and receipts. Webhooks are set up per endpoint and aren&apos;t affected by this.
             </span>
           </span>
         </label>
+        <div className="mt-4 pt-4 border-t border-border">
+          <div className="text-sm text-ink mb-1">Session usage alerts</div>
+          <p className="text-xs text-muted mb-3">
+            Warn me when a session has used this much of its data. The first level is a heads-up, the second means it is about to stop. They also drive the banners on My Proxies and the session-low webhook.
+          </p>
+          <div className="flex items-end gap-3 flex-wrap">
+            <label className="block">
+              <span className="text-[10px] font-mono text-muted uppercase tracking-widest">Heads-up at (%)</span>
+              <input value={warnPct} onChange={e => setWarnPct(e.target.value)} inputMode="numeric" disabled={savingPcts || !profile}
+                className="mt-1.5 block w-24 border border-border rounded-xl px-3 py-2 text-sm text-ink focus:outline-none focus:border-accent" />
+            </label>
+            <label className="block">
+              <span className="text-[10px] font-mono text-muted uppercase tracking-widest">Urgent at (%)</span>
+              <input value={urgentPct} onChange={e => setUrgentPct(e.target.value)} inputMode="numeric" disabled={savingPcts || !profile}
+                className="mt-1.5 block w-24 border border-border rounded-xl px-3 py-2 text-sm text-ink focus:outline-none focus:border-accent" />
+            </label>
+            <button onClick={saveAlertLevels} disabled={savingPcts || !profile}
+              className="bg-accent text-white px-5 py-2.5 rounded-xl text-sm font-medium disabled:opacity-60">
+              {savingPcts ? 'Saving…' : 'Save levels'}
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Default auto-allocate */}
