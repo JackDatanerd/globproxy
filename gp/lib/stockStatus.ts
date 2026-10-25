@@ -9,7 +9,8 @@ export interface StockStatus {
   committed_unused_gb: number       // Σ max(0, allocated - used) — ALREADY deducted from available_gb by Geonode
   unallocated_balances_gb: number   // customer balances not yet given to any credential
   pending_allocated_gb: number      // reserved by credentials that have no Geonode sub-user yet
-  exposure_gb: number               // unallocated_balances + pending — the GB still to be carved out of available_gb
+  paused_resume_gb: number          // headroom of customer-paused sessions: released upstream while paused, re-taken from available_gb on resume
+  exposure_gb: number               // unallocated_balances + pending + paused_resume — the GB still to be carved out of available_gb
   covered: boolean
   last_synced: string
 }
@@ -31,13 +32,21 @@ export interface StockStatus {
 //      Geonode sub-user hasn't been created yet; provisioning will have to
 //      carve them out of available_gb.
 //
-// Exposure = (1) + (2). `covered` means the remaining unsold-to-Geonode pool
+//   3. customer-paused sessions — pausing caps the live limit at what was used, which
+//      hands the unused headroom BACK to available_gb; the customer can resume at any
+//      moment and the full allocation has to be carved out again. Admin- and
+//      account-suspended sessions only return through an admin action, so they are not counted.
+//
+// Exposure = (1) + (2) + (3). `covered` means the remaining unsold-to-Geonode pool
 // can honour every one of them.
 export async function computeStockStatus(supabase: any): Promise<StockStatus> {
   const balance = await getAccountBalance()
 
   const active = await fetchAllRows<{ gb_allocated: number | null; gb_used: number | null }>((from, to) =>
     supabase.from('proxy_credentials').select('gb_allocated, gb_used').eq('status', 'active').order('id').range(from, to)
+  )
+  const pausedAll = await fetchAllRows<{ user_id: string; gb_allocated: number | null; gb_used: number | null }>((from, to) =>
+    supabase.from('proxy_credentials').select('user_id, gb_allocated, gb_used').eq('status', 'suspended').eq('suspended_reason', 'customer').order('id').range(from, to)
   )
   const pendingAll = await fetchAllRows<{ user_id: string; gb_allocated: number | null }>((from, to) =>
     supabase.from('proxy_credentials').select('user_id, gb_allocated').eq('status', 'pending').order('id').range(from, to)
@@ -54,11 +63,12 @@ export async function computeStockStatus(supabase: any): Promise<StockStatus> {
   )
   // A truncated read would silently UNDERSTATE exposure — the dangerous
   // direction for an alerting metric. Fail loudly instead.
-  if (active.error || pendingAll.error || accountsAll.error || inactive.error) {
-    throw new Error(`Stock status read failed: ${active.error ?? pendingAll.error ?? accountsAll.error ?? inactive.error}`)
+  if (active.error || pausedAll.error || pendingAll.error || accountsAll.error || inactive.error) {
+    throw new Error(`Stock status read failed: ${active.error ?? pausedAll.error ?? pendingAll.error ?? accountsAll.error ?? inactive.error}`)
   }
   const inactiveIds = new Set(inactive.rows.map(r => r.id))
   const pending = { rows: pendingAll.rows.filter(c => !inactiveIds.has(c.user_id)) }
+  const paused = { rows: pausedAll.rows.filter(c => !inactiveIds.has(c.user_id)) }
   const accounts = { rows: accountsAll.rows.filter(a => !inactiveIds.has(a.user_id)) }
 
   const sum = (xs: number[]) => xs.reduce((s, n) => s + n, 0)
@@ -69,7 +79,8 @@ export async function computeStockStatus(supabase: any): Promise<StockStatus> {
   const committedUnused = sum(active.rows.map(c => Math.max(0, Number(c.gb_allocated ?? 0) - Number(c.gb_used ?? 0))))
   const unallocatedBalances = sum(accounts.rows.map(a => Number(a.available_gb ?? 0)))
   const pendingAllocated = sum(pending.rows.map(c => Number(c.gb_allocated ?? 0)))
-  const exposure = unallocatedBalances + pendingAllocated
+  const pausedResume = sum(paused.rows.map(c => Math.max(0, Number(c.gb_allocated ?? 0) - Number(c.gb_used ?? 0))))
+  const exposure = unallocatedBalances + pendingAllocated + pausedResume
 
   return {
     available_gb: balance.available_gb,
@@ -79,6 +90,7 @@ export async function computeStockStatus(supabase: any): Promise<StockStatus> {
     committed_unused_gb: committedUnused,
     unallocated_balances_gb: unallocatedBalances,
     pending_allocated_gb: pendingAllocated,
+    paused_resume_gb: pausedResume,
     exposure_gb: exposure,
     covered: balance.available_gb >= exposure,
     last_synced: new Date().toISOString(),

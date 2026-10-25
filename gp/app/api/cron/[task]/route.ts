@@ -143,7 +143,7 @@ async function runStockCheck() {
   }
 
   const subject = exposureBreach
-    ? `[EXPOSURE ALERT] Stock (${stock.available_gb.toFixed(1)}GB) can't cover unallocated + pending customer GB (${stock.exposure_gb.toFixed(1)}GB)`
+    ? `[EXPOSURE ALERT] Stock (${stock.available_gb.toFixed(1)}GB) can't cover unallocated + pending + paused customer GB (${stock.exposure_gb.toFixed(1)}GB)`
     : `[LOW STOCK] Proxy bandwidth stock: ${stock.available_gb.toFixed(1)}GB remaining`
   const delivered = process.env.ADMIN_EMAIL ? await sendEmailSafe({
     to: process.env.ADMIN_EMAIL,
@@ -151,7 +151,8 @@ async function runStockCheck() {
     html: `<p><strong>Available to allocate:</strong> ${stock.available_gb.toFixed(1)}GB of ${stock.total_gb.toFixed(1)}GB total</p>
            <p><strong>Customer balances not yet allocated to a session:</strong> ${stock.unallocated_balances_gb.toFixed(1)}GB</p>
            <p><strong>Sessions waiting to be provisioned:</strong> ${stock.pending_allocated_gb.toFixed(1)}GB</p>
-           <p><strong>Exposure (the two above):</strong> ${stock.exposure_gb.toFixed(1)}GB</p>
+           <p><strong>Unused GB in customer-paused sessions (re-taken on resume):</strong> ${stock.paused_resume_gb.toFixed(1)}GB</p>
+           <p><strong>Exposure (the three above):</strong> ${stock.exposure_gb.toFixed(1)}GB</p>
            <p style="color:#666">Already inside live sessions: ${stock.committed_unused_gb.toFixed(1)}GB unused of ${stock.total_allocated_gb.toFixed(1)}GB allocated — already deducted from Geonode's available figure, so not counted as exposure.</p>
            ${exposureBreach ? '<p style="color:#e24b4a"><strong>If customers turned all their unallocated balance into sessions right now, you would run short.</strong></p>' : ''}
            <p><a href="${appUrl()}/admin/settings">Go to Admin Panel →</a></p>`,

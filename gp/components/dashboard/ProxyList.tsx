@@ -152,6 +152,17 @@ export default function ProxyList({ creds, availableGb, rotationEnabled }: Props
     const active = creds.filter(c => c.status === 'active' && c.username && c.password)
     let namedFailed = 0
     const rows: Row[] = []
+    // ONE request for every named session of the account (was one GET per sticky session).
+    const namedBy = new Map<string, { label: string; session_token: string }[]>()
+    if (active.some(c => c.session_type === 'sticky')) {
+      try {
+        const data = await apiFetch('/api/dashboard/proxies/named-sessions')
+        for (const n of data.sessions ?? []) {
+          const list = namedBy.get(n.credential_id) ?? []
+          list.push(n); namedBy.set(n.credential_id, list)
+        }
+      } catch { namedFailed = active.filter(c => c.session_type === 'sticky').length }
+    }
     for (const c of active) {
       const sticky = c.session_type === 'sticky'
       const host = c.host || 'proxy.globproxy.com'
@@ -161,11 +172,7 @@ export default function ProxyList({ creds, availableGb, rotationEnabled }: Props
         rows.push({ ...base, label: c.label || '', user: buildProxyUsername(c.username, { ...c, session_type: 'rotating', sticky_duration: null }) })
         continue
       }
-      let named: { label: string; session_token: string }[] = []
-      try {
-        const data = await apiFetch(`/api/dashboard/proxies/${c.id}/sessions`)
-        named = data.sessions ?? []
-      } catch { namedFailed++ }
+      const named = namedBy.get(c.id) ?? []
       if (named.length === 0) {
         rows.push({ ...base, label: c.label || '', user: buildProxyUsername(c.username, c, deriveSessionId(c.id, 0)) })
       } else {
@@ -220,14 +227,20 @@ export default function ProxyList({ creds, availableGb, rotationEnabled }: Props
     let ok = 0
     const failed: string[] = []
     let stop = false
-    for (const c of targets) {
+    // Chunks of 20 per request: one usage sync per chunk instead of one per session, and one
+    // rate-limit hit per chunk (see /api/dashboard/proxies/bulk-action).
+    const labelOf = new Map(targets.map(c => [c.id, c.label || c.id.slice(0, 8)]))
+    for (let i = 0; i < targets.length && !stop; i += 20) {
+      const chunk = targets.slice(i, i + 20)
       try {
-        if (kind === 'delete') await apiJson('DELETE', `/api/dashboard/proxies/${c.id}`)
-        else await apiJson('POST', `/api/dashboard/proxies/${c.id}/${kind}`)
-        ok++
+        const res = await apiJson('POST', '/api/dashboard/proxies/bulk-action', { action: kind, ids: chunk.map(c => c.id) })
+        for (const r of res.results ?? []) {
+          if (r.ok) ok++
+          else failed.push(labelOf.get(r.id) ?? String(r.id).slice(0, 8))
+        }
       } catch (err: any) {
         if (err?.code === 'mfa_required') { stop = true; break }   // redirected to verify
-        failed.push(c.label || c.id.slice(0, 8))
+        for (const c of chunk) failed.push(c.label || c.id.slice(0, 8))
       }
     }
     setBulkBusy(false)

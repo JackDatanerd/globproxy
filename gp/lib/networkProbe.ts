@@ -98,6 +98,8 @@ function probeOnce(
 
     socket.on('data', (chunk: Buffer) => {
       buffer += chunk.toString('utf-8')
+      // A misbehaving endpoint streaming forever must not grow the buffer for the whole timeout.
+      if (buffer.length > 65536) { finish(false); return }
       if (!headersParsed && buffer.includes('\r\n\r\n')) {
         headersParsed = true
         headerLatencyMs = Date.now() - started

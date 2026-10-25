@@ -57,8 +57,12 @@ async function alertOnce(
   detail: { added_gb?: number } = {}
 ): Promise<boolean> {
   const { data: claimed } = await supabase.from('proxy_credentials')
-    .update({ auto_topup_insufficient_alerted_at: new Date().toISOString() })
-    .eq('id', cred.id).is('auto_topup_insufficient_alerted_at', null).select('id')
+    .update({ auto_topup_insufficient_alerted_at: new Date().toISOString(), auto_topup_alert_kind: kind })
+    // One notice per KIND per episode (migration 0083): the three notices used to share a
+    // single flag, so after e.g. "insufficient balance" a later "partial" or "session limit"
+    // situation was swallowed silently. A row flagged before 0083 has no kind and keeps the
+    // old behaviour (suppressed) until the flag clears.
+    .eq('id', cred.id).or(`auto_topup_insufficient_alerted_at.is.null,auto_topup_alert_kind.neq.${kind}`).select('id')
   if (!claimed?.length) return false
 
   const { data: profile } = await supabase

@@ -1,5 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/server'
-import { disableCredential, enableCredential } from '@/lib/adminProxy'
+import { disableCredential, enableCredential, SessionLimitError } from '@/lib/adminProxy'
 import { syncUserUsage } from '@/lib/usageSync'
 import { dispatchWebhook } from '@/lib/webhooks'
 import { getOwnedCredential } from '@/lib/credentials'
@@ -56,6 +56,7 @@ export async function resumeCredential(admin: Admin, userId: string, id: string)
   try {
     await enableCredential(admin, cred)
   } catch (e) {
+    if (e instanceof SessionLimitError) return fail(409, 'conflict', 'You already have 100 live sessions, so this one can\u2019t be resumed. Delete an unused session first, then resume it.')
     console.error('[pause] enable failed', id, e)
     return fail(502, 'upstream_unavailable', 'Could not resume the sub-user right now. Nothing was changed — retry shortly.')
   }

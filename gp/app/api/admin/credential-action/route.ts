@@ -1,6 +1,6 @@
 import { authorizeAdmin, readJson, badRequest, isUuid } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
-import { disableCredential, enableCredential } from '@/lib/adminProxy'
+import { disableCredential, enableCredential, SessionLimitError } from '@/lib/adminProxy'
 import { syncUserUsage } from '@/lib/usageSync'
 import { dispatchWebhook } from '@/lib/webhooks'
 import { NextResponse } from 'next/server'
@@ -54,6 +54,7 @@ export async function POST(req: Request) {
       await enableCredential(supabase, cred)
     }
   } catch (err: any) {
+    if (err instanceof SessionLimitError) return NextResponse.json({ error: 'The owner already has 100 live sessions — they must delete one before this can be re-enabled.' }, { status: 409 })
     return NextResponse.json({ error: err.message ?? 'Failed to update the credential' }, { status: 502 })
   }
 

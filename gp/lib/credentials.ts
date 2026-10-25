@@ -898,10 +898,16 @@ export async function rotateCredentialPassword(
     const echoed = await updateSubUserPassword(cred.upstream_sub_user_id, newPassword)
     if (echoed !== null && echoed !== newPassword) {
       console.error('[credentials] rotate: provider echoed a different password — not committing', id)
+      if (cred.upstream_password) await updateSubUserPassword(cred.upstream_sub_user_id, cred.upstream_password)
+        .catch((e2) => console.error('[credentials] rotate: could not re-assert the previous password', id, e2))
       return fail(502, 'upstream_unavailable', 'The proxy network did not apply the new password. Nothing was changed.')
     }
   } catch (e) {
     console.error('[credentials] rotate: provider rejected the password change', id, e)
+    // A timeout is ambiguous: the change may have been applied after we gave up. Re-assert the
+    // stored password so the provider and the database cannot end up on different ones.
+    if (cred.upstream_password) await updateSubUserPassword(cred.upstream_sub_user_id, cred.upstream_password)
+      .catch(() => { /* the provider is unreachable — nothing more can be done from here */ })
     return fail(502, 'upstream_unavailable', 'Could not change the password right now. Nothing was changed \u2014 please retry shortly.')
   }
 
@@ -909,6 +915,11 @@ export async function rotateCredentialPassword(
     const verdict = await verifyRotation(cred.host || PROXY_HOST, cred.upstream_username, cred.upstream_password, newPassword)
     if (verdict === 'ignored') {
       console.error('[credentials] rotate: provider ignored the password change — not committing', id)
+      // The provider may only be slow to apply it: left alone, the new password could take
+      // effect AFTER this answer and lock the customer out of the one we still store. Put the
+      // old one back so both sides converge on it (best effort — it is the password we keep).
+      await updateSubUserPassword(cred.upstream_sub_user_id, cred.upstream_password)
+        .catch((e) => console.error('[credentials] rotate: could not re-assert the previous password', id, e))
       return fail(502, 'upstream_unavailable', 'The proxy network did not apply the new password. Nothing was changed.')
     }
     if (verdict === 'unknown') console.warn('[credentials] rotate: could not verify the new password end to end — committing on the provider echo', id)

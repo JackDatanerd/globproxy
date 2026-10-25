@@ -7,7 +7,7 @@ import { adminGet, adminPost } from '@/lib/adminFetch'
 type Stock = {
   available_gb?: number; total_gb?: number; total_allocated_gb?: number; total_used_gb?: number
   exposure_gb?: number; covered?: boolean; last_synced?: string | null
-  unallocated_balances_gb?: number; pending_allocated_gb?: number
+  unallocated_balances_gb?: number; pending_allocated_gb?: number; paused_resume_gb?: number
 }
 
 // Loads and saves through /api/admin/stock-settings (MFA-gated, audited) —
@@ -133,12 +133,12 @@ export default function AdminStockPanel() {
           </div>
           <div>
             <div className={`font-display text-xl font-bold ${stock.covered === false ? 'text-red-500' : 'text-ink'}`}>{formatGb(stock.exposure_gb)}</div>
-            <div className="text-[10px] font-mono text-muted mt-0.5">Exposure (unallocated + pending)</div>
+            <div className="text-[10px] font-mono text-muted mt-0.5">Exposure (unallocated + pending + paused)</div>
           </div>
         </div>
         <p className="text-[10px] text-muted mt-3 font-light leading-relaxed">
           Exposure = customer balance not yet allocated to a session ({formatGb(stock.unallocated_balances_gb ?? 0)}) + sessions
-          waiting to be provisioned ({formatGb(stock.pending_allocated_gb ?? 0)}) — what you&apos;d still have to carve out of the supplier&apos;s
+          waiting to be provisioned ({formatGb(stock.pending_allocated_gb ?? 0)}) + unused GB in sessions customers have paused ({formatGb(stock.paused_resume_gb ?? 0)} — returned to the supplier&apos;s pool while paused, taken back on resume) — what you&apos;d still have to carve out of the supplier&apos;s
           available stock. GB already allocated to live sessions is already deducted from Available by the supplier, so it isn&apos;t counted again.
           {stock.covered === false
             ? ' Current stock is below this — you are exposed if customers allocate it all at once.'

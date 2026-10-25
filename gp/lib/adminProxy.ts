@@ -36,12 +36,34 @@ export async function disableCredential(supabase: AdminSupabase, cred: CredRow, 
   if (error) throw new Error(error.message)
 }
 
-export async function enableCredential(supabase: AdminSupabase, cred: CredRow): Promise<void> {
-  if (cred.upstream_sub_user_id) {
-    await updateSubUserTrafficLimit(cred.upstream_sub_user_id, Math.round(Number(cred.gb_allocated ?? 0) * 1024))
+// Thrown when re-activating would push the account past its live-session cap (the
+// database trigger, migration 0083). A caller maps it to a 409 instead of a 500.
+export class SessionLimitError extends Error {
+  constructor() { super('Session limit reached (100). Delete an unused session first.'); this.name = 'SessionLimitError' }
+}
+
+// The database row is activated FIRST so the session-cap trigger can refuse it BEFORE
+// the upstream cap is lifted. The other order lifted the cap, then failed on the cap
+// trigger: the session kept proxying upstream while it still read "paused" here — and
+// the usage sync never walks a suspended session, so nothing was ever counted or billed.
+// If the upstream call then fails, the row is put back to its previous suspended state.
+export async function enableCredential(supabase: AdminSupabase, cred: CredRow & { suspended_reason?: string | null }): Promise<void> {
+  const { error } = await supabase.from('proxy_credentials')
+    .update({ status: 'active', suspended_reason: null }).eq('id', cred.id).eq('status', 'suspended')
+  if (error) {
+    if ((error as any).code === '23514') throw new SessionLimitError()
+    throw new Error(error.message)
   }
-  const { error } = await supabase.from('proxy_credentials').update({ status: 'active', suspended_reason: null }).eq('id', cred.id)
-  if (error) throw new Error(error.message)
+  if (cred.upstream_sub_user_id) {
+    try {
+      await updateSubUserTrafficLimit(cred.upstream_sub_user_id, Math.round(Number(cred.gb_allocated ?? 0) * 1024))
+    } catch (e) {
+      const { error: revertErr } = await supabase.from('proxy_credentials')
+        .update({ status: 'suspended', suspended_reason: cred.suspended_reason ?? 'admin' }).eq('id', cred.id)
+      if (revertErr) console.error('[admin-proxy] could not put a failed re-enable back to suspended', cred.id, revertErr)
+      throw e
+    }
+  }
 }
 
 export async function disableUserCredentials(supabase: AdminSupabase, userId: string): Promise<ProxyToggleResult> {
@@ -75,7 +97,7 @@ export async function disableUserCredentials(supabase: AdminSupabase, userId: st
 export async function enableUserCredentials(supabase: AdminSupabase, userId: string): Promise<ProxyToggleResult> {
   const { data: creds } = await supabase
     .from('proxy_credentials')
-    .select('id, upstream_sub_user_id, gb_allocated, status, label')
+    .select('id, upstream_sub_user_id, gb_allocated, status, label, suspended_reason')
     .eq('user_id', userId)
     .eq('status', 'suspended')
     .or('suspended_reason.is.null,suspended_reason.eq.account')
