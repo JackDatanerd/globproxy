@@ -44,6 +44,8 @@ export const VERIFIED_OPERATOR_REVIEW_DAYS = 180
 // the last recorded review, plus VERIFIED_OPERATOR_REVIEW_DAYS. null = not an operator.
 export function verifiedOperatorReviewDue(since: string | null | undefined, lastReviewedAt: string | null | undefined): Date | null {
   const base = [since, lastReviewedAt].filter(Boolean).map(d => new Date(d as string).getTime()).filter(t => Number.isFinite(t))
-  if (base.length === 0) return null
+  // An operator whose grant date was never recorded (and who has never been reviewed) is due
+  // right away — returning null here made such an account permanently exempt from review.
+  if (base.length === 0) return new Date(0)
   return new Date(Math.max(...base) + VERIFIED_OPERATOR_REVIEW_DAYS * 86_400_000)
 }

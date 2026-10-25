@@ -137,7 +137,7 @@ export default async function AdminAffiliateDetailPage({ params }: { params: Pro
       <div className="grid md:grid-cols-2 gap-4 mb-6">
         <div className="bg-white border border-border rounded-xl p-5 text-xs flex flex-col gap-1.5">
           <div className="text-sm font-medium text-ink mb-1">Terms</div>
-          <div><span className="text-muted">Rates (intro / lifetime): </span><span className="font-mono">{formatRatePct(p.affiliate_commission_rate ?? 0.3)} / {formatRatePct(p.affiliate_commission_rate_lifetime ?? 0.15)}</span></div>
+          <div><span className="text-muted">Rates (intro / lifetime): </span><span className="font-mono">{formatRatePct(p.affiliate_commission_rate ?? DEFAULT_AFFILIATE_INTRO_RATE)} / {formatRatePct(p.affiliate_commission_rate_lifetime ?? DEFAULT_AFFILIATE_LIFETIME_RATE)}</span></div>
           <div><span className="text-muted">Referral code: </span><span className="font-mono">{p.referral_code ?? '—'}</span></div>
           <div><span className="text-muted">Joined: </span><span className="font-mono">{day(p.created_at)}</span></div>
           {app?.channel && <div><span className="text-muted">Channel: </span>{app.channel}</div>}
@@ -163,7 +163,7 @@ export default async function AdminAffiliateDetailPage({ params }: { params: Pro
               <div className="text-muted mt-0.5">
                 {p.is_verified_operator
                   ? <>Review every {VERIFIED_OPERATOR_REVIEW_DAYS} days — {reviewOverdue
-                      ? <span className="text-amber-700 font-medium">review overdue since {day(reviewDue!.toISOString())}</span>
+                      ? <span className="text-amber-700 font-medium">{reviewDue!.getTime() === 0 ? 'review overdue — no grant date was recorded' : `review overdue since ${day(reviewDue!.toISOString())}`}</span>
                       : <>next due {day(reviewDue?.toISOString() ?? null)}</>}</>
                   : 'What this affiliate has actually delivered, to inform a grant.'}
               </div>
@@ -190,12 +190,15 @@ export default async function AdminAffiliateDetailPage({ params }: { params: Pro
         <Section title="Verified Operator history" empty="" rows={voHistory ?? []} heads={['When', 'Action', 'By', 'Rates (intro / lifetime)', 'Reason']}
           cell={(r: any) => {
             const d = r.details ?? {}
+            // The query matches every verified_operator.* action, including .review. A review
+            // used to fall into the "else" and show up as "Revoked".
             const grant = r.action === 'verified_operator.grant'
+            const review = r.action === 'verified_operator.review'
             const a = grant ? d.intro_rate : d.restored_intro_rate
             const b = grant ? d.lifetime_rate : d.restored_lifetime_rate
-            return [day(r.created_at), grant ? 'Granted' : 'Revoked', (r.admin as any)?.email ?? 'system',
-              a != null && b != null ? `${formatRatePct(a)} / ${formatRatePct(b)}` : '—',
-              d.reason ?? '—']
+            return [day(r.created_at), grant ? 'Granted' : review ? 'Reviewed' : 'Revoked', (r.admin as any)?.email ?? 'system',
+              !review && a != null && b != null ? `${formatRatePct(a)} / ${formatRatePct(b)}` : '—',
+              (review ? d.note : d.reason) ?? '—']
           }} />
       )}
 

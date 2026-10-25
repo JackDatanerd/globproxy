@@ -52,6 +52,7 @@ export function AdminDisputeButtons({ orderId, email }: { orderId: string; email
     const { ok, data } = await adminPost('/api/admin/dispute-outcome', { orderId, outcome, reason })
     setLoading(false)
     if (!ok) { toast.error(data.error ?? 'Could not record the outcome'); return }
+    if ((data as any).warning) toast.error((data as any).warning, { duration: 10000 })
     toast.success(outcome === 'lost'
       ? `Recorded as lost — ${Number(data.gb_clawed ?? 0).toFixed(2)} GB taken back${Number(data.gb_not_recoverable) > 0 ? ` (${Number(data.gb_not_recoverable).toFixed(2)} GB was already in use)` : ''}.`
       : 'Recorded as won.', { duration: 8000 })
@@ -85,6 +86,30 @@ export function AdminDeclineRequestButton({ requestId, email }: { requestId: str
   return (
     <button onClick={decline} disabled={loading} className={`${btn} text-ink2 border-border hover:border-ink2`}>
       {loading ? '…' : 'Decline request'}
+    </button>
+  )
+}
+
+// Clears a refund lock whose outcome Paystack never confirmed. Only after checking the Paystack
+// dashboard: releasing it while the refund actually went through allows a second refund.
+export function AdminReleaseRefundLockButton({ orderId, email }: { orderId: string; email: string }) {
+  const [loading, setLoading] = useState(false)
+
+  async function release() {
+    if (!confirm(`Release the refund lock on ${email}'s order?\n\nFirst check the Paystack dashboard. If the refund DID go through and you release the lock, a second refund request can pay the customer twice.`)) return
+    const reason = window.prompt('What did you find on Paystack? (required — kept in the audit log):')?.trim()
+    if (!reason || reason.length < 3) { toast.error('A reason of at least 3 characters is required.'); return }
+    setLoading(true)
+    const { ok, data } = await adminPost('/api/admin/release-refund-lock', { orderId, reason })
+    setLoading(false)
+    if (!ok) { toast.error(data.error ?? 'Could not release the lock'); return }
+    toast.success('Refund lock released.')
+    window.location.reload()
+  }
+
+  return (
+    <button onClick={release} disabled={loading} className={`${btn} text-amber-700 border-amber-300 hover:bg-amber-50`}>
+      {loading ? '…' : 'Release refund lock'}
     </button>
   )
 }

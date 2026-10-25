@@ -10,8 +10,10 @@ export default function AdminConfirmFraudButton({ referralId }: { referralId: st
 
   async function confirmFraud() {
     if (!confirm('Confirm this referral as fraud? It stays blocked — it will never earn a bonus or commission — and leaves the review queue. You can still clear it later.')) return
+    const reason = window.prompt('What shows this is fraud? (required — kept in the audit log):')?.trim()
+    if (!reason || reason.length < 3) { toast.error('A reason of at least 3 characters is required.'); return }
     setLoading(true)
-    const { ok, data } = await adminPost('/api/admin/confirm-referral-fraud', { referralId })
+    const { ok, data } = await adminPost('/api/admin/confirm-referral-fraud', { referralId, reason })
     if (!ok) { toast.error(data.error ?? 'Could not confirm'); setLoading(false); return }
     toast.success('Marked as confirmed fraud')
     window.location.reload()

@@ -2,7 +2,7 @@ import Link from 'next/link'
 import { createAdminClient } from '@/lib/supabase/server'
 import AdminPager, { parsePage, cleanSearch } from '@/components/admin/AdminPager'
 import AdminCsvButton from '@/components/admin/AdminCsvButton'
-import { parseAuditFilters, resolveWhoIds, applyAuditFilters, WHO_MATCH_CAP } from '@/lib/adminAuditFilters'
+import { parseAuditFilters, searchAuditLog } from '@/lib/adminAuditFilters'
 
 const PAGE_SIZE = 50
 
@@ -19,15 +19,8 @@ export default async function AdminAuditPage({ searchParams }: { searchParams: P
   const anyFilter = !!(f.action || f.user || f.who || f.from || f.to)
 
   const supabase = await createAdminClient()
-  const whoIds = await resolveWhoIds(supabase, f.who)
-  const query = applyAuditFilters(
-    supabase
-      .from('admin_audit_log')
-      .select('id, action, target_ref, target_user_id, details, created_at, admin:admin_id(email), target:target_user_id(email)', { count: 'exact' }),
-    f, whoIds
-  )
   const from = (page - 1) * PAGE_SIZE
-  const { data: rows, count, error } = await query.order('created_at', { ascending: false }).range(from, from + PAGE_SIZE - 1)
+  const { rows, count, error } = await searchAuditLog(supabase, f, { limit: PAGE_SIZE, offset: from })
 
   const csvParams = new URLSearchParams()
   if (f.action) csvParams.set('q', f.action)
@@ -50,13 +43,7 @@ export default async function AdminAuditPage({ searchParams }: { searchParams: P
 
       {error && (
         <div className="bg-red-50 border border-red-200 text-red-600 text-xs font-mono rounded-xl px-4 py-3 mb-6">
-          Could not load the audit log — has migration 0043_admin_hardening.sql been run?
-        </div>
-      )}
-
-      {whoIds && whoIds.length >= WHO_MATCH_CAP && (
-        <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs font-mono rounded-xl px-4 py-3 mb-4">
-          “{f.who}” matches {WHO_MATCH_CAP}+ accounts, so only the first {WHO_MATCH_CAP} are searched and rows are missing. Type more of the email to narrow it.
+          Could not load the audit log — has migration 0085_admin_section8_pass6.sql been run?
         </div>
       )}
 
@@ -103,7 +90,7 @@ export default async function AdminAuditPage({ searchParams }: { searchParams: P
           </tbody>
         </table>
       </div>
-      <AdminPager basePath="/admin/audit" page={page} pageSize={PAGE_SIZE} total={count ?? 0} params={{ q: f.action, who: f.who, from: f.from, to: f.to, user: f.user }} />
+      <AdminPager basePath="/admin/audit" page={page} pageSize={PAGE_SIZE} total={count} params={{ q: f.action, who: f.who, from: f.from, to: f.to, user: f.user }} />
     </div>
   )
 }

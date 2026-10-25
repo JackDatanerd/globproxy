@@ -22,7 +22,7 @@ export async function POST(req: Request) {
 
   const result = await resolvePendingApplication({
     supabase: auth.supabase, adminId: auth.adminId, userId: body.userId,
-    statusColumn: 'affiliate_status',
+    statusColumn: 'affiliate_status', blockSuspended: true,
     updates: { affiliate_status: 'approved', affiliate_commission_rate: rate1 as number, affiliate_commission_rate_lifetime: rate2 as number },
     audit: { action: 'affiliate.approve', details: { intro_rate: rate1, lifetime_rate: rate2 } },
     email: {

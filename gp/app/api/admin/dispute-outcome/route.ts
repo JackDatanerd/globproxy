@@ -62,9 +62,13 @@ export async function POST(req: Request) {
     if (!updated || updated.length === 0) {
       return NextResponse.json({ error: 'This dispute changed while you were working (it may have just been settled). Reload and check its current status.' }, { status: 409 })
     }
-    if (!order.is_canary) await placePaymentHold(supabase, order.user_id, { reason: `Payment dispute lost (admin ${adminId})`, source: 'dispute_lost', orderId: order.id })
-    await logAdminAction(supabase, { adminId, action: 'order.dispute_lost', targetUserId: order.user_id, targetRef: order.id, details: { reason, uncredited: true } })
-    return NextResponse.json({ success: true, outcome: 'lost', refund_usd: 0, gb_clawed: 0, gb_not_recoverable: 0 })
+    let holdFailed = false
+    if (!order.is_canary) {
+      try { await placePaymentHold(supabase, order.user_id, { reason: `Payment dispute lost (admin ${adminId})`, source: 'dispute_lost', orderId: order.id }) }
+      catch (e) { holdFailed = true; console.error('[dispute-outcome] payment hold failed', order.user_id, e) }
+    }
+    await logAdminAction(supabase, { adminId, action: 'order.dispute_lost', targetUserId: order.user_id, targetRef: order.id, details: { reason, uncredited: true, ...(holdFailed ? { payment_hold_failed: true } : {}) } })
+    return NextResponse.json({ success: true, outcome: 'lost', refund_usd: 0, gb_clawed: 0, gb_not_recoverable: 0, ...(holdFailed ? { warning: 'Recorded, but the payment hold could not be placed — put the account on hold by hand.' } : {}) })
   }
   try {
     const r = await applyDisputeLoss(supabase, order, { source: `admin ${adminId}`, resolution: reason, amountUsd: body.amountUsd as number | undefined })

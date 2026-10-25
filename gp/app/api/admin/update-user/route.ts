@@ -3,6 +3,7 @@ import { authorizeAdmin, readJson, badRequest, isUuid } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
 import { adminNoticeHtml, appUrl } from '@/lib/adminEmail'
 import { revokeAllApiKeys } from '@/lib/adminAccountSecurity'
+import { cancelOpenInvitations } from '@/lib/adminInvitations'
 import { NextResponse } from 'next/server'
 
 type Action = 'make_reseller' | 'make_user' | 'grant_api_access' | 'revoke_api_access' | 'toggle_api_access'
@@ -25,7 +26,7 @@ export async function POST(req: Request) {
 
   const { data: target } = await supabase
     .from('profiles')
-    .select('role, api_access, email, full_name, is_deleted')
+    .select('role, api_access, email, full_name, is_deleted, is_suspended')
     .eq('id', user_id)
     .single()
   if (!target) return NextResponse.json({ error: 'User not found' }, { status: 404 })
@@ -41,6 +42,7 @@ export async function POST(req: Request) {
   switch (resolved) {
     case 'make_reseller':
       if (target.role === 'reseller') return NextResponse.json({ error: 'Already a reseller' }, { status: 409 })
+      if (target.is_suspended) return NextResponse.json({ error: 'This account is suspended — reinstate it before making it a reseller.' }, { status: 409 })
       updates = { role: 'reseller', reseller_status: 'approved' }
       break
     case 'make_user':
@@ -92,6 +94,12 @@ export async function POST(req: Request) {
     keysRevokeFailed = !r.ok
   }
 
+  // A demoted reseller's open invitations must not stay claimable: cancel them and return the
+  // reserved GB to the account's stock.
+  const invites = resolved === 'make_user'
+    ? await cancelOpenInvitations(supabase, { id: user_id, email: target.email, full_name: target.full_name })
+    : null
+
   await logAdminAction(supabase, {
     adminId,
     action: `user.${resolved}`,
@@ -101,6 +109,7 @@ export async function POST(req: Request) {
       ...(resolved === 'revoke_api_access' || resolved === 'make_user'
         ? { api_keys_revoked: keysRevoked, api_keys_revoke_failed: keysRevokeFailed || undefined }
         : {}),
+      ...(invites && (invites.cancelled || invites.failed) ? { invitations_cancelled: invites.cancelled, invitations_returned_gb: invites.returnedGb, invitations_cancel_failed: invites.failed || undefined } : {}),
     },
   })
 
@@ -120,7 +129,7 @@ export async function POST(req: Request) {
     } else if (resolved === 'make_user') {
       subject = 'Your GlobProxy reseller status has been removed'
       heading = 'Reseller status removed'
-      text = `Hi ${firstName}, your account is no longer a reseller account — it's back to a regular customer account. Any bandwidth you'd already allocated to clients is unaffected, and any API keys you had have been revoked. If this wasn't expected, contact support.`
+      text = `Hi ${firstName}, your account is no longer a reseller account — it's back to a regular customer account. Any bandwidth you'd already allocated to clients is unaffected, and any API keys you had have been revoked${invites?.cancelled ? `, and your ${invites.cancelled} open client invitation${invites.cancelled === 1 ? ' was' : 's were'} cancelled` : ''}. If this wasn't expected, contact support.`
     } else if (resolved === 'grant_api_access') {
       subject = 'API access has been enabled on your GlobProxy account'
       heading = 'API access enabled ✓'
@@ -141,5 +150,5 @@ export async function POST(req: Request) {
   // api_access / is_suspended fresh from `profiles` per request, so a
   // downgraded user's still-live session is already fully constrained the
   // moment the update above commits.
-  return NextResponse.json({ success: true, updates, api_keys_revoked: keysRevoked, ...(keysRevokeFailed ? { warning: 'The account was updated but its API keys could not be revoked — revoke them from the user page.' } : {}) })
+  return NextResponse.json({ success: true, updates, api_keys_revoked: keysRevoked, ...(invites ? { invitations_cancelled: invites.cancelled, invitations_cancel_failed: invites.failed } : {}), ...(keysRevokeFailed ? { warning: 'The account was updated but its API keys could not be revoked — revoke them from the user page.' } : {}) })
 }

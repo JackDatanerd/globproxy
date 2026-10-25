@@ -13,6 +13,7 @@ const STATUSES: Record<string, string> = {
   suspended: 'Suspended',
   pending: 'Has a pending request',
   no2fa: 'Admin / reseller without 2FA',
+  hold: 'On payment hold',
 }
 
 export default async function AdminUsersPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
@@ -38,6 +39,12 @@ export default async function AdminUsersPage({ searchParams }: { searchParams: P
   else if (status === 'pending') query = query.or('reseller_status.eq.pending,affiliate_status.eq.pending,api_access_status.eq.pending')
   else if (status === 'no2fa') query = query.in('role', ['admin', 'reseller']).eq('mfa_enabled', false)
   if (q) query = query.or(`email.ilike.%${q}%,full_name.ilike.%${q}%`)
+  if (status === 'hold') {
+    // Holds are rare (a lost dispute or a manual hold), so the id list stays short.
+    const { data: holdRows } = await supabase.from('payment_holds').select('user_id').limit(200)
+    const ids = (holdRows ?? []).map(h => h.user_id)
+    query = query.in('id', ids.length ? ids : ['00000000-0000-0000-0000-000000000000'])
+  }
   const from = (page - 1) * PAGE_SIZE
   const { data: users, count, error: listErr } = await query.order('created_at', { ascending: sort === 'oldest' }).range(from, from + PAGE_SIZE - 1)
 
@@ -45,6 +52,10 @@ export default async function AdminUsersPage({ searchParams }: { searchParams: P
   const { data: bwAccounts } = userIds.length > 0
     ? await supabase.from('bandwidth_accounts').select('user_id, available_gb, total_gb, used_gb').in('user_id', userIds)
     : { data: [] }
+  const { data: heldRows } = userIds.length > 0
+    ? await supabase.from('payment_holds').select('user_id').in('user_id', userIds)
+    : { data: [] as { user_id: string }[] }
+  const heldIds = new Set((heldRows ?? []).map(h => h.user_id))
   const bwMap = Object.fromEntries((bwAccounts ?? []).map(b => [b.user_id, b]))
 
   return (
@@ -117,6 +128,7 @@ export default async function AdminUsersPage({ searchParams }: { searchParams: P
                   <td className="px-5 py-3.5 font-mono text-sm text-ink">{formatGb(bw?.available_gb)} GB</td>
                   <td className="px-5 py-3.5">
                     {u.is_suspended ? <span className="text-[10px] font-mono bg-red-50 text-red-500 px-2.5 py-1 rounded-full">Suspended</span> : <span className="text-[10px] font-mono bg-accent2-light text-accent2 px-2.5 py-1 rounded-full">Active</span>}
+                    {heldIds.has(u.id) && <span className="ml-1.5 text-[10px] font-mono bg-amber-50 text-amber-700 px-2 py-1 rounded-full" title="New purchases are blocked for this account">hold</span>}
                   </td>
                   <td className="px-5 py-3.5">
                     {u.role === 'reseller' ? (u.api_access ? <span className="text-[10px] font-mono bg-accent-light text-accent px-2.5 py-1 rounded-full">Enabled</span> : <span className="text-[10px] font-mono bg-surface text-muted border border-border px-2.5 py-1 rounded-full">Off</span>) : <span className="text-[10px] text-muted">—</span>}

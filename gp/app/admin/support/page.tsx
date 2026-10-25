@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { createAdminClient } from '@/lib/supabase/server'
-import AdminPager, { parsePage } from '@/components/admin/AdminPager'
+import AdminPager, { parsePage, cleanSearch } from '@/components/admin/AdminPager'
+import { isUuid } from '@/lib/adminAuth'
 import AdminSupportActions from '@/components/admin/AdminSupportActions'
 
 const PAGE_SIZE = 25
@@ -14,12 +15,20 @@ export default async function AdminSupportPage({ searchParams }: { searchParams:
   const page = parsePage(sp.page)
   const status = typeof sp.status === 'string' && (STATUSES as readonly string[]).includes(sp.status) ? sp.status : 'open'
 
+  const q = cleanSearch(sp.q)
+  const userFilter = isUuid(sp.user) ? (sp.user as string) : ''
+
   const supabase = await createAdminClient()
   const from = (page - 1) * PAGE_SIZE
+  // Search by customer e-mail or message text, or show one customer's reports (linked from the
+  // user page). The open/resolved counts stay global so the chips still answer "what is waiting".
+  let listQuery = supabase.from('support_reports')
+    .select('id, user_id, email, page_url, message, status, created_at, resolved_at, admin_note', { count: 'exact' })
+    .eq('status', status)
+  if (userFilter) listQuery = listQuery.eq('user_id', userFilter)
+  if (q) listQuery = listQuery.or(`email.ilike.%${q}%,message.ilike.%${q}%`)
   const [{ data: reports, count, error }, { count: openCount }, { count: resolvedCount }] = await Promise.all([
-    supabase.from('support_reports')
-      .select('id, user_id, email, page_url, message, status, created_at, resolved_at, admin_note', { count: 'exact' })
-      .eq('status', status)
+    listQuery
       .order('created_at', { ascending: status === 'open' }) // oldest unresolved first
       .range(from, from + PAGE_SIZE - 1),
     supabase.from('support_reports').select('*', { count: 'exact', head: true }).eq('status', 'open'),
@@ -47,9 +56,16 @@ export default async function AdminSupportPage({ searchParams }: { searchParams:
         <p className="text-muted text-sm mt-1">Issues customers sent from the dashboard. Oldest unresolved first.</p>
       </div>
 
-      <div className="flex gap-2 mb-4">
-        <Link href="/admin/support?status=open" className={chip(status === 'open')}>{openCount ?? 0} open</Link>
-        <Link href="/admin/support?status=resolved" className={chip(status === 'resolved')}>{resolvedCount ?? 0} resolved</Link>
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <Link href={`/admin/support?${new URLSearchParams({ status: 'open', ...(q ? { q } : {}), ...(userFilter ? { user: userFilter } : {}) })}`} className={chip(status === 'open')}>{openCount ?? 0} open</Link>
+        <Link href={`/admin/support?${new URLSearchParams({ status: 'resolved', ...(q ? { q } : {}), ...(userFilter ? { user: userFilter } : {}) })}`} className={chip(status === 'resolved')}>{resolvedCount ?? 0} resolved</Link>
+        <form method="get" className="ml-auto flex gap-2">
+          <input type="hidden" name="status" value={status} />
+          {userFilter && <input type="hidden" name="user" value={userFilter} />}
+          <input name="q" defaultValue={q} placeholder="Search e-mail or message…" className="w-60 bg-white border border-border px-3 py-1.5 rounded-lg text-xs focus:outline-none focus:border-accent" />
+          <button className="text-xs font-mono px-3 py-1.5 rounded-lg border border-border text-ink2 hover:border-ink2">Search</button>
+          {(q || userFilter) && <Link href={`/admin/support?status=${status}`} className="text-xs font-mono px-2 py-1.5 text-muted hover:text-ink">Clear</Link>}
+        </form>
       </div>
 
       {error ? (
@@ -90,7 +106,7 @@ export default async function AdminSupportPage({ searchParams }: { searchParams:
           ))}
         </div>
       )}
-      <AdminPager basePath="/admin/support" page={page} pageSize={PAGE_SIZE} total={count ?? 0} params={{ status }} />
+      <AdminPager basePath="/admin/support" page={page} pageSize={PAGE_SIZE} total={count ?? 0} params={{ status, q, user: userFilter }} />
     </div>
   )
 }

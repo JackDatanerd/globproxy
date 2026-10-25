@@ -13,7 +13,7 @@ export async function POST(req: Request) {
   // anyone else regardless), so the role is part of the UPDATE condition.
   const result = await resolvePendingApplication({
     supabase: auth.supabase, adminId: auth.adminId, userId: body.userId,
-    statusColumn: 'api_access_status', requireRole: 'reseller',
+    statusColumn: 'api_access_status', requireRole: 'reseller', blockSuspended: true,
     updates: { api_access: true, api_access_status: 'approved' },
     audit: { action: 'api_access.approve' },
     email: {

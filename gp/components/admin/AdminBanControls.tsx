@@ -69,8 +69,14 @@ export function AdminUnbanButton({ banId, email }: { banId: string; email: strin
     setLoading(true)
     const { ok, data } = await adminPost('/api/admin/unban-email', { banId })
     if (!ok) { toast.error(data.error ?? 'Could not lift the ban'); setLoading(false); return }
-    toast.success('Ban lifted')
-    window.location.reload()
+    const d = data as any
+    if (d.still_suspended_total > 0) {
+      toast(`Ban lifted. ${d.still_suspended_total} account${d.still_suspended_total === 1 ? ' that uses' : 's that use'} this address ${d.still_suspended_total === 1 ? 'is' : 'are'} still suspended — reinstate from the Users page if wanted.`, { duration: 9000 })
+      setTimeout(() => window.location.reload(), 3500)
+    } else {
+      toast.success('Ban lifted')
+      window.location.reload()
+    }
   }
   return (
     <button onClick={unban} disabled={loading} className="text-xs font-mono text-muted border border-border px-3 py-1.5 rounded-lg hover:text-ink hover:border-ink2 disabled:opacity-50">

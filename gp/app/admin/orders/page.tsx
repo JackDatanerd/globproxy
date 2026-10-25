@@ -5,7 +5,7 @@ import AdminOrdersExport from '@/components/admin/AdminOrdersExport'
 import AdminPager, { parsePage, cleanSearch } from '@/components/admin/AdminPager'
 import { formatGb } from '@/lib/format'
 import AdminRefundButton from '@/components/admin/AdminRefundButton'
-import { AdminVerifyOrderButton, AdminDisputeButtons, AdminDeclineRequestButton } from '@/components/admin/AdminOrderActions'
+import { AdminVerifyOrderButton, AdminDisputeButtons, AdminDeclineRequestButton, AdminReleaseRefundLockButton } from '@/components/admin/AdminOrderActions'
 
 const PAGE_SIZE = 50
 // 'refund' = any order with money refunded (partial refunds keep status 'paid').
@@ -13,7 +13,7 @@ const PAGE_SIZE = 50
 // 'refund_requested' = the customer asked for a refund from Billing (migration 0062).
 // 'uncredited' = not credited yet but has a payment reference (candidates for Verify & credit).
 // 'unfulfilled' = marked PAID but the bandwidth was never credited (the customer paid and got nothing).
-const FILTERS = ['paid', 'pending', 'failed', 'cancelled', 'refunded', 'refund', 'disputed', 'refund_requested', 'uncredited', 'unfulfilled'] as const
+const FILTERS = ['paid', 'pending', 'failed', 'cancelled', 'refunded', 'refund', 'disputed', 'refund_requested', 'uncredited', 'unfulfilled', 'refund_in_flight'] as const
 
 export default async function AdminOrdersPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const sp = await searchParams
@@ -41,6 +41,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
   if (status === 'refund') query = query.gt('refunded_usd', 0)
   else if (status === 'disputed') query = query.eq('dispute_status', 'open')
   else if (status === 'refund_requested') query = query.eq('open_request.status', 'open')
+  else if (status === 'refund_in_flight') query = query.not('refund_requested_at', 'is', null)
   else if (status === 'uncredited') query = query.eq('bandwidth_credited', false).in('payment_status', ['pending', 'failed', 'cancelled']).not('paystack_reference', 'is', null).eq('is_canary', false)
   else if (status === 'unfulfilled') query = query.eq('payment_status', 'paid').eq('bandwidth_credited', false).eq('is_canary', false)
   else if (status) query = query.eq('payment_status', status)
@@ -60,6 +61,14 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
     ? await supabase.from('refund_requests').select('id, order_id, reason, within_policy, created_at').eq('status', 'open').in('order_id', pageOrderIds)
     : { data: [] }
   const requestByOrder = Object.fromEntries((openRequests ?? []).map(r => [r.order_id, r]))
+
+  // Refund history per order (what Paystack confirmed). A partial refund in KES was invisible
+  // here: the row showed only the running total.
+  const { data: refundRows } = pageOrderIds.length
+    ? await supabase.from('order_refunds').select('order_id, amount_usd, created_at').in('order_id', pageOrderIds).order('created_at', { ascending: true })
+    : { data: [] as { order_id: string; amount_usd: number; created_at: string }[] }
+  const refundsByOrder: Record<string, { amount_usd: number; created_at: string }[]> = {}
+  for (const r of refundRows ?? []) (refundsByOrder[r.order_id] ??= []).push(r)
 
   const chip = (active: boolean) => `text-xs font-mono px-3 py-1.5 rounded-full border transition-all ${active ? 'bg-ink text-white border-ink' : 'border-border text-ink2 hover:border-ink2'}`
   const hrefFor = (s: string) => {
@@ -101,7 +110,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
 
       <div className="flex flex-wrap items-center gap-2 mb-4">
         <Link href={hrefFor('')} className={chip(!status)}>All</Link>
-        {FILTERS.map(f => <Link key={f} href={hrefFor(f)} className={chip(status === f)}>{f === 'refund' ? 'has refund' : f === 'disputed' ? 'open dispute' : f === 'refund_requested' ? 'refund requested' : f === 'uncredited' ? 'paid? (uncredited)' : f === 'unfulfilled' ? 'paid, not credited' : f}</Link>)}
+        {FILTERS.map(f => <Link key={f} href={hrefFor(f)} className={chip(status === f)}>{f === 'refund' ? 'has refund' : f === 'disputed' ? 'open dispute' : f === 'refund_requested' ? 'refund requested' : f === 'uncredited' ? 'paid? (uncredited)' : f === 'unfulfilled' ? 'paid, not credited' : f === 'refund_in_flight' ? 'refund awaiting Paystack' : f}</Link>)}
         <form method="get" className="ml-auto flex gap-2">
           {status && <input type="hidden" name="status" value={status} />}
           <input name="q" defaultValue={q} placeholder="Search customer email or name…"
@@ -173,6 +182,17 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
                         dispute {o.dispute_status === 'resolved' ? 'resolved (outcome not recorded)' : o.dispute_status}{o.dispute_resolution ? ` — ${o.dispute_resolution}` : ''}
                       </div>
                     )}
+                    {o.refund_requested_at && (
+                      <div className="text-[10px] font-mono text-amber-700 mt-1 max-w-[220px]">
+                        ⏳ refund sent to Paystack {new Date(o.refund_requested_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                        {Date.now() - new Date(o.refund_requested_at).getTime() > 86_400_000 ? ' — unconfirmed for over 24 h, check Paystack' : ' — awaiting confirmation'}
+                      </div>
+                    )}
+                    {(refundsByOrder[o.id] ?? []).length > 0 && (
+                      <div className="text-[10px] font-mono text-muted mt-1">
+                        {refundsByOrder[o.id].map((r, i) => <div key={i}>refunded ${Number(r.amount_usd).toFixed(2)} · {new Date(r.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}</div>)}
+                      </div>
+                    )}
                     {requestByOrder[o.id] && (
                       <div className="text-[10px] font-mono text-amber-700 mt-1 max-w-[220px]">
                         ✋ refund requested{requestByOrder[o.id].within_policy ? ' · within policy' : ' · outside policy'}
@@ -187,6 +207,9 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
                     )}
                     {(o.dispute_status === 'open' || o.dispute_status === 'resolved') && !o.is_canary && (
                       <div><AdminDisputeButtons orderId={o.id} email={profile?.email || 'this customer'} /></div>
+                    )}
+                    {o.refund_requested_at && !o.is_canary && (
+                      <div><AdminReleaseRefundLockButton orderId={o.id} email={profile?.email || 'this customer'} /></div>
                     )}
                     {requestByOrder[o.id] && (
                       <div><AdminDeclineRequestButton requestId={requestByOrder[o.id].id} email={profile?.email || 'this customer'} /></div>

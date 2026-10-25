@@ -18,13 +18,25 @@ export default function MpesaSettings({
   const [saving, setSaving] = useState(false)
 
   async function save(extra: Record<string, unknown> = {}) {
+    // Number('129 KES') is NaN, and JSON turns NaN into null — which the server reads as "clear
+    // the manual rate". Reject unreadable input here instead of silently wiping a setting.
+    let manualRate: number | null = null
+    if (manual.trim() !== '') {
+      manualRate = Number(manual.trim().replace(/,/g, ''))
+      if (!Number.isFinite(manualRate)) { toast.error('The manual rate must be a plain number, e.g. 129'); return }
+    }
+    let markupPct: number | undefined
+    if (markup.trim() !== '') {
+      markupPct = Number(markup.trim())
+      if (!Number.isFinite(markupPct)) { toast.error('The markup must be a plain number between 0 and 10'); return }
+    }
     setSaving(true)
     const { ok, data } = await adminPost('/api/admin/mpesa-settings', {
       enabled: on,
       // A cleared field leaves the stored markup alone (Number('') is 0, which would
       // silently remove the markup).
-      ...(markup.trim() === '' ? {} : { markupPct: Number(markup) }),
-      manualRate: manual.trim() === '' ? null : Number(manual),
+      ...(markupPct === undefined ? {} : { markupPct }),
+      manualRate,
       ...extra,
     })
     setSaving(false)

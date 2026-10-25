@@ -26,7 +26,7 @@ export async function GET(req: Request) {
     const { rows: data, error } = await fetchAllRows<any>((from, to) => {
       let q = auth.supabase
         .from('affiliate_payouts')
-        .select('id, cycle_start, cycle_end, amount_usd, status, payout_method, payout_wallet_address, payout_bank_details, payout_mpesa_phone, payment_reference, paid_at, created_at, payout_local_amount, payout_local_currency, payout_fx_rate, referrer:referrer_id(email, full_name, is_deleted, affiliate_status)')
+        .select('id, cycle_start, cycle_end, amount_usd, status, payout_method, payout_wallet_address, payout_bank_details, payout_mpesa_phone, payment_reference, paid_at, created_at, payout_local_amount, payout_local_currency, payout_fx_rate, referrer:referrer_id(email, full_name, is_deleted, is_suspended, affiliate_status)')
         .order('created_at', { ascending: true })
         .order('id', { ascending: true })
         .range(from, to)
@@ -46,7 +46,7 @@ export async function GET(req: Request) {
       { header: 'Payout ID', value: r => r.id },
       { header: 'Affiliate email', value: r => r.referrer?.email ?? '' },
       { header: 'Affiliate name', value: r => r.referrer?.full_name ?? '' },
-      { header: 'Account state', value: r => r.referrer?.is_deleted ? 'DELETED - do not pay' : r.referrer?.affiliate_status === 'suspended' ? 'SUSPENDED - check first' : 'ok' },
+      { header: 'Account state', value: r => r.referrer?.is_deleted ? 'DELETED - do not pay' : (r.referrer?.affiliate_status === 'suspended' || r.referrer?.is_suspended) ? 'SUSPENDED - check first' : 'ok' },
       { header: 'Cycle', value: r => formatCycleLabel(r) },
       { header: 'Amount USD', value: r => Number(r.amount_usd).toFixed(2) },
       { header: 'Method', value: r => r.payout_method },

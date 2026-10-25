@@ -18,6 +18,7 @@ import { fetchAllRows } from '@/lib/dbPaging'
 import { findReportedError, recordCronRun, checkCronFreshness, checkStockWatchdog, checkUsageSyncFreshness, claimCronLock, releaseCronLock } from '@/lib/cronHealth'
 import { runInviteNotices, runResellerMaintenance } from '@/lib/resellerCron'
 import { runAccountDeletions } from '@/lib/accountDeletionCron'
+import { listVerifiedOperatorsDue } from '@/lib/adminVo'
 import { runAutoRecharge } from '@/lib/autoRecharge'
 import { ATTEMPT_OPEN_MS } from '@/lib/rechargeRules'
 import { NextResponse } from 'next/server'
@@ -352,6 +353,13 @@ async function runDailySummary() {
     .lt('created_at', `${today}T00:00:00Z`) // yesterday only, like the revenue figures above
   if (usersErr) return { error: `daily summary could not count new users: ${usersErr.message}` }
 
+  // Verified Operator reviews that are overdue. Nothing else tells the admin: it was a tile on a
+  // page nobody is obliged to open. A failed read just leaves the line out of the e-mail.
+  const voDue = await listVerifiedOperatorsDue(supabase)
+  const voLine = !voDue.error && voDue.ids.length > 0
+    ? `<p style="color:#b45309"><strong>Verified Operator reviews overdue:</strong> ${voDue.ids.length} — <a href="${appUrl()}/admin/affiliates?due=1">review them →</a></p>`
+    : ''
+
   const delivered = await sendEmailSafe({
     to: adminTo,
     subject: `GlobProxy Daily Summary — ${yesterday}`,
@@ -361,6 +369,7 @@ async function runDailySummary() {
       <p><strong>GB sold:</strong> ${gb.toFixed(1)} GB</p>
       <p><strong>Orders:</strong> ${orderCount}</p>
       <p><strong>New users:</strong> ${newUsers ?? 0}</p>
+      ${voLine}
       <a href="${appUrl()}/admin">Open admin panel →</a>
     </div>`,
   })

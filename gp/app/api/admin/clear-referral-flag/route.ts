@@ -15,6 +15,8 @@ export async function POST(req: Request) {
 
     const body = await readJson(req)
     if (!isUuid(body?.referralId)) return badRequest('Referral ID missing')
+    const reason = typeof body?.reason === 'string' ? body.reason.trim().slice(0, 300) : ''
+    if (reason.length < 3) return badRequest('A reason (at least 3 characters) is required')
 
     const { data: result, error } = await auth.supabase.rpc('clear_referral_flag', {
       p_referral_id: body!.referralId,
@@ -27,7 +29,7 @@ export async function POST(req: Request) {
     }
     if (!result) return NextResponse.json({ error: 'That referral is not flagged.' }, { status: 409 })
 
-    await logAdminAction(auth.supabase, { adminId: auth.adminId, action: 'referral_flag_cleared', targetRef: body!.referralId, details: result as Record<string, unknown> })
+    await logAdminAction(auth.supabase, { adminId: auth.adminId, action: 'referral_flag_cleared', targetRef: body!.referralId, details: { reason, ...(result as Record<string, unknown>) } })
     // What the clearing paid out back-dated is announced like a normal conversion.
     await announceClearedReferral(auth.supabase as any, body!.referralId, result as { bonus_credited?: boolean; commissions_backfilled?: number })
     return NextResponse.json({ success: true, backfill: result })

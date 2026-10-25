@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import toast from 'react-hot-toast'
 import { adminPost } from '@/lib/adminFetch'
 
@@ -23,6 +23,22 @@ export type AdminUserControlsUser = {
 export default function AdminUserControls({ user }: { user: AdminUserControlsUser }) {
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState<{ top?: number; bottom?: number; right: number }>({ right: 0 })
+  const btnRef = useRef<HTMLButtonElement>(null)
+
+  // The list page puts this menu inside an overflow-hidden table card, which clipped it
+  // (entirely, for a short list). Fixed positioning escapes that; it opens upward when there is
+  // not room below.
+  function toggle() {
+    if (open) { setOpen(false); return }
+    const r = btnRef.current?.getBoundingClientRect()
+    if (r) {
+      const right = Math.max(8, window.innerWidth - r.right)
+      const roomBelow = window.innerHeight - r.bottom
+      setPos(roomBelow < 420 && r.top > roomBelow ? { bottom: window.innerHeight - r.top + 4, right } : { top: r.bottom + 4, right })
+    }
+    setOpen(true)
+  }
 
   async function run(path: string, body: Record<string, unknown>, success: string, confirmMsg?: string, redirectTo?: string) {
     if (confirmMsg && !confirm(confirmMsg)) return
@@ -40,6 +56,8 @@ export default function AdminUserControls({ user }: { user: AdminUserControlsUse
     let notes = 0
     // Suspending also shuts the user's live proxies; surface partial failures.
     const failures = d.proxy_failures?.length ?? 0
+    if (d.invitations_cancelled) { notes++; toast(`${d.invitations_cancelled} open client invitation${d.invitations_cancelled === 1 ? ' was' : 's were'} cancelled and the reserved bandwidth went back to their stock.`, { duration: 8000 }) }
+    if (d.invitations_cancel_failed) { notes++; toast.error(`${d.invitations_cancel_failed} invitation(s) could not be cancelled — cancel them from the reseller page.`, { duration: 8000 }) }
     if (failures) { notes++; toast.error(`${failures} proxy credential${failures === 1 ? '' : 's'} could not be shut off or restored upstream — check /admin/credentials`, { duration: 8000 }) }
     // A reinstate does not revive credentials that were disabled one by one.
     if (d.credentials_kept_disabled) { notes++; toast(`${d.credentials_kept_disabled} credential${d.credentials_kept_disabled === 1 ? ' was' : 's were'} disabled individually and stay off — re-enable them from the credentials list if wanted.`, { duration: 8000 }) }
@@ -87,14 +105,14 @@ export default function AdminUserControls({ user }: { user: AdminUserControlsUse
 
   return (
     <div className="relative">
-      <button onClick={() => setOpen(!open)} disabled={loading}
+      <button ref={btnRef} onClick={toggle} disabled={loading}
         className="text-xs font-mono text-muted border border-border px-3 py-1.5 rounded-lg hover:text-ink hover:border-ink2 transition-all">
         {loading ? '...' : 'Actions ▾'}
       </button>
       {open && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-8 z-20 bg-white border border-border rounded-xl shadow-lg py-1.5 w-52 overflow-hidden">
+          <div style={{ position: 'fixed', ...pos }} className="z-20 bg-white border border-border rounded-xl shadow-lg py-1.5 w-52 overflow-y-auto max-h-[80vh]">
 
             {user.is_suspended
               ? <button onClick={() => run('/api/admin/suspend-user', { action: 'unsuspend' }, 'User reinstated')}

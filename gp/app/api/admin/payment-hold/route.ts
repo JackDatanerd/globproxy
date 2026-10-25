@@ -19,6 +19,13 @@ export async function POST(req: Request) {
   const reason = body.reason.trim().slice(0, 300)
 
   try {
+    // The account must exist, be a live customer-type account, and not be an admin. The
+    // foreign-key failure for a bad id used to surface as "already on payment hold".
+    const { data: target, error: tErr } = await supabase.from('profiles').select('role, is_deleted').eq('id', body.userId).maybeSingle()
+    if (tErr) throw tErr
+    if (!target) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+    if (body.action === 'place' && target.role === 'admin') return NextResponse.json({ error: 'An admin account cannot be put on payment hold.' }, { status: 403 })
+    if (body.action === 'place' && target.is_deleted) return NextResponse.json({ error: 'This account has been deleted.' }, { status: 409 })
     if (body.action === 'place') {
       const placed = await placePaymentHold(supabase, body.userId, { reason, source: 'admin', createdBy: adminId })
       if (!placed) return NextResponse.json({ error: 'This account is already on payment hold.' }, { status: 409 })

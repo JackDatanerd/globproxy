@@ -75,9 +75,18 @@ export async function applyDisputeLoss(
   // A lost chargeback puts the account on hold (cleared by an admin). Applies whether or
   // not any GB could be taken back; a failed write is logged and never undoes the loss.
   if (!order.is_canary) {
-    const placed = await placePaymentHold(supabase, order.user_id, {
-      reason: `Payment dispute lost (${opts.source})`, source: 'dispute_lost', orderId: order.id,
-    })
+    let placed = false
+    try {
+      placed = await placePaymentHold(supabase, order.user_id, {
+        reason: `Payment dispute lost (${opts.source})`, source: 'dispute_lost', orderId: order.id,
+      })
+    } catch (e) {
+      console.error('[disputes] could not place the payment hold after a lost dispute', order.user_id, e)
+      await alertAdminPayment('Payment hold could NOT be placed after a lost dispute', {
+        order_id: order.id, user_id: order.user_id,
+        note: 'The loss was recorded but the hold write failed. Place the hold by hand: Admin → user → Put on payment hold.',
+      })
+    }
     if (placed) {
       await alertAdminPayment('Account put on payment hold after a lost dispute', {
         order_id: order.id, user_id: order.user_id,

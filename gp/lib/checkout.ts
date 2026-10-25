@@ -2,7 +2,7 @@ import { createAdminClient } from '@/lib/supabase/server'
 import { initializeTransaction, generateReference } from '@/lib/paystack'
 import { appUrl } from '@/lib/appUrl'
 import type { OrderQuote } from '@/lib/plans'
-import { hasPaymentHold, PAYMENT_HOLD_MESSAGE } from '@/lib/paymentHold'
+import { getPaymentHold, paymentHoldMessage } from '@/lib/paymentHold'
 import { currentTax } from '@/lib/invoiceTax'
 
 // The one place a hosted-checkout order is created. /api/checkout (the dashboard buy
@@ -29,7 +29,8 @@ export const DISPUTE_PAUSE_MESSAGE =
 // clears it (lib/paymentHold.ts). Every checkout entry point asks this one question.
 export async function purchaseBlock(supabase: Admin, userId: string): Promise<string | null> {
   if (await hasOpenDispute(supabase, userId)) return DISPUTE_PAUSE_MESSAGE
-  if (await hasPaymentHold(supabase, userId)) return PAYMENT_HOLD_MESSAGE
+  const hold = await getPaymentHold(supabase, userId)
+  if (hold) return paymentHoldMessage(hold.source)
   return null
 }
 

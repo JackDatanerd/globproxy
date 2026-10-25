@@ -12,6 +12,8 @@ export async function POST(req: Request) {
 
     const body = await readJson(req)
     if (!isUuid(body?.referralId)) return badRequest('Referral ID missing')
+    const reason = typeof body?.reason === 'string' ? body.reason.trim().slice(0, 300) : ''
+    if (reason.length < 3) return badRequest('A reason (at least 3 characters) is required')
 
     const { data: ok, error } = await auth.supabase.rpc('confirm_referral_fraud', { p_referral_id: body!.referralId })
     if (error) {
@@ -20,7 +22,7 @@ export async function POST(req: Request) {
     }
     if (!ok) return NextResponse.json({ error: 'That referral is not flagged, or is already confirmed.' }, { status: 409 })
 
-    await logAdminAction(auth.supabase, { adminId: auth.adminId, action: 'referral_fraud_confirmed', targetRef: body!.referralId })
+    await logAdminAction(auth.supabase, { adminId: auth.adminId, action: 'referral_fraud_confirmed', targetRef: body!.referralId, details: { reason } })
     return NextResponse.json({ success: true })
   } catch (err: any) {
     console.error('[admin/confirm-referral-fraud] unexpected error', err)

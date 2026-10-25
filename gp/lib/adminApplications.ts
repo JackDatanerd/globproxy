@@ -19,6 +19,8 @@ export async function resolvePendingApplication(opts: {
   statusColumn: StatusColumn
   updates: Record<string, any>
   requireRole?: 'user' | 'reseller'
+  // Approvals only: an account that is suspended must be reinstated before it is promoted.
+  blockSuspended?: boolean
   audit: { action: string; details?: Record<string, unknown> }
   // Optional note written by the admin: shown to the applicant in the email
   // and kept in the audit log.
@@ -26,6 +28,14 @@ export async function resolvePendingApplication(opts: {
   email: { subject: string; heading: string; body: (firstName: string) => string; cta: { href: string; label: string } }
 }): Promise<{ ok: true } | { ok: false; response: NextResponse }> {
   const { supabase, adminId, userId, statusColumn, requireRole, audit, email, reason } = opts
+
+  if (opts.blockSuspended) {
+    const { data: s, error: sErr } = await supabase.from('profiles').select('is_suspended').eq('id', userId).maybeSingle()
+    if (sErr) return { ok: false, response: NextResponse.json({ error: sErr.message }, { status: 500 }) }
+    if (s?.is_suspended) {
+      return { ok: false, response: NextResponse.json({ error: 'This account is suspended — reinstate it before approving this request.' }, { status: 409 }) }
+    }
+  }
 
   // Stamp WHEN a rejection happened: the 7-day re-apply cooldown (apply-reseller /
   // apply-affiliate) counts from the review, not from the original submission.

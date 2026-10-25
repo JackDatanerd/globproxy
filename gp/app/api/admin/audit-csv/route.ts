@@ -2,8 +2,7 @@ import { NextResponse } from 'next/server'
 import { authorizeAdmin } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
 import { toCsv, csvResponse } from '@/lib/csv'
-import { fetchAllRows } from '@/lib/dbPaging'
-import { parseAuditFilters, resolveWhoIds, applyAuditFilters, WHO_MATCH_CAP } from '@/lib/adminAuditFilters'
+import { parseAuditFilters, searchAuditLog } from '@/lib/adminAuditFilters'
 
 const clean = (v: string | undefined) => (v ?? '').replace(/[,()%*\\"']/g, ' ').trim().slice(0, 80)
 
@@ -16,18 +15,18 @@ export async function GET(req: Request) {
 
     const url = new URL(req.url)
     const f = parseAuditFilters(k => url.searchParams.get(k) ?? undefined, clean)
-    const whoIds = await resolveWhoIds(auth.supabase, f.who)
-
-    const { rows, error } = await fetchAllRows<any>((from, to) =>
-      applyAuditFilters(
-        auth.supabase.from('admin_audit_log')
-          .select('id, action, target_ref, details, created_at, admin:admin_id(email), target:target_user_id(email)'),
-        f, whoIds
-      ).order('created_at', { ascending: false }).order('id', { ascending: false }).range(from, to)
-    )
+    // Page through the same search function the screen uses, so both always agree.
+    const rows: any[] = []
+    let error: string | null = null
+    for (let page = 0; page < 200; page++) {
+      const r = await searchAuditLog(auth.supabase, f, { limit: 1000, offset: page * 1000 })
+      if (r.error) { error = r.error; break }
+      rows.push(...r.rows)
+      if (r.rows.length < 1000) break
+    }
     if (error) return NextResponse.json({ error: 'Export failed' }, { status: 500 })
 
-    await logAdminAction(auth.supabase, { adminId: auth.adminId, action: 'audit_log_exported', details: { rows: rows.length, ...f, ...(whoIds && whoIds.length >= WHO_MATCH_CAP ? { who_match_capped: true } : {}) } })
+    await logAdminAction(auth.supabase, { adminId: auth.adminId, action: 'audit_log_exported', details: { rows: rows.length, ...f } })
 
     const csv = toCsv(rows as any[], [
       { header: 'When (UTC)', value: r => r.created_at },

@@ -5,7 +5,7 @@ import { toCsv, csvResponse } from '@/lib/csv'
 import { fetchAllRows } from '@/lib/dbPaging'
 import { cleanSearch } from '@/components/admin/AdminPager'
 
-const STATUSES = ['paid', 'pending', 'failed', 'cancelled', 'refunded', 'refund', 'disputed', 'refund_requested', 'uncredited', 'unfulfilled'] as const
+const STATUSES = ['paid', 'pending', 'failed', 'cancelled', 'refunded', 'refund', 'disputed', 'refund_requested', 'uncredited', 'unfulfilled', 'refund_in_flight'] as const
 const DAY = /^\d{4}-\d{2}-\d{2}$/
 
 // Orders / refunds export for accounting. Filters mirror the Orders page:
@@ -39,6 +39,7 @@ export async function GET(req: Request) {
       if (status === 'refund') query = query.gt('refunded_usd', 0)
       else if (status === 'disputed') query = query.eq('dispute_status', 'open')
       else if (status === 'refund_requested') query = query.eq('open_request.status', 'open')
+      else if (status === 'refund_in_flight') query = query.not('refund_requested_at', 'is', null)
       else if (status === 'uncredited') query = query.eq('bandwidth_credited', false).in('payment_status', ['pending', 'failed', 'cancelled']).not('paystack_reference', 'is', null)
       else if (status === 'unfulfilled') query = query.eq('payment_status', 'paid').eq('bandwidth_credited', false)
       else if (status) query = query.eq('payment_status', status)

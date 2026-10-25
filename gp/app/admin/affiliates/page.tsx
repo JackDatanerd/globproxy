@@ -9,6 +9,8 @@ import AdminPendingPayouts, { type PendingPayoutRow } from '@/components/admin/A
 import AdminPager, { parsePage, cleanSearch } from '@/components/admin/AdminPager'
 import { formatCycleLabel } from '@/lib/payoutCycle'
 import { formatRatePct, DEFAULT_AFFILIATE_INTRO_RATE, DEFAULT_AFFILIATE_LIFETIME_RATE, verifiedOperatorReviewDue } from '@/lib/rates'
+import { listVerifiedOperatorsDue } from '@/lib/adminVo'
+import AdminVerifiedOperatorReview from '@/components/admin/AdminVerifiedOperatorReview'
 
 const PAGE_SIZE = 50
 const LIST_CAP = 100      // pending applications / suspended affiliates shown at once
@@ -18,7 +20,8 @@ export default async function AdminAffiliatesPage({ searchParams }: { searchPara
   const sp = await searchParams
   const page = parsePage(sp.page)
   const q = cleanSearch(sp.q)
-  const voOnly = sp.vo === '1'
+  const dueOnly = sp.due === '1'
+  const voOnly = sp.vo === '1' || dueOnly
 
   const supabase = await createAdminClient()
   // Deleted accounts keep their affiliate_status on the '[deleted]' tombstone,
@@ -32,6 +35,11 @@ export default async function AdminAffiliatesPage({ searchParams }: { searchPara
     .select('id, full_name, email, created_at, is_verified_operator, verified_operator_since, affiliate_commission_rate, affiliate_commission_rate_lifetime', { count: 'exact' })
     .eq('affiliate_status', 'approved').eq('is_deleted', false)
   if (voOnly) activeQuery = activeQuery.eq('is_verified_operator', true)
+  if (dueOnly) {
+    // Only the operators whose review is overdue (the Overview tile links here).
+    const due = await listVerifiedOperatorsDue(supabase)
+    activeQuery = activeQuery.in('id', due.ids.length ? due.ids : ['00000000-0000-0000-0000-000000000000'])
+  }
   if (q) activeQuery = activeQuery.or(`email.ilike.%${q}%,full_name.ilike.%${q}%`)
 
   const [
@@ -236,7 +244,10 @@ export default async function AdminAffiliatesPage({ searchParams }: { searchPara
             <input name="q" defaultValue={q} placeholder="Search email or name…"
               className="w-56 bg-white border border-border px-3 py-1.5 rounded-lg text-xs focus:outline-none focus:border-accent" />
             <label className="flex items-center gap-1.5 text-xs font-mono text-ink2">
-              <input type="checkbox" name="vo" value="1" defaultChecked={voOnly} /> Verified Operators only
+              <input type="checkbox" name="vo" value="1" defaultChecked={sp.vo === '1'} /> Verified Operators only
+            </label>
+            <label className="flex items-center gap-1.5 text-xs font-mono text-ink2">
+              <input type="checkbox" name="due" value="1" defaultChecked={dueOnly} /> Review due
             </label>
             <button className="text-xs font-mono px-3 py-1.5 rounded-lg border border-border text-ink2 hover:border-ink2">Filter</button>
             {(q || voOnly) && <Link href="/admin/affiliates" className="text-xs font-mono px-2 py-1.5 text-muted hover:text-ink">Clear</Link>}
@@ -281,6 +292,7 @@ export default async function AdminAffiliatesPage({ searchParams }: { searchPara
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex flex-wrap gap-2">
+                        {reviewOverdue(a) && <AdminVerifiedOperatorReview userId={a.id} />}
                         <AdminAffiliateActions userId={a.id} action={a.is_verified_operator ? 'revokeVerifiedOperator' : 'grantVerifiedOperator'} />
                         {!a.is_verified_operator && (
                           <AdminAffiliateActions userId={a.id} action="editRates"
@@ -295,10 +307,10 @@ export default async function AdminAffiliatesPage({ searchParams }: { searchPara
             </tbody>
           </table>
         ) : (
-          <div className="text-center py-14 text-muted text-sm font-light">{q || voOnly ? 'No affiliates match.' : 'No approved affiliates yet.'}</div>
+          <div className="text-center py-14 text-muted text-sm font-light">{dueOnly ? 'No Verified Operator reviews are due.' : q || voOnly ? 'No affiliates match.' : 'No approved affiliates yet.'}</div>
         )}
       </div>
-      <AdminPager basePath="/admin/affiliates" page={page} pageSize={PAGE_SIZE} total={activeCount ?? 0} params={{ q, vo: voOnly ? '1' : '' }} />
+      <AdminPager basePath="/admin/affiliates" page={page} pageSize={PAGE_SIZE} total={activeCount ?? 0} params={{ q, vo: sp.vo === '1' ? '1' : '', due: dueOnly ? '1' : '' }} />
 
       {/* Suspended affiliates */}
       {suspendedAffiliates && suspendedAffiliates.length > 0 && (

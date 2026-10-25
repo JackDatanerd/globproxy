@@ -37,7 +37,9 @@ export async function suspendAccount(
   // back so state never claims a ban that was not applied.
   const { error: banError } = await supabase.auth.admin.updateUserById(userId, { ban_duration: BAN_FOREVER })
   if (banError) {
-    await supabase.from('profiles').update({ is_suspended: false, suspended_at: null, suspension_reason: null }).eq('id', userId)
+    // Undo only a suspension THIS call made. If the account was already suspended (a concurrent
+    // suspend), clearing the flag here would silently reinstate it.
+    if (flagged?.length) await supabase.from('profiles').update({ is_suspended: false, suspended_at: null, suspension_reason: null }).eq('id', userId)
     return { ok: false, status: 500, error: `Could not ban the auth account: ${banError.message}` }
   }
 

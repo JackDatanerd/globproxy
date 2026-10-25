@@ -81,6 +81,11 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
       .limit(5),
     supabase.rpc('list_auth_sessions', { p_user_id: id }),
   ])
+  // Their support reports, newest first — support used to be a separate inbox you could not
+  // reach from the customer it was about.
+  const { data: reports, count: reportCount } = await supabase.from('support_reports')
+    .select('id, status, message, created_at', { count: 'exact' })
+    .eq('user_id', id).order('created_at', { ascending: false }).limit(5)
   const activeKeys = apiKeys?.length ?? 0
   const sessionList: PanelSession[] = Array.isArray(sessionsRes?.data) ? sessionsRes.data : []
   const isAffiliate = !!profile.affiliate_status
@@ -313,6 +318,28 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
         sessions={sessionList.map((x: any) => ({ id: String(x.id), created_at: x.created_at ?? null, updated_at: x.updated_at ?? null, user_agent: x.user_agent ?? null, ip: x.ip ? String(x.ip) : null }))}
         keys={(apiKeys ?? []) as PanelKey[]} sessionsError={!!sessionsRes?.error}
       />
+
+      <div className="bg-white border border-border rounded-xl overflow-hidden mt-6">
+        <div className="px-6 py-4 border-b border-border flex items-center justify-between">
+          <h2 className="font-display font-bold text-base text-ink">Support reports ({reportCount ?? 0})</h2>
+          {(reportCount ?? 0) > 0 && <Link href={`/admin/support?user=${id}&status=${(reports ?? []).some((r: any) => r.status === 'open') ? 'open' : 'resolved'}`} className="text-xs font-mono text-accent hover:underline">Open in support →</Link>}
+        </div>
+        {(reports ?? []).length === 0 ? (
+          <div className="px-6 py-8 text-center text-sm text-muted">No reports from this customer.</div>
+        ) : (
+          <ul>
+            {(reports ?? []).map((r: any, i: number) => (
+              <li key={r.id} className={`px-6 py-3 flex items-start justify-between gap-4 ${i < (reports?.length ?? 0) - 1 ? 'border-b border-border' : ''}`}>
+                <div className="text-sm text-ink min-w-0 break-words">{String(r.message ?? '').slice(0, 160)}{String(r.message ?? '').length > 160 ? '…' : ''}</div>
+                <div className="text-right shrink-0">
+                  <div className={`text-[10px] font-mono px-2 py-0.5 rounded-full ${r.status === 'open' ? 'bg-amber-50 text-amber-700' : 'bg-surface text-muted border border-border'}`}>{r.status}</div>
+                  <div className="text-[11px] font-mono text-muted mt-0.5">{new Date(r.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
 
       {/* Security events */}
       <div className="bg-white border border-border rounded-xl overflow-hidden mt-6">

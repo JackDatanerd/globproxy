@@ -4,30 +4,9 @@ import AdminStockPanel from '@/components/admin/AdminStockPanel'
 import { formatGb } from '@/lib/format'
 import { upstreamCostPerGbUsd } from '@/lib/constants'
 import { CRON_MAX_AGE_SECONDS } from '@/lib/cronHealth'
-import { fetchAllRows } from '@/lib/dbPaging'
-import { VERIFIED_OPERATOR_REVIEW_DAYS } from '@/lib/rates'
+import { listVerifiedOperatorsDue } from '@/lib/adminVo'
 
 const money = (n: number) => `$${n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`
-
-// A Verified Operator is due a review VERIFIED_OPERATOR_REVIEW_DAYS after the later of the
-// grant and the last review (lib/rates.ts verifiedOperatorReviewDue). Same rule, computed
-// as a set difference so it needs no per-operator query: granted before the cutoff and not
-// reviewed since it. The affiliates page marks each due row; this puts the count on the
-// Overview, where nobody had to remember to look.
-async function countVerifiedOperatorsDueForReview(supabase: Awaited<ReturnType<typeof createAdminClient>>, now: Date): Promise<{ n: number }> {
-  const cutoff = new Date(now.getTime() - VERIFIED_OPERATOR_REVIEW_DAYS * 86_400_000).toISOString()
-  const [ops, reviewed] = await Promise.all([
-    fetchAllRows<{ id: string }>((from, to) => supabase.from('profiles').select('id')
-      .eq('is_verified_operator', true).eq('affiliate_status', 'approved').eq('is_deleted', false)
-      .lte('verified_operator_since', cutoff).order('id').range(from, to)),
-    fetchAllRows<{ user_id: string }>((from, to) => supabase.from('verified_operator_reviews').select('user_id')
-      .gte('reviewed_at', cutoff).order('id').range(from, to)),
-  ])
-  // If either read failed, show nothing rather than a wrong number.
-  if (ops.error || reviewed.error) return { n: 0 }
-  const recent = new Set(reviewed.rows.map(r => r.user_id))
-  return { n: ops.rows.filter(o => !recent.has(o.id)).length }
-}
 
 export default async function AdminPage() {
   const supabase = await createAdminClient()
@@ -43,23 +22,23 @@ export default async function AdminPage() {
   // Soft-deleted accounts keep their role on a '[deleted]' tombstone row, so
   // every account count / signup list excludes is_deleted.
   const [
-    { count: totalUsers },
-    { count: totalResellers },
+    { count: totalUsers, error: cErr0 },
+    { count: totalResellers, error: cErr1 },
     allTime,
     month,
-    { data: recentUsers },
-    { count: pendingResellers },
-    { count: pendingAffiliates },
-    { count: pendingApi },
-    { count: unpaidPayouts },
-    { count: flaggedReferrals },
-    { count: openReports },
-    { count: openDisputes },
-    { count: openRefundRequests },
-    { count: unfulfilledOrders },
-    { count: unconfirmedRefunds },
-    { data: cronRuns },
-    { count: deletionsStuck },
+    { data: recentUsers, error: recentErr },
+    { count: pendingResellers, error: cErr2 },
+    { count: pendingAffiliates, error: cErr3 },
+    { count: pendingApi, error: cErr4 },
+    { count: unpaidPayouts, error: cErr5 },
+    { count: flaggedReferrals, error: cErr6 },
+    { count: openReports, error: cErr7 },
+    { count: openDisputes, error: cErr8 },
+    { count: openRefundRequests, error: cErr9 },
+    { count: unfulfilledOrders, error: cErr10 },
+    { count: unconfirmedRefunds, error: cErr11 },
+    { data: cronRuns, error: cronErr },
+    { count: deletionsStuck, error: cErr12 },
     voDue,
   ] = await Promise.all([
     supabase.from('profiles').select('*',{count:'exact',head:true}).eq('role','user').eq('is_deleted',false),
@@ -79,16 +58,20 @@ export default async function AdminPage() {
     // Paid but never credited, and old enough that the webhook/reconcile should have finished.
     supabase.from('orders').select('*',{count:'exact',head:true}).eq('payment_status','paid').eq('bandwidth_credited',false).eq('is_canary',false)
       .lt('created_at', new Date(now.getTime() - 15 * 60_000).toISOString()),
-    // Refunds Paystack accepted but did not confirm (written to the audit log by refund-order).
-    supabase.from('admin_audit_log').select('*',{count:'exact',head:true}).eq('action','order.refund_unconfirmed')
-      .gte('created_at', new Date(now.getTime() - 14 * 86_400_000).toISOString()),
+    // Refunds Paystack accepted but has not confirmed: the order still carries its refund lock
+    // (refund_requested_at), which the processed/failed webhook clears. This used to count
+    // 'order.refund_unconfirmed' audit rows, which are append-only and so never cleared.
+    supabase.from('orders').select('*',{count:'exact',head:true}).not('refund_requested_at','is',null),
     supabase.from('cron_task_runs').select('task, last_run_at, consecutive_failures'),
     // Account deletions that are failing, or finished with leftovers (migration 0075 / 0084).
     supabase.from('profiles').select('*',{count:'exact',head:true})
       .or('and(is_deleted.eq.false,deletion_attempts.gt.0,deletion_scheduled_at.not.is.null),and(is_deleted.eq.true,deletion_cleanup_pending.eq.true)'),
-    countVerifiedOperatorsDueForReview(supabase, now),
+    listVerifiedOperatorsDue(supabase, now),
   ])
   // Scheduled tasks failing now, or silent for ~3 missed ticks (same rule as the Settings panel).
+  // Every tile below is a count. A failed query used to read as 0 ("nothing needs attention").
+  const failedReads = [cErr0,cErr1,cErr2,cErr3,cErr4,cErr5,cErr6,cErr7,cErr8,cErr9,cErr10,cErr11,cErr12,recentErr,cronErr].filter(Boolean).length + (voDue.error ? 1 : 0)
+
   const failingTasks = (cronRuns ?? []).filter((r: any) => {
     const maxAge = CRON_MAX_AGE_SECONDS[r.task]
     return r.consecutive_failures > 0 || (!!maxAge && now.getTime() - new Date(r.last_run_at).getTime() > maxAge * 1000)
@@ -107,9 +90,9 @@ export default async function AdminPage() {
     { label: 'Open support reports', n: openReports ?? 0, href: '/admin/support' },
     { label: 'Open payment disputes', n: openDisputes ?? 0, href: '/admin/orders?status=disputed' },
     { label: 'Refund requests', n: openRefundRequests ?? 0, href: '/admin/orders?status=refund_requested' },
-    { label: 'Paid, bandwidth not credited', n: unfulfilledOrders ?? 0, href: '/admin/orders?status=unfulfilled' },
-    { label: 'Refunds to confirm (14 d)', n: unconfirmedRefunds ?? 0, href: '/admin/audit?q=order.refund_unconfirmed' },
-    { label: 'Verified Operator reviews due', n: voDue.n, href: '/admin/affiliates?vo=1' },
+    { label: 'Paid, not credited (over 15 min)', n: unfulfilledOrders ?? 0, href: '/admin/orders?status=unfulfilled' },
+    { label: 'Refunds awaiting Paystack', n: unconfirmedRefunds ?? 0, href: '/admin/orders?status=refund_in_flight' },
+    { label: 'Verified Operator reviews due', n: voDue.ids.length, href: '/admin/affiliates?due=1' },
     { label: 'Scheduled tasks failing', n: failingTasks, href: '/admin/settings' },
     { label: 'Account deletions needing attention', n: deletionsStuck ?? 0, href: '/admin/settings' },
   ]
@@ -120,6 +103,12 @@ export default async function AdminPage() {
         <h1 className="font-display font-bold text-2xl text-ink">Admin Overview</h1>
         <p className="text-muted text-sm mt-1">Platform health, finances, and controls</p>
       </div>
+
+      {failedReads > 0 && (
+        <div role="alert" className="bg-red-50 border border-red-200 text-red-600 text-xs font-mono rounded-xl px-4 py-3 mb-6">
+          {failedReads} of the figures below could not be loaded — a 0 here may not be a real 0. Reload before relying on the "Needs attention" tiles.
+        </div>
+      )}
 
       {!statsOk && (
         <div className="bg-red-50 border border-red-200 text-red-600 text-xs font-mono rounded-xl px-4 py-3 mb-6">

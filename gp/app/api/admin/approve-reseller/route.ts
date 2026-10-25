@@ -14,7 +14,7 @@ export async function POST(req: Request) {
   // up with reseller_status = 'pending' would be DEMOTED by an approval.)
   const result = await resolvePendingApplication({
     supabase: auth.supabase, adminId: auth.adminId, userId: body.userId,
-    statusColumn: 'reseller_status', requireRole: 'user',
+    statusColumn: 'reseller_status', requireRole: 'user', blockSuspended: true,
     updates: { role: 'reseller', reseller_status: 'approved' },
     audit: { action: 'reseller.approve' },
     email: {
