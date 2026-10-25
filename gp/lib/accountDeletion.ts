@@ -1,4 +1,4 @@
-import { deleteSubUser, listAllSubUsers, getSubUserUsage, GeonodeApiError } from '@/lib/geonode'
+import { deleteSubUser, listAllSubUsers, getSubUserUsage, UpstreamApiError } from '@/lib/upstream'
 import type { AdminSupabase } from '@/lib/adminAuth'
 import { anonymisedProfilePatch, rollbackProfilePatch } from '@/lib/accountPatch'
 import { BAN_FOREVER } from '@/lib/adminSuspend'
@@ -76,7 +76,7 @@ export async function releaseUpstreamSubUsers(
       }
       if (subUserId) await deleteSubUser(subUserId)
     } catch (e: any) {
-      if (!(e instanceof GeonodeApiError && e.status === 404)) {
+      if (!(e instanceof UpstreamApiError && e.status === 404)) {
         console.error('Failed to clean up upstream sub-user during account deletion', cred.id, e)
         failed.push({ id: cred.id, error: String(e?.message ?? e) })
         continue

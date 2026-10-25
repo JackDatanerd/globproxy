@@ -130,6 +130,8 @@ jobs:
           # 'enforce' turns the Content-Security-Policy-Report-Only header into an
           # enforcing Content-Security-Policy (next.config.ts). Unset = report-only.
           CSP_MODE: ${{ vars.CSP_MODE }}
+          # Promotes ONLY the signed-in nonce policy (dashboard/reseller/admin/invoice). Unset = follows CSP_MODE.
+          CSP_MODE_PROTECTED: ${{ vars.CSP_MODE_PROTECTED }}
 
       # The version that is live BEFORE this run changes anything. The smoke
       # test below rolls back to exactly this id. A bare `wrangler rollback`
@@ -225,6 +227,8 @@ jobs:
       #   REFERRAL_IP_SALT            salt for the hashed IPs kept for referral
       #                               fraud checks (falls back to CRON_SECRET).
       #   PASSWORD_BREACH_CHECK       `off` disables the breached-password lookup.
+      #   HEARTBEAT_URL               https URL an external monitor expects a GET from every
+      #                               5 minutes (the Worker pings it after a fully OK */5 chain).
       #   UPSTREAM_COST_PER_GB_USD    what a GB costs us wholesale, for the profit figures on
       #                               /admin and /admin/cycles. Kept out of the source on
       #                               purpose; unset, those pages say "not set" instead of
@@ -251,8 +255,9 @@ jobs:
           REFERRAL_IP_SALT: ${{ secrets.REFERRAL_IP_SALT }}
           PASSWORD_BREACH_CHECK: ${{ secrets.PASSWORD_BREACH_CHECK }}
           UPSTREAM_COST_PER_GB_USD: ${{ secrets.UPSTREAM_COST_PER_GB_USD }}
+          HEARTBEAT_URL: ${{ secrets.HEARTBEAT_URL }}
         run: |
-          names="TURNSTILE_SECRET_KEY MFA_ENCRYPTION_KEY MFA_ENCRYPTION_KEY_PREVIOUS INVOICE_SELLER_NAME INVOICE_SELLER_ADDRESS INVOICE_SELLER_TAX_ID SUPABASE_CAPTCHA_ENABLED REFERRAL_IP_SALT PASSWORD_BREACH_CHECK UPSTREAM_COST_PER_GB_USD"
+          names="TURNSTILE_SECRET_KEY MFA_ENCRYPTION_KEY MFA_ENCRYPTION_KEY_PREVIOUS INVOICE_SELLER_NAME INVOICE_SELLER_ADDRESS INVOICE_SELLER_TAX_ID SUPABASE_CAPTCHA_ENABLED REFERRAL_IP_SALT PASSWORD_BREACH_CHECK UPSTREAM_COST_PER_GB_USD HEARTBEAT_URL"
           for name in $names; do
             [ -z "${!name}" ] && echo "::notice::$name is not set in GitHub secrets — leaving the Worker's current value untouched"
           done

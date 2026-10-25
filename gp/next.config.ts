@@ -1,6 +1,7 @@
 import type { NextConfig } from 'next'
 import { buildCsp, cspHeaderName } from './lib/csp'
 import { unprotectedSource } from './lib/protectedPaths'
+import { SECURITY_HEADERS } from './lib/securityHeaders'
 
 // Content-Security-Policy. REPORT-ONLY by default: the browser evaluates every
 // rule below and posts violations to /api/csp-report (which logs them and counts
@@ -37,23 +38,14 @@ const nextConfig: NextConfig = {
   experimental: { serverActions: { allowedOrigins: ['globproxy.com', 'www.globproxy.com'] } },
   // The Worker has no CSP_MODE at runtime (it is a build variable), and middleware.ts
   // needs it to pick report-only vs enforcing for its nonce policy: inline it.
-  env: { CSP_MODE: process.env.CSP_MODE ?? '' },
+  env: { CSP_MODE: process.env.CSP_MODE ?? '', CSP_MODE_PROTECTED: process.env.CSP_MODE_PROTECTED ?? '' },
   // Don't announce the framework on every response.
   poweredByHeader: false,
   async headers() {
     return [
       {
         source: '/:path*',
-        headers: [
-          { key: 'Strict-Transport-Security', value: 'max-age=63072000; includeSubDomains' },
-          { key: 'X-Content-Type-Options', value: 'nosniff' },
-          { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
-          { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
-          { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), payment=(self "https://checkout.paystack.com")' },
-          // allow-popups, not same-origin: payment and verification widgets may
-          // open windows that must keep a reference back to this page.
-          { key: 'Cross-Origin-Opener-Policy', value: 'same-origin-allow-popups' },
-        ],
+        headers: SECURITY_HEADERS.map(([key, value]) => ({ key, value })),
       },
       // The static CSP, on everything EXCEPT the signed-in areas: middleware.ts sets
       // its own per-request-nonce policy there, and sending both would have the browser

@@ -3,6 +3,7 @@ import { timingSafeEqual } from 'crypto'
 import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { createAdminClient } from '@/lib/supabase/server'
 import { rateLimited, missingRateLimiters } from '@/lib/rateLimit'
+import { CRON_MAX_AGE_SECONDS, STOCK_TASK_MAX_AGE_SECONDS } from '@/lib/cronHealth'
 
 // Health / readiness probe. Used by the deploy workflow right after a deploy
 // (it rolls the Worker back if this reports the new version as broken) and
@@ -20,12 +21,12 @@ export const dynamic = 'force-dynamic'
 const DB_TIMEOUT_MS = 3000
 
 // [label shown to callers, environment variable the app reads]
-const REQUIRED_ENV: [string, string][] = [
+const REQUIRED_ENV: [string, string, string?][] = [
   ['SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL'],
   ['SUPABASE_ANON_KEY', 'NEXT_PUBLIC_SUPABASE_ANON_KEY'],
   ['SUPABASE_SERVICE_KEY', 'SUPABASE_SERVICE_ROLE_KEY'],
-  ['UPSTREAM_API_KEY', 'GEONODE_API_KEY'],
-  ['UPSTREAM_RESELLER_ID', 'GEONODE_RESELLER_ID'],
+  ['UPSTREAM_API_KEY', 'UPSTREAM_API_KEY', 'GEONODE_API_KEY'],
+  ['UPSTREAM_RESELLER_ID', 'UPSTREAM_RESELLER_ID', 'GEONODE_RESELLER_ID'],
   ['PAYSTACK_SECRET_KEY', 'PAYSTACK_SECRET_KEY'],
   ['RESEND_API_KEY', 'RESEND_API_KEY'],
   ['CRON_SECRET', 'CRON_SECRET'],
@@ -60,6 +61,27 @@ function hasSecret(req: Request): boolean {
   return timingSafeEqual(Buffer.from(given), Buffer.from(expected))
 }
 
+// Scheduled tasks that have not reported inside their window. Read-only (unlike
+// checkCronFreshness it neither emails nor stamps an alert), so an external uptime monitor can
+// poll it as often as it likes. 'usage' runs every 5 minutes: 20 minutes is four missed ticks.
+const DEEP_MAX_AGES: Record<string, number> = { ...CRON_MAX_AGE_SECONDS, stock: STOCK_TASK_MAX_AGE_SECONDS, usage: 20 * 60 }
+
+async function staleCronTasks(): Promise<string[] | null> {
+  try {
+    const admin = await createAdminClient()
+    const { data, error } = await admin.from('cron_task_runs').select('task, last_run_at')
+    if (error || !data) return null
+    const seen = new Map(data.map((r) => [r.task as string, new Date(r.last_run_at as string).getTime()]))
+    const now = Date.now()
+    // A task with no row at all has never reported: that is stale too (a trigger that never fired).
+    return Object.entries(DEEP_MAX_AGES)
+      .filter(([task, maxS]) => { const at = seen.get(task); return at === undefined || !(now - at <= maxS * 1000) })
+      .map(([task]) => task)
+  } catch {
+    return null
+  }
+}
+
 async function databaseReachable(): Promise<boolean> {
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
@@ -81,7 +103,7 @@ export async function GET(req: Request) {
   const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', 'health')
   if (limited) return limited
 
-  const missing = REQUIRED_ENV.filter(([, name]) => !process.env[name]?.trim()).map(([label]) => label)
+  const missing = REQUIRED_ENV.filter(([, name, alt]) => !process.env[name]?.trim() && !(alt && process.env[alt]?.trim())).map(([label]) => label)
   const database = await databaseReachable()
   // A missing rate-limit binding silently disables that limiter, so on a real
   // deploy it counts as broken. null = not on Workers (local dev): not checked.
@@ -98,14 +120,24 @@ export async function GET(req: Request) {
       rate_limiters: limitersOk ? 'ok' : 'fail',
     },
   }
+  let status = ok ? 200 : 503
   if (hasSecret(req)) {
+    // ?deep=1 (secret holders only — the deploy smoke test does not send it, so a task that is
+    // merely late right after a deploy can never trigger a rollback): also report the scheduler.
+    // Point an external uptime monitor at /api/health?deep=1 with the x-cron-secret header.
+    if (new URL(req.url).searchParams.get('deep') === '1') {
+      const stale = await staleCronTasks()
+      body.cron = stale === null ? 'unknown' : stale.length ? 'stale' : 'ok'
+      if (stale?.length) body.stale_tasks = stale
+      if (stale === null || stale.length) status = 503
+    }
     if (missing.length) body.missing = missing
     if (noLimiters?.length) body.missing_limiters = noLimiters
     const warnings = RECOMMENDED_ENV.filter(([, name]) => !process.env[name]?.trim()).map(([label]) => label)
     if (warnings.length) body.warnings = warnings
   }
 
-  return NextResponse.json(body, { status: ok ? 200 : 503, headers: { 'Cache-Control': 'no-store' } })
+  return NextResponse.json(body, { status, headers: { 'Cache-Control': 'no-store' } })
 }
 
 export async function HEAD(req: Request) {

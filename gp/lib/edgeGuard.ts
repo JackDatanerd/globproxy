@@ -115,19 +115,27 @@ export async function limitBody(request: Request, max: number = MAX_API_BODY_BYT
   return { ok: true, request: new Request(request, { body }) }
 }
 
+// Same rule the v1 routes use (lib/apiHelpers.ts withApiAuth): a caller-supplied X-Request-Id
+// of up to 64 safe characters is honoured, anything else is replaced.
+export function edgeRequestId(supplied: string | null | undefined): string {
+  if (supplied && /^[A-Za-z0-9_\-.:]{1,64}$/.test(supplied)) return supplied
+  return `req_${crypto.randomUUID().replace(/-/g, '').slice(0, 20)}`
+}
+
 // Carries the same machine-readable `code` every /api/v1 error has, so a client
-// that switches on `code` is not surprised by a bare `{ error }` from the edge.
-export function guardResponse(verdict: { status: number; error: string }): Response {
+// that switches on `code` is not surprised by a bare `{ error }` from the edge, and the
+// X-Request-Id the docs promise on EVERY response.
+export function guardResponse(verdict: { status: number; error: string }, requestId?: string): Response {
   const code = verdict.status === 413 ? 'payload_too_large' : verdict.status === 400 ? 'invalid_request' : 'forbidden'
-  return new Response(JSON.stringify({ error: verdict.error, code }), {
-    status: verdict.status,
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Cache-Control': 'no-store',
     // These answers are produced in the Worker, ahead of Next, so the headers
     // next.config.ts adds to every app response are not applied to them.
-    headers: {
-      'Content-Type': 'application/json',
-      'Cache-Control': 'no-store',
-      'X-Content-Type-Options': 'nosniff',
-      'Strict-Transport-Security': 'max-age=63072000; includeSubDomains',
-    },
-  })
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'SAMEORIGIN',
+    'Strict-Transport-Security': 'max-age=63072000; includeSubDomains',
+  }
+  if (requestId) headers['X-Request-Id'] = requestId
+  return new Response(JSON.stringify({ error: verdict.error, code }), { status: verdict.status, headers })
 }

@@ -1,4 +1,4 @@
-import { getPeriodStats, MAX_STATS_GRANULARITY_UNITS } from '@/lib/geonode'
+import { getPeriodStats, MAX_STATS_GRANULARITY_UNITS } from '@/lib/upstream'
 import { withApiAuth } from '@/lib/apiHelpers'
 import { allowApiRequest } from '@/lib/rateLimit'
 import { apiError } from '@/lib/apiAuth'

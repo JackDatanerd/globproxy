@@ -1,4 +1,4 @@
-import { getAccountBalance } from '@/lib/geonode'
+import { getAccountBalance } from '@/lib/upstream'
 import { fetchAllRows } from '@/lib/dbPaging'
 
 export interface StockStatus {

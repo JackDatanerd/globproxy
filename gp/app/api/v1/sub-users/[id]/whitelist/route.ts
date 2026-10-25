@@ -1,6 +1,6 @@
 import { withApiAuth, readJsonBody } from '@/lib/apiHelpers'
 import { apiError } from '@/lib/apiAuth'
-import { listWhitelistedIps, addWhitelistedIp, removeWhitelistedIp } from '@/lib/geonode'
+import { listWhitelistedIps, addWhitelistedIp, removeWhitelistedIp } from '@/lib/upstream'
 import { isValidIp, validateIpForAdd, validateDescription, notifyWhitelistChanged } from '@/lib/ipWhitelist'
 import { getOwnedCredential } from '@/lib/credentials'
 import { mirrorWhitelist, whitelistFailure } from '@/lib/whitelistMirror'

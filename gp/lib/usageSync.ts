@@ -1,5 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/server'
-import { listAllSubUsers, getSubUserUsage, updateSubUserTrafficLimit, deleteSubUser, type SubUserSnapshot } from '@/lib/geonode'
+import { listAllSubUsers, getSubUserUsage, updateSubUserTrafficLimit, deleteSubUser, type SubUserSnapshot } from '@/lib/upstream'
 import { runAutoTopups } from '@/lib/autoTopup'
 import { fetchAllRows } from '@/lib/dbPaging'
 import { recordUsageDeltas } from '@/lib/usageLedger'

@@ -101,3 +101,24 @@ export function classifySession(cookieHeader: string | null | undefined, nowMs: 
   }
   return sawReadable ? 'fresh' : 'unreadable'
 }
+
+/**
+ * The Cookie header with every Supabase session cookie (sb-<ref>-auth-token and its .N
+ * chunks) removed, or null when nothing else is left. The PKCE verifier cookie and every
+ * other cookie stay. Used by the Worker's refresh brake to carry on as an anonymous visitor
+ * instead of answering 429: a signed-out view of a page, or the login form, is a better
+ * outcome than a wall for someone whose only problem is an expired cookie on a busy network.
+ */
+export function stripSessionCookies(cookieHeader: string | null | undefined): string | null {
+  if (!cookieHeader) return null
+  const kept: string[] = []
+  for (const part of cookieHeader.split(';')) {
+    const trimmed = part.trim()
+    if (!trimmed) continue
+    const eq = trimmed.indexOf('=')
+    const name = (eq === -1 ? trimmed : trimmed.slice(0, eq)).trim()
+    if (SESSION_COOKIE.test(name)) continue
+    kept.push(trimmed)
+  }
+  return kept.length ? kept.join('; ') : null
+}

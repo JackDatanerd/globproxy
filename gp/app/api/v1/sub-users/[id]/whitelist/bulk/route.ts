@@ -1,6 +1,6 @@
 import { withApiAuth, readJsonBody } from '@/lib/apiHelpers'
 import { apiError } from '@/lib/apiAuth'
-import { bulkAddWhitelistedIps, bulkRemoveWhitelistedIps } from '@/lib/geonode'
+import { bulkAddWhitelistedIps, bulkRemoveWhitelistedIps } from '@/lib/upstream'
 import { isValidIp, validateIpForAdd, validateDescription, notifyWhitelistChanged, MAX_BULK_ITEMS } from '@/lib/ipWhitelist'
 import { getOwnedCredential } from '@/lib/credentials'
 import { mirrorWhitelist, whitelistFailure } from '@/lib/whitelistMirror'

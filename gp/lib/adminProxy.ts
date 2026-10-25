@@ -1,5 +1,5 @@
 import type { AdminSupabase } from '@/lib/adminAuth'
-import { getSubUserUsage, updateSubUserTrafficLimit } from '@/lib/geonode'
+import { getSubUserUsage, updateSubUserTrafficLimit } from '@/lib/upstream'
 import { syncUserUsage } from '@/lib/usageSync'
 import { dispatchWebhook } from '@/lib/webhooks'
 

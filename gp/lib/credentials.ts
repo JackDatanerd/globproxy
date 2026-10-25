@@ -2,8 +2,8 @@ import { createAdminClient } from '@/lib/supabase/server'
 import { leaksSupplier } from '@/lib/supplierGuard'
 import {
   createSubUser, createOrAdoptSubUser, memoizedSubUserLookup, newUpstreamIdentity, deleteSubUser, getSubUserUsage, updateSubUserTrafficLimit, updateSubUserPassword,
-  classifyUpstreamError, GeonodeApiError, subUserExists, type UpstreamReason, type UpstreamIdentity, PROXY_HOST,
-} from '@/lib/geonode'
+  classifyUpstreamError, UpstreamApiError, upstreamConfigured, subUserExists, type UpstreamReason, type UpstreamIdentity, PROXY_HOST,
+} from '@/lib/upstream'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { appUrl } from '@/lib/appUrl'
 import { buildProxyUsername, getProxyPort, deriveSessionId } from '@/lib/proxyEndpoint'
@@ -36,7 +36,7 @@ export type CredResult<T> = { ok: true; data: T } | CredFail
 const fail = (status: number, code: CredErrorCode, message: string): CredFail => ({ ok: false, status, code, message })
 
 export function providerConfigured(): boolean {
-  return !!(process.env.GEONODE_API_KEY && process.env.GEONODE_RESELLER_ID)
+  return upstreamConfigured()
 }
 
 // Mirrors enforce_credential_limit() (migration 0046).
@@ -78,7 +78,7 @@ export function toDashboardCredential(row: Record<string, any>): Record<string, 
 }
 
 export function toApiCredential(c: any) {
-  // Second line of defence behind the check at provisioning (lib/geonode.ts): a
+  // Second line of defence behind the check at provisioning (lib/upstream.ts): a
   // stored username that names the supplier is never handed to a customer. They get
   // a credential that reads as "not ready" and the operator gets a log line.
   if (leaksSupplier(c?.upstream_username)) {
@@ -144,7 +144,7 @@ const errMsg = (e: unknown) => {
   const status = (e as any)?.status
   return typeof status === 'number' ? `upstream_error_${status}` : 'provision_failed'
 }
-const isGone = (e: unknown) => e instanceof GeonodeApiError && e.status === 404
+const isGone = (e: unknown) => e instanceof UpstreamApiError && e.status === 404
 
 // ── Create ────────────────────────────────────────────────────────────
 export async function createCredential(
@@ -167,7 +167,7 @@ export async function createCredential(
 
   // Soft pre-check of the per-account cap (the database trigger from
   // migration 0046 is the authoritative, race-free enforcement). Without
-  // this a user at the cap would reserve bandwidth and create a real Geonode
+  // this a user at the cap would reserve bandwidth and create a real Upstream
   // sub-user only to have the insert rejected and everything unwound.
   const { count: liveCount } = await admin
     .from('proxy_credentials').select('id', { count: 'exact', head: true })
@@ -200,7 +200,7 @@ export async function createCredential(
   }
 
   try {
-    // 2. Geonode. A failure leaves the credential 'pending' (the reservation
+    // 2. Upstream. A failure leaves the credential 'pending' (the reservation
     // stands); the 'provision' cron task retries it with backoff.
     let gcred: Awaited<ReturnType<typeof createSubUser>> | null = null
     let status: 'active' | 'pending' = 'pending'
@@ -224,7 +224,7 @@ export async function createCredential(
       } catch (e) {
         provisionError = errMsg(e) // neutral code (see errMsg) — raw detail is logged below
         pendingReason = classifyUpstreamError(e)
-        console.error('[credentials] Geonode createSubUser failed — leaving credential pending:', pendingReason, e)
+        console.error('[credentials] Upstream createSubUser failed — leaving credential pending:', pendingReason, e)
       }
     } else {
       provisionError = 'provider_not_configured'
@@ -274,7 +274,7 @@ export async function createCredential(
       console.error('[credentials] insert failed', insertErr)
       if (gcred) {
         await deleteSubUser(gcred.upstream_sub_user_id).catch((e) =>
-          console.error('[credentials] FAILED to clean up orphaned Geonode sub-user', gcred?.upstream_sub_user_id, e))
+          console.error('[credentials] FAILED to clean up orphaned Upstream sub-user', gcred?.upstream_sub_user_id, e))
       }
       await release('insert failure')
       // Lost the race to a concurrent attempt with the SAME Idempotency-Key:
@@ -324,7 +324,7 @@ export async function createCredential(
 // ── Delete ────────────────────────────────────────────────────────────
 // Ordering guarantees (shared with the dashboard route and DELETE
 // /api/v1/sub-users/:id):
-//   1. the upstream (Geonode) delete must succeed — or the sub-user already
+//   1. the upstream (provider) delete must succeed — or the sub-user already
 //      be gone (404) — BEFORE any local record changes. A transient
 //      upstream failure used to be swallowed: the row was deleted and the
 //      unused GB released while the sub-user kept working with its cap.
@@ -403,7 +403,7 @@ export async function deleteCredential(
 }
 
 // ── Top-up ────────────────────────────────────────────────────────────
-// A failed live Geonode PATCH is recorded on the row (last_provision_error =
+// A failed live Upstream PATCH is recorded on the row (last_provision_error =
 // LIMIT_SYNC) so the 'provision' cron task retries it, instead of "needs
 // manual reconciliation" with nothing watching.
 export const LIMIT_SYNC_MARKER = 'LIMIT_SYNC'
@@ -430,10 +430,10 @@ export function expectedLimitMb(gbAllocated: number): number {
   return Math.max(1, Math.round(Number(gbAllocated) * 1024))
 }
 
-// Brings Geonode's live cap in line with the database for ONE credential.
+// Brings the provider's live cap in line with the database for ONE credential.
 //
 //   1. read gb_allocated fresh,  2. PATCH it,  3. read it again — if a
-//   concurrent top-up committed while we were talking to Geonode, PATCH the
+//   concurrent top-up committed while we were talking to Upstream, PATCH the
 //   newer value too (bounded to 2 rounds; the usage-sync reconciler heals
 //   anything beyond that on the next tick).
 //
@@ -452,7 +452,7 @@ export async function syncCredentialLimit(admin: Admin, credentialId: string): P
       // trafficLimitMB only — NEVER activeUntil (it resets usage upstream).
       await updateSubUserTrafficLimit(cred.upstream_sub_user_id, expectedLimitMb(sent))
     } catch (e) {
-      console.error('[credentials] DB committed but Geonode limit PATCH failed — queued for automatic retry', credentialId, e)
+      console.error('[credentials] DB committed but Upstream limit PATCH failed — queued for automatic retry', credentialId, e)
       await markLimitSyncNeeded(admin, credentialId)
       return 'Your allocation was updated, but applying it to the live proxy failed. It will be retried automatically; contact support if it doesn\u2019t resolve shortly.'
     }
@@ -492,7 +492,7 @@ export async function topupCredential(
 
   const newTotal = Number(rawNewTotal)
 
-  // Push the CURRENT database allocation to Geonode — not `newTotal`. Two
+  // Push the CURRENT database allocation to Upstream — not `newTotal`. Two
   // concurrent top-ups each PATCH an absolute number; if the older request's
   // PATCH lands last the live cap ends up BELOW what the database (and the
   // customer) says, the PATCH "succeeds", and nothing is marked for retry.
@@ -640,7 +640,7 @@ export async function reconcileLimitSync(limit = 5): Promise<{ checked: number; 
 
 // ── Edit in place ─────────────────────────────────────────────────────
 // Label, targeting, protocol, session type, sticky lifetime and endpoint
-// count, WITHOUT delete + recreate. Nothing here touches Geonode: targeting
+// count, WITHOUT delete + recreate. Nothing here touches Upstream: targeting
 // lives in the connection username and the stored port is a pure function of
 // (protocol, session_type). Shared by PATCH /api/v1/sub-users/:id and PATCH
 // /api/dashboard/proxies/:id (the dashboard had no edit at all — moving a
@@ -649,7 +649,7 @@ export async function reconcileLimitSync(limit = 5): Promise<{ checked: number; 
 //
 // Changing the country clears a dependent state/city that the caller didn't
 // also send: merging them onto the new country (e.g. country=de with the old
-// state=california) produced a username Geonode can't match.
+// state=california) produced a username Upstream can't match.
 const normGeo = (v: unknown): string | null => {
   if (v === undefined || v === null) return null
   const t = String(v).trim().toLowerCase().replace(/[^a-z0-9]/g, '')

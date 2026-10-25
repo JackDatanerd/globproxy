@@ -45,8 +45,9 @@
 
 // @ts-ignore `.open-next/worker.js` is generated at build time
 import { default as handler } from './.open-next/worker.js'
-import { guardApiRequest, guardResponse, limitBody } from './lib/edgeGuard'
-import { classifySession } from './lib/sessionProbe'
+import { guardApiRequest, guardResponse, limitBody, edgeRequestId } from './lib/edgeGuard'
+import { classifySession, stripSessionCookies } from './lib/sessionProbe'
+import { SECURITY_HEADERS } from './lib/securityHeaders'
 import { clientKeyFromHeader } from './lib/ipParse'
 import { cookiesAreBenign, cacheAge } from './lib/edgeCache'
 
@@ -179,11 +180,14 @@ function appOriginOf(env: any): string | undefined {
 // response: rotated passwords, generated credentials, payout details). next.config
 // only marks /api/admin as no-store and just a handful of routes set their own
 // Cache-Control, so a browser or an intermediary was free to keep the rest. A route
-// that sets its own Cache-Control keeps it; everything else gets no-store.
-function withDefaultNoStore(res: Response): Response {
-  if (res.headers.has('cache-control')) return res
+// that sets its own Cache-Control keeps it; everything else gets no-store. Every answer
+// also carries an X-Request-Id (the docs promise it on every response): a route that
+// already set one (the v1 routes) keeps it.
+function finishApiResponse(res: Response, requestId: string): Response {
+  if (res.headers.has('cache-control') && res.headers.has('x-request-id')) return res
   const out = new Response(res.body, res)
-  out.headers.set('Cache-Control', 'no-store')
+  if (!out.headers.has('cache-control')) out.headers.set('Cache-Control', 'no-store')
+  if (!out.headers.has('x-request-id')) out.headers.set('X-Request-Id', requestId)
   return out
 }
 
@@ -191,7 +195,20 @@ function withDefaultNoStore(res: Response): Response {
 // (lib/sessionProbe.ts explains why). A real browser does that about once an hour, so
 // the budget is tiny: SESSION_REFRESH_RATE_LIMITER, per client address. Fails open — a
 // missing binding or a limiter error never blocks anyone.
-async function sessionRefreshBrake(request: Request, url: URL, env: any): Promise<Response | null> {
+//
+// Over budget, a PAGE or sign-in request is not refused: its stale session cookies are
+// dropped and it carries on as an anonymous visitor (a protected page redirects to the login
+// form, which is what an expired session needs anyway). A hard 429 there locked everyone with
+// an expired cookie out of the login page and the login endpoint itself, which on a shared
+// carrier address (many subscribers behind one IPv4) is exactly when they all come back at
+// once. Other /api/* calls still get the 429: they are the ones a script can hammer.
+type Brake = { response: Response } | { request: Request } | null
+
+function degradesToAnonymous(pathname: string): boolean {
+  return !pathname.startsWith('/api/') || pathname.startsWith('/api/auth/')
+}
+
+async function sessionRefreshBrake(request: Request, url: URL, env: any, requestId: string): Promise<Brake> {
   try {
     if (classifySession(request.headers.get('cookie'), Date.now()) !== 'refresh') return null
     const limiter = env?.SESSION_REFRESH_RATE_LIMITER as { limit: (o: { key: string }) => Promise<{ success: boolean }> } | undefined
@@ -204,17 +221,22 @@ async function sessionRefreshBrake(request: Request, url: URL, env: any): Promis
     console.error('[session-brake] check failed, allowing request through', e)
     return null
   }
-  const api = url.pathname.startsWith('/api/')
+  if (degradesToAnonymous(url.pathname)) {
+    const headers = new Headers(request.headers)
+    const cookie = stripSessionCookies(headers.get('cookie'))
+    if (cookie) headers.set('cookie', cookie)
+    else headers.delete('cookie')
+    return { request: new Request(request, { headers }) }
+  }
   const message = 'Too many requests. Please try again in a minute.'
-  return new Response(api ? JSON.stringify({ error: message, code: 'rate_limited' }) : message, {
-    status: 429,
-    headers: {
-      'Content-Type': api ? 'application/json' : 'text/plain; charset=utf-8',
-      'Retry-After': '60',
-      'Cache-Control': 'no-store',
-      'X-Content-Type-Options': 'nosniff',
-    },
-  })
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Retry-After': '60',
+    'Cache-Control': 'no-store',
+    'X-Request-Id': requestId,
+  }
+  for (const [k, v] of SECURITY_HEADERS) headers[k] = v
+  return { response: new Response(JSON.stringify({ error: message, code: 'rate_limited' }), { status: 429, headers }) }
 }
 
 let warnedNoVersion = false
@@ -260,24 +282,30 @@ async function fetchWithEdgeCache(request: Request, env: any, ctx: any): Promise
     return handler.fetch(request, env, ctx)
   }
 
+  const isApi = url.pathname.startsWith('/api/')
+  const requestId = isApi ? edgeRequestId(request.headers.get('x-request-id')) : ''
+
   // Before anything else (and before a body is buffered): a request that would make the
   // app refresh a session against Supabase Auth gets a per-address budget.
-  const braked = await sessionRefreshBrake(request, url, env)
-  if (braked) return braked
+  const braked = await sessionRefreshBrake(request, url, env, requestId)
+  if (braked) {
+    if ('response' in braked) return braked.response
+    request = braked.request
+  }
 
   // Request guard for /api/*: body-size cap and same-origin enforcement for
   // state-changing calls (see lib/edgeGuard.ts for what is exempt and why).
   const verdict = guardApiRequest(request, url, appOriginOf(env))
-  if (verdict) return guardResponse(verdict)
-  if (url.pathname.startsWith('/api/')) {
+  if (verdict) return guardResponse(verdict, requestId)
+  if (isApi) {
     const limited = await limitBody(request)
-    if (!limited.ok) return guardResponse(limited.verdict)
+    if (!limited.ok) return guardResponse(limited.verdict, requestId)
     request = limited.request
   }
 
   if (!isEdgeCacheable(request, url)) {
     const res: Response = await handler.fetch(request, env, ctx)
-    return url.pathname.startsWith('/api/') ? withDefaultNoStore(res) : res
+    return isApi ? finishApiResponse(res, requestId) : res
   }
 
   // One synthetic key per path AND deployed version: the real request's
@@ -351,8 +379,34 @@ export default {
     // waitUntil so the scheduled invocation doesn't get torn down before
     // the chain (and everything each step awaits — email sends, upstream-provider
     // calls, Supabase writes) actually finishes.
-    ctx.waitUntil(runTaskChain(base, env.CRON_SECRET ?? '', tasks, handler, env, ctx, INDEPENDENT_CHAINS.has(event.cron)))
+    ctx.waitUntil(
+      runTaskChain(base, env.CRON_SECRET ?? '', tasks, handler, env, ctx, INDEPENDENT_CHAINS.has(event.cron)).then(async (allOk) => {
+        // Dead-man's switch: every watchdog in the app runs INSIDE this cron chain, so if the
+        // triggers stop (a deploy that drops them, a suspended account, a platform fault) nothing
+        // in the app can say so. An external monitor (Healthchecks.io, Better Stack, ...) that
+        // expects this ping every few minutes can. Sent only when the whole 5-minute chain
+        // answered OK, so a chain that keeps failing goes quiet and alerts too.
+        if (allOk && event.cron === HEARTBEAT_CRON && env.HEARTBEAT_URL) await pingHeartbeat(String(env.HEARTBEAT_URL))
+      })
+    )
   },
+}
+
+// The chain whose completion proves the scheduler is alive (CRON_TASKS' fastest cadence).
+const HEARTBEAT_CRON = '*/5 * * * *'
+
+async function pingHeartbeat(raw: string): Promise<void> {
+  try {
+    const u = new URL(raw)
+    if (u.protocol !== 'https:') {
+      console.error('[heartbeat] HEARTBEAT_URL must be https — not pinging')
+      return
+    }
+    const res = await fetch(u.href, { method: 'GET', signal: AbortSignal.timeout(5000) })
+    if (!res.ok) console.error('[heartbeat] monitor answered', res.status)
+  } catch (e) {
+    console.error('[heartbeat] ping failed', e)
+  }
 }
 
 // Looks for an `error` string anywhere in the first few levels of a task's
@@ -405,7 +459,8 @@ async function runTaskChain(
   env: any,
   ctx: any,
   continueOnFailure = false
-) {
+): Promise<boolean> {
+  let allOk = true
   for (const task of tasks) {
     const req = new Request(`${base}/api/cron/${task}`, {
       method: 'POST',
@@ -415,7 +470,8 @@ async function runTaskChain(
       const res: Response = await handler.fetch(req, env, ctx)
       if (!res.ok) {
         console.error(`[scheduled] cron task "${task}" returned ${res.status}:`, await res.text().catch(() => ''))
-        if (!continueOnFailure) return // stop the chain, matching needs:
+        allOk = false
+        if (!continueOnFailure) return false // stop the chain, matching needs:
         continue
       }
       // Several tasks (reconcile, provision, webhooks, …) catch their own
@@ -428,7 +484,9 @@ async function runTaskChain(
       if (reported) console.error(`[scheduled] cron task "${task}" finished but reported an error:`, reported)
     } catch (e) {
       console.error(`[scheduled] cron task "${task}" threw:`, e)
-      if (!continueOnFailure) return // stop the chain, matching needs:
+      allOk = false
+      if (!continueOnFailure) return false // stop the chain, matching needs:
     }
   }
+  return allOk
 }

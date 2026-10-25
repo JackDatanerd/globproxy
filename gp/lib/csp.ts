@@ -21,12 +21,17 @@ export function supabaseOrigins(): string[] {
   return [...new Set(out)]
 }
 
-export function cspEnforced(): boolean {
+// `signedIn` is the nonce policy on /dashboard, /reseller, /admin and /invoice. It can be
+// promoted on its own (CSP_MODE_PROTECTED=enforce) BEFORE the public policy: the signed-in
+// areas are where an injected script does real damage, and their policy has no 'unsafe-inline'
+// to get wrong. Unset, it follows CSP_MODE, so existing deployments behave exactly as before.
+export function cspEnforced(signedIn = false): boolean {
+  if (signedIn && process.env.CSP_MODE_PROTECTED) return process.env.CSP_MODE_PROTECTED === 'enforce'
   return process.env.CSP_MODE === 'enforce'
 }
 
-export function cspHeaderName(): 'Content-Security-Policy' | 'Content-Security-Policy-Report-Only' {
-  return cspEnforced() ? 'Content-Security-Policy' : 'Content-Security-Policy-Report-Only'
+export function cspHeaderName(signedIn = false): 'Content-Security-Policy' | 'Content-Security-Policy-Report-Only' {
+  return cspEnforced(signedIn) ? 'Content-Security-Policy' : 'Content-Security-Policy-Report-Only'
 }
 
 // Without a nonce: the policy for public, cacheable pages. script-src keeps

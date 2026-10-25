@@ -2,7 +2,7 @@ import { requireMfaVerified } from '@/lib/mfa'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { rateLimited, rateLimitedUser } from '@/lib/rateLimit'
-import { getPeriodStats, getHostCountryStatsWithMeta, GeonodeApiError, type PeriodStat, type HostCountryStat } from '@/lib/geonode'
+import { getPeriodStats, getHostCountryStatsWithMeta, UpstreamApiError, type PeriodStat, type HostCountryStat } from '@/lib/upstream'
 import { toCsv, csvResponse } from '@/lib/csv'
 import { NextResponse } from 'next/server'
 
@@ -126,7 +126,7 @@ function buildBreakdown(rows: { label: string; stats: HostCountryStat[] }[]): Br
 }
 
 function geonodeStatsErrorResponse(e: unknown): NextResponse {
-  if (e instanceof GeonodeApiError) {
+  if (e instanceof UpstreamApiError) {
     if (e.status === 401 || e.status === 403) {
       console.error('Geonode rejected reseller API key on stats call:', e.status, e.body)
       return NextResponse.json(

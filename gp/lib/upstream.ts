@@ -2,14 +2,20 @@ import { getProxyPort } from '@/lib/proxyEndpoint'
 import { leaksSupplier } from '@/lib/supplierGuard'
 
 const BASE = 'https://app-api.geonode.com/api/reseller/v2'
-const KEY = process.env.GEONODE_API_KEY!
-const RESELLER_ID = process.env.GEONODE_RESELLER_ID!
+const KEY = (process.env.UPSTREAM_API_KEY ?? process.env.GEONODE_API_KEY)!
+const RESELLER_ID = (process.env.UPSTREAM_RESELLER_ID ?? process.env.GEONODE_RESELLER_ID)!
+// Preferred names first; the legacy secret names keep working until the Worker and
+// GitHub secrets have been renamed (see FIX_PACKAGE_edge-pipeline-pass8.md).
+export function upstreamConfigured(): boolean {
+  return !!((process.env.UPSTREAM_API_KEY ?? process.env.GEONODE_API_KEY) && (process.env.UPSTREAM_RESELLER_ID ?? process.env.GEONODE_RESELLER_ID))
+}
+
 const SERVICE_TYPE = 'RESIDENTIAL-PREMIUM'
 
-// White-label host — always expose this to users, never residential.geonode.com
+// White-label host — always expose this to users, never the provider's own host
 export const PROXY_HOST = 'proxy.globproxy.com'
 
-// Confirmed against the live OpenAPI spec (app-api.geonode.com/api/docs/reseller-api):
+// Confirmed against the live OpenAPI spec (the provider's reseller API docs):
 // the header is a literal custom header, NOT "r-api-key" and NOT "Authorization: Bearer".
 // Both of those were tried and failed (401 "Authorization is not provided" /
 // "Invalid or expired JWT token") before this was confirmed from the real spec.
@@ -27,7 +33,7 @@ function mbToGb(mb: number): number {
   return Math.round((mb / 1024) * 10000) / 10000
 }
 
-// Every Geonode call goes through this. Without a timeout a hung upstream
+// Every Upstream call goes through this. Without a timeout a hung upstream
 // holds the Worker open until the platform kills it — and createCredential
 // has a bandwidth reservation committed by then (a kill between the reserve
 // and the insert leaks it permanently).
@@ -74,13 +80,13 @@ export interface GCred {
 export interface CreateSubUserParams {
   label: string
   gb_limit: number
-  // NOTE: Geonode's sub-user creation endpoint does not accept country, state,
+  // NOTE: the provider's sub-user creation endpoint does not accept country, state,
   // city, protocol, or session_type — confirmed from the live spec, which only
-  // takes username/password/trafficLimitMB/activeUntil/email. Geonode applies
+  // takes username/password/trafficLimitMB/activeUntil/email. Upstream applies
   // geo-targeting and session control by suffixing options onto the username
   // at connection time (e.g. "user-country-us-session-abc123"), not at
   // creation time. These fields are accepted here so calling code doesn't
-  // need to change yet, but they are currently NOT sent to Geonode and NOT
+  // need to change yet, but they are currently NOT sent to Upstream and NOT
   // applied anywhere. If GlobProxy needs per-credential targeting to actually
   // work, the connection-string builder (wherever proxy.globproxy.com
   // credentials are displayed/exported to the customer) needs to encode these
@@ -119,7 +125,7 @@ export async function createSubUser(p: CreateSubUserParams, identity?: UpstreamI
   // sticky vs rotating at all. See lib/proxyEndpoint.ts for the confirmed values.
   const port = getProxyPort(p.protocol, p.session_type)
 
-  // A limit that rounds to 0 MB must never reach Geonode: depending on the
+  // A limit that rounds to 0 MB must never reach Upstream: depending on the
   // provider's semantics 0 can mean "unlimited". The validators enforce a
   // 0.01 GB minimum; this is the backstop for any caller that skips them.
   const trafficLimitMB = Math.round(p.gb_limit * 1024)
@@ -140,21 +146,21 @@ export async function createSubUser(p: CreateSubUserParams, identity?: UpstreamI
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    // GeonodeApiError so callers can classify the failure (capacity vs auth
+    // UpstreamApiError so callers can classify the failure (capacity vs auth
     // vs outage) without regex-parsing a message string.
-    throw new GeonodeApiError(`Geonode createSubUser failed: ${res.status} ${JSON.stringify(err)}`, res.status, err)
+    throw new UpstreamApiError(`Upstream createSubUser failed: ${res.status} ${JSON.stringify(err)}`, res.status, err)
   }
 
   const d = await res.json()
   const result = d.result ?? d.data ?? d
 
-  // Previously fell back to the username when Geonode returned no id. Every
+  // Previously fell back to the username when Upstream returned no id. Every
   // later PATCH/DELETE/usage call is keyed on the numeric id, so a username
   // there silently 404s forever. Fail loudly instead; the orphan sweep in
   // usage sync surfaces the sub-user that was created.
   if (result?.id === undefined || result?.id === null || result?.id === '') {
-    console.error('Geonode createSubUser returned no id for', username, JSON.stringify(d))
-    throw new Error('Geonode createSubUser returned no sub-user id')
+    console.error('Upstream createSubUser returned no id for', username, JSON.stringify(d))
+    throw new Error('Upstream createSubUser returned no sub-user id')
   }
 
   // The username we asked for is neutral ("gp_…"). If the provider hands back one that
@@ -167,7 +173,7 @@ export async function createSubUser(p: CreateSubUserParams, identity?: UpstreamI
     try { await deleteSubUser(String(result.id)) } catch (e) {
       console.error('[supplier-guard] could not delete the refused upstream sub-user', String(result.id), '— delete it by hand', e)
     }
-    throw new GeonodeApiError('provider returned an unusable sub-user identity', 502, {})
+    throw new UpstreamApiError('provider returned an unusable sub-user identity', 502, {})
   }
 
   return {
@@ -184,7 +190,7 @@ export async function createSubUser(p: CreateSubUserParams, identity?: UpstreamI
 // not documented, so this is deliberately loose; a false positive only costs one
 // listing, and adoption still requires an exact username match.
 export function isDuplicateSubUserError(e: unknown): boolean {
-  if (!(e instanceof GeonodeApiError)) return false
+  if (!(e instanceof UpstreamApiError)) return false
   if (e.status === 409) return true
   if (e.status !== 400 && e.status !== 422) return false
   const msg = JSON.stringify(e.body ?? '') + ' ' + e.message
@@ -229,7 +235,7 @@ export async function createOrAdoptSubUser(
   if (opts.lookupFirst) {
     const found = await (opts.lookup ?? findSubUserByUsername)(identity.username)
     if (found.id) return { ...adoptedCred(found.id, identity, p), adopted: true }
-    if (!found.complete) throw new GeonodeApiError('sub-user listing incomplete — not creating blind', 503, {})
+    if (!found.complete) throw new UpstreamApiError('sub-user listing incomplete — not creating blind', 503, {})
   }
   try {
     return { ...(await createSubUser(p, identity)), adopted: false }
@@ -263,12 +269,12 @@ export function memoizedSubUserLookup(): SubUserLookup {
 // Per the live OpenAPI spec (PATCH /sub-users/{subUid}): "changing
 // activeUntil resets sub-user current traffic usage." A top-up call that
 // happened to also touch activeUntil would zero out trafficUsedMB on
-// Geonode's side — a free, repeatable usage-reset exploit disguised as a
+// the provider's side — a free, repeatable usage-reset exploit disguised as a
 // routine limit bump. Keep this function's request body to trafficLimitMB
 // only, deliberately, rather than accepting a generic "patch fields"
 // param that a future caller could accidentally widen.
 export async function updateSubUserTrafficLimit(
-  geonodeSubUserId: string,
+  upstreamSubUserId: string,
   newTrafficLimitMB: number
 ): Promise<void> {
   const limitMb = Math.round(newTrafficLimitMB)
@@ -276,7 +282,7 @@ export async function updateSubUserTrafficLimit(
     throw new Error(`Refusing to set an invalid traffic limit (${newTrafficLimitMB} MB)`)
   }
   const res = await gfetch(
-    `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${geonodeSubUserId}`,
+    `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${upstreamSubUserId}`,
     {
       method: 'PATCH',
       headers: headers(),
@@ -285,8 +291,8 @@ export async function updateSubUserTrafficLimit(
   )
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    // GeonodeApiError (not a bare Error) so callers can branch on status.
-    throw new GeonodeApiError(`Geonode updateSubUserTrafficLimit failed: ${res.status} ${JSON.stringify(err)}`, res.status, err)
+    // UpstreamApiError (not a bare Error) so callers can branch on status.
+    throw new UpstreamApiError(`Upstream updateSubUserTrafficLimit failed: ${res.status} ${JSON.stringify(err)}`, res.status, err)
   }
 }
 
@@ -296,11 +302,11 @@ export async function updateSubUserTrafficLimit(
 // provider echoes back (or null when it echoes nothing) so the caller can
 // refuse to commit a rotation the provider silently ignored.
 export async function updateSubUserPassword(
-  geonodeSubUserId: string,
+  upstreamSubUserId: string,
   newPassword: string
 ): Promise<string | null> {
   const res = await gfetch(
-    `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${geonodeSubUserId}`,
+    `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${upstreamSubUserId}`,
     {
       method: 'PATCH',
       headers: headers(),
@@ -309,7 +315,7 @@ export async function updateSubUserPassword(
   )
   const d = await res.json().catch(() => ({}))
   if (!res.ok) {
-    throw new GeonodeApiError(`Geonode updateSubUserPassword failed: ${res.status} ${JSON.stringify(d)}`, res.status, d)
+    throw new UpstreamApiError(`Upstream updateSubUserPassword failed: ${res.status} ${JSON.stringify(d)}`, res.status, d)
   }
   const result = d?.result ?? d?.data ?? d
   return typeof result?.password === 'string' ? result.password : null
@@ -323,7 +329,7 @@ export async function updateSubUserPassword(
 //   error       — anything else (auth, validation, unknown)
 export type UpstreamReason = 'capacity' | 'unavailable' | 'error'
 export function classifyUpstreamError(e: unknown): UpstreamReason {
-  if (e instanceof GeonodeApiError) {
+  if (e instanceof UpstreamApiError) {
     if (e.status >= 500 || e.status === 408 || e.status === 429) return 'unavailable'
     const msg = String(e.body?.message ?? e.body?.error ?? e.message ?? '').toLowerCase()
     // Not the bare words "traffic" / "bandwidth": the request field is trafficLimitMB, so a plain
@@ -343,11 +349,11 @@ export function classifyUpstreamError(e: unknown): UpstreamReason {
 // trafficUsedMB on the same "get sub-user" call.
 //
 // IMPORTANT: this throws on a failed request rather than returning 0.
-// It used to return 0 on `!res.ok`, which silently collapsed "Geonode
+// It used to return 0 on `!res.ok`, which silently collapsed "Upstream
 // errored / I don't actually know" into "confirmed zero usage" — and that
 // fake zero fed straight into two money-affecting call sites:
 //   1. syncUserUsage() (admin "sync this user now") would overwrite a
-//      real, previously-synced gb_used with 0 on a transient Geonode
+//      real, previously-synced gb_used with 0 on a transient Upstream
 //      error, corrupting the exact number an admin is trying to fix.
 //   2. The pre-delete live-usage check in dashboard/proxies/[id]/route.ts
 //      would set liveUsedGb = 0 (not null) on a transient error — and
@@ -355,20 +361,20 @@ export function classifyUpstreamError(e: unknown): UpstreamReason {
 //      fallback to the last-synced value never fired), the full
 //      gb_allocated got refunded regardless of real consumption. That's
 //      the same delete-then-recreate revenue leak migration 0007/0009
-//      already fixed once, reopened by any ordinary Geonode hiccup.
+//      already fixed once, reopened by any ordinary Upstream hiccup.
 // Both call sites already have their own try/catch and correctly treat a
 // thrown error as "unknown, don't touch the number" (skip in the sync
 // loop; fall back to the last-synced gb_used on delete) — they just never
 // got the chance to do that while this function swallowed the failure
 // into a fake real value.
-export async function getSubUserUsage(geonodeSubUserId: string): Promise<number> {
+export async function getSubUserUsage(upstreamSubUserId: string): Promise<number> {
   const res = await gfetch(
-    `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${geonodeSubUserId}`,
+    `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${upstreamSubUserId}`,
     { headers: headers() }
   )
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(`Geonode getSubUserUsage failed: ${res.status} ${JSON.stringify(err)}`)
+    throw new Error(`Upstream getSubUserUsage failed: ${res.status} ${JSON.stringify(err)}`)
   }
   const d = await res.json()
   const result = d.result ?? d.data ?? d
@@ -378,7 +384,7 @@ export async function getSubUserUsage(geonodeSubUserId: string): Promise<number>
   // "unknown, leave the number alone" path.
   const usedMb = typeof result?.trafficUsedMB === 'number' ? result.trafficUsedMB : Number.NaN
   if (!Number.isFinite(usedMb) || usedMb < 0) {
-    throw new Error('Geonode getSubUserUsage returned no usable trafficUsedMB')
+    throw new Error('Upstream getSubUserUsage returned no usable trafficUsedMB')
   }
   return mbToGb(usedMb)
 }
@@ -392,12 +398,12 @@ export async function subUserExists(subUserId: string): Promise<boolean> {
   )
   if (res.status === 404) return false
   if (res.ok) return true
-  throw new GeonodeApiError(`Provider subUserExists failed: ${res.status}`, res.status, await res.json().catch(() => ({})))
+  throw new UpstreamApiError(`Provider subUserExists failed: ${res.status}`, res.status, await res.json().catch(() => ({})))
 }
 
 // Bulk version — fetches usage for ALL sub-users in pages of 100 instead of
 // one call per credential. Fixes a real production bug: the cron usage-sync
-// job was making one Geonode API call per active credential in a loop,
+// job was making one Upstream API call per active credential in a loop,
 // which crossed Cloudflare Workers' 50-subrequest-per-invocation cap (Free
 // plan) once enough credentials existed from testing — the runtime enforces
 // that cap below the level JS try/catch can intercept, so it killed the
@@ -406,15 +412,15 @@ export async function subUserExists(subUserId: string): Promise<boolean> {
 // Returns usage AND the live traffic limit AND the username per sub-user,
 // plus a `complete` flag. It used to swallow a failed page and hand back
 // whatever had been collected — indistinguishable from a full listing — so a
-// Geonode outage or revoked key looked like a healthy sync and stamped the
+// Upstream outage or revoked key looked like a healthy sync and stamped the
 // freshness marker the staleness watchdog depends on. Callers must check
 // `complete` before treating absence from the map as meaningful.
 export interface SubUserSnapshot {
-  // null when Geonode didn't report a numeric usage figure for this sub-user.
+  // null when Upstream didn't report a numeric usage figure for this sub-user.
   // Never coerced to 0: a missing figure must not overwrite real usage.
   usedGb: number | null
   usedMb: number | null
-  limitMb: number | null // null when Geonode didn't report one
+  limitMb: number | null // null when Upstream didn't report one
   username: string | null
 }
 
@@ -435,11 +441,11 @@ export async function listAllSubUsers(): Promise<{ subUsers: Map<string, SubUser
         { headers: headers() }
       )
     } catch (e) {
-      console.error('Geonode listAllSubUsers request failed:', e)
+      console.error('Upstream listAllSubUsers request failed:', e)
       return { subUsers, complete: false }
     }
     if (!res.ok) {
-      console.error('Geonode listAllSubUsers failed:', res.status, await res.text().catch(() => ''))
+      console.error('Upstream listAllSubUsers failed:', res.status, await res.text().catch(() => ''))
       return { subUsers, complete: false }
     }
     const d = await res.json().catch(() => null)
@@ -472,7 +478,7 @@ export async function listAllSubUsers(): Promise<{ subUsers: Map<string, SubUser
     // ignoring `offset` — the listing is NOT complete and looping on it
     // would only burn subrequests.
     if (added === 0) {
-      console.error('Geonode listAllSubUsers: page repeated already-seen sub-users — treating the listing as incomplete')
+      console.error('Upstream listAllSubUsers: page repeated already-seen sub-users — treating the listing as incomplete')
       return { subUsers, complete: false }
     }
     const total = Number(result.total ?? result.totalCount)
@@ -490,8 +496,8 @@ export async function getAccountBalance(): Promise<{ available_gb: number; total
   )
   if (!res.ok) {
     const errText = await res.text().catch(() => '')
-    console.error('Geonode getAccountBalance failed:', res.status, errText)
-    throw new Error(`Geonode getAccountBalance failed: ${res.status} ${errText}`)
+    console.error('Upstream getAccountBalance failed:', res.status, errText)
+    throw new Error(`Upstream getAccountBalance failed: ${res.status} ${errText}`)
   }
   const d = await res.json()
   const result = d.result ?? d.data ?? d
@@ -501,10 +507,10 @@ export async function getAccountBalance(): Promise<{ available_gb: number; total
   // customer credentials but not yet consumed. availableForAllocationMB
   // (= totalMB - allocatedToSubUsersMB) is the field that actually answers
   // "how much can I still sell" — confirmed against the live OpenAPI spec's
-  // /traffic response schema. This is what Geonode's own dashboard shows
+  // /traffic response schema. This is what the provider's own dashboard shows
   // as "Available Bandwidth", and what our stock/exposure alerting needs
   // to match — using remainingMB here is what caused the admin panel to
-  // read higher than Geonode's true available figure.
+  // read higher than the provider's true available figure.
   // A response without numeric figures (schema change, partial payload) must not read
   // as "0 GB in stock": that raised a false exposure alert. Throw, like getSubUserUsage.
   const avail = result?.availableForAllocationMB
@@ -518,28 +524,28 @@ export async function getAccountBalance(): Promise<{ available_gb: number; total
 // IMPORTANT: the live OpenAPI spec for this API has no purchase/reload
 // endpoint at all — only Traffic (read), Sub-users (CRUD), Whitelisted IPs,
 // and Usage Statistics. This function is now disabled rather than calling a
-// made-up URL. Reloading reseller stock may require Geonode's dashboard/
-// billing directly rather than the API — confirm with Geonode support before
+// made-up URL. Reloading reseller stock may require the provider's dashboard/
+// billing directly rather than the API — confirm with Upstream support before
 // re-enabling this, and update the real endpoint here once known.
 export async function purchaseBandwidth(gb: number): Promise<void> {
   throw new Error(
-    'Geonode reseller API has no documented purchase/reload endpoint. ' +
+    'Upstream reseller API has no documented purchase/reload endpoint. ' +
     'This call has been disabled rather than hitting a nonexistent URL — ' +
-    'confirm the correct mechanism with Geonode support before re-enabling.'
+    'confirm the correct mechanism with Upstream support before re-enabling.'
   )
 }
 
 // Thrown by every function below instead of a plain Error, so callers
-// (the API routes) can branch on the real Geonode HTTP status instead of
+// (the API routes) can branch on the real Upstream HTTP status instead of
 // regex-parsing a formatted message string. The other functions in this
 // file predate this and were left as-is rather than widening their
 // existing (already-handled-at-each-callsite) contracts.
-export class GeonodeApiError extends Error {
+export class UpstreamApiError extends Error {
   status: number
   body: any
   constructor(message: string, status: number, body: any) {
     super(message)
-    this.name = 'GeonodeApiError'
+    this.name = 'UpstreamApiError'
     this.status = status
     this.body = body
   }
@@ -550,9 +556,9 @@ export interface WhitelistedIp {
   description: string
 }
 
-// ─── Usage Statistics (monitor.geonode.com) ──────────────────────────────
+// ─── Usage Statistics (separate monitor host) ─────────────────────────────
 // Confirmed against the live OpenAPI spec: these two endpoints live on a
-// DIFFERENT host (monitor.geonode.com, not app-api.geonode.com) and use a
+// DIFFERENT host (the monitor host, not the reseller API host) and use a
 // DIFFERENT auth header — "r-api-key", not "Reseller-Api-Key". Also unlike
 // every other call in this file, the path has no {resellerUid} segment —
 // the API key alone scopes the request to this reseller's account. Mixing
@@ -573,7 +579,7 @@ function monitorHeaders() {
 // more than 720 units (minutes/hours/days). Callers are expected to stay
 // well under that (this app only ever asks for 7 or 30 days at
 // granularity=day), but this is a hard ceiling on the provider side, not
-// just a suggestion — a caller that ignores it gets a 400 from Geonode,
+// just a suggestion — a caller that ignores it gets a 400 from Upstream,
 // not a silently truncated range.
 export const MAX_STATS_GRANULARITY_UNITS = 720
 
@@ -586,7 +592,7 @@ export interface PeriodStat {
   totalRequests: number
 }
 
-// Time-series usage for a single sub-user (by Geonode username, NOT the
+// Time-series usage for a single sub-user (by Upstream username, NOT the
 // numeric upstream_sub_user_id — confirmed from the spec's own example
 // values, and matches what subUserId comes back as in
 // per-subuser-host-country below). Always grouped by periodStart; there is
@@ -611,8 +617,8 @@ export async function getPeriodStats(
   )
   const d = await res.json().catch(() => ({}))
   if (!res.ok) {
-    throw new GeonodeApiError(
-      d?.message || `Geonode getPeriodStats failed: ${res.status}`,
+    throw new UpstreamApiError(
+      d?.message || `Upstream getPeriodStats failed: ${res.status}`,
       res.status,
       d
     )
@@ -654,7 +660,7 @@ export async function getHostCountryStatsWithMeta(
   hardCap = 2000
 ): Promise<{ stats: HostCountryStat[]; truncated: boolean }> {
   const results: HostCountryStat[] = []
-  // The page size actually sent to Geonode (max 5000 per spec). The "was that
+  // The page size actually sent to Upstream (max 5000 per spec). The "was that
   // the last page" check must compare against THIS, not the caller's raw
   // `limit` — with limit > 5000 the old check never saw a short page and
   // looped to the hard cap.
@@ -689,8 +695,8 @@ export async function getHostCountryStatsWithMeta(
     )
     const d = await res.json().catch(() => ({}))
     if (!res.ok) {
-      throw new GeonodeApiError(
-        d?.message || `Geonode getHostCountryStats failed: ${res.status}`,
+      throw new UpstreamApiError(
+        d?.message || `Upstream getHostCountryStats failed: ${res.status}`,
         res.status,
         d
       )
@@ -728,18 +734,18 @@ export async function getHostCountryStats(
 // local list with the response rather than re-fetching separately.
 
 async function whitelistRequest(
-  geonodeSubUserId: string,
+  upstreamSubUserId: string,
   path: string,
   init?: RequestInit
 ): Promise<WhitelistedIp[]> {
   const res = await gfetch(
-    `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${geonodeSubUserId}/whitelisted-ips${path}`,
+    `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${upstreamSubUserId}/whitelisted-ips${path}`,
     { ...init, headers: headers() }
   )
   const d = await res.json().catch(() => ({}))
   if (!res.ok) {
-    throw new GeonodeApiError(
-      d?.message || `Geonode whitelist request failed: ${res.status}`,
+    throw new UpstreamApiError(
+      d?.message || `Upstream whitelist request failed: ${res.status}`,
       res.status,
       d
     )
@@ -755,60 +761,60 @@ async function whitelistRequest(
     : []
 }
 
-export function listWhitelistedIps(geonodeSubUserId: string): Promise<WhitelistedIp[]> {
-  return whitelistRequest(geonodeSubUserId, '', { method: 'GET' })
+export function listWhitelistedIps(upstreamSubUserId: string): Promise<WhitelistedIp[]> {
+  return whitelistRequest(upstreamSubUserId, '', { method: 'GET' })
 }
 
 export function addWhitelistedIp(
-  geonodeSubUserId: string,
+  upstreamSubUserId: string,
   ip: string,
   description: string
 ): Promise<WhitelistedIp[]> {
-  return whitelistRequest(geonodeSubUserId, '', {
+  return whitelistRequest(upstreamSubUserId, '', {
     method: 'POST',
     body: JSON.stringify({ ip, description }),
   })
 }
 
 // Max 150 items per request (matches the spec's maxItems on `items`).
-// Geonode dedupes by IP within the request (first description wins) and
+// Upstream dedupes by IP within the request (first description wins) and
 // skips IPs already on the whitelist.
 export function bulkAddWhitelistedIps(
-  geonodeSubUserId: string,
+  upstreamSubUserId: string,
   items: WhitelistedIp[]
 ): Promise<WhitelistedIp[]> {
-  return whitelistRequest(geonodeSubUserId, '/bulk-create', {
+  return whitelistRequest(upstreamSubUserId, '/bulk-create', {
     method: 'POST',
     body: JSON.stringify({ items }),
   })
 }
 
 export function removeWhitelistedIp(
-  geonodeSubUserId: string,
+  upstreamSubUserId: string,
   ip: string
 ): Promise<WhitelistedIp[]> {
   // The IP is a path segment here (DELETE /whitelisted-ips/{ip}), not a
   // query param or body field — encode it so a literal IPv6 address
   // (colons) doesn't get misparsed as part of the URL structure.
-  return whitelistRequest(geonodeSubUserId, `/${encodeURIComponent(ip)}`, {
+  return whitelistRequest(upstreamSubUserId, `/${encodeURIComponent(ip)}`, {
     method: 'DELETE',
   })
 }
 
-// Unknown IPs are ignored by Geonode; an empty list is a no-op. Max 150
+// Unknown IPs are ignored by Upstream; an empty list is a no-op. Max 150
 // per request (matches the spec's maxItems on `ips`).
 export function bulkRemoveWhitelistedIps(
-  geonodeSubUserId: string,
+  upstreamSubUserId: string,
   ips: string[]
 ): Promise<WhitelistedIp[]> {
-  return whitelistRequest(geonodeSubUserId, '/bulk-delete', {
+  return whitelistRequest(upstreamSubUserId, '/bulk-delete', {
     method: 'POST',
     body: JSON.stringify({ ips }),
   })
 }
 
-export async function deleteSubUser(geonodeSubUserId: string): Promise<void> {
-  const res = await gfetch(`${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${geonodeSubUserId}`, {
+export async function deleteSubUser(upstreamSubUserId: string): Promise<void> {
+  const res = await gfetch(`${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${upstreamSubUserId}`, {
     method: 'DELETE',
     headers: headers(),
   })
@@ -816,20 +822,20 @@ export async function deleteSubUser(geonodeSubUserId: string): Promise<void> {
     // Previously this was fire-and-forget with no status check, so every
     // caller's `.catch(...)` around a "cleanup" deleteSubUser call never
     // fired on failure — a failed delete looked identical to a successful
-    // one, leaving orphaned sub-users on Geonode's side with no local
+    // one, leaving orphaned sub-users on the provider's side with no local
     // record and no way to find them again.
     const err = await res.json().catch(() => ({}))
-    // GeonodeApiError (not a bare Error) so callers can tell "already gone"
+    // UpstreamApiError (not a bare Error) so callers can tell "already gone"
     // (404 — safe to treat as deleted) from a real failure.
-    throw new GeonodeApiError(`Geonode deleteSubUser failed: ${res.status} ${JSON.stringify(err)}`, res.status, err)
+    throw new UpstreamApiError(`Upstream deleteSubUser failed: ${res.status} ${JSON.stringify(err)}`, res.status, err)
   }
 }
 
 // ─── Debug only — admin diagnostic endpoint ──────────────────────────────────
-// Creates a 10 MB test sub-user, captures the full raw Geonode response,
-// then immediately deletes it. Used by /api/admin/debug-geonode to verify:
+// Creates a 10 MB test sub-user, captures the full raw Upstream response,
+// then immediately deletes it. Used by /api/admin/debug-upstream to verify:
 //   1. API key and reseller ID are valid
-//   2. Exact field names Geonode returns
+//   2. Exact field names Upstream returns
 //   3. trafficLimitMB is the correct request field name
 export async function debugCreateSubUser(): Promise<{
   raw_request: object
@@ -882,7 +888,7 @@ export async function debugCreateSubUser(): Promise<{
       }
       usernameMatches = parsedGcred.username === username
 
-      // Immediately clean up — don't leave test sub-users in Geonode
+      // Immediately clean up — don't leave test sub-users in Upstream
       try {
         const delRes = await gfetch(
           `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${parsedGcred.upstream_sub_user_id}`,

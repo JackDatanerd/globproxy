@@ -4,6 +4,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { isAuthOutage } from '@/lib/authOutage'
 import { buildCsp, cspHeaderName } from '@/lib/csp'
 import { isProtectedPath } from '@/lib/protectedPaths'
+import { applySecurityHeaders } from '@/lib/securityHeaders'
 
 type CookieToSet = {
   name: string
@@ -181,12 +182,12 @@ export async function middleware(request: NextRequest) {
     // Rebuilt from request.headers on every call, so cookies Supabase has just
     // written onto the request (setAll below) are not lost.
     const headers = new Headers(request.headers)
-    headers.set(cspHeaderName(), nonceCsp)
+    headers.set(cspHeaderName(true), nonceCsp)
     headers.set('x-nonce', nonce)
     // Where the person was going, for layouts that must send them through sign-in / 2FA and back.
     headers.set('x-return-path', request.nextUrl.pathname + request.nextUrl.search)
     const res = NextResponse.next({ request: { headers } })
-    res.headers.set(cspHeaderName(), nonceCsp)
+    res.headers.set(cspHeaderName(true), nonceCsp)
     return res
   }
 
@@ -204,7 +205,13 @@ export async function middleware(request: NextRequest) {
     response.cookies.getAll().forEach((c) => res.cookies.set(c))
     return res
   }
-  const redirectTo = (url: URL) => withSessionCookies(NextResponse.redirect(url))
+  // OpenNext hands back a response the middleware made itself (a redirect, the 503 page)
+  // without merging next.config.ts's headers, so they are applied here.
+  const redirectTo = (url: URL) => {
+    const res = withSessionCookies(NextResponse.redirect(url))
+    applySecurityHeaders(res.headers)
+    return res
+  }
 
   // Plain 503, deliberately not a redirect to /auth/login: the login page
   // bounces signed-in users back to /dashboard, which would loop.
@@ -218,6 +225,7 @@ export async function middleware(request: NextRequest) {
       status: 503,
       headers: { 'Content-Type': 'text/html; charset=utf-8', 'Retry-After': '5', 'Cache-Control': 'no-store' },
     })
+    applySecurityHeaders(res.headers)
     return keepBrowserCookies ? res : withSessionCookies(res)
   }
 

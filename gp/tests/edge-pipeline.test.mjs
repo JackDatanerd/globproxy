@@ -2,7 +2,10 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { canonicalEmail, targetBuckets, TARGET_PER_ADDRESS_MAX, TARGET_PER_ADDRESS_WINDOW_S, TARGET_GLOBAL_MAX, TARGET_GLOBAL_WINDOW_S } from '../lib/targetThrottle.ts'
-import { classifySession, REFRESH_MARGIN_S } from '../lib/sessionProbe.ts'
+import { classifySession, REFRESH_MARGIN_S, stripSessionCookies } from '../lib/sessionProbe.ts'
+import { edgeRequestId, guardResponse } from '../lib/edgeGuard.ts'
+import { SECURITY_HEADERS, applySecurityHeaders } from '../lib/securityHeaders.ts'
+import { cspHeaderName, cspEnforced } from '../lib/csp.ts'
 import { cookiesAreBenign, cacheAge } from '../lib/edgeCache.ts'
 import { PROTECTED_PREFIXES, isProtectedPath, unprotectedSource } from '../lib/protectedPaths.ts'
 import { normalizeClientIp, clientKeyFromHeader, parseIpv6 } from '../lib/ipParse.ts'
@@ -136,4 +139,51 @@ test('the middleware matcher still always runs on every protected prefix, whatev
   assert.equal(re.test('/logo.png'), false, 'ordinary static files skip it')
   assert.equal(re.test('/api/anything'), false)
   assert.equal(re.test('/blog/post'), true)
+})
+
+test('stripSessionCookies drops only the Supabase session cookies (and their chunks)', () => {
+  assert.equal(stripSessionCookies(null), null)
+  assert.equal(stripSessionCookies('sb-abc-auth-token=x'), null)
+  assert.equal(stripSessionCookies('sb-abc-auth-token.0=x; sb-abc-auth-token.1=y'), null)
+  assert.equal(stripSessionCookies('gp_ref=A; sb-abc-auth-token.0=x; theme=dark'), 'gp_ref=A; theme=dark')
+  assert.equal(stripSessionCookies('sb-abc-auth-token-code-verifier=v; sb-abc-auth-token=x'), 'sb-abc-auth-token-code-verifier=v')
+})
+
+test('edgeRequestId honours a safe supplied id and mints otherwise', () => {
+  assert.equal(edgeRequestId('abc-1.2:3'), 'abc-1.2:3')
+  assert.match(edgeRequestId('has space'), /^req_[0-9a-f]{20}$/)
+  assert.match(edgeRequestId('x'.repeat(65)), /^req_/)
+  assert.match(edgeRequestId(null), /^req_/)
+  assert.equal(guardResponse({ status: 413, error: 'x' }, 'req_1').headers.get('x-request-id'), 'req_1')
+  assert.equal(guardResponse({ status: 413, error: 'x' }).headers.has('x-request-id'), false)
+})
+
+test('applySecurityHeaders sets every header, overwriting a weaker copy', () => {
+  const h = new Headers({ 'x-frame-options': 'ALLOWALL' })
+  applySecurityHeaders(h)
+  for (const [k, v] of SECURITY_HEADERS) assert.equal(h.get(k), v)
+  assert.equal(h.get('x-frame-options'), 'SAMEORIGIN')
+  const mw = readFileSync(new URL('../middleware.ts', import.meta.url), 'utf8')
+  assert.match(mw, /applySecurityHeaders\(res\.headers\)/)
+  const nc = readFileSync(new URL('../next.config.ts', import.meta.url), 'utf8')
+  assert.match(nc, /SECURITY_HEADERS\.map/)
+})
+
+test('CSP_MODE_PROTECTED promotes the signed-in policy on its own; unset it follows CSP_MODE', () => {
+  const save = { m: process.env.CSP_MODE, p: process.env.CSP_MODE_PROTECTED }
+  try {
+    delete process.env.CSP_MODE; delete process.env.CSP_MODE_PROTECTED
+    assert.equal(cspHeaderName(), 'Content-Security-Policy-Report-Only')
+    assert.equal(cspHeaderName(true), 'Content-Security-Policy-Report-Only')
+    process.env.CSP_MODE_PROTECTED = 'enforce'
+    assert.equal(cspHeaderName(true), 'Content-Security-Policy')
+    assert.equal(cspHeaderName(), 'Content-Security-Policy-Report-Only', 'public pages stay report-only')
+    process.env.CSP_MODE = 'enforce'; process.env.CSP_MODE_PROTECTED = 'report'
+    assert.equal(cspEnforced(true), false)
+    assert.equal(cspEnforced(), true)
+    delete process.env.CSP_MODE_PROTECTED
+    assert.equal(cspEnforced(true), true, 'unset = follows CSP_MODE')
+  } finally {
+    for (const [k, v] of [['CSP_MODE', save.m], ['CSP_MODE_PROTECTED', save.p]]) v === undefined ? delete process.env[k] : (process.env[k] = v)
+  }
 })

@@ -1,4 +1,4 @@
-import { GeonodeApiError, listWhitelistedIps, bulkAddWhitelistedIps, subUserExists } from '@/lib/geonode'
+import { UpstreamApiError, listWhitelistedIps, bulkAddWhitelistedIps, subUserExists } from '@/lib/upstream'
 
 // Neutral names for modules that must not mention the supplier (scripts/check-supplier-leak.mjs).
 export { listWhitelistedIps, bulkAddWhitelistedIps, subUserExists }
@@ -125,11 +125,11 @@ export function validateDescription(value: unknown): string | null {
 
 export const MAX_BULK_ITEMS = 150
 
-// Central place both whitelist routes funnel a thrown GeonodeApiError (or
+// Central place both whitelist routes funnel a thrown UpstreamApiError (or
 // anything else) through, so status handling doesn't drift between the
 // single-IP route and the bulk route.
 export function whitelistErrorResponse(e: unknown): NextResponse {
-  if (e instanceof GeonodeApiError) {
+  if (e instanceof UpstreamApiError) {
     // A 401/403 here means OUR reseller API key was rejected by Geonode,
     // not anything the end user did — surfacing Geonode's raw status as
     // the user's own response would read as "your session/permissions are
