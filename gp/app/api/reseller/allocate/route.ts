@@ -70,6 +70,10 @@ export async function POST(req: Request) {
     )
     if (!result.ok) {
       if (idem.key) await releaseIdempotencyKey(admin, user.id, idem.key)
+      // The only 429 this path produces is the daily new-recipient cap — a "come back tomorrow"
+      // refusal, not a throttle. The code lets the bulk sender report it as a definite failure
+      // instead of waiting out a per-minute retry loop that can never succeed.
+      if (result.status === 429) return NextResponse.json({ error: result.message, code: 'new_recipient_limit' }, { status: 429, headers: { 'Retry-After': '3600' } })
       return NextResponse.json({ error: result.message }, { status: result.status })
     }
     const responseBody = { success: true, transfer_id: result.data.transfer_id, status: result.data.status, pending_id: result.data.pending_id, message: result.data.message }

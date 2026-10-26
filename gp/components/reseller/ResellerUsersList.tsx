@@ -134,7 +134,8 @@ export default function ResellerUsersList({
       let res = await postAllocate(r.email, r.gb, r.note, key)
       // The server allows 30 transfers a minute: wait out the throttle and
       // resend with the SAME key instead of abandoning the rest of the batch.
-      while ((res.status === 429 || res.status === 0) && attempts < 6) {
+      // The daily new-recipient cap (code new_recipient_limit) is a definite refusal until tomorrow — never retried.
+      while ((res.status === 429 && res.data?.code !== 'new_recipient_limit' || res.status === 0) && attempts < 6) {
         attempts++
         const wait = Math.min(res.retryAfter ?? 15, 60)
         setProgress(`${i} of ${rows.length} sent — ${res.status === 429 ? 'rate limit reached' : 'connection problem'}, retrying in ${wait}s…`)
@@ -142,7 +143,7 @@ export default function ResellerUsersList({
         res = await postAllocate(r.email, r.gb, r.note, key)
       }
       if (res.ok) { okCount++; if (res.data?.status === 'pending_signup') invitedCount++ }
-      else if (res.status === 429 || res.status === 0 || (res.status === 409 && /did not finish|still being processed/.test(res.data?.error ?? ''))) {
+      else if ((res.status === 429 && res.data?.code !== 'new_recipient_limit') || res.status === 0 || (res.status === 409 && /did not finish|still being processed/.test(res.data?.error ?? ''))) {
         unknown.push(`${r.email} (${res.data?.error ?? 'no answer'})`)
       } else {
         failed.push({ line: [r.email, String(r.gb), r.note].filter(Boolean).join(', '), why: `${r.email}: ${res.data?.error ?? 'failed'}` })

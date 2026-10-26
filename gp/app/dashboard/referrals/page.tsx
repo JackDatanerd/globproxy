@@ -114,7 +114,10 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
   // following cycle>" made it look skipped.
   const holdPending = !!profile?.payout_method_updated_at && !!profile?.payout_method
     && new Date(profile.payout_method_updated_at).getTime() + AFFILIATE_HOLD_HOURS * 3600 * 1000 > Date.now()
-  const awaitingRun = cycleIsPayable(lc) && isAffiliate && !!profile?.payout_method && !holdPending && payable >= AFFILIATE_MIN_PAYOUT_USD
+  // The payout run only batches commissions created on or before the completed cycle's last day,
+  // so what the next run can take is the payable balance minus what accrued in the current cycle.
+  const runnable = payable - thisCycle
+  const awaitingRun = cycleIsPayable(lc) && isAffiliate && !!profile?.payout_method && !holdPending && runnable >= AFFILIATE_MIN_PAYOUT_USD
   const nextPayoutDate = cycleIsPayable(lc) ? accruing.payableFrom : lc.payableFrom
   const holdEndsAt = profile?.payout_method_updated_at
     ? new Date(new Date(profile.payout_method_updated_at).getTime() + AFFILIATE_HOLD_HOURS * 3600 * 1000)
