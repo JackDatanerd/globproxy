@@ -18,7 +18,8 @@ import { NextResponse } from 'next/server'
 //           200 { status: 'credited', reference }
 //           202 { status: 'pending',  reference }   outcome not known yet — poll /api/verify-payment, never re-POST
 //           402 { status: 'declined', error }
-//           409 { status: 'needs_action' | 'card_expired', error }   pay through the normal checkout instead
+//           409 { status: 'needs_action' | 'card_expired', code, error }   pay through the normal checkout instead
+//           409 { status: 'pending', code: 'in_flight' | 'unknown_outcome', error }   keep the same key; never charge again
 //           404 { status: 'no_card' }
 //
 // Charging a stored card with one click is the most sensitive way to spend money here, so it
@@ -80,8 +81,8 @@ export async function POST(req: Request) {
     const claim = await claimIdempotencyKey(admin, user.id, idem.key, JSON.stringify({ plan: quote.slug, gb: quote.gb }), 'POST /checkout/saved-card', { allowStaleTakeover: false })
     if (claim.kind === 'replay') return NextResponse.json(claim.body ?? {}, { status: claim.status })
     if (claim.kind === 'mismatch') return NextResponse.json({ error: 'This request was already made with different values. Reload the page and try again.' }, { status: 422 })
-    if (claim.kind === 'in_flight') return NextResponse.json({ status: 'pending', error: 'This payment is still being processed. Check Billing in a moment.' }, { status: 409 })
-    if (claim.kind === 'unknown_outcome') return NextResponse.json({ status: 'pending', error: 'An earlier attempt did not finish. Check Billing before paying again.' }, { status: 409 })
+    if (claim.kind === 'in_flight') return NextResponse.json({ status: 'pending', code: 'in_flight', error: 'This payment is still being processed. Check Billing in a moment.' }, { status: 409 })
+    if (claim.kind === 'unknown_outcome') return NextResponse.json({ status: 'pending', code: 'unknown_outcome', error: 'An earlier attempt did not finish. Check Billing before paying again.' }, { status: 409 })
 
     let status = 500
     let out: Record<string, unknown> = { error: 'Could not take the payment. Please try again.' }
@@ -92,8 +93,8 @@ export async function POST(req: Request) {
         case 'credited': status = 200; out = { status: 'credited', reference: r.reference }; keep = true; break
         case 'pending': status = 202; out = { status: 'pending', reference: r.reference }; keep = true; break
         case 'declined': status = 402; out = { status: 'declined', error: r.reason }; break
-        case 'needs_action': status = 409; out = { status: 'needs_action', error: 'Your bank wants extra verification for this card. Use the card checkout instead.' }; break
-        case 'card_expired': status = 409; out = { status: 'card_expired', error: 'Your saved card has expired. Use the card checkout to pay and save a new one.' }; break
+        case 'needs_action': status = 409; out = { status: 'needs_action', code: 'needs_action', error: 'Your bank wants extra verification for this card. Use the card checkout instead.' }; break
+        case 'card_expired': status = 409; out = { status: 'card_expired', code: 'card_expired', error: 'Your saved card has expired. Use the card checkout to pay and save a new one.' }; break
         case 'no_card': status = 404; out = { status: 'no_card', error: 'No saved card found.' }; break
       }
     } catch (e) {

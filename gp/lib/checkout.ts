@@ -110,6 +110,7 @@ export async function startCheckout(
     .update({ payment_status: 'cancelled' })
     .eq('user_id', user.id)
     .eq('payment_status', 'pending')
+    .eq('auto_recharge', false) // an in-flight auto-recharge charge is not a stale checkout; cancelling it hides its spend from the 30-day cap
     .neq('id', order.id)
 
   return { order: { id: order.id, created_at: order.created_at }, url: txn.authorization_url, access_code: txn.access_code, reference }

@@ -72,9 +72,24 @@ export async function POST(req: Request) {
 
   // Inside the policy: within 72 hours of payment AND nothing used on the account
   // (usage is synced from the proxy network, so this is the account's own figure).
-  const { data: acct } = await admin.from('bandwidth_accounts').select('used_gb').eq('user_id', user.id).maybeSingle()
-  const used = Number(acct?.used_gb ?? 0) // used_gb already includes archived usage
+  // "Nothing used" means nothing used SINCE this purchase: the account-wide used_gb is lifetime,
+  // so a customer who spent an earlier pack could never again have a within-policy order. The
+  // local daily usage (usage_daily, UTC buckets) is summed from the purchase day on — a day
+  // bucket is coarse, so usage earlier on the same day counts against the customer (the safe side).
   const paidAt = order.paid_at ? Date.parse(order.paid_at) : NaN
+  let used = 0
+  if (Number.isFinite(paidAt)) {
+    const sinceDay = new Date(paidAt).toISOString().slice(0, 10)
+    const { data: days, error: uErr } = await admin.from('usage_daily').select('gb').eq('user_id', user.id).gte('day', sinceDay)
+    if (uErr) {
+      console.error('[refund-request] usage lookup failed', uErr)
+      // Fall back to the lifetime figure rather than guessing "nothing used".
+      const { data: acct } = await admin.from('bandwidth_accounts').select('used_gb').eq('user_id', user.id).maybeSingle()
+      used = Number(acct?.used_gb ?? 0)
+    } else {
+      used = (days ?? []).reduce((s, r) => s + Number(r.gb ?? 0), 0)
+    }
+  }
   const withinPolicy = Number.isFinite(paidAt) && Date.now() - paidAt <= POLICY_WINDOW_MS && used <= 0
 
   const { data: created, error: insErr } = await admin.from('refund_requests')
@@ -92,7 +107,7 @@ export async function POST(req: Request) {
   await alertAdminPayment('Customer refund request', {
     order_id: order.id, customer: user.email ?? user.id, invoice: order.invoice_number ?? '',
     amount_usd: Number(order.amount_usd), gb: Number(order.gb_amount),
-    within_policy: withinPolicy ? 'yes — paid within 72h, nothing used' : `no — ${used > 0 ? `${used.toFixed(2)} GB used` : 'older than 72h'}`,
+    within_policy: withinPolicy ? 'yes — paid within 72h, nothing used' : `no — ${used > 0 ? `${used.toFixed(2)} GB used since purchase` : 'older than 72h'}`,
     reason,
     note: 'Approve it with the Refund button on Admin → Orders (the request closes itself), or decline it there.',
   })

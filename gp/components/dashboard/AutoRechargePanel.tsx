@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
-import { apiFetch, apiJson } from '@/lib/clientApi'
+import { apiFetch, apiJson, toastApiError } from '@/lib/clientApi'
 import { PLANS, resolveOrder, CUSTOM_MIN_GB, CUSTOM_MAX_GB } from '@/lib/plans'
 import { formatUsd } from '@/lib/format'
 import { validThreshold, validCap } from '@/lib/rechargeRules'
@@ -86,7 +86,7 @@ export default function AutoRechargePanel() {
       setEnabled(nextEnabled); setWhy(null)
       toast.success(nextEnabled ? 'Auto-recharge is on.' : 'Settings saved — auto-recharge is off.')
     } catch (err: any) {
-      if (err?.code !== 'mfa_required') toast.error(err?.message || 'Could not save auto-recharge')
+      toastApiError(err, 'Could not save auto-recharge')
     }
     setSaving(false)
   }

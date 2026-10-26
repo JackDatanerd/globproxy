@@ -1,4 +1,5 @@
 import { requireMfaVerified } from '@/lib/mfa'
+import { requireStepUp } from '@/lib/reauth'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { isCrossSiteRequest } from '@/lib/appUrl'
@@ -93,6 +94,12 @@ export async function PUT(req: Request) {
   if (quote.total > body.monthly_cap_usd) {
     return NextResponse.json({ error: `One top-up costs $${quote.total.toFixed(2)}, which is more than your $${body.monthly_cap_usd} 30-day limit. Raise the limit or pick a smaller top-up.` }, { status: 400 })
   }
+
+  // Enabling / changing the rule authorises charges to the saved card with no further click,
+  // so it takes the same step-up as the one-click saved-card payment. Switching OFF (above)
+  // and removing the card stay ungated: they only ever reduce what can be charged.
+  const gate = await requireStepUp(req, user.id)
+  if (gate) return gate
 
   const admin = await createAdminClient()
   if (enabled) {

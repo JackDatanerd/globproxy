@@ -34,6 +34,11 @@ export async function captureSavedCard(supabase: Admin, userId: string, data: an
     if (auth.channel && String(auth.channel) !== 'card') return false
     const email = String(data?.customer?.email ?? '').trim()
     if (!email) return false
+    // A late webhook (redelivery, or a charge that settled after the customer deleted the
+    // account) must not re-create a chargeable card for a closed account.
+    const { data: prof, error: pErr } = await supabase.from('profiles').select('is_deleted').eq('id', userId).maybeSingle()
+    if (pErr) { console.error('[auto-recharge] profile check failed', userId, pErr); return false }
+    if (!prof || prof.is_deleted) return false
     const { error } = await supabase.from('saved_cards').upsert({
       user_id: userId,
       authorization_code: String(auth.authorization_code),

@@ -142,7 +142,10 @@ export default function BuyPage() {
       // A decline or "needs extra verification" frees the key (fresh attempt next time); the
       // normal card checkout below is always available.
       if (e?.code !== 'mfa_required' && e?.code !== 'reauth_required') {
-        if (e?.status === 402 || e?.status === 409) savedKey.current = null
+        // Only a definite "nothing was charged" outcome frees the key. A 409 in_flight /
+        // unknown_outcome means the first attempt may still complete or already has, so the
+        // SAME key must stay: a fresh one would charge the card a second time.
+        if (e?.status === 402 || (e?.status === 409 && (e?.code === 'needs_action' || e?.code === 'card_expired'))) savedKey.current = null
         toast.error(e?.message || 'Could not charge your saved card. You can pay with a different card below.', { duration: 7000 })
       }
     }
