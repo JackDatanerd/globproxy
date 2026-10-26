@@ -41,7 +41,10 @@ export default function CredentialSettings({ cred }: { cred: any }) {
   }, [])
 
   useEffect(() => {
-    if (!country) { setDetail(null); return }
+    // Drop the previous country's regions immediately, so none of them can be picked (and saved)
+    // for the new country while its own list is still loading.
+    setDetail(null)
+    if (!country) return
     let cancelled = false
     fetchCountryDetail(country)
       .then(d => { if (!cancelled) { setDetail(d); setGeoError(null) } })

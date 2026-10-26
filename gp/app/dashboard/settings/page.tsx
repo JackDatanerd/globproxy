@@ -237,6 +237,7 @@ function SettingsPageInner() {
         setShowDelete(false); setDeleteText('')
         toast.success('Deletion scheduled — we have emailed you how to cancel it')
         setDeleting(false)
+        router.refresh() // the dashboard layout's "scheduled for deletion" banner is server-rendered
         return
       }
       // The route only ever schedules; anything else is an unexpected answer.
@@ -254,6 +255,7 @@ function SettingsPageInner() {
       await apiJson('POST', '/api/user/delete-account/cancel')
       setDeletionScheduledAt(null)
       toast.success('Deletion cancelled — your account stays as it is')
+      router.refresh() // drop the layout's red banner, which would otherwise stay until a reload
     } catch (err: any) {
       toast.error(err?.message ?? 'Could not cancel the deletion')
     }
@@ -268,15 +270,17 @@ function SettingsPageInner() {
       if (!res.ok) {
         const data: any = await res.json().catch(() => ({}))
         if (res.status === 403 && data?.code === 'mfa_required') { redirectToMfa(data); return }
-        if (res.status === 403 && data?.code === 'reauth_required') return
+        if (res.status === 403 && data?.code === 'reauth_required') return   // confirmation declined
         throw new Error(data?.error || `Export failed (${res.status})`)
       }
       saveBlob(await res.blob(), `globproxy-my-data-${new Date().toISOString().slice(0, 10)}.json`)
       toast.success('Your data was downloaded')
     } catch (err: any) {
       toast.error(err?.message ?? 'Could not export your data')
+    } finally {
+      // finally: the early returns above used to skip this and leave the button on "Preparing…".
+      setExporting(false)
     }
-    setExporting(false)
   }
 
   async function saveDefaultAuto(e?: React.FormEvent) {

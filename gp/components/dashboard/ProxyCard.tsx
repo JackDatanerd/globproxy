@@ -26,13 +26,12 @@ interface Props {
   // Bandwidth). `nonce` changes on every request so asking for the same tab
   // twice still works after the user has clicked elsewhere.
   requestedTab?: { tab: 'cred' | 'bandwidth' | 'endpoints' | 'whitelist' | 'code'; nonce: number } | null
+  // The customer's own alert levels (Settings → E-mail notifications), 80 / 95 unless changed. The
+  // same pair drives every indicator on the card (rail, bar, tab dot, remaining text) and the
+  // list's banners, so they cannot disagree.
+  warnPct?: number
+  urgentPct?: number
 }
-
-// One pair of thresholds for every indicator on the card (rail, bar, tab dot,
-// remaining text) and for the list's banners. They used to disagree — the rail
-// went red at 85 while the bar went red at 80 and the banner said 95.
-const WARN_PCT = 80
-const URGENT_PCT = 95
 
 type Tab = 'cred' | 'bandwidth' | 'endpoints' | 'whitelist' | 'edit' | 'code'
 type Lang = 'py' | 'node' | 'playwright' | 'puppeteer' | 'curl' | 'go' | 'php' | 'browser'
@@ -42,7 +41,8 @@ type Lang = 'py' | 'node' | 'playwright' | 'puppeteer' | 'curl' | 'go' | 'php' |
 // detail the old always-open card showed, just organized into tabs so the
 // expanded state doesn't turn into another giant scroll once someone has a
 // handful of sessions.
-export default function ProxyCard({ cred, index, availableGb, expanded, onToggle, requestedTab, rotationEnabled }: Props) {
+export default function ProxyCard({ cred, index, availableGb, expanded, onToggle, requestedTab, rotationEnabled, warnPct = 80, urgentPct = 95 }: Props) {
+  const WARN_PCT = warnPct, URGENT_PCT = urgentPct
   const router = useRouter()
   const [showPass, setShowPass] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -327,6 +327,7 @@ export default function ProxyCard({ cred, index, availableGb, expanded, onToggle
   async function handleAutoTopupSave(e: React.FormEvent) {
     e.preventDefault()
     if (autoEnabled) {
+      if (autoThreshold.trim() === '') { toast.error('Enter the remaining-GB level that triggers a top-up (0 = only when it is empty).'); return }
       const t = Number(autoThreshold), a = Number(autoAmount)
       if (!Number.isFinite(t) || t < 0) { toast.error('Threshold must be 0 or greater'); return }
       if (!Number.isFinite(a) || a <= 0) { toast.error('Top-up amount must be greater than 0'); return }

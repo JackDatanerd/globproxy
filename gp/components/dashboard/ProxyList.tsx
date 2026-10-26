@@ -16,12 +16,15 @@ interface Props {
   // The customer's own alert levels (Settings); 80 / 95 unless changed.
   warnPct?: number
   urgentPct?: number
+  userId?: string | null
 }
 
 type SortKey = 'newest' | 'oldest' | 'most_used' | 'nearly_full' | 'least_left' | 'label'
 type StatusFilter = 'all' | 'active' | 'pending' | 'suspended'
 
 const DISMISS_KEY = 'gp_usage_banner_dismissed'
+// Per account: a shared browser must not prune (or honour) another account's dismissals.
+const dismissKeyOf = (userId?: string | null) => `${DISMISS_KEY}${userId ? ':' + userId : ''}`
 
 // Which credentials are close to running out with nothing set up to
 // refill them automatically — nothing like this existed before, so
@@ -63,7 +66,8 @@ function usageTier(cred: any, warnPct = 80, urgentPct = 95): 'urgent' | 'warn' |
 // once someone has more than a handful of sessions to scan through. Only
 // one row is expanded at a time so opening a new one doesn't leave a wall
 // of open cards behind.
-export default function ProxyList({ creds, availableGb, rotationEnabled, warnPct = 80, urgentPct = 95 }: Props) {
+export default function ProxyList({ creds, availableGb, rotationEnabled, warnPct = 80, urgentPct = 95, userId = null }: Props) {
+  const STORE_KEY = dismissKeyOf(userId)
   const router = useRouter()
   const [exporting, setExporting] = useState(false)
   // Bulk actions: pause / resume / delete many sessions in one go.
@@ -97,12 +101,12 @@ export default function ProxyList({ creds, availableGb, rotationEnabled, warnPct
   // covered by an earlier dismiss of the less urgent version.
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(DISMISS_KEY)
+      const raw = localStorage.getItem(STORE_KEY)
       const stored: Record<string, boolean> = raw ? JSON.parse(raw) : {}
       // Drop entries for deleted sessions so the stored map can't grow forever.
       const live = new Set(creds.map(c => c.id))
       const pruned = Object.fromEntries(Object.entries(stored).filter(([k]) => live.has(k.split(':')[0])))
-      if (Object.keys(pruned).length !== Object.keys(stored).length) localStorage.setItem(DISMISS_KEY, JSON.stringify(pruned))
+      if (Object.keys(pruned).length !== Object.keys(stored).length) localStorage.setItem(STORE_KEY, JSON.stringify(pruned))
       setDismissed(pruned)
     } catch {}
     setDismissedLoaded(true)
@@ -116,7 +120,7 @@ export default function ProxyList({ creds, availableGb, rotationEnabled, warnPct
   function dismiss(cred: any, tier: string) {
     setDismissed(prev => {
       const next = { ...prev, [dismissKeyFor(cred, tier)]: true }
-      try { localStorage.setItem(DISMISS_KEY, JSON.stringify(next)) } catch {}
+      try { localStorage.setItem(STORE_KEY, JSON.stringify(next)) } catch {}
       return next
     })
   }
@@ -210,9 +214,9 @@ export default function ProxyList({ creds, availableGb, rotationEnabled, warnPct
       if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
     }
-    // `url` = scheme://user:pass@host:port, one per line — what most scrapers, browsers
+    // `url` = scheme://user:pass@host:port (socks5h: DNS resolved on the proxy side, like the card snippets), one per line — what most scrapers, browsers
     // and proxy managers paste directly (the .txt form is host:port:user:pass).
-    const urlOf = (r: Row) => `${r.protocol === 'socks5' ? 'socks5' : 'http'}://${encodeURIComponent(r.user)}:${encodeURIComponent(r.pass)}@${r.host}:${r.port}`
+    const urlOf = (r: Row) => `${r.protocol === 'socks5' ? 'socks5h' : 'http'}://${encodeURIComponent(r.user)}:${encodeURIComponent(r.pass)}@${r.host}:${r.port}`
     const body = format === 'csv'
       ? ['label,type,protocol,host,port,username,password', ...rows.map(r => [r.label, r.type, r.protocol, r.host, r.port, r.user, r.pass].map(csvCell).join(','))].join('\n') + '\n'
       : format === 'url'
@@ -229,7 +233,10 @@ export default function ProxyList({ creds, availableGb, rotationEnabled, warnPct
   // Only rows currently shown: a selection made before the search/filter changed must not
   // be acted on invisibly.
   const selectedCreds = filtered.filter(c => selected.has(c.id))
-  const hiddenSelected = selected.size - selectedCreds.length
+  // Only sessions that still exist but are filtered out; ids of sessions deleted meanwhile don't count.
+  const liveIds = new Set(creds.map(c => c.id))
+  const shownIds = new Set(filtered.map(c => c.id))
+  const hiddenSelected = Array.from(selected).filter(id => liveIds.has(id) && !shownIds.has(id)).length
   const canPause  = selectedCreds.filter(c => c.status === 'active')
   const canResume = selectedCreds.filter(c => c.status === 'suspended' && c.suspended_reason === 'customer')
   function toggleSelected(id: string) {
@@ -273,6 +280,7 @@ export default function ProxyList({ creds, availableGb, rotationEnabled, warnPct
     const leftIds = new Set<string>()
     let stop = false
     let throttled = false
+    let declined = false   // the password / authenticator confirmation was cancelled
     // Chunks of 20 per request: one usage sync per chunk instead of one per session, and one
     // rate-limit hit per chunk (see /api/dashboard/proxies/bulk-action).
     const labelOf = new Map(targets.map(c => [c.id, c.label || c.id.slice(0, 8)]))
@@ -287,6 +295,14 @@ export default function ProxyList({ creds, availableGb, rotationEnabled, warnPct
         }
       } catch (err: any) {
         if (err?.code === 'mfa_required') { stop = true; break }   // redirected to verify
+        if (err?.code === 'reauth_required') {
+          // The customer cancelled the confirmation: that is a choice, not a failure. Stop here
+          // (asking again for every remaining chunk would be nagging) and keep the untouched
+          // sessions selected.
+          declined = true
+          for (const c of targets.slice(i)) leftIds.add(c.id)
+          break
+        }
         for (const c of chunk) { failed.push(c.label || c.id.slice(0, 8)); leftIds.add(c.id) }
         if (err?.status === 429) {
           // Rate-limited: hammering the remaining chunks would only fail them too.
@@ -299,6 +315,7 @@ export default function ProxyList({ creds, availableGb, rotationEnabled, warnPct
     setBulkBusy(false)
     const verb = kind === 'pause' ? 'paused' : kind === 'resume' ? 'resumed' : kind === 'topup' ? 'topped up' : kind === 'retarget' ? 'moved' : 'deleted'
     if (ok > 0) toast.success(`${ok} session${ok === 1 ? '' : 's'} ${verb}`)
+    if (declined) toast(`Confirmation cancelled — ${leftIds.size} session${leftIds.size === 1 ? '' : 's'} not changed and still selected.`, { icon: 'ℹ️' })
     if (throttled) toast.error(`Too many requests — wait a minute, then retry the ${leftIds.size} session${leftIds.size === 1 ? '' : 's'} still selected.`, { duration: 7000 })
     else if (failed.length > 0) toast.error(`Couldn’t ${kind} ${failed.length}: ${failed.slice(0, 3).join(', ')}${failed.length > 3 ? '…' : ''} — still selected so you can retry.`, { duration: 6000 })
     if (!stop) {
@@ -416,7 +433,7 @@ export default function ProxyList({ creds, availableGb, rotationEnabled, warnPct
       </div>
 
       {selecting && (
-        <div className="sticky top-2 z-10 mb-2.5 bg-white border border-accent/30 rounded-xl px-4 py-2.5 flex items-center gap-2.5 flex-wrap shadow-sm">
+        <div className="sticky top-[4.5rem] z-10 mb-2.5 bg-white border border-accent/30 rounded-xl px-4 py-2.5 flex items-center gap-2.5 flex-wrap shadow-sm">
           <span className="text-xs font-mono text-ink">{selectedCreds.length} selected{hiddenSelected > 0 ? ` (+${hiddenSelected} hidden by the filter — not affected)` : ''}</span>
           <button onClick={() => setSelected(new Set(filtered.filter(selectable).map(c => c.id)))}
             className="text-[11px] font-mono text-accent hover:underline">Select all shown</button>
@@ -497,6 +514,8 @@ export default function ProxyList({ creds, availableGb, rotationEnabled, warnPct
                 expanded={expandedId === cred.id}
                 onToggle={() => setExpandedId(prev => prev === cred.id ? null : cred.id)}
                 rotationEnabled={rotationEnabled}
+                warnPct={warnPct}
+                urgentPct={urgentPct}
               />
               </div>
             </div>

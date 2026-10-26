@@ -176,7 +176,11 @@ export function SecurityActivityCard({ className = 'mb-5' }: { className?: strin
       const res = await fetch('/api/auth/signout-others', { method: 'POST' })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) toast.error(data.error ?? 'Could not sign out other devices.')
-      else { toast.success('Signed out of all other devices.'); await load() }
+      else {
+        toast.success('Signed out of all other devices.')
+        window.dispatchEvent(new Event('gp:sessions-changed'))   // the "Where you’re signed in" list below
+        await load()
+      }
     } catch {
       toast.error('Network error. Please try again.')
     }
@@ -245,6 +249,11 @@ export function ActiveSessionsCard({ className = 'mb-5' }: { className?: string 
     } catch { setFailed(true) }
   }
   useEffect(() => { load() }, [])
+  useEffect(() => {
+    const h = () => { load() }
+    window.addEventListener('gp:sessions-changed', h)
+    return () => window.removeEventListener('gp:sessions-changed', h)
+  }, [])
 
   async function signOut(d: DeviceRow) {
     if (!confirm('Sign this device out?')) return

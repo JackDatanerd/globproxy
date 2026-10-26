@@ -146,7 +146,7 @@ export default async function ProxiesPage() {
 
       {/* Proxy list */}
       {creds && creds.length > 0 ? (
-        <ProxyList creds={safeCreds as unknown as React.ComponentProps<typeof ProxyList>["creds"]} availableGb={available} rotationEnabled={passwordRotationEnabled()} warnPct={warnPct} urgentPct={urgentPct} />
+        <ProxyList creds={safeCreds as unknown as React.ComponentProps<typeof ProxyList>["creds"]} availableGb={available} rotationEnabled={passwordRotationEnabled()} warnPct={warnPct} urgentPct={urgentPct} userId={user.id} />
       ) : total > 0 ? (
         <div className="bg-white border border-border rounded-xl p-12 text-center">
           <div className="text-3xl mb-3">⬡</div>

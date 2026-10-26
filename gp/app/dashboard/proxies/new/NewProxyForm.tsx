@@ -562,7 +562,7 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup, initial, d
         </div>
 
         {/* ============ RECEIPT: sticky live summary + submit ============ */}
-        <div className="lg:sticky lg:top-6">
+        <div className="lg:sticky lg:top-20">
           <div className="bg-ink rounded-2xl overflow-hidden text-white shadow-[0_12px_32px_rgba(15,17,20,.18)]">
             <div className="px-6 pt-5 pb-4 border-b border-dashed border-white/[.14]">
               <div className="text-[10px] font-mono uppercase tracking-widest text-white/40 mb-1.5">Session preview</div>

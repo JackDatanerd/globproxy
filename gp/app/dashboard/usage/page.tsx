@@ -14,6 +14,13 @@ export default async function UsagePage() {
     supabase.from('proxy_credentials').select('id, label, country, gb_used, gb_allocated, status').eq('user_id', user.id).in('status', ['active', 'suspended']).order('gb_used',{ascending:false}),
   ])
   const bw = bwRes.data, creds = credsRes.data
+  // The customer's own alert levels (Settings). Tolerant: 80 / 95 if unset or unreadable.
+  let warnPct = 80, urgentPct = 95
+  try {
+    const { data: lv } = await supabase.from('profiles').select('usage_warn_pct, usage_urgent_pct').eq('id', user.id).maybeSingle()
+    const w = Number((lv as any)?.usage_warn_pct), u = Number((lv as any)?.usage_urgent_pct)
+    if (Number.isFinite(w) && Number.isFinite(u) && w < u) { warnPct = w; urgentPct = u }
+  } catch { /* defaults */ }
   const total = bw?.total_gb ?? 0
   const used = bw?.used_gb ?? 0
   // Remaining = purchased - used (what the customer still owns). This tile
@@ -77,7 +84,7 @@ export default async function UsagePage() {
                     <span className="text-xs font-mono text-muted">{formatGb(cUsed)} / {formatGb(c.gb_allocated)} GB</span>
                   </div>
                   <div className="bg-surface rounded-full h-2 overflow-hidden">
-                    <div className={`h-full rounded-full ${pct>=95?'bg-red-400':pct>=80?'bg-amber-400':'bg-accent2'}`} style={{width:`${Math.min(pct,100)}%`}} />
+                    <div className={`h-full rounded-full ${pct>=urgentPct?'bg-red-400':pct>=warnPct?'bg-amber-400':'bg-accent2'}`} style={{width:`${Math.min(pct,100)}%`}} />
                   </div>
                   <div className="flex justify-between mt-1 text-xs font-mono text-muted">
                     <span>{formatPct(cUsed, c.gb_allocated)}% used</span><span>{formatGb(Math.max(0,c.gb_allocated-cUsed))} GB left</span>
