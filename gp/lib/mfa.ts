@@ -478,6 +478,8 @@ export async function confirmRekey(userId: string, email: string, code: string, 
     p_user_id: userId,
     p_counter: counter,
     p_max_age: '15 minutes',
+    // CAS: only swap in the exact pending seed the submitted code was verified against.
+    p_expected_pending: pendingSecret,
   })
   if (error) {
     await refundAttempt(supabase, userId, gate)

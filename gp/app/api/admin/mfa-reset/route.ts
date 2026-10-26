@@ -1,9 +1,7 @@
-import { appUrl } from '@/lib/appUrl'
 import { adminResetMfa } from '@/lib/mfa'
 import { revokeAllSessions } from '@/lib/adminAccountSecurity'
 import { authorizeAdmin, readJson, badRequest, isUuid } from '@/lib/adminAuth'
-import { sendEmailSafe, escapeHtml } from '@/lib/email'
-import { logSecurityEvent } from '@/lib/securityEvents'
+import { recordAndNotify } from '@/lib/securityEvents'
 import { logAdminAction } from '@/lib/adminAudit'
 import { NextResponse } from 'next/server'
 
@@ -53,50 +51,13 @@ export async function POST(req: Request) {
   // takeover) must sign in again.
   // Checked, not swallowed: a failed revoke is reported to the admin and recorded.
   const sessions = await revokeAllSessions(supabase, user_id)
-  await logSecurityEvent({ userId: user_id, actorId: adminId, event: 'mfa_reset_by_admin', req, admin: supabase })
+  // Durable: stored with notify = true and e-mailed to the owner now; if the provider is down the
+  // 'security' cron sweep retries for 24 h (the old direct send was lost on a failed attempt).
+  await recordAndNotify({ userId: user_id, actorId: adminId, event: 'mfa_reset_by_admin', req, admin: supabase })
   await logAdminAction(supabase, {
     adminId, action: 'user.mfa_reset', targetUserId: user_id,
     details: { sessions_revoked: sessions.ok ? sessions.revoked : 0, ...(sessions.ok ? {} : { sessions_revoke_failed: true }) },
   })
-
-  // Security-relevant account change — notify the owner the same way
-  // suspend/unsuspend does, so a reset the account owner didn't request
-  // (support impersonation, a compromised support account) is visible to
-  // them immediately, not discovered later.
-  if (target.email && target.email !== '[deleted]') {
-    await sendEmailSafe({
-      to: target.email,
-      subject: 'Two-factor authentication was reset on your GlobProxy account',
-      html: `
-        <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;">
-          <img src="https://globproxy.com/og-image.png" alt="GlobProxy" width="200"
-            style="display:block;margin:0 auto 32px auto;border-radius:12px;"/>
-          <h2 style="text-align:center;color:#111;">Two-factor authentication reset</h2>
-          <p style="color:#444;text-align:center;">
-            Hi ${escapeHtml(target.full_name) || 'there'}, our support team reset two-factor
-            authentication on your GlobProxy account, so it is now switched off. We strongly
-            recommend turning it back on from Settings. If you didn't request this, sign in now,
-            change your password and re-enable two-factor authentication right away — you don't
-            need to wait on a reply from us to lock things back down.
-          </p>
-          <div style="text-align:center;margin:32px 0;">
-            <a href="${appUrl()}/dashboard/settings"
-               style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">
-              Go to account settings →
-            </a>
-          </div>
-          <p style="color:#888;font-size:13px;text-align:center;">
-            Also worth changing your password if you're not sure how this happened.
-            Still concerned, or can't sign in?
-            <a href="mailto:support@globproxy.com" style="color:#2563eb;">Contact support</a>.
-          </p>
-          <p style="color:#bbb;font-size:12px;text-align:center;margin-top:32px;">
-            © ${new Date().getFullYear()} GlobProxy · Residential Proxies That Never Expire
-          </p>
-        </div>
-      `,
-    })
-  }
 
   return NextResponse.json({
     success: true,

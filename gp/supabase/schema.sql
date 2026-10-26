@@ -10345,7 +10345,9 @@ begin
 end;
 $$;
 
-create or replace function public.mfa_rekey_confirm(p_user_id uuid, p_counter bigint, p_max_age interval)
+create or replace function public.mfa_rekey_confirm(
+  p_user_id uuid, p_counter bigint, p_max_age interval, p_expected_pending text default null
+)
 returns boolean
 language plpgsql security definer set search_path = public, pg_temp as $$
 begin
@@ -10360,15 +10362,16 @@ begin
    where user_id = p_user_id
      and confirmed
      and pending_secret is not null
-     and pending_created_at > now() - p_max_age;
+     and pending_created_at > now() - p_max_age
+     and (p_expected_pending is null or pending_secret = p_expected_pending);
   return found;
 end;
 $$;
 
 revoke all on function public.mfa_rekey_start(uuid, text) from public, anon, authenticated;
-revoke all on function public.mfa_rekey_confirm(uuid, bigint, interval) from public, anon, authenticated;
+revoke all on function public.mfa_rekey_confirm(uuid, bigint, interval, text) from public, anon, authenticated;
 grant execute on function public.mfa_rekey_start(uuid, text) to service_role;
-grant execute on function public.mfa_rekey_confirm(uuid, bigint, interval) to service_role;
+grant execute on function public.mfa_rekey_confirm(uuid, bigint, interval, text) to service_role;
 
 -- ── 2. e-mail change ends every session ──────────────────────────────
 create or replace function public.on_auth_email_changed()

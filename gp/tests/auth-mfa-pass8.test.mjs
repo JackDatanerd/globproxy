@@ -34,3 +34,19 @@ test('mfa-setup sends an enrolled-but-unverified session to the code prompt', ()
   assert.match(s, /res\.status === 403 && data\?\.code === 'mfa_required'/)
   assert.match(s, /\/auth\/mfa-verify/)
 })
+
+test('pass 9: rekey confirm is compare-and-set on the verified pending seed', () => {
+  const s = read('lib/mfa.ts')
+  assert.match(s, /p_expected_pending:\s*pendingSecret/)
+  const m = read('supabase/migrations/0092_auth_mfa_pass9.sql')
+  assert.match(m, /pending_secret = p_expected_pending/)
+})
+
+test('pass 9: admin MFA reset notice is durable', () => {
+  const r = read('app/api/admin/mfa-reset/route.ts')
+  assert.match(r, /recordAndNotify\(\{[^}]*mfa_reset_by_admin/)
+  assert.doesNotMatch(r, /sendEmailSafe/)
+  const n = read('lib/securityNotices.ts')
+  assert.match(n, /DURABLE_NOTICE_EVENTS[\s\S]{0,200}'mfa_reset_by_admin'/)
+  assert.match(n, /case 'mfa_reset_by_admin'/)
+})

@@ -39,7 +39,7 @@ type NoticeProfile = { email: string; full_name: string | null }
 export type NoticeRow = { event: string; ip: string | null; user_agent: string | null; meta: Record<string, unknown> | null }
 
 export const DURABLE_NOTICE_EVENTS: ReadonlySet<string> = new Set([
-  'mfa_enabled', 'mfa_disabled', 'mfa_backup_regenerated', 'mfa_rekeyed', 'mfa_locked', 'login_throttled', 'login',
+  'mfa_enabled', 'mfa_disabled', 'mfa_backup_regenerated', 'mfa_rekeyed', 'mfa_reset_by_admin', 'mfa_locked', 'login_throttled', 'login',
 ])
 
 export function renderSecurityNotice(row: NoticeRow, profile: NoticeProfile): { to: string; subject: string; html: string } | null {
@@ -69,6 +69,12 @@ export function renderSecurityNotice(row: NoticeRow, profile: NoticeProfile): { 
         p(`Hi ${name}, the authenticator app for your GlobProxy account (${email}) was just replaced with a new one. Browsers that were trusted for two-factor have been signed out of that trust. If you made this change, no action is needed.`) +
         p(`If you didn't make this change, someone has your password and controls the account's second factor — contact support immediately, then reset your password.`) +
         resetButton() + supportLine())
+    case 'mfa_reset_by_admin':
+      return make('Two-factor authentication was reset on your GlobProxy account', '2FA reset',
+        p(`Hi ${name}, our support team reset two-factor authentication on your GlobProxy account (${email}), so it is now switched off. We strongly recommend turning it back on from Settings.`) +
+        p(`If you didn't request this, sign in now, change your password and re-enable two-factor authentication right away — you don't need to wait on a reply from us to lock things back down.`) +
+        `<div style="text-align:center;margin:32px 0;"><a href="${APP_URL()}/dashboard/settings" style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">Go to account settings →</a></div>` +
+        supportLine())
     case 'mfa_locked':
       return make('Too many incorrect two-factor codes on your GlobProxy account', '2FA temporarily locked',
         p(`Hi ${name}, several incorrect two-factor codes were entered for your GlobProxy account${ip ? ` (most recently from ${escapeHtml(ip)})` : ''}, so code entry is paused for 15 minutes.`) +
