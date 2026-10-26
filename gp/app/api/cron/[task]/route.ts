@@ -19,7 +19,7 @@ import { findReportedError, recordCronRun, checkCronFreshness, checkStockWatchdo
 import { runInviteNotices, runResellerMaintenance } from '@/lib/resellerCron'
 import { runAccountDeletions } from '@/lib/accountDeletionCron'
 import { listVerifiedOperatorsDue } from '@/lib/adminVo'
-import { runAutoRecharge } from '@/lib/autoRecharge'
+import { runAutoRecharge, captureSavedCardIfRequested } from '@/lib/autoRecharge'
 import { ATTEMPT_OPEN_MS } from '@/lib/rechargeRules'
 import { NextResponse } from 'next/server'
 
@@ -448,6 +448,7 @@ async function runReconcile() {
               paystack_reference: o.paystack_reference!, amount_usd: Number(o.amount_usd),
               is_canary: !!o.is_canary,
             })
+            if (result.status !== 'error') await captureSavedCardIfRequested(supabase, o, txn.metadata, txn)
             if (result.status === 'credited') {
               recovered++
               await alertAdminPayment('Reconcile recovered an uncredited payment', {

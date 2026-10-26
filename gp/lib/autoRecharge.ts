@@ -60,6 +60,18 @@ export async function captureSavedCard(supabase: Admin, userId: string, data: an
   }
 }
 
+// The one "did the customer tick save-card on this order?" rule, shared by every path that can
+// be the one to credit it (the webhook, /api/verify-payment, the reconcile cron) — the card used
+// to be stored only when the webhook happened to be the path that saw the payment. `data` is a
+// Paystack transaction (webhook payload or verify response). Never for the canary order; never
+// throws (the credit is already committed).
+export async function captureSavedCardIfRequested(
+  supabase: Admin, order: { user_id: string; is_canary?: boolean | null }, metadata: any, data: any,
+): Promise<void> {
+  if (String(metadata?.save_card ?? '') !== '1' || order.is_canary) return
+  await captureSavedCard(supabase, order.user_id, data)
+}
+
 // What the rule has spent in the cap's rolling 30 days, and when it last paid. The cron
 // (cap enforcement) and the Billing page (what the customer is shown) both call this, so
 // they cannot disagree about how much headroom is left.

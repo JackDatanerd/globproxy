@@ -5,6 +5,7 @@ import { createAdminClient } from '@/lib/supabase/server'
 import { alertMismatchOnce } from '@/lib/paymentAlerts'
 import { rateLimited } from '@/lib/rateLimit'
 import { failPendingOrder } from '@/lib/orderFailure'
+import { captureSavedCardIfRequested } from '@/lib/autoRecharge'
 
 // The answer for anything that is OUR or the provider's hiccup rather than a
 // verdict on the payment. The client polls on `pending` and tells the customer it
@@ -158,6 +159,10 @@ export async function POST(req: Request) {
         error: "Your payment is confirmed, but we couldn't credit it just yet. It will be credited automatically within a few minutes — contact support if it doesn't appear.",
       }, { status: 503 })
     }
+
+    // The customer asked to keep this card: when this call (not the webhook) is the one that
+    // saw the payment, the webhook may never land, so store it here too. Best-effort.
+    await captureSavedCardIfRequested(supabase, order, txn.metadata, txn)
 
     return NextResponse.json({ success: true, already_paid: result.status === 'already_credited' })
   } catch (err: any) {

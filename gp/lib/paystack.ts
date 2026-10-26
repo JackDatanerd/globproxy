@@ -42,6 +42,9 @@ export interface PaystackTransaction {
   currency?: string
   gateway_response?: string
   metadata: Record<string, string>
+  // Present on a settled card payment; used to store the card the customer asked us to save.
+  authorization?: Record<string, any>
+  customer?: { email?: string } & Record<string, any>
 }
 
 export async function verifyTransaction(reference: string): Promise<PaystackTransaction> {

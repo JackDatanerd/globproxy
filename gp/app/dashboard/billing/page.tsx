@@ -322,7 +322,7 @@ export default function BillingPage() {
                         {requesting === o.id ? 'Sending…' : 'Request refund'}
                       </button>
                     )}
-                    {(o.payment_status === 'pending' || o.payment_status === 'failed') && (() => {
+                    {(o.payment_status === 'failed' || (o.payment_status === 'pending' && !o.auto_recharge)) && (() => {
                       // Re-open the buy page on the same selection: a fixed plan when
                       // the order matches one exactly, otherwise a custom quantity.
                       const plan = PLANS.find(p => !p.custom && p.gb === Number(o.gb_amount) && p.total === Number(o.amount_usd))
@@ -337,7 +337,8 @@ export default function BillingPage() {
                         </Link>
                       ) : null
                     })()}
-                    {o.payment_status === 'pending' && (
+                    {/* An automatic top-up already sent to the card is not a checkout the customer can abandon: cancelling the label would not stop the charge and hides it from the 30-day limit. */}
+                    {o.payment_status === 'pending' && !o.auto_recharge && (
                       <button
                         onClick={() => cancelOrder(o.id)}
                         disabled={cancelling === o.id}
