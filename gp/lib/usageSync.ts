@@ -3,7 +3,7 @@ import { listAllSubUsers, getSubUserUsage, updateSubUserTrafficLimit, deleteSubU
 import { runAutoTopups } from '@/lib/autoTopup'
 import { fetchAllRows } from '@/lib/dbPaging'
 import { recordUsageDeltas } from '@/lib/usageLedger'
-import { syncCredentialLimit, expectedLimitMb, suspendedCapMb, loadSuspendedUserIds } from '@/lib/credentials'
+import { syncCredentialLimit, expectedLimitMb, suspendedCapMb, loadSuspendedUserIds, UPSTREAM_MISSING_GRACE_MS } from '@/lib/credentials'
 import { dispatchWebhook } from '@/lib/webhooks'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { appUrl } from '@/lib/appUrl'
@@ -31,7 +31,6 @@ const MAX_LOW_NOTICES_PER_RUN = 8
 // Webhooks now carry every crossing, up to this many per run; the rest follow on
 // the next tick. Each is only a database insert here — delivery is deferred.
 const MAX_WEBHOOK_EVENTS_PER_RUN = 60
-const UPSTREAM_MISSING_GRACE_MS = 10 * 60_000 // listing may lag a just-created sub-user
 
 type UsageChange = { id: string; gb_used: number; user_id: string | null; delta: number }
 

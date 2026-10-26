@@ -59,6 +59,10 @@ export const CRED_COLS =
  *  - free-text reason columns are dropped (the UI only compares them to fixed
  *    enum strings, so a stray value is useless to it and unsafe to ship).
  */
+// A just-created sub-user can be absent from the supplier's listing for a few minutes. Neither the
+// admin alert (usageSync) nor the customer's "not responding" notice (dashboard) acts before this.
+export const UPSTREAM_MISSING_GRACE_MS = 10 * 60_000
+
 export function toDashboardCredential(row: Record<string, any>): Record<string, any> {
   const { upstream_username, upstream_password, ...rest } = row
   const out: Record<string, any> = {
@@ -531,13 +535,14 @@ export async function topupCredential(
 
 // ── Pending credentials: provisioning with retries ────────────────────
 export async function provisionPendingCredentials(
-  opts: { userId?: string; limit?: number; ignoreBackoff?: boolean } = {}
+  opts: { userId?: string; credentialId?: string; limit?: number; ignoreBackoff?: boolean } = {}
 ): Promise<{ claimed: number; activated: number; failed: number; skipped?: string }> {
   if (!providerConfigured()) return { claimed: 0, activated: 0, failed: 0, skipped: 'provider_not_configured' }
   const admin = await createAdminClient()
 
   const { data: claimed, error } = await admin.rpc('claim_pending_credentials', {
     p_limit: opts.limit ?? 5, p_user_id: opts.userId ?? null, p_ignore_backoff: opts.ignoreBackoff ?? false,
+    p_credential_id: opts.credentialId ?? null,
   })
   if (error) { console.error('[provision] claim failed', error); return { claimed: 0, activated: 0, failed: 0 } }
 
@@ -617,8 +622,15 @@ export async function provisionPendingCredentials(
       }
 
       // A re-provisioned session gets its IP whitelist back from the local mirror.
-      await replayWhitelist(admin, cred.id, gcred.upstream_sub_user_id)
-        .catch((e) => console.error('[provision] whitelist replay failed', cred.id, e))
+      // A failure is remembered (whitelist_replay_pending) and retried by the cron, instead of the
+      // session silently going live with a less restricted list than the customer set.
+      await replayWhitelist(admin, cred.id, gcred.upstream_sub_user_id).then(
+        () => admin.from('proxy_credentials').update({ whitelist_replay_pending: false }).eq('id', cred.id).eq('whitelist_replay_pending', true).then(() => undefined, () => undefined),
+        async (e) => {
+          console.error('[provision] whitelist replay failed', cred.id, e)
+          await admin.from('proxy_credentials').update({ whitelist_replay_pending: true }).eq('id', cred.id)
+            .then(() => undefined, () => undefined)
+        })
 
       activated++
       await dispatchWebhook(cred.user_id, 'session_activated', {

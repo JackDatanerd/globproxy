@@ -46,7 +46,9 @@ export class SessionLimitError extends Error {
 // the upstream cap is lifted. The other order lifted the cap, then failed on the cap
 // trigger: the session kept proxying upstream while it still read "paused" here — and
 // the usage sync never walks a suspended session, so nothing was ever counted or billed.
-// If the upstream call then fails, the row is put back to its previous suspended state.
+// If the upstream call then fails, the row is put back to its previous suspended state — including a
+// NULL reason (suspended before the column existed = account-level), which must not become 'admin',
+// or a later account re-enable would never touch it again.
 export async function enableCredential(supabase: AdminSupabase, cred: CredRow & { suspended_reason?: string | null }): Promise<void> {
   const { error } = await supabase.from('proxy_credentials')
     .update({ status: 'active', suspended_reason: null }).eq('id', cred.id).eq('status', 'suspended')
@@ -59,7 +61,7 @@ export async function enableCredential(supabase: AdminSupabase, cred: CredRow & 
       await updateSubUserTrafficLimit(cred.upstream_sub_user_id, Math.round(Number(cred.gb_allocated ?? 0) * 1024))
     } catch (e) {
       const { error: revertErr } = await supabase.from('proxy_credentials')
-        .update({ status: 'suspended', suspended_reason: cred.suspended_reason ?? 'admin' }).eq('id', cred.id)
+        .update({ status: 'suspended', suspended_reason: cred.suspended_reason ?? null }).eq('id', cred.id)
       if (revertErr) console.error('[admin-proxy] could not put a failed re-enable back to suspended', cred.id, revertErr)
       throw e
     }

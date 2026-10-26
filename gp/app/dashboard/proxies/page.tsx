@@ -3,7 +3,7 @@ import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import ProxyList from '@/components/dashboard/ProxyList'
 import { formatGb, formatPct } from '@/lib/format'
-import { passwordRotationEnabled, toDashboardCredential } from '@/lib/credentials'
+import { passwordRotationEnabled, toDashboardCredential, UPSTREAM_MISSING_GRACE_MS } from '@/lib/credentials'
 
 export default async function ProxiesPage() {
   const supabase = await createClient()
@@ -50,7 +50,12 @@ export default async function ProxiesPage() {
   // supplier's internal sub-user id) would show in the page payload. Expose
   // only neutral names.
   // toDashboardCredential also applies the supplier guard (see lib/credentials).
-  const safeCreds = (creds ?? []).map((row: Record<string, any>) => toDashboardCredential(row))
+  // The "isn't responding" notice only after the same grace the admin alert waits for: the supplier's
+  // listing can lag a just-created session by a few minutes, which is not an outage.
+  const renderedAt = Date.now()
+  const safeCreds = (creds ?? []).map((row: Record<string, any>) => toDashboardCredential(
+    row.upstream_missing_since && renderedAt - Date.parse(row.upstream_missing_since) < UPSTREAM_MISSING_GRACE_MS
+      ? { ...row, upstream_missing_since: null } : row))
 
   // The customer's own alert levels (Settings → E-mail notifications). Tolerant: if the columns
   // aren't there yet or the read fails, the original 80 / 95 apply.

@@ -45,13 +45,38 @@ export async function replayWhitelist(admin: Admin, credentialId: string, upstre
     .from('proxy_whitelist_entries').select('ip, description').eq('credential_id', credentialId).order('created_at')
   if (error) throw error
   if (!entries?.length) return 0
+  // Only what the sub-user does not already have: a retry after a partly applied replay must not
+  // re-add (and fail on) entries that landed the first time.
+  const present = new Set((await listWhitelistedIps(upstreamSubUserId)).map((i: WhitelistedIp) => i.ip))
+  const todo = entries.filter((e: any) => !present.has(e.ip))
   let restored = 0
-  for (let i = 0; i < entries.length; i += MAX_BULK_ITEMS) {
-    const chunk = entries.slice(i, i + MAX_BULK_ITEMS).map((e: any) => ({ ip: e.ip, description: e.description || 'Restored' }))
+  for (let i = 0; i < todo.length; i += MAX_BULK_ITEMS) {
+    const chunk = todo.slice(i, i + MAX_BULK_ITEMS).map((e: any) => ({ ip: e.ip, description: e.description || 'Restored' }))
     await bulkAddWhitelistedIps(upstreamSubUserId, chunk)
     restored += chunk.length
   }
   return restored
+}
+
+// Cron: sessions whose whitelist replay failed at provisioning (proxy_credentials.whitelist_replay_pending).
+// Retried until it lands; a sub-user missing upstream is left to the usage sync's handling.
+export async function retryPendingWhitelistReplays(admin: Admin, limit = 15): Promise<{ checked: number; restored: number }> {
+  const { data: rows, error } = await admin
+    .from('proxy_credentials').select('id, upstream_sub_user_id')
+    .eq('status', 'active').eq('whitelist_replay_pending', true).not('upstream_sub_user_id', 'is', null)
+    .order('created_at').limit(limit)
+  if (error) { console.error('[whitelist-mirror] replay retry read failed', error); return { checked: 0, restored: 0 } }
+  let restored = 0
+  for (const r of rows ?? []) {
+    try {
+      await replayWhitelist(admin, r.id, r.upstream_sub_user_id)
+      await admin.from('proxy_credentials').update({ whitelist_replay_pending: false }).eq('id', r.id)
+      restored++
+    } catch (e) {
+      if (!isUpstreamNotFound(e)) console.error('[whitelist-mirror] replay retry failed', r.id, e)
+    }
+  }
+  return { checked: rows?.length ?? 0, restored }
 }
 
 // Cron backfill: sessions created before the mirror existed (or whose mirror failed) have

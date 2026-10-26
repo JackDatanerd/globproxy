@@ -1,4 +1,4 @@
-import { backfillWhitelistMirrors } from '@/lib/whitelistMirror'
+import { backfillWhitelistMirrors, retryPendingWhitelistReplays } from '@/lib/whitelistMirror'
 import { appUrl } from '@/lib/appUrl'
 import { createAdminClient } from '@/lib/supabase/server'
 import { syncAllUsage } from '@/lib/usageSync'
@@ -806,7 +806,12 @@ async function runProvision() {
       console.error('[cron provision] whitelist mirror backfill failed:', e)
       return { checked: 0, mirrored: 0 }
     })
-    return { provision, limits, stalled, stuck, whitelist }
+    // Whitelists that could not be put back on a re-provisioned session (0094) — bounded, never throws.
+    const whitelistReplay = await retryPendingWhitelistReplays(await createAdminClient()).catch((e) => {
+      console.error('[cron provision] whitelist replay retry failed:', e)
+      return { checked: 0, restored: 0 }
+    })
+    return { provision, limits, stalled, stuck, whitelist, whitelistReplay }
   } catch (e: any) {
     console.error('[cron provision] failed:', e)
     return { error: String(e?.message ?? e) }
