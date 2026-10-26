@@ -295,12 +295,12 @@ export default function TwoFactorSettings({ role }: { role?: string } = {}) {
             </p>
             <input
               type="text" autoFocus required value={code}
-              onChange={e => setCode(e.target.value.trim())}
+              onChange={e => setCode(e.target.value.slice(0, 32))}
               placeholder="6-digit code or backup code"
               className="w-full bg-surface border border-border text-ink placeholder-muted px-4 py-2.5 rounded-xl text-sm font-mono focus:outline-none focus:border-accent transition-colors"
             />
             <div className="flex gap-2">
-              <button type="submit" disabled={submitting || !code} className="text-xs font-mono px-4 py-2 rounded-lg text-white bg-accent transition-opacity hover:opacity-90 disabled:opacity-60">
+              <button type="submit" disabled={submitting || !code.trim()} className="text-xs font-mono px-4 py-2 rounded-lg text-white bg-accent transition-opacity hover:opacity-90 disabled:opacity-60">
                 {submitting ? 'Checking…' : 'Continue'}
               </button>
               <button type="button" onClick={cancelRekey} className="text-xs font-mono border border-border rounded-lg px-4 py-2 hover:text-ink transition-colors">Cancel</button>
@@ -345,12 +345,12 @@ export default function TwoFactorSettings({ role }: { role?: string } = {}) {
           )}
           <input
             type="text" autoFocus required value={code}
-            onChange={e => setCode(e.target.value.trim())}
+            onChange={e => setCode(e.target.value.slice(0, 32))}
             placeholder="6-digit code or backup code"
             className="w-full bg-surface border border-border text-ink placeholder-muted px-4 py-2.5 rounded-xl text-sm font-mono focus:outline-none focus:border-accent transition-colors"
           />
           <div className="flex gap-2">
-            <button type="submit" disabled={submitting || !code}
+            <button type="submit" disabled={submitting || !code.trim()}
               className={`text-xs font-mono px-4 py-2 rounded-lg text-white transition-opacity hover:opacity-90 disabled:opacity-60 ${mode === 'disable' ? 'bg-red-500' : 'bg-accent'}`}>
               {submitting ? 'Confirming…' : mode === 'disable' ? 'Confirm disable' : 'Confirm & regenerate'}
             </button>

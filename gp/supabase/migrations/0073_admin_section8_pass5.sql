@@ -363,3 +363,7 @@ end;
 $$;
 revoke all on function public.admin_reverse_paid_payout(uuid) from public, anon, authenticated;
 grant execute on function public.admin_reverse_paid_payout(uuid) to service_role;
+
+insert into public.schema_migrations (filename) values
+  ('0073_admin_section8_pass5.sql')
+on conflict do nothing;

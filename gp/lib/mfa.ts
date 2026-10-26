@@ -374,6 +374,8 @@ export async function confirmEnrollment(userId: string, email: string, code: str
     p_user_id: userId,
     p_used_counter: usedCounter,
     p_hashes: hashes,
+    // CAS: only confirm the exact pending seed the submitted code was verified against.
+    p_expected_secret: factor.secret,
   })
   if (confirmErr) {
     await refundAttempt(supabase, userId, gate)

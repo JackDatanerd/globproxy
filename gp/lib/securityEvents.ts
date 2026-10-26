@@ -139,8 +139,19 @@ export async function recordLogin(userId: string, req: Request, extraMeta: Recor
     const country = requestCountry(req)
     const since = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString()
 
+    // "Has this account EVER signed in" must not use the 180-day window: a dormant account
+    // (no sign-in for 6+ months) taken over from a new device would otherwise count as a
+    // first-ever sign-in and never alert. Security events are pruned after a year, so an
+    // account that is more than a day old with no login row at all also counts as having
+    // signed in before.
     const { data: anyPrior } = await admin
-      .from('security_events').select('id').eq('user_id', userId).eq('event', 'login').gte('created_at', since).limit(1)
+      .from('security_events').select('id').eq('user_id', userId).eq('event', 'login').limit(1)
+    let hadPriorLogin = (anyPrior?.length ?? 0) > 0
+    if (!hadPriorLogin) {
+      const { data: prof } = await admin.from('profiles').select('created_at').eq('id', userId).maybeSingle()
+      const made = prof?.created_at ? new Date(prof.created_at as string).getTime() : NaN
+      if (Number.isFinite(made) && Date.now() - made > 24 * 60 * 60 * 1000) hadPriorLogin = true
+    }
     const { data: sameDevice } = await admin
       .from('security_events').select('id').eq('user_id', userId).eq('event', 'login')
       .eq('meta->>ua_hash', hash).gte('created_at', since).limit(1)
@@ -160,7 +171,7 @@ export async function recordLogin(userId: string, req: Request, extraMeta: Recor
     }
 
     const newDevice = isNewSignIn({
-      hadPriorLogin: (anyPrior?.length ?? 0) > 0,
+      hadPriorLogin,
       sameDeviceSeen: (sameDevice?.length ?? 0) > 0,
       country,
       countriesSeen: seen,

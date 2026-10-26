@@ -1,7 +1,7 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { isMfaEnrolled, revokeOtherSessions } from '@/lib/mfa'
 import { sendEmailSafe, securityNoticeHtml, escapeHtml } from '@/lib/email'
-import { logSecurityEvent } from '@/lib/securityEvents'
+import { logSecurityEvent, recordAndNotify } from '@/lib/securityEvents'
 import { appUrl } from '@/lib/appUrl'
 
 /**
@@ -109,9 +109,25 @@ export async function pendingRecoveryFor(userId: string): Promise<{ state: 'wait
   return null
 }
 
+const ADMIN_RECOVERY_MSG = 'Administrator accounts cannot remove two-factor authentication this way. Ask another administrator to reset it after verifying your identity.'
+
+// Administrators must keep a second factor (disableMfa refuses them too), so the
+// self-service path is closed to them; an admin reset with out-of-band identity checks is
+// the way back in. An unreadable role fails toward "admin" (refuse).
+async function refuseIfAdmin(userId: string): Promise<void> {
+  const admin = await createAdminClient()
+  const { data, error } = await admin.from('profiles').select('role').eq('id', userId).maybeSingle()
+  if (error || !data) {
+    console.error('[mfaRecovery] role lookup failed', userId, error?.message)
+    throw new RecoveryUserError('Could not check your account right now. Please try again.')
+  }
+  if (data.role === 'admin') throw new RecoveryUserError(ADMIN_RECOVERY_MSG)
+}
+
 /** Step 1 — the signed-in owner (password already verified by the route) asks for recovery. */
 export async function requestRecovery(userId: string, email: string, fullName: string | null | undefined, req?: Request): Promise<void> {
   if (!(await isMfaEnrolled(userId))) throw new RecoveryUserError('Two-factor authentication is not turned on for this account.')
+  await refuseIfAdmin(userId)
   const admin = await createAdminClient()
 
   // A request that is already CONFIRMED (waiting or ready) is never replaced
@@ -176,6 +192,7 @@ export async function recoveryStatus(token: string): Promise<{ state: RecoverySt
 export async function confirmRecovery(userId: string, email: string, fullName: string | null | undefined, token: string, req?: Request): Promise<{ ready_at: string }> {
   const r = await findByToken(token)
   if (!r || r.user_id !== userId) throw new RecoveryUserError('This recovery link is not valid for the account you are signed in to.')
+  await refuseIfAdmin(userId)
   const state = stateOf(r)
   if (state === 'expired') throw new RecoveryUserError('This link has expired. Start recovery again.')
   if (state === 'cancelled') throw new RecoveryUserError('This recovery request was cancelled.')
@@ -191,7 +208,7 @@ export async function confirmRecovery(userId: string, email: string, fullName: s
   if (!updated) throw new RecoveryUserError('This recovery request is no longer active.')
   await logSecurityEvent({ userId, event: 'mfa_recovery_confirmed', req, admin })
 
-  await sendEmailSafe({
+  const announced = await sendEmailSafe({
     to: email,
     subject: 'Two-factor recovery started — you can cancel it',
     html: mail('2FA recovery started', `
@@ -202,6 +219,14 @@ export async function confirmRecovery(userId: string, email: string, fullName: s
       <p style="color:#444;text-align:center;"><strong>If you did not ask for this, cancel it now.</strong> Then reset your password.</p>
       ${button(link(token), 'Cancel recovery', '#dc2626')}`),
   })
+  if (!announced) {
+    // The waiting period only protects the owner if they are TOLD it started. Without the
+    // notice the clock must not run: put the request back to "awaiting confirmation".
+    await admin.from('mfa_recovery_requests')
+      .update({ confirmed_at: null, ready_at: null })
+      .eq('id', r.id).is('cancelled_at', null).is('completed_at', null)
+    throw new RecoveryUserError('We could not send the notification e-mail, so the waiting period was not started. Please try again in a moment.')
+  }
   return { ready_at: readyAt }
 }
 
@@ -224,6 +249,7 @@ export async function cancelRecovery(token: string, req?: Request): Promise<bool
 export async function completeRecovery(userId: string, email: string, fullName: string | null | undefined, token: string, req?: Request, keepSessionId?: string | null): Promise<void> {
   const r = await findByToken(token)
   if (!r || r.user_id !== userId) throw new RecoveryUserError('This recovery link is not valid for the account you are signed in to.')
+  await refuseIfAdmin(userId)
   const state = stateOf(r)
   if (state === 'waiting') throw new RecoveryUserError('The waiting period has not ended yet.')
   if (state !== 'ready') throw new RecoveryUserError('This recovery request is not active.')
@@ -243,16 +269,6 @@ export async function completeRecovery(userId: string, email: string, fullName: 
   // 2FA is gone; end every OTHER login session so whoever else may be signed
   // in must sign in again (and the owner can immediately re-enrol).
   await revokeOtherSessions(userId, keepSessionId)
-  await logSecurityEvent({ userId, event: 'mfa_recovery_completed', req, admin })
-  await sendEmailSafe({
-    to: email,
-    subject: 'Two-factor authentication was removed from your account',
-    html: mail('2FA removed', `
-      <p style="color:#444;text-align:center;">
-        Hi ${escapeHtml(fullName) || 'there'}, two-factor authentication was removed from your GlobProxy account through the
-        recovery process. Turn it back on in Settings as soon as you have a new authenticator.
-      </p>
-      <p style="color:#444;text-align:center;">If this wasn't you, reset your password immediately and contact support.</p>
-      ${button(`${appUrl()}/auth/reset`, 'Reset your password →')}`),
-  })
+  // Durable: stored with notify = true, sent now, retried by the cron sweep if the provider is down.
+  await recordAndNotify({ userId, event: 'mfa_recovery_completed', req, admin })
 }

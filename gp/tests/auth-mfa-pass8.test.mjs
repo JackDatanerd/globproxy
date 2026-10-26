@@ -50,3 +50,31 @@ test('pass 9: admin MFA reset notice is durable', () => {
   assert.match(n, /DURABLE_NOTICE_EVENTS[\s\S]{0,200}'mfa_reset_by_admin'/)
   assert.match(n, /case 'mfa_reset_by_admin'/)
 })
+
+test('pass 10: dormant accounts still get a new-device alert', () => {
+  const s = read('lib/securityEvents.ts')
+  assert.doesNotMatch(s, /event', 'login'\)\.gte\('created_at', since\)\.limit\(1\)\s*\n\s*const \{ data: sameDevice/)
+  assert.match(s, /let hadPriorLogin/)
+})
+
+test('pass 10: migrations register themselves', () => {
+  for (const f of ['0073_admin_section8_pass5', '0092_auth_mfa_pass9', '0095_auth_mfa_pass10']) {
+    assert.match(read(`supabase/migrations/${f}.sql`), new RegExp(`schema_migrations[\\s\\S]*${f}\\.sql`))
+  }
+})
+
+test('pass 10: enrollment confirm is compare-and-set on the verified seed', () => {
+  assert.match(read('lib/mfa.ts'), /p_expected_secret:\s*factor\.secret/)
+  assert.match(read('supabase/migrations/0095_auth_mfa_pass10.sql'), /v_secret is distinct from p_expected_secret/)
+})
+
+test('pass 10: admins cannot use self-service 2FA recovery; completion notice is durable', () => {
+  const r = read('lib/mfaRecovery.ts')
+  assert.equal((r.match(/await refuseIfAdmin\(userId\)/g) ?? []).length, 3)
+  assert.match(r, /recordAndNotify\(\{ userId, event: 'mfa_recovery_completed'/)
+  assert.match(read('lib/securityNotices.ts'), /DURABLE_NOTICE_EVENTS[\s\S]{0,300}'mfa_recovery_completed'/)
+})
+
+test('pass 10: 2FA code inputs do not strip spaces while typing', () => {
+  assert.doesNotMatch(read('components/dashboard/TwoFactorSettings.tsx'), /setCode\(e\.target\.value\.trim\(\)\)/)
+})

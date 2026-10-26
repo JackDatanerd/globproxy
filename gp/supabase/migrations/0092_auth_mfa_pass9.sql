@@ -37,3 +37,7 @@ $$;
 
 revoke all on function public.mfa_rekey_confirm(uuid, bigint, interval, text) from public, anon, authenticated;
 grant execute on function public.mfa_rekey_confirm(uuid, bigint, interval, text) to service_role;
+
+insert into public.schema_migrations (filename) values
+  ('0092_auth_mfa_pass9.sql')
+on conflict do nothing;
