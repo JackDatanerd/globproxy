@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation'
 import { cookies } from 'next/headers'
-import { createClient } from '@/lib/supabase/server'
+import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { checkVerifiedSession, MFA_COOKIE_NAME } from '@/lib/mfa'
 import DashShell from '@/components/dashboard/DashShell'
 
@@ -18,8 +18,16 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   if (!profile.mfa_enabled) redirect('/auth/mfa-setup?required=1&next=/admin')
   const mfaToken = (await cookies()).get(MFA_COOKIE_NAME)?.value
   if (!(await checkVerifiedSession(mfaToken, user.id))) redirect('/auth/mfa-verify?next=/admin')
+  // Unread conversations for the sidebar badge. Cosmetic: a failure (or migration 0091 not applied
+  // yet) just shows no badge.
+  let inboxUnread = 0
+  try {
+    const { count } = await (await createAdminClient()).from('inbox_threads')
+      .select('*', { count: 'exact', head: true }).eq('unread', true).neq('status', 'closed')
+    inboxUnread = count ?? 0
+  } catch { /* no badge */ }
   return (
-    <DashShell role="admin" email={profile.email ?? user.email ?? null} showMfaBanner={false}>
+    <DashShell role="admin" email={profile.email ?? user.email ?? null} showMfaBanner={false} inboxUnread={inboxUnread}>
       {children}
     </DashShell>
   )

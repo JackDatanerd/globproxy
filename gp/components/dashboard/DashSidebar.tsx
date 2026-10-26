@@ -45,6 +45,7 @@ const adminNav = [
   { label: 'Orders',      href: '/admin/orders' },
   { label: 'Resellers',   href: '/admin/resellers' },
   { label: 'Credentials', href: '/admin/credentials' },
+  { label: 'Inbox',       href: '/admin/inbox' },
   { label: 'Support',     href: '/admin/support' },
   { label: 'Banned Emails', href: '/admin/bans' },
   { label: 'Affiliates',  href: '/admin/affiliates' },
@@ -62,6 +63,8 @@ interface Props {
   // behaviour used to eat 224px of a 375px phone.
   open?: boolean
   onClose?: () => void
+  // Admin only: unread, not-closed conversations in /admin/inbox — shown as a badge on "Inbox".
+  inboxUnread?: number
 }
 
 // Overview-style roots must match exactly (every other dashboard URL starts
@@ -74,7 +77,7 @@ function isActive(path: string, href: string): boolean {
   return path === href || path.startsWith(href + '/')
 }
 
-export default function DashSidebar({ role, email, open = false, onClose }: Props) {
+export default function DashSidebar({ role, email, open = false, onClose, inboxUnread = 0 }: Props) {
   const path = usePathname()
   const asideRef = useRef<HTMLElement>(null)
 
@@ -160,6 +163,9 @@ export default function DashSidebar({ role, email, open = false, onClose }: Prop
                 : 'text-ink2 hover:bg-surface hover:text-ink'
             )}>
             {item.label}
+            {item.href === '/admin/inbox' && inboxUnread > 0 && (
+              <span aria-label={`${inboxUnread} unread`} className="ml-auto text-[10px] font-mono bg-accent text-white rounded-full px-1.5 py-0.5 min-w-[1.25rem] text-center">{inboxUnread > 99 ? '99+' : inboxUnread}</span>
+            )}
           </Link>
         ))}
       </nav>

@@ -211,6 +211,9 @@ export async function purgeAccountSecrets(supabase: AdminSupabase, userId: strin
     const ids = (reportRows ?? []).map((r: any) => r.id)
     if (ids.length) check('support_report_replies', (await supabase.from('support_report_replies').delete().in('report_id', ids)).error)
   }
+  // Mail the customer exchanged with support@ (admin inbox, migration 0091): the addresses and
+  // free text are theirs, so the conversations go with the account (messages cascade).
+  check('inbox_threads', (await supabase.from('inbox_threads').delete().eq('customer_user_id', userId)).error)
   // What no foreign-key cascade reaches (the profile row is kept): whitelist mirror (the
   // customer's IPs), free text on refund requests, labels, a reseller's open invitations
   // (their reserved stock is handed back) and third-party invitee addresses — one database

@@ -50,6 +50,8 @@ import { classifySession, sessionKeyFromUrl, stripSessionCookies } from './lib/s
 import { SECURITY_HEADERS } from './lib/securityHeaders'
 import { clientKeyFromHeader } from './lib/ipParse'
 import { cookiesAreBenign, cacheAge } from './lib/edgeCache'
+import { parseInboundMime, unreadablePayload } from './lib/inboxWorker'
+import { MAX_RAW_BYTES } from './lib/inboxCore'
 
 // Keep this in sync with wrangler.jsonc's triggers.crons array — every
 // pattern here needs a matching entry there, and vice versa. Cloudflare
@@ -350,8 +352,63 @@ async function fetchWithEdgeCache(request: Request, env: any, ctx: any): Promise
   return out
 }
 
+// ── Inbound e-mail (support@globproxy.com) ───────────────────────────
+// Cloudflare Email Routing → this Worker. The message is parsed here (lib/inboxWorker.ts) and
+// stored by the app's own POST /api/internal/inbound-email, called through the generated fetch
+// handler exactly like the scheduled() cron tasks (same CRON_SECRET, nothing crosses the network).
+// If the message cannot be stored it is REJECTED, so the sender's server gets a bounce / retries
+// rather than the mail silently vanishing. Optional: set INBOX_COPY_TO (an address verified in
+// Cloudflare Email Routing) to also receive a copy of everything that was stored.
+async function handleInboundEmail(message: any, env: any, ctx: any): Promise<void> {
+  const envelope = { from: String(message.from ?? ''), to: String(message.to ?? '').toLowerCase() }
+  if (Number(message.rawSize) > MAX_RAW_BYTES) {
+    message.setReject('Message too large for this mailbox (limit 10 MB).')
+    return
+  }
+  let base = 'https://globproxy.com'
+  try {
+    if (env.NEXT_PUBLIC_APP_URL) base = new URL(env.NEXT_PUBLIC_APP_URL).origin
+  } catch { /* fall back to the default above */ }
+
+  const post = async (payload: unknown): Promise<boolean> => {
+    const res: Response = await handler.fetch(new Request(`${base}/api/internal/inbound-email`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-cron-secret': env.CRON_SECRET ?? '' },
+      body: JSON.stringify(payload),
+    }), env, ctx)
+    if (!res.ok) console.error('[inbound-email] store answered', res.status, await res.text().catch(() => ''))
+    return res.ok
+  }
+
+  try {
+    const raw = await new Response(message.raw).arrayBuffer()
+    let payload
+    try {
+      payload = await parseInboundMime(raw, envelope)
+    } catch (e) {
+      console.error('[inbound-email] MIME parse failed — storing a placeholder', e)
+      payload = unreadablePayload(envelope, message.headers?.get?.('subject') ?? null, message.headers?.get?.('message-id') ?? null)
+    }
+    if (!(await post(payload))) {
+      message.setReject('This mailbox could not accept your message right now. Please try again shortly.')
+      return
+    }
+    const copyTo = String(env.INBOX_COPY_TO ?? '').trim()
+    if (copyTo && copyTo.toLowerCase() !== envelope.to) {
+      await message.forward(copyTo).catch((e: unknown) => console.error('[inbound-email] copy forward failed', e))
+    }
+  } catch (e) {
+    console.error('[inbound-email] failed', e)
+    message.setReject('This mailbox could not accept your message right now. Please try again shortly.')
+  }
+}
+
 export default {
   fetch: fetchWithEdgeCache,
+
+  async email(message: any, env: any, ctx: any) {
+    await handleInboundEmail(message, env, ctx)
+  },
 
   async scheduled(event: any, env: any, ctx: any) {
     const tasks = CRON_TASKS[event.cron]

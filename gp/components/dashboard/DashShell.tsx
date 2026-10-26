@@ -10,7 +10,7 @@ import DeletionScheduledBanner from '@/components/dashboard/DeletionScheduledBan
 // sidebar can talk to each other while the layout itself stays a server
 // component (page content arrives as `children`).
 export default function DashShell({
-  role, email, userId = null, showMfaBanner, verifiedOperator = false, deletionScheduledAt = null, children,
+  role, email, userId = null, showMfaBanner, verifiedOperator = false, deletionScheduledAt = null, inboxUnread = 0, children,
 }: {
   role: string
   email: string | null
@@ -18,6 +18,7 @@ export default function DashShell({
   showMfaBanner: boolean
   verifiedOperator?: boolean
   deletionScheduledAt?: string | null
+  inboxUnread?: number
   children: React.ReactNode
 }) {
   const [navOpen, setNavOpen] = useState(false)
@@ -32,7 +33,7 @@ export default function DashShell({
           a page (the new-session summary/Create button) silently stopped
           sticking. The document scrolls; the sidebar sticks itself. */}
       <div className="flex flex-1">
-        <DashSidebar role={role} email={email} open={navOpen} onClose={closeNav} />
+        <DashSidebar role={role} email={email} open={navOpen} onClose={closeNav} inboxUnread={inboxUnread} />
         <main className="flex-1 min-w-0 p-4 sm:p-6 md:p-8">
           {deletionScheduledAt && <DeletionScheduledBanner when={deletionScheduledAt} />}
           {showMfaBanner && <MfaRecommendBanner role={role} userId={userId} />}
