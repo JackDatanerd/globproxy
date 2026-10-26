@@ -60,7 +60,10 @@ export async function POST(req: Request) {
   if (profile?.is_suspended) return err('Account suspended', 403)
   if (!canUseApi(profile)) return err('API access is not enabled for your account.', 403)
 
-  const body = await req.json().catch(() => ({}))
+  // A valid-JSON body that is not an object (null, 5, "x", []) used to reach body.label
+  // and throw — a 500 for what is a plain bad request.
+  const parsed = await req.json().catch(() => ({}))
+  const body: Record<string, any> = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
   const label = cleanLabel(body.label)
 
   // 'write' implies read; the default is a full-access (read+write) key.

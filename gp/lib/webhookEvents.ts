@@ -1,7 +1,7 @@
 // Pure constants — no server imports — so the dashboard (client component),
 // the API routes, the delivery engine and the docs all read the same list.
 // Keep in sync with the webhook_endpoints_valid_events CHECK constraint
-// (migrations 0042 + 0046 + 0054 + 0059 + 0062 + 0064 + 0069 + 0070 + 0074): an event added here must be added there too, or the
+// (migrations 0042 + 0046 + 0054 + 0059 + 0062 + 0064 + 0069 + 0070 + 0074 + 0089): an event added here must be added there too, or the
 // insert/update is rejected by the database.
 // Sent as `api_version` in every payload so a receiver can tell which shape it is
 // parsing if the event format ever has to change incompatibly. Additive today.
@@ -39,6 +39,7 @@ export const WEBHOOK_EVENTS = [
   'reseller_invitation_cancelled',
   'bandwidth_reclaimed',
   'bandwidth_refunded',
+  'order_failed',
   'api_key_created',
   'api_key_revoked',
   'api_key_expiring',
@@ -75,6 +76,7 @@ export const WEBHOOK_EVENT_LABELS: Record<WebhookEvent, string> = {
   reseller_invitation_cancelled: 'Invitation cancelled (reseller)',
   bandwidth_reclaimed: 'Bandwidth reclaimed by your reseller',
   bandwidth_refunded: 'Purchase refunded (bandwidth clawed back)',
+  order_failed: 'Purchase payment failed',
   api_key_created: 'API key created',
   api_key_revoked: 'API key revoked',
   api_key_expiring: 'API key expiring soon',
@@ -110,6 +112,7 @@ export const WEBHOOK_EVENT_DESCRIPTIONS: Record<WebhookEvent, { description: str
   reseller_invitation_cancelled: { description: 'An invitation was cancelled (by you, the API or support) and its stock returned to you (resellers).', data: ['pending_id', 'recipient_email', 'gb', 'source'] },
   bandwidth_reclaimed: { description: 'Unused bandwidth was reclaimed from your account by the reseller who allocated it.', data: ['transfer_id', 'gb_reclaimed', 'gb_remaining'] },
   bandwidth_refunded: { description: 'A purchase was refunded and its bandwidth taken back.', data: ['order_id', 'refund_usd', 'gb_clawed_back', 'gb_not_recoverable', 'fully_refunded'] },
+  order_failed: { description: 'A purchase payment failed or was declined; nothing was charged and no bandwidth was added. Start a new order with POST /orders to retry. reason is the payment provider\'s decline text when it gave one.', data: ['order_id', 'gb', 'amount_usd', 'reason'] },
   api_key_created: { description: 'An API key was created on your account.', data: ['key_id', 'label', 'key_prefix', 'scopes', 'expires_at', 'rotated_from'] },
   api_key_revoked: { description: 'An API key was revoked. reason is "manual" (one key revoked), "revoke_all" (the panic button) or "rotated" (an old key revoked immediately by a rotation; replaced_by is the new key id).', data: ['key_id', 'label', 'key_prefix', 'reason', 'replaced_by'] },
   api_key_expiring: { description: 'An API key expires within 7 days.', data: ['key_id', 'label', 'key_prefix', 'expires_at'] },

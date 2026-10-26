@@ -129,6 +129,36 @@ export function rateLimitHeaders(limit: number): Record<string, string> {
   return { 'Retry-After': String(RATE_LIMIT_WINDOW_SECONDS), 'X-RateLimit-Limit': String(limit) }
 }
 
+// Refusals of a key that DID match a real row (revoked, expired, wrong IP, wrong scope)
+// used to leave no trace at all: api_request_log only held calls that were let through,
+// so a leaked key being probed from elsewhere was invisible to its owner. They are now
+// recorded (status 401/403) in the same log the dashboard's "Activity" and
+// GET /api/v1/account/activity read. Best-effort, off the response path, and capped at
+// one row per key per minute per Worker isolate so a flood of refusals can't flood the
+// table. Unknown keys are never logged — there is no account to attribute them to.
+const DENIED_LOG_INTERVAL_MS = 60_000
+const deniedLoggedAt = new Map<string, number>()
+
+function logDeniedKeyUse(
+  supabase: Awaited<ReturnType<typeof createAdminClient>>,
+  key: { id: string; user_id: string }, req: Request, status: number
+) {
+  const now = Date.now()
+  const last = deniedLoggedAt.get(key.id) ?? 0
+  if (now - last < DENIED_LOG_INTERVAL_MS) return
+  if (deniedLoggedAt.size > 2000) deniedLoggedAt.clear()
+  deniedLoggedAt.set(key.id, now)
+  let path = ''
+  try { path = new URL(req.url).pathname.slice(0, 300) } catch { /* leave empty */ }
+  const write = Promise.resolve(
+    supabase.from('api_request_log').insert({
+      user_id: key.user_id, key_id: key.id, method: req.method, path, status,
+      ip: req.headers.get('cf-connecting-ip'), request_id: null,
+    })
+  ).then(() => {}, () => {})
+  try { getCloudflareContext({ async: false }).ctx.waitUntil(write) } catch { /* not in Workers — it just runs */ }
+}
+
 // `opts.scope` overrides the default (GET/HEAD → read, everything else →
 // write) for the rare route where the HTTP method doesn't say it.
 export async function requireApiAccess(req: Request, opts: { scope?: ApiScope } = {}): Promise<ApiAuthResult> {
@@ -167,12 +197,17 @@ export async function requireApiAccess(req: Request, opts: { scope?: ApiScope } 
     // Anything else is unexpected → falls to the catch's 500 instead of being
     // silently treated as "no such key".
     if (keyErr && keyErr.code !== 'PGRST116') throw keyErr
-    if (!apiKey || apiKey.revoked_at) {
+    if (!apiKey) {
+      return { ok: false, response: unauthorized() }
+    }
+    if (apiKey.revoked_at) {
+      logDeniedKeyUse(supabase, apiKey, req, 401)
       return { ok: false, response: unauthorized() }
     }
     // Same 401 as revoked/unknown on purpose: the body must not let a holder
     // of a leaked key probe the account's key history.
     if (apiKey.expires_at && new Date(apiKey.expires_at).getTime() <= Date.now()) {
+      logDeniedKeyUse(supabase, apiKey, req, 401)
       return { ok: false, response: unauthorized() }
     }
 
@@ -181,12 +216,14 @@ export async function requireApiAccess(req: Request, opts: { scope?: ApiScope } 
     // costs nothing. Cloudflare sets cf-connecting-ip; it can't be spoofed
     // by the client at the edge.
     if (!ipAllowed(apiKey.allowed_ips as string[] | null, req.headers.get('cf-connecting-ip'))) {
+      logDeniedKeyUse(supabase, apiKey, req, 403)
       return { ok: false, response: apiError(403, 'ip_not_allowed', 'This API key is restricted to specific IP addresses and this request did not come from one of them.') }
     }
 
     const scopes: string[] = Array.isArray(apiKey.scopes) ? apiKey.scopes : ['read', 'write']
     const needed = opts.scope ?? requiredScope(req.method)
     if (!hasScope(scopes, needed)) {
+      logDeniedKeyUse(supabase, apiKey, req, 403)
       return {
         ok: false,
         response: apiError(

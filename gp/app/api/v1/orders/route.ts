@@ -55,6 +55,19 @@ export async function POST(req: Request) {
         console.error('[v1 POST orders] checkout start failed', e)
         return { kind: 'fail', response: apiError(503, 'service_unavailable', 'Could not start checkout. Try again shortly.') }
       }
+    }, {
+      // A replay used to hand back the stored link even when a later checkout had retired
+      // that order (or it had since been paid), so a retry could send the buyer to a dead
+      // page. The order's CURRENT state is read now; a link is returned only while the
+      // order is still pending.
+      onReplay: async (stored) => {
+        const s = stored as { order?: { id?: string; status?: string }; checkout_url?: string | null } | null
+        const id = s?.order?.id
+        if (!s?.order || typeof id !== 'string') return stored
+        const { data: cur } = await supabase.from('orders').select('payment_status').eq('id', id).eq('user_id', user.id).maybeSingle()
+        if (!cur) return { ...s, order: { ...s.order, status: 'cancelled' }, checkout_url: null }
+        return { ...s, order: { ...s.order, status: cur.payment_status }, checkout_url: cur.payment_status === 'pending' ? s.checkout_url ?? null : null }
+      },
     })
   }, { scope: 'write' })
 }

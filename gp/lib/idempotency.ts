@@ -73,7 +73,10 @@ export async function claimIdempotencyKey(
       // Unsafe to repeat: the first attempt may have committed before dying.
       if (!allowStaleTakeover) return { kind: 'unknown_outcome' }
       // The original attempt died without completing — take over its claim.
-      await admin.from('api_idempotency_keys').delete().eq('user_id', userId).eq('key', key).eq('status', 'in_progress')
+      // Delete exactly THE stale row (matched on created_at). Without that, two retries
+      // racing here could have the slower one delete the faster one's FRESH claim, and
+      // both would then run the operation.
+      await admin.from('api_idempotency_keys').delete().eq('user_id', userId).eq('key', key).eq('status', 'in_progress').eq('created_at', row.created_at)
       continue
     }
     return { kind: 'in_flight' }
@@ -152,7 +155,9 @@ export type IdempotentOutcome =
 export async function runIdempotent(
   req: Request, admin: Admin, userId: string, scope: string, canonicalBody: string,
   exec: (key: string | null) => Promise<IdempotentOutcome>,
-  opts: { allowStaleTakeover?: boolean; successStatus?: number } = {}
+  // onReplay: lets an endpoint whose stored answer can go stale (a checkout link that a
+  // later purchase has retired) refresh that answer before it is replayed.
+  opts: { allowStaleTakeover?: boolean; successStatus?: number; onReplay?: (body: unknown) => Promise<unknown> } = {}
 ): Promise<Response> {
   const idem = parseIdempotencyKey(req)
   if (!idem.ok) return apiError(400, 'invalid_request', idem.error)
@@ -160,7 +165,11 @@ export async function runIdempotent(
   if (idem.key) {
     const claim = await claimIdempotencyKey(admin, userId, idem.key, canonicalBody, scope, { allowStaleTakeover: opts.allowStaleTakeover })
     if (claim.kind === 'replay') {
-      return NextResponse.json(claim.body, { status: claim.status, headers: { 'Idempotent-Replayed': 'true' } })
+      let replayBody = claim.body
+      if (opts.onReplay) {
+        try { replayBody = await opts.onReplay(claim.body) } catch (e) { console.error('[idempotency] onReplay failed — replaying the stored body', e) }
+      }
+      return NextResponse.json(replayBody, { status: claim.status, headers: { 'Idempotent-Replayed': 'true' } })
     }
     if (claim.kind === 'mismatch') {
       return apiError(422, 'idempotency_conflict', 'This Idempotency-Key was already used with a different request.')

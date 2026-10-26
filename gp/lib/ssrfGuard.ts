@@ -166,6 +166,7 @@ type FetchLike = (url: string, init?: any) => Promise<{ ok: boolean; json: () =>
 const DOH_ENDPOINT = 'https://cloudflare-dns.com/dns-query'
 const DOH_TIMEOUT_MS = 3000
 const DOH_CACHE_TTL_MS = 60_000
+export const DNS_UNAVAILABLE_MESSAGE = 'We could not verify that hostname right now. Please try again in a moment.'
 const dohCache = new Map<string, { at: number; result: string | null }>()
 
 async function dohQuery(fetchImpl: FetchLike, name: string, type: 'A' | 'AAAA'): Promise<DohResponse> {
@@ -179,12 +180,15 @@ async function dohQuery(fetchImpl: FetchLike, name: string, type: 'A' | 'AAAA'):
 
 // Returns an error message if `hostname` resolves to a blocked address (or,
 // with requireResolvable, doesn't resolve at all), else null. IP literals are
-// skipped (already covered by validateWebhookUrl). FAILS OPEN if the DNS
-// lookup itself is unavailable — a resolver outage must not stop every
-// webhook delivery platform-wide; the literal check above still ran.
+// skipped (already covered by validateWebhookUrl). FAILS OPEN at DELIVERY time if
+// the DNS lookup itself is unavailable — a resolver outage must not stop every
+// webhook delivery platform-wide; the literal check above still ran. With
+// `failClosed` (used when an endpoint is CREATED or EDITED, where one retry costs
+// the user nothing) an unusable lookup is refused instead, so a resolver blip
+// can't be used to register a hostname that was never actually checked.
 export async function checkHostnameResolution(
   hostname: string,
-  opts: { requireResolvable?: boolean; fetchImpl?: FetchLike } = {}
+  opts: { requireResolvable?: boolean; fetchImpl?: FetchLike; failClosed?: boolean } = {}
 ): Promise<string | null> {
   const h = hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, '')
   if (!h || h.includes(':') || /^\d+(\.\d+){3}$/.test(h)) return null
@@ -214,8 +218,8 @@ export async function checkHostnameResolution(
       // NOT cached: a SERVFAIL "pass" used to be remembered for a minute, so the
       // name could be checked as clean once and then re-resolved to something
       // private inside that window with no second look.
-      console.error('[ssrfGuard] DNS lookup returned', a.Status, aaaa.Status, 'for', h, '— not cached, failing open')
-      return null
+      console.error('[ssrfGuard] DNS lookup returned', a.Status, aaaa.Status, 'for', h, '— not cached,', opts.failClosed ? 'refusing' : 'failing open')
+      return opts.failClosed ? DNS_UNAVAILABLE_MESSAGE : null
     } else if (opts.requireResolvable && answers.length === 0) {
       // NXDOMAIN, or NOERROR with no A/AAAA records at all (a name that exists but
       // has no address — deliveries to it could never connect). Only NXDOMAIN used
@@ -223,8 +227,8 @@ export async function checkHostnameResolution(
       result = 'That hostname does not resolve'
     }
   } catch (e) {
-    console.error('[ssrfGuard] DNS resolution check unavailable, failing open for', h, e)
-    return null // deliberately not cached
+    console.error('[ssrfGuard] DNS resolution check unavailable,', opts.failClosed ? 'refusing' : 'failing open', 'for', h, e)
+    return opts.failClosed ? DNS_UNAVAILABLE_MESSAGE : null // deliberately not cached
   }
   dohCache.set(cacheKey, { at: Date.now(), result })
   if (dohCache.size > 500) dohCache.clear()
@@ -238,5 +242,5 @@ export async function validateWebhookUrlFull(raw: string): Promise<string | null
   const u = new URL(raw)
   const port = validateWebhookPort(u)
   if (port) return port
-  return checkHostnameResolution(u.hostname, { requireResolvable: true })
+  return checkHostnameResolution(u.hostname, { requireResolvable: true, failClosed: true })
 }

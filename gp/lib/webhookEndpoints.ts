@@ -103,6 +103,7 @@ export async function updateEndpoint(admin: Admin, userId: string, id: string, b
       // Re-enabling is a fresh start: clear the failure streak and the
       // auto-disable markers so it isn't instantly disabled again.
       patch.consecutive_failures = 0
+      patch.failing_since = null
       patch.disabled_at = null
       patch.disabled_reason = null
     }

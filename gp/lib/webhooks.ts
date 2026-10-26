@@ -15,8 +15,9 @@ export type { WebhookEvent } from '@/lib/webhookEvents'
 // receiver's slowness never delays the caller's own response), and a failed
 // attempt is retried by the 'webhooks' cron task (runWebhookRetries) with
 // backoff: 1m, 5m, 30m, 2h, 6h, then the delivery is marked failed.
-// After DISABLE_THRESHOLD consecutive failed attempts the endpoint is
-// disabled and its owner emailed; a 410 Gone disables it immediately.
+// After DISABLE_THRESHOLD consecutive failed attempts AND a failing streak more than
+// 24 hours old (record_webhook_attempt, migration 0089) the endpoint is disabled and
+// its owner emailed; a 410 Gone disables it immediately.
 //
 // Receivers should treat delivery as at-least-once and de-duplicate on the
 // event `id` (also sent as X-GlobProxy-Event-Id).

@@ -1,6 +1,7 @@
 import type { createAdminClient } from '@/lib/supabase/server'
 import { sendPaymentFailedEmail } from '@/lib/billingEmails'
 import { alertAdminPayment } from '@/lib/paymentAlerts'
+import { dispatchWebhook } from '@/lib/webhooks'
 
 type Admin = Awaited<ReturnType<typeof createAdminClient>>
 
@@ -54,6 +55,15 @@ export async function failPendingOrder(
   const mpesa = order.pay_currency && String(order.pay_currency).toUpperCase() !== 'USD' && order.pay_amount != null
     ? { currency: String(order.pay_currency).toUpperCase(), amount: Number(order.pay_amount) }
     : null
+  // An integration that started this purchase through POST /orders otherwise only ever
+  // learns of a decline by polling. Never allowed to fail the order bookkeeping above.
+  try {
+    await dispatchWebhook(order.user_id, 'order_failed', {
+      order_id: order.id, gb: Number(order.gb_amount), amount_usd: Number(order.amount_usd), reason: (reason ?? 'Declined').slice(0, 200),
+    })
+  } catch (e) {
+    console.error('[orderFailure] order_failed webhook failed (order is already marked failed)', order.id, e)
+  }
   await sendPaymentFailedEmail(supabase, order.user_id, {
     amountUsd: Number(order.amount_usd), gb: Number(order.gb_amount), reason: reason ?? null, mpesa,
   })
