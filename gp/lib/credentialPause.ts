@@ -1,6 +1,6 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { disableCredential, enableCredential, SessionLimitError } from '@/lib/adminProxy'
-import { syncUserUsage } from '@/lib/usageSync'
+import { refreshLiveUsage } from '@/lib/usageLive'
 import { dispatchWebhook } from '@/lib/webhooks'
 import { getOwnedCredential } from '@/lib/credentials'
 
@@ -25,12 +25,15 @@ async function ownerState(admin: Admin, userId: string) {
 // pauses do it once instead of once per sub-user — a sync walks every active
 // sub-user against the provider).
 export async function pauseCredential(admin: Admin, userId: string, id: string, opts: { usageSynced?: boolean } = {}): Promise<PauseResult> {
-  const cred = await getOwnedCredential(admin, userId, id, 'id, label, status, suspended_reason, upstream_sub_user_id, gb_allocated')
+  const cred = await getOwnedCredential(admin, userId, id, 'id, label, status, suspended_reason, upstream_sub_user_id, gb_allocated, gb_used, usage_synced_at')
   if (!cred) return fail(404, 'not_found', 'Sub-user not found')
   if (cred.status === 'suspended' && cred.suspended_reason === 'customer') return { ok: true, data: { id, status: 'suspended', changed: false } }
   if (cred.status !== 'active') return fail(409, 'conflict', `Only an active sub-user can be paused (status: ${cred.status}).`)
   // Bring usage up to date first (the usage sync only walks active sub-users).
-  if (!opts.usageSynced) await syncUserUsage(userId).catch((e) => console.error('[pause] pre-pause usage sync failed', id, e))
+  // Only THIS session's counter is brought up to date (one upstream read). A whole-account
+  // sync walks every active session (up to ~100 provider calls plus a global recalculation)
+  // for a single pause; bulk pauses still do that once, up front, and pass usageSynced.
+  if (!opts.usageSynced) await refreshLiveUsage(admin, userId, cred).catch((e) => console.error('[pause] pre-pause usage refresh failed', id, e))
   const fresh = await getOwnedCredential(admin, userId, id, 'id, label, status, upstream_sub_user_id, gb_allocated')
   if (!fresh || fresh.status !== 'active') return fail(409, 'conflict', `This sub-user changed while it was being paused (status: ${fresh?.status ?? 'gone'}). Check it and retry.`)
   try {

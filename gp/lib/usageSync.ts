@@ -142,6 +142,18 @@ export async function syncAllUsage(admin?: AdminClient) {
 
     // Stamp the freshness marker ONLY on a genuine, complete success.
     if (healthy) {
+      // Per-session "usage as of" marker: the cron sync never set it, so the API/dashboard
+      // reported a stale or empty usage_synced_at for every session that wasn't manually
+      // refreshed. Stamped for sessions whose figure was actually read this run; best effort
+      // and bounded (200 ids per write, at most 10 writes) so it can't eat the subrequest budget.
+      try {
+        const nowIso = new Date().toISOString()
+        const ids = active.filter(c => usageMap.has(String(c.upstream_sub_user_id))).map(c => c.id)
+        for (let i = 0, n = 0; i < ids.length && n < 10; i += 200, n++) {
+          const { error } = await supabase.from('proxy_credentials').update({ usage_synced_at: nowIso }).in('id', ids.slice(i, i + 200))
+          if (error) { console.error('[usage-sync] could not stamp usage_synced_at', error); break }
+        }
+      } catch (e) { console.error('[usage-sync] usage_synced_at stamp failed', e) }
       await supabase.from('platform_settings')
         .upsert({ key: 'usage_last_synced_at', value: new Date().toISOString() }, { onConflict: 'key' })
     }

@@ -200,7 +200,7 @@ export async function retryPostCredit(order: {
     done = await postCreditSteps(supabase, {
       order_id: order.id, user_id: order.user_id, gb_amount: Number(order.gb_amount),
       amount_usd: Number(order.amount_usd), is_canary: !!order.is_canary,
-    }, { sendConfirmation: false })
+    }, { sendConfirmation: false, ignoreBackoff: false })
   } catch (e) {
     console.error('[bandwidth] post-credit retry threw', order.id, e)
   }
@@ -220,8 +220,12 @@ export async function retryPostCredit(order: {
 export async function activatePendingCredentials(
   _supabase: Awaited<ReturnType<typeof createAdminClient>>,
   userId: string,
+  // The first attempt right after a purchase skips the retry backoff (a purchase is a good moment
+  // to try). The cron's post-credit RETRY must keep it: it re-runs every 5 minutes per unfinished
+  // order, which would otherwise hammer a provider that is already failing or out of capacity.
+  opts: { ignoreBackoff?: boolean } = {},
 ): Promise<boolean> {
-  const r = await provisionPendingCredentials({ userId, limit: 10, ignoreBackoff: true })
+  const r = await provisionPendingCredentials({ userId, limit: 10, ignoreBackoff: opts.ignoreBackoff ?? true })
   if (r.skipped) console.log('[bandwidth] credential activation skipped:', r.skipped, 'user', userId)
   return r.failed === 0
 }
@@ -229,13 +233,13 @@ export async function activatePendingCredentials(
 async function postCreditSteps(
   supabase: Awaited<ReturnType<typeof createAdminClient>>,
   p: { order_id: string; user_id: string; gb_amount: number; amount_usd: number; is_canary?: boolean },
-  opts: { sendConfirmation: boolean },
+  opts: { sendConfirmation: boolean; ignoreBackoff?: boolean },
 ): Promise<boolean> {
   let ok = true
 
   // 3. Activate pending proxy credentials
   try {
-    if (!(await activatePendingCredentials(supabase, p.user_id))) ok = false
+    if (!(await activatePendingCredentials(supabase, p.user_id, { ignoreBackoff: opts.ignoreBackoff }))) ok = false
   } catch (e) {
     ok = false
     console.error('[bandwidth] credential activation failed (credit is committed)', p.order_id, e)

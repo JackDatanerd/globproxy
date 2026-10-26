@@ -193,6 +193,7 @@ export async function createCredential(
   const credId = crypto.randomUUID()
   const identity = newUpstreamIdentity(credId)
   let upstreamAttempted = false
+  let createdCred: any = null // set once the row is inserted: from then on the reservation belongs to it
 
   const release = async (why: string) => {
     const { error } = await admin.rpc('release_credential_bandwidth', { p_user_id: userId, p_gb: gb })
@@ -292,6 +293,8 @@ export async function createCredential(
       return fail(500, 'internal_error', 'Could not create the sub-user. Please try again.')
     }
 
+    createdCred = cred
+
     // 4. Optional auto top-up (set_auto_topup owns config validity).
     let warning: string | undefined
     if (opts.autoTopup) {
@@ -314,8 +317,11 @@ export async function createCredential(
 
     return { ok: true, data: { cred, warning } }
   } catch (e) {
-    // Anything unexpected after the reservation: give it back.
+    // Anything unexpected after the reservation: give it back — unless the row already exists,
+    // in which case the reservation backs a real session and releasing it would count the same
+    // bandwidth twice. That session is returned as created.
     console.error('[credentials] unexpected error during create', e)
+    if (createdCred) return { ok: true, data: { cred: createdCred, warning: 'Session created, but a follow-up step failed. Check its settings.' } }
     await release('unexpected error')
     return fail(500, 'internal_error', 'Internal error. Please try again.')
   }
@@ -373,7 +379,10 @@ export async function deleteCredential(
     } catch (e) {
       if (!isGone(e)) {
         console.error('[credentials] upstream delete failed — nothing changed', id, e)
-        if (frozen) {
+        // Only an ACTIVE session gets its full cap back. A paused / admin-disabled session was
+        // already capped at its usage: restoring gb_allocated would lift that pause or kill.
+        // The freeze cap (ceil of live usage) is exactly the pause cap, so it stays.
+        if (frozen && cred.status === 'active') {
           try { await updateSubUserTrafficLimit(cred.upstream_sub_user_id, expectedLimitMb(Number(cred.gb_allocated))) }
           catch (e2) { console.error('[credentials] could not restore the cap after a failed delete', id, e2); await markLimitSyncNeeded(admin, id) }
         }
@@ -894,6 +903,7 @@ export async function rotateCredentialPassword(
   }
 
   const newPassword = crypto.randomUUID() // the provider requires uuid-format passwords
+  let confirmedByEcho = false
   try {
     const echoed = await updateSubUserPassword(cred.upstream_sub_user_id, newPassword)
     if (echoed !== null && echoed !== newPassword) {
@@ -902,6 +912,7 @@ export async function rotateCredentialPassword(
         .catch((e2) => console.error('[credentials] rotate: could not re-assert the previous password', id, e2))
       return fail(502, 'upstream_unavailable', 'The proxy network did not apply the new password. Nothing was changed.')
     }
+    confirmedByEcho = echoed === newPassword
   } catch (e) {
     console.error('[credentials] rotate: provider rejected the password change', id, e)
     // A timeout is ambiguous: the change may have been applied after we gave up. Re-assert the
@@ -922,7 +933,17 @@ export async function rotateCredentialPassword(
         .catch((e) => console.error('[credentials] rotate: could not re-assert the previous password', id, e))
       return fail(502, 'upstream_unavailable', 'The proxy network did not apply the new password. Nothing was changed.')
     }
-    if (verdict === 'unknown') console.warn('[credentials] rotate: could not verify the new password end to end — committing on the provider echo', id)
+    if (verdict === 'unknown') {
+      if (!confirmedByEcho) {
+        // Neither an echo nor a probe confirmed it: committing could hand the customer a password
+        // that does not work. Put the old one back so both sides converge on it.
+        console.error('[credentials] rotate: new password unconfirmed (no echo, probe inconclusive) — not committing', id)
+        await updateSubUserPassword(cred.upstream_sub_user_id, cred.upstream_password)
+          .catch((e) => console.error('[credentials] rotate: could not re-assert the previous password', id, e))
+        return fail(502, 'upstream_unavailable', 'We could not confirm the new password was applied. Nothing was changed \u2014 please retry shortly.')
+      }
+      console.warn('[credentials] rotate: could not verify the new password end to end — committing on the provider echo', id)
+    }
   }
 
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -1028,7 +1049,10 @@ export async function flagStalledPending(admin: Admin): Promise<{ flagged: numbe
   const { data: due } = await admin
     .from('proxy_credentials').select('id')
     .eq('status', 'pending').is('created_by', null).is('provision_stalled_at', null)
-    .lt('created_at', cutoff).limit(MAX_STALL_NOTICES_PER_RUN)
+    // Measured from when it LAST became pending (a re-provisioned old session starts a fresh
+    // clock); rows from before migration 0087 have no pending_since and fall back to created_at.
+    .or(`pending_since.lt.${cutoff},and(pending_since.is.null,created_at.lt.${cutoff})`)
+    .order('created_at').limit(MAX_STALL_NOTICES_PER_RUN)
   if (!due?.length) return { flagged: 0 }
 
   // Claim by flagging first: a duplicate email is worse than a late one.
