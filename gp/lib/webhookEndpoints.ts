@@ -42,7 +42,8 @@ export async function listEndpoints(admin: Admin, userId: string): Promise<Servi
 
 export async function getEndpoint(admin: Admin, userId: string, id: string): Promise<ServiceResult<any>> {
   if (!isUuidString(id)) return fail(404, 'not_found', 'Webhook not found')
-  const { data } = await admin.from('webhook_endpoints').select(VIEW_COLS).eq('id', id).eq('user_id', userId).maybeSingle()
+  const { data, error } = await admin.from('webhook_endpoints').select(VIEW_COLS).eq('id', id).eq('user_id', userId).maybeSingle()
+  if (error) { console.error('[webhooks] get failed', error); return fail(500, 'internal_error', 'Could not load the webhook.') }
   return data ? { ok: true, data } : fail(404, 'not_found', 'Webhook not found')
 }
 
@@ -138,8 +139,9 @@ export async function rotateSecret(
     return fail(400, 'invalid_request', `grace_minutes must be between 0 and ${MAX_ROTATION_GRACE_MINUTES}.`)
   }
   if (!isUuidString(id)) return fail(404, 'not_found', 'Webhook not found')
-  const { data: current } = await admin
+  const { data: current, error: curErr } = await admin
     .from('webhook_endpoints').select('secret').eq('id', id).eq('user_id', userId).maybeSingle()
+  if (curErr) { console.error('[webhooks] rotate lookup failed', curErr); return fail(500, 'internal_error', 'Could not rotate the secret.') }
   if (!current) return fail(404, 'not_found', 'Webhook not found')
 
   const secret = generateSecret()
@@ -147,9 +149,15 @@ export async function rotateSecret(
   const { data, error } = await admin
     .from('webhook_endpoints')
     .update({ secret, previous_secret: graceMinutes > 0 ? current.secret : null, previous_secret_expires_at: expires })
-    .eq('id', id).eq('user_id', userId).select('id').maybeSingle()
+    // Compare-and-set on the secret we read: two concurrent rotations used to both succeed, and the
+    // loser was handed a secret that was already replaced. The loser now gets a 409 and retries.
+    .eq('id', id).eq('user_id', userId).eq('secret', current.secret).select('id').maybeSingle()
   if (error) { console.error('[webhooks] rotate failed', error); return fail(500, 'internal_error', 'Could not rotate the secret.') }
-  return data ? { ok: true, data: { id: data.id, secret, previous_secret_expires_at: expires } } : fail(404, 'not_found', 'Webhook not found')
+  if (!data) {
+    const { data: still } = await admin.from('webhook_endpoints').select('id').eq('id', id).eq('user_id', userId).maybeSingle()
+    return still ? fail(409, 'conflict', 'The secret was rotated by another request at the same time. Retry to rotate again.') : fail(404, 'not_found', 'Webhook not found')
+  }
+  return { ok: true, data: { id: data.id, secret, previous_secret_expires_at: expires } }
 }
 
 const DELIVERY_LIST_COLS =
@@ -164,6 +172,7 @@ export async function listDeliveries(
 ): Promise<ServiceResult<{ rows: any[]; has_more: boolean }>> {
   if (!isUuidString(endpointId)) return fail(404, 'not_found', 'Webhook not found')
   const owned = await admin.from('webhook_endpoints').select('id').eq('id', endpointId).eq('user_id', userId).maybeSingle()
+  if (owned.error) { console.error('[webhooks] ownership check failed', owned.error); return fail(500, 'internal_error', 'Could not load deliveries.') }
   if (!owned.data) return fail(404, 'not_found', 'Webhook not found')
 
   const limit = Math.min(Math.max(Math.trunc(opts.limit ?? 50) || 50, 1), 100)

@@ -56,6 +56,7 @@ export async function POST(req: Request) {
   const profile = await loadKeyOwner(admin, user.id)
   // Middleware excludes /api, so a deleted account's unexpired session token
   // can reach this route even though /dashboard/api-keys is blocked.
+  if (!profile) return err('Could not verify your account right now. Please try again.', 503)
   if (profile?.is_deleted) return err('This account no longer exists.', 403)
   if (profile?.is_suspended) return err('Account suspended', 403)
   if (!canUseApi(profile)) return err('API access is not enabled for your account.', 403)
@@ -109,9 +110,10 @@ export async function PATCH(req: Request) {
 
   const admin = await createAdminClient()
   const profile = await loadKeyOwner(admin, user.id)
-  if (profile?.is_deleted || profile?.is_suspended) return err('Account unavailable', 403)
+  if (!profile) return err('Could not verify your account right now. Please try again.', 503)
+  if (profile.is_deleted || profile.is_suspended) return err('Account unavailable', 403)
 
-  const plan = await planKeyUpdate(admin, user.id, body.id, body, profile ?? {})
+  const plan = await planKeyUpdate(admin, user.id, body.id, body, profile)
   if (!plan.ok) return err(plan.message, plan.status)
 
   if (plan.data.loosens) {

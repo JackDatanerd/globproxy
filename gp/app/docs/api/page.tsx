@@ -111,7 +111,7 @@ export default function ApiDocsPage() {
             Each key has a scope and an optional expiry, both chosen when you create it:{' '}
             <span className="font-mono text-ink">read-only</span> keys can only make <span className="font-mono text-ink">GET</span>{' '}
             requests (any other method returns <span className="font-mono text-ink">403 insufficient_scope</span>), and a key
-            can be set to expire after 30 days, 90 days, 180 days or a year — an expired key behaves exactly like a revoked one.
+            can be set to expire after 30 days, 90 days, 180 days or a year — an expired key behaves exactly like a revoked one and cannot be edited — rotate it to issue a replacement.
             You can hold up to 25 active keys, so give each integration its own and revoke it independently.
             The API key list in your dashboard also shows when and from which IP each key was last used.
           </p>
@@ -996,7 +996,7 @@ export default function ApiDocsPage() {
           <p className="text-sm text-ink2 leading-relaxed mb-3">
             Get an HTTPS POST when something happens on your account. Create endpoints in{' '}
             <Link href="/dashboard/settings" className="text-accent hover:underline">Settings → Webhooks</Link> or over the API
-            (below). Each endpoint subscribes to the events it wants; up to 10 endpoints per account. Adding, changing, rotating or deleting an endpoint — from the dashboard <em>or</em> with an API key — is recorded in your account's security log and e-mailed to you (at most one e-mail per kind of change every 10 minutes). Events caused by your own request are first delivered right after that request returns; events raised by background checks (<span className="font-mono text-ink">session_low</span>, <span className="font-mono text-ink">session_exhausted</span>, <span className="font-mono text-ink">auto_topup_*</span>, <span className="font-mono text-ink">session_activated</span>, <span className="font-mono text-ink">bandwidth_threshold_crossed</span>) can arrive up to about five minutes after the cause. Endpoint URLs must be public{' '}
+            (below). Each endpoint subscribes to the events it wants; up to 10 endpoints per account. Adding, changing, rotating or deleting an endpoint — from the dashboard <em>or</em> with an API key — is recorded in your account's security log and e-mailed to you (at most one e-mail per kind of change every 10 minutes). Events caused by your own request are first delivered right after that request returns; events raised by background checks (<span className="font-mono text-ink">session_low</span>, <span className="font-mono text-ink">session_exhausted</span>, <span className="font-mono text-ink">auto_topup_*</span>, <span className="font-mono text-ink">session_activated</span>, <span className="font-mono text-ink">bandwidth_threshold_crossed</span>) can arrive up to about five minutes after the cause (a large burst, such as revoking many keys at once, is delivered over the next few runs at up to 12 events per endpoint every five minutes). Endpoint URLs must be public{' '}
             <span className="font-mono text-ink">https://</span> addresses on port 443 (or 8443) — private, loopback and link-local
             destinations (including hostnames that resolve to them), GlobProxy's own domains and redirects are rejected.
           </p>

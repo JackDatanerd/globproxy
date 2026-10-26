@@ -26,6 +26,9 @@ import { apiError } from '@/lib/apiAuth'
 type Admin = Awaited<ReturnType<typeof createAdminClient>>
 
 const IN_PROGRESS_STALE_MS = 2 * 60_000
+// How long a key is remembered (lib/webhooks.ts pruneIntegrationData deletes claims older than this).
+// Anything stored against a key elsewhere (proxy_credentials.idempotency_key) must lapse with it.
+export const IDEMPOTENCY_WINDOW_MS = 24 * 3_600_000
 const KEY_RE = /^[A-Za-z0-9_\-:.]{8,128}$/
 
 export function parseIdempotencyKey(req: Request): { ok: true; key: string | null } | { ok: false; error: string } {

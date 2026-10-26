@@ -4,6 +4,7 @@ import { createAdminClient } from '@/lib/supabase/server'
 import { validateWebhookUrl, validateWebhookPort, checkHostnameResolution } from '@/lib/ssrfGuard'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { fetchAllRows } from '@/lib/dbPaging'
+import { IDEMPOTENCY_WINDOW_MS } from '@/lib/idempotency'
 import { WEBHOOK_API_VERSION, WEBHOOK_WILDCARD, subscribesTo, type WebhookEvent } from '@/lib/webhookEvents'
 
 export type { WebhookEvent } from '@/lib/webhookEvents'
@@ -28,8 +29,14 @@ const REQUEST_TIMEOUT_MS = 8000
 // Workers caps subrequests per invocation, so a tick is bounded — but the bound
 // is generous enough that the deferred first attempts (usage sync, auto top-up)
 // plus retries clear within a tick or two. ~6 subrequests per delivery.
-const RETRIES_PER_RUN = 24
-const PER_ENDPOINT_PER_RUN = 3   // one dead endpoint must not use the whole tick
+// Every deferred event (usage alerts, auto top-up, the revoke-all batch) waits for this task, and the
+// task runs once per 5-minute tick. At 24 a tick / 3 per endpoint, revoking 25 keys took ~45 minutes to
+// reach a receiver and a burst of session_low events took hours. The caps are sized for a burst to clear
+// in a tick or two; a DEAD endpoint still cannot burn the budget because a group stops after
+// GROUP_STOP_AFTER_FAILURES consecutive failures (its remaining rows stay due for the next tick).
+const RETRIES_PER_RUN = 60
+const PER_ENDPOINT_PER_RUN = 12
+const GROUP_STOP_AFTER_FAILURES = 2
 const ENDPOINT_PARALLELISM = 6   // endpoints worked at once; one endpoint's deliveries stay sequential
 const CLAIM_LEASE_MS = 5 * 60_000
 const TEST_COOLDOWN_MS = 10_000
@@ -423,9 +430,10 @@ export async function sendTestWebhook(
   endpointId: string
 ): Promise<AttemptResult & { cooldown?: boolean }> {
   const supabase = await createAdminClient()
-  const { data: ep } = await supabase
+  const { data: ep, error: epErr } = await supabase
     .from('webhook_endpoints').select(EP_COLS)
-    .eq('id', endpointId).eq('user_id', userId).single()
+    .eq('id', endpointId).eq('user_id', userId).maybeSingle()
+  if (epErr && epErr.code !== '22P02') throw new Error(`webhook lookup failed: ${epErr.message}`)
   if (!ep) return { ok: false, error: 'Webhook not found' }
 
   const eventId = crypto.randomUUID()
@@ -459,14 +467,17 @@ export async function sendTestWebhook(
 // signature timestamp). One attempt, no automatic retries.
 export async function redeliverWebhook(userId: string, deliveryId: string, endpointId?: string): Promise<AttemptResult> {
   const supabase = await createAdminClient()
-  const { data: d } = await supabase
+  const { data: d, error: dErr } = await supabase
     .from('webhook_deliveries')
     .select(DELIVERY_COLS)
-    .eq('id', deliveryId).eq('user_id', userId).single()
+    .eq('id', deliveryId).eq('user_id', userId).maybeSingle()
+  // 22P02 = a malformed id: genuinely "not found". Any other error is ours, not a 404.
+  if (dErr && dErr.code !== '22P02') throw new Error(`delivery lookup failed: ${dErr.message}`)
   if (!d || (endpointId && d.endpoint_id !== endpointId)) return { ok: false, error: 'Delivery not found' }
-  const { data: ep } = await supabase
+  const { data: ep, error: epErr } = await supabase
     .from('webhook_endpoints').select(EP_COLS)
-    .eq('id', d.endpoint_id).eq('user_id', userId).single()
+    .eq('id', d.endpoint_id).eq('user_id', userId).maybeSingle()
+  if (epErr) throw new Error(`webhook lookup failed: ${epErr.message}`)
   if (!ep) return { ok: false, error: 'Webhook not found' }
   return attemptDelivery(supabase, ep as Endpoint, d as Delivery, { retry: false, manual: true })
 }
@@ -481,7 +492,8 @@ export async function redeliverFailedWebhooks(
   userId: string, endpointId: string, max = 5
 ): Promise<{ ok: true; attempted: number; succeeded: number; more_failed: boolean; stopped_early: boolean } | { ok: false; error: string }> {
   const supabase = await createAdminClient()
-  const { data: ep } = await supabase.from('webhook_endpoints').select(EP_COLS).eq('id', endpointId).eq('user_id', userId).maybeSingle()
+  const { data: ep, error: epErr } = await supabase.from('webhook_endpoints').select(EP_COLS).eq('id', endpointId).eq('user_id', userId).maybeSingle()
+  if (epErr && epErr.code !== '22P02') throw new Error(`webhook lookup failed: ${epErr.message}`)
   if (!ep) return { ok: false, error: 'Webhook not found' }
   const cap = Math.min(Math.max(Math.trunc(max) || 5, 1), 10)
   const { data: rows, error } = await supabase
@@ -551,7 +563,9 @@ export async function runWebhookRetries(limit = RETRIES_PER_RUN) {
   let retried = 0
   let succeeded = 0
   const runGroup = async (group: Delivery[]) => {
+    let failStreak = 0
     for (const d of group) {
+      if (failStreak >= GROUP_STOP_AFTER_FAILURES) break
       const { data: claimed } = await supabase
         .from('webhook_deliveries')
         .update({ next_attempt_at: new Date(Date.now() + CLAIM_LEASE_MS).toISOString() })
@@ -559,8 +573,11 @@ export async function runWebhookRetries(limit = RETRIES_PER_RUN) {
         .select('id')
       if (!claimed?.length) continue
 
-      const { data: ep } = await supabase
-        .from('webhook_endpoints').select('id, user_id, url, secret, previous_secret, previous_secret_expires_at, enabled').eq('id', d.endpoint_id).single()
+      const { data: ep, error: epErr } = await supabase
+        .from('webhook_endpoints').select('id, user_id, url, secret, previous_secret, previous_secret_expires_at, enabled').eq('id', d.endpoint_id).maybeSingle()
+      // A failed lookup is not "the endpoint is gone": it used to fail the delivery for good. The claim
+      // lease (5 min) simply expires and the next tick tries again.
+      if (epErr) { console.error('[webhooks] endpoint lookup failed during retry', d.endpoint_id, epErr.message); continue }
       if (!ep || !ep.enabled) {
         await supabase.from('webhook_deliveries')
           .update({ status: 'failed', next_attempt_at: null, last_error: 'Endpoint disabled or deleted before delivery' })
@@ -569,7 +586,7 @@ export async function runWebhookRetries(limit = RETRIES_PER_RUN) {
       }
       const r = await attemptDelivery(supabase, ep as Endpoint, d, { retry: true })
       retried++
-      if (r.ok) succeeded++
+      if (r.ok) { succeeded++; failStreak = 0 } else failStreak++
     }
   }
   const groups = [...byEndpoint.values()]
@@ -725,7 +742,7 @@ export async function runIntegrationHousekeeping(
 // API request log older than 30 days.
 export async function pruneIntegrationData() {
   const supabase = await createAdminClient()
-  const dayAgo = new Date(Date.now() - 24 * 3_600_000).toISOString()
+  const dayAgo = new Date(Date.now() - IDEMPOTENCY_WINDOW_MS).toISOString()
   const twoWeeksAgo = new Date(Date.now() - 14 * 24 * 3_600_000).toISOString()
   const a = await supabase.from('webhook_deliveries').delete().lt('created_at', twoWeeksAgo).neq('status', 'retrying')
   const b = await supabase.from('api_idempotency_keys').delete().lt('created_at', dayAgo)

@@ -4,7 +4,7 @@ import { requireActiveUser } from '@/lib/apiAuth'
 import { rateLimitedUser } from '@/lib/rateLimit'
 import { requireStepUp } from '@/lib/reauth'
 import { logSecurityEvent, notifySecurityChange } from '@/lib/securityEvents'
-import { rotateApiKey, notifyKeyEvent } from '@/lib/apiKeys'
+import { rotateApiKey, notifyKeyEvent, graceInput } from '@/lib/apiKeys'
 
 // POST /api/dashboard/api-keys/:id/rotate   body (optional): { grace_hours?: 0–72 (default 24) }
 // Issues a replacement key (same label, scopes, IP allowlist and lifespan) and
@@ -27,7 +27,7 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
 
   const { id } = await context.params
   const body = await req.json().catch(() => ({}))
-  const grace = body?.grace_hours === undefined ? 24 : Number(body.grace_hours)
+  const grace = graceInput(body?.grace_hours, 24)
 
   const admin = await createAdminClient()
   const r = await rotateApiKey(admin, user.id, id, grace)

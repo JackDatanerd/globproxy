@@ -127,3 +127,52 @@ test('the auto-disable rule in the database needs a 24h streak, and a re-enable 
   const ep = readFileSync(path.join(root, 'lib', 'webhookEndpoints.ts'), 'utf8')
   assert.match(ep, /patch\.failing_since = null/)
 })
+
+// ── Pass 6 ────────────────────────────────────────────────────────────
+const src = (p) => readFileSync(path.join(root, p), 'utf8')
+
+test('pass 6: a database error is never reported as "not found"', () => {
+  const cred = src('lib/credentials.ts')
+  assert.match(cred, /if \(error\) throw new Error\(`getOwnedCredential failed/)
+  assert.match(cred, /if \(!isUuidString\(id\)\) return null/)
+  assert.match(cred, /getOwnedCredential\(admin, userId, id, 'label'\)\.catch\(\(\) => null\)/, 'a committed top-up must not become a 500')
+  const ep = src('lib/webhookEndpoints.ts')
+  assert.match(ep, /get failed/); assert.match(ep, /ownership check failed/); assert.match(ep, /rotate lookup failed/)
+  const keys = src('lib/apiKeys.ts')
+  assert.match(keys, /edit lookup failed/); assert.match(keys, /rotate lookup failed/)
+  assert.match(keys, /return error \? null : data/, 'loadKeyOwner fails closed')
+  const bulk = src('app/api/v1/sub-users/bulk-action/route.ts')
+  assert.match(bulk, /status: 500, error: \{ code: 'internal_error'/, 'one item failing keeps the other results')
+  const wh = src('lib/webhooks.ts')
+  assert.match(wh, /endpoint lookup failed during retry/)
+})
+
+test('pass 6: webhook queue drains bursts but a dead endpoint cannot burn the tick', () => {
+  const wh = src('lib/webhooks.ts')
+  assert.match(wh, /const RETRIES_PER_RUN = 60/); assert.match(wh, /const PER_ENDPOINT_PER_RUN = 12/)
+  assert.match(wh, /GROUP_STOP_AFTER_FAILURES = 2/)
+  assert.match(wh, /if \(failStreak >= GROUP_STOP_AFTER_FAILURES\) break/)
+})
+
+test('pass 6: bulk pause does a whole-account sync only for large batches', () => {
+  assert.match(src('app/api/v1/sub-users/bulk-action/route.ts'), /ids\.length > BULK_SYNC_MIN/)
+  const d = src('app/api/dashboard/proxies/bulk-action/route.ts')
+  assert.match(d, /action === 'pause' && ids\.length > 5/); assert.match(d, /usageSynced: ids\.length > 5/)
+})
+
+test('pass 6: idempotency stamps on sessions lapse with the 24h claim window', () => {
+  assert.match(src('lib/idempotency.ts'), /export const IDEMPOTENCY_WINDOW_MS = 24 \* 3_600_000/)
+  assert.match(src('lib/credentials.ts'), /age > IDEMPOTENCY_WINDOW_MS/)
+  assert.match(src('lib/webhooks.ts'), /Date\.now\(\) - IDEMPOTENCY_WINDOW_MS/)
+})
+
+test('pass 6: webhook secret rotation is compare-and-set; grace inputs are strict; expired keys are not editable', () => {
+  assert.match(src('lib/webhookEndpoints.ts'), /\.eq\('secret', current\.secret\)/)
+  const keys = src('lib/apiKeys.ts')
+  assert.match(keys, /export function graceInput/)
+  assert.match(keys, /has expired and cannot be edited/)
+  for (const f of ['app/api/dashboard/api-keys/[id]/rotate/route.ts', 'app/api/dashboard/webhooks/[id]/rotate-secret/route.ts', 'app/api/v1/webhooks/[id]/rotate-secret/route.ts']) {
+    assert.match(src(f), /graceInput\(/, f)
+    assert.doesNotMatch(src(f), /Number\(body\??\.grace_/, f)
+  }
+})

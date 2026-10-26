@@ -56,9 +56,19 @@ export function parseExpiryDays(v: unknown): { ok: true; value: string | null } 
   return { ok: true, value: new Date(Date.now() + Number(v) * 86_400_000).toISOString() }
 }
 
+// null = no such profile OR the lookup failed; callers treat both as "cannot verify" (fail closed).
 export async function loadKeyOwner(admin: Admin, userId: string) {
-  const { data } = await admin.from('profiles').select('role, api_access, is_suspended, is_deleted').eq('id', userId).maybeSingle()
-  return data
+  const { data, error } = await admin.from('profiles').select('role, api_access, is_suspended, is_deleted').eq('id', userId).maybeSingle()
+  if (error) console.error('[api-keys] owner lookup failed', error.message)
+  return error ? null : data
+}
+
+// A rotation grace period from a request body: absent / null = the default; anything but a
+// number is NaN (the rotate functions answer 400). Number(null) and Number('') are both 0 —
+// which used to kill the old key or secret on the spot for a client that sent null or "".
+export function graceInput(v: unknown, fallback: number): number {
+  if (v === undefined || v === null) return fallback
+  return typeof v === 'number' ? v : NaN
 }
 
 export const canUseApi = (p: { role?: string | null; api_access?: boolean | null } | null) =>
@@ -100,9 +110,16 @@ export async function createApiKey(
 export async function planKeyUpdate(
   admin: Admin, userId: string, id: string, body: any, owner: { role?: string | null }
 ): Promise<KeyResult<{ patch: Record<string, unknown>; loosens: boolean; current: any }>> {
-  const { data: current } = await admin
+  if (!isUuidString(id)) return fail(404, 'Key not found or already revoked')
+  const { data: current, error: curErr } = await admin
     .from('api_keys').select('id, label, scopes, allowed_ips, expires_at, revoked_at, key_prefix').eq('id', id).eq('user_id', userId).maybeSingle()
+  if (curErr) { console.error('[api-keys] edit lookup failed', curErr); return fail(500, 'Could not load the key. Please try again.') }
   if (!current || current.revoked_at) return fail(404, 'Key not found or already revoked')
+  // An expired key behaves like a revoked one everywhere else. Editing its expiry used to bring it
+  // back to life — past the 25-active-keys cap, which only checks inserts. Rotate renews a key.
+  if (current.expires_at && new Date(current.expires_at).getTime() <= Date.now()) {
+    return fail(409, 'This key has expired and cannot be edited. Rotate it to issue a replacement.')
+  }
 
   const patch: Record<string, unknown> = {}
   let loosens = false
@@ -189,8 +206,10 @@ export async function rotateApiKey(
   if (!Number.isFinite(graceHours) || graceHours < 0 || graceHours > MAX_ROTATION_GRACE_HOURS) {
     return fail(400, `grace_hours must be between 0 and ${MAX_ROTATION_GRACE_HOURS}.`)
   }
-  const { data: old } = await admin
+  if (!isUuidString(id)) return fail(404, 'Key not found or already revoked')
+  const { data: old, error: oldErr } = await admin
     .from('api_keys').select('id, label, scopes, allowed_ips, expires_at, created_at, revoked_at, key_prefix').eq('id', id).eq('user_id', userId).maybeSingle()
+  if (oldErr) { console.error('[api-keys] rotate lookup failed', oldErr); return fail(500, 'Could not load the key. Please try again.') }
   if (!old || old.revoked_at) return fail(404, 'Key not found or already revoked')
   // A key made before the allocate-pin rule may carry a block that is now too wide. The
   // replacement would be refused (and, with no grace period, the old key revoked and

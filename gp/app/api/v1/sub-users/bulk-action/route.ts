@@ -7,6 +7,7 @@ import { isUuid } from '@/lib/adminAuth'
 import { syncUserUsage } from '@/lib/usageSync'
 
 const MAX_BULK = 20
+const BULK_SYNC_MIN = 5 // pauses of more sub-users than this share one whole-account usage sync
 
 // POST /api/v1/sub-users/bulk-action { "action": "delete" | "pause" | "resume", "ids": ["<sub-user id>", …] }   (max 20)
 //
@@ -28,8 +29,11 @@ export async function POST(req: Request) {
     if (ids.length > MAX_BULK) return apiError(400, 'invalid_request', `A bulk request can act on at most ${MAX_BULK} sub-users.`)
     if (!(await consumeWrites(ids.length - 1))) return writeBudgetExceeded()
 
-    // One usage sync for the whole batch (see pauseCredential).
-    if (action === 'pause') await syncUserUsage(user.id).catch((e) => console.error('[bulk-action] pre-pause usage sync failed', e))
+    // One usage sync for a LARGE batch (see pauseCredential). A whole-account sync walks every active
+    // sub-user at the provider (up to ~100 calls) and a small batch counts as only a few writes, so it
+    // was a cheap way to multiply provider traffic. Small batches refresh just their own sessions.
+    const syncWholeAccount = action === 'pause' && ids.length > BULK_SYNC_MIN
+    if (syncWholeAccount) await syncUserUsage(user.id).catch((e) => console.error('[bulk-action] pre-pause usage sync failed', e))
 
     const results: any[] = []
     const seen = new Set<string>()
@@ -38,12 +42,19 @@ export async function POST(req: Request) {
       if (typeof id !== 'string' || !isUuid(id)) { results.push({ index: i, id: String(id ?? ''), status: 400, error: { code: 'invalid_request', message: 'id must be a sub-user id.' } }); continue }
       if (seen.has(id)) { results.push({ index: i, id, status: 400, error: { code: 'invalid_request', message: 'Duplicate id in this request.' } }); continue }
       seen.add(id)
-      if (action === 'delete') {
-        const r = await deleteCredential(supabase, user.id, id, 'api')
-        results.push(r.ok ? { index: i, id, status: 200, gb_released: r.data.gb_released } : { index: i, id, status: r.status, error: { code: r.code, message: r.message } })
-      } else {
-        const r = action === 'pause' ? await pauseCredential(supabase, user.id, id, { usageSynced: true }) : await resumeCredential(supabase, user.id, id)
-        results.push(r.ok ? { index: i, id, status: 200, changed: r.data.changed } : { index: i, id, status: r.status, error: { code: r.code, message: r.message } })
+      try {
+        if (action === 'delete') {
+          const r = await deleteCredential(supabase, user.id, id, 'api')
+          results.push(r.ok ? { index: i, id, status: 200, gb_released: r.data.gb_released } : { index: i, id, status: r.status, error: { code: r.code, message: r.message } })
+        } else {
+          const r = action === 'pause' ? await pauseCredential(supabase, user.id, id, { usageSynced: syncWholeAccount }) : await resumeCredential(supabase, user.id, id)
+          results.push(r.ok ? { index: i, id, status: 200, changed: r.data.changed } : { index: i, id, status: r.status, error: { code: r.code, message: r.message } })
+        }
+      } catch (e) {
+        // A database error on one item must not discard the results of the ones already done, and it is
+        // reported as a retryable 500 — never as a 404 ("already gone").
+        console.error('[bulk-action] item failed unexpectedly', id, e)
+        results.push({ index: i, id, status: 500, error: { code: 'internal_error', message: 'Internal error. Retry this item.' } })
       }
     }
     const succeeded = results.filter((r) => r.status === 200).length

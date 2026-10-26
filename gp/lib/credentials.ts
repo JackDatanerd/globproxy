@@ -12,6 +12,7 @@ import { fetchAllRows } from '@/lib/dbPaging'
 import { isUuidString } from '@/lib/cursor'
 import { recordUsageDeltas } from '@/lib/usageLedger'
 import { replayWhitelist } from '@/lib/whitelistMirror'
+import { IDEMPOTENCY_WINDOW_MS } from '@/lib/idempotency'
 import { parseLabel, parseTargeting, parseSessionOptions, parseFiniteNumber, MAX_ENDPOINT_COUNT, type CreateCredentialInput } from '@/lib/apiValidation'
 
 // The single implementation of credential create / delete / top-up /
@@ -130,8 +131,14 @@ export function toApiCredential(c: any) {
   }
 }
 
+// null means "no such sub-user for this account" — a malformed id included. A DATABASE error is
+// NOT that: it used to be swallowed here, so a blip answered 404 "Sub-user not found" (and a
+// DELETE or bulk delete then looked like "already gone" to an automation). It now throws; the
+// v1 wrapper turns that into a 500 the client can retry.
 export async function getOwnedCredential(admin: Admin, userId: string, id: string, cols = CRED_COLS) {
-  const { data } = await admin.from('proxy_credentials').select(cols).eq('id', id).eq('user_id', userId).maybeSingle()
+  if (!isUuidString(id)) return null
+  const { data, error } = await admin.from('proxy_credentials').select(cols).eq('id', id).eq('user_id', userId).maybeSingle()
+  if (error) throw new Error(`getOwnedCredential failed: ${error.code ?? ''} ${error.message}`)
   return (data as any) ?? null
 }
 
@@ -162,7 +169,14 @@ export async function createCredential(
   if (idemKey) {
     const { data: existing } = await admin
       .from('proxy_credentials').select(CRED_COLS).eq('user_id', userId).eq('idempotency_key', idemKey).maybeSingle()
-    if (existing) return { ok: true, data: { cred: existing, replayed: true } }
+    if (existing) {
+      const age = Date.now() - new Date(existing.created_at as string).getTime()
+      if (!(age > IDEMPOTENCY_WINDOW_MS)) return { ok: true, data: { cred: existing, replayed: true } }
+      // The key's 24-hour memory has lapsed (the claim row is pruned) but the stamp on the old
+      // session is permanent. Replaying it would hand a NEW request, possibly with different
+      // parameters, an old session. Release the stamp so this is treated as the new request it is.
+      await admin.from('proxy_credentials').update({ idempotency_key: null }).eq('id', existing.id).eq('idempotency_key', idemKey)
+    }
   }
 
   // Soft pre-check of the per-account cap (the database trigger from
@@ -507,7 +521,7 @@ export async function topupCredential(
   // customer) says, the PATCH "succeeds", and nothing is marked for retry.
   // See syncCredentialLimit for the read-then-write-then-verify sequence.
   const warning = (await syncCredentialLimit(admin, id)) ?? undefined
-  const cred = await getOwnedCredential(admin, userId, id, 'label')
+  const cred = await getOwnedCredential(admin, userId, id, 'label').catch(() => null)
 
   await dispatchWebhook(userId, 'session_topped_up', {
     credential_id: id, label: cred?.label ?? null, gb_added: gb, gb_allocated: newTotal, source,

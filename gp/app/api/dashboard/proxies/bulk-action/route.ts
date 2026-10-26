@@ -57,7 +57,7 @@ export async function POST(req: Request) {
   }
 
   const admin = await createAdminClient()
-  if (action === 'pause') await syncUserUsage(user.id).catch((e) => console.error('[dashboard bulk] pre-pause usage sync failed', e))
+  if (action === 'pause' && ids.length > 5) await syncUserUsage(user.id).catch((e) => console.error('[dashboard bulk] pre-pause usage sync failed', e))
 
   const results: { id: string; ok: boolean; error?: string; code?: string }[] = []
   const seen = new Set<string>()
@@ -65,15 +65,22 @@ export async function POST(req: Request) {
     const id = typeof raw === 'string' ? raw : ''
     if (!isUuidString(id) || seen.has(id)) { results.push({ id, ok: false, error: 'Invalid or repeated session id.', code: 'invalid_request' }); continue }
     seen.add(id)
-    const r = action === 'delete'
+    let r: any
+    try {
+    r = action === 'delete'
       ? await deleteCredential(admin, user.id, id, 'dashboard')
       : action === 'topup'
         ? await topupCredential(admin, user.id, id, gbAmount, 'dashboard')
         : action === 'retarget'
           ? await updateCredentialSettings(admin, user.id, id, { country }, 'dashboard')
           : action === 'pause'
-            ? await pauseCredential(admin, user.id, id, { usageSynced: true })
+            ? await pauseCredential(admin, user.id, id, { usageSynced: ids.length > 5 })
             : await resumeCredential(admin, user.id, id)
+    } catch (e) {
+      // A database error on one item must not discard the results of the ones already done.
+      console.error('[dashboard bulk] item failed unexpectedly', id, e)
+      r = { ok: false, status: 500, code: 'internal_error', message: 'Something went wrong. Please retry this one.' }
+    }
     results.push(r.ok ? { id, ok: true } : { id, ok: false, error: r.status === 404 ? 'Session not found' : r.message, code: r.code })
   }
   const succeeded = results.filter(r => r.ok).length

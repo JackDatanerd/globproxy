@@ -2,6 +2,7 @@ import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { rateLimitedUser } from '@/lib/rateLimit'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { rotateSecret } from '@/lib/webhookEndpoints'
+import { graceInput } from '@/lib/apiKeys'
 import { requireStepUp } from '@/lib/reauth'
 import { auditWebhookChange, hostOf } from '@/lib/integrationAudit'
 import { NextResponse } from 'next/server'
@@ -29,7 +30,7 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
 
   const { id } = await context.params
   const body = await req.json().catch(() => ({}))
-  const r = await rotateSecret(await createAdminClient(), user.id, id, body?.grace_minutes === undefined ? 0 : Number(body.grace_minutes))
+  const r = await rotateSecret(await createAdminClient(), user.id, id, graceInput(body?.grace_minutes, 0))
   if (!r.ok) return NextResponse.json({ error: r.message }, { status: r.status })
   await auditWebhookChange({ userId: user.id, event: 'webhook_secret_rotated', req, via: 'dashboard', webhookId: id })
   return NextResponse.json(r.data)
