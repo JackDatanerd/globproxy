@@ -24,17 +24,23 @@ import { fileURLToPath } from 'node:url'
 const here = dirname(fileURLToPath(import.meta.url))
 const gpRoot = resolve(here, '..')
 const baselinePath = resolve(here, 'supplier-leak-baseline.json')
-const NAME = /geo[\s_.\-]*node/gi
+// `*` is in the class so a glob such as a .gitignore pattern spelling the name is caught too.
+const NAME = /geo[\s_.\-*]*node/gi
 const SKIP = [/\.sql$/i, /package-lock\.json$/, /supplier-leak-baseline\.json$/, /scripts\/check-supplier-leak\.mjs$/, /\.(png|jpe?g|gif|webp|ico|woff2?|ttf|pdf|gz)$/i]
 
-const files = execFileSync('git', ['ls-files', '-z'], { cwd: gpRoot, encoding: 'utf8' }).split('\0').filter(Boolean)
+// The whole repository, not just gp/: the workflows, hooks and README at the root are as
+// readable as the source. Keys stay relative to gp/ for files inside it (the baseline's
+// existing form) and to the repository root for everything else.
+const top = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: gpRoot, encoding: 'utf8' }).trim()
+const files = execFileSync('git', ['ls-files', '-z'], { cwd: top, encoding: 'utf8' }).split('\0').filter(Boolean)
 const counts = {}
 for (const f of files) {
   if (SKIP.some((re) => re.test(f))) continue
   let text
-  try { text = readFileSync(resolve(gpRoot, f), 'utf8') } catch { continue }
+  try { text = readFileSync(resolve(top, f), 'utf8') } catch { continue }
   const n = (text.match(NAME) ?? []).length
-  if (n) counts[f] = n
+  const key = f.startsWith('gp/') ? f.slice(3) : f
+  if (n) counts[key] = n
 }
 
 const baseline = existsSync(baselinePath) ? JSON.parse(readFileSync(baselinePath, 'utf8')) : {}

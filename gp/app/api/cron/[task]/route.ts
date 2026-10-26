@@ -290,8 +290,11 @@ async function runBandwidthAlerts() {
       // (The bandwidth_threshold_crossed WEBHOOK no longer fires from this
       // once-a-day email run — it has its own 5-minute task, see
       // runBandwidthThresholdWebhooks in lib/webhooks.ts.)
+      // Stamp the 80% flag too: an account that jumped straight past 80% must not get a
+      // second, lower "Heads up" e-mail when it later settles back between 80% and 95%.
+      const stamp = new Date().toISOString()
       await supabase.from('bandwidth_accounts')
-        .update({ alerted_95_at: new Date().toISOString() })
+        .update({ alerted_95_at: stamp, alerted_80_at: acc.alerted_80_at ?? stamp })
         .eq('user_id', acc.user_id)
       sent++
     } else if (due80) {

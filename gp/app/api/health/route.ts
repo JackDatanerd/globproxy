@@ -57,8 +57,14 @@ function deployedVersion(): string {
 function hasSecret(req: Request): boolean {
   const expected = process.env.CRON_SECRET ?? ''
   const given = req.headers.get('x-cron-secret') ?? ''
-  if (!expected || given.length !== expected.length) return false
-  return timingSafeEqual(Buffer.from(given), Buffer.from(expected))
+  if (!expected) return false
+  // Compare BYTE lengths: timingSafeEqual throws when the buffers differ in length, and a
+  // header with a multi-byte character can match the secret's character count but not its
+  // byte count — a 500 only for the right length, i.e. a length oracle for the secret.
+  const a = Buffer.from(given)
+  const b = Buffer.from(expected)
+  if (a.length !== b.length) return false
+  return timingSafeEqual(a, b)
 }
 
 // Scheduled tasks that have not reported inside their window. Read-only (unlike

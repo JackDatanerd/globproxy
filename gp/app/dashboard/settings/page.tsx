@@ -34,7 +34,6 @@ function SettingsPageInner() {
   const [deleteText, setDeleteText] = useState('')
   // Cool-off: when set, the account is scheduled for deletion (migration 0075) and can be cancelled.
   const [deletionScheduledAt, setDeletionScheduledAt] = useState<string | null>(null)
-  const [deleteImmediately, setDeleteImmediately] = useState(false)
   const [cancellingDeletion, setCancellingDeletion] = useState(false)
   const [deleteFacts, setDeleteFacts] = useState<{ remainingGb: number; sessions: number; unpaidEarningsUsd: number } | null>(null)
   const [exporting, setExporting] = useState(false)
@@ -231,20 +230,18 @@ function SettingsPageInner() {
     if (deleteText.trim().toUpperCase() !== 'DELETE') return
     setDeleting(true)
     try {
-      // Default: schedule it (7-day cool-off, cancellable). "Delete immediately" skips the wait.
-      const res: any = await apiJson('DELETE', '/api/user/delete-account', deleteImmediately ? { immediate: true } : {})
+      // Always scheduled (7-day cool-off, cancellable); there is no immediate option.
+      const res: any = await apiJson('DELETE', '/api/user/delete-account', {})
       if (res?.scheduled) {
         setDeletionScheduledAt(res.scheduled_at ?? null)
-        setShowDelete(false); setDeleteText(''); setDeleteImmediately(false)
+        setShowDelete(false); setDeleteText('')
         toast.success('Deletion scheduled — we have emailed you how to cancel it')
         setDeleting(false)
         return
       }
-      await fetch('/api/auth/mfa/logout', { method: 'POST' }).catch(() => {})
-      await createClient().auth.signOut()
-      toast.success('Account deleted')
-      router.push('/')
-      router.refresh()
+      // The route only ever schedules; anything else is an unexpected answer.
+      toast.error('We could not schedule the deletion. Please try again.')
+      setDeleting(false)
     } catch (err: any) {
       if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Failed to delete account')
       setDeleting(false)
@@ -1026,17 +1023,13 @@ function SettingsPageInner() {
               <li>Remove your name, email, payout details, webhooks and revoke your API keys.</li>
               <li>Keep only what accounting requires: records of past payments and invoices.</li>
             </ul>
-            <label className="flex items-start gap-2 text-xs text-red-700 mb-3 cursor-pointer">
-              <input type="checkbox" checked={deleteImmediately} onChange={e => setDeleteImmediately(e.target.checked)} className="mt-0.5" />
-              <span>Delete immediately instead of waiting 7 days (your proxies stop working right away and this cannot be cancelled).</span>
-            </label>
             <label className="block text-xs text-red-700 mb-1.5">Type <span className="font-mono font-bold">DELETE</span> to confirm</label>
             <input value={deleteText} onChange={e => setDeleteText(e.target.value)} autoComplete="off"
               className="w-full max-w-xs bg-white border border-red-200 px-3 py-2 rounded-lg text-sm font-mono focus:outline-none focus:border-red-400 mb-3" />
             <div className="flex gap-3">
               <button onClick={deleteAccount} disabled={deleting || deleteText.trim().toUpperCase() !== 'DELETE'}
                 className="bg-red-600 text-white px-5 py-2.5 rounded-xl text-sm font-medium hover:bg-red-700 disabled:opacity-40 transition-all">
-                {deleting ? 'Working…' : deleteImmediately ? 'Permanently delete my account now' : 'Schedule deletion in 7 days'}
+                {deleting ? 'Working…' : 'Schedule deletion in 7 days'}
               </button>
               <button onClick={() => { setShowDelete(false); setDeleteText('') }} disabled={deleting}
                 className="border border-border text-ink2 px-5 py-2.5 rounded-xl text-sm hover:text-ink">

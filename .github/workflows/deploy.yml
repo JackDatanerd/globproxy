@@ -168,11 +168,23 @@ jobs:
       # purpose: this log is public for a public repository.)
       - name: Verify the required GitHub secrets are set
         env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           UPSTREAM_API_KEY: ${{ secrets.UPSTREAM_API_KEY }}
           UPSTREAM_RESELLER_ID: ${{ secrets.UPSTREAM_RESELLER_ID }}
+          PAYSTACK_SECRET_KEY: ${{ secrets.PAYSTACK_SECRET_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          NEXT_PUBLIC_APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL }}
+          ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL }}
+          FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
         run: |
+          # Every name in the deploy step's `secrets:` list (and every setting /api/health treats
+          # as required) — not just two of them — so a missing one is named here, before the
+          # build, instead of failing the deploy step with wrangler's one-line "missing value".
           missing=""
-          for n in UPSTREAM_API_KEY UPSTREAM_RESELLER_ID; do
+          for n in NEXT_PUBLIC_SUPABASE_URL NEXT_PUBLIC_SUPABASE_ANON_KEY SUPABASE_SERVICE_ROLE_KEY UPSTREAM_API_KEY UPSTREAM_RESELLER_ID PAYSTACK_SECRET_KEY RESEND_API_KEY CRON_SECRET NEXT_PUBLIC_APP_URL ADMIN_EMAIL FROM_EMAIL; do
             [ -z "${!n}" ] && missing="$missing $n"
           done
           if [ -n "$missing" ]; then
@@ -205,7 +217,6 @@ jobs:
             NEXT_PUBLIC_APP_URL
             ADMIN_EMAIL
             FROM_EMAIL
-            STOCK_ALERT_THRESHOLD
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
@@ -218,7 +229,6 @@ jobs:
           NEXT_PUBLIC_APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL }}
           ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL }}
           FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
-          STOCK_ALERT_THRESHOLD: ${{ secrets.STOCK_ALERT_THRESHOLD }}
 
       # Optional Worker secrets. They are NOT in the `secrets:` list above on
       # purpose: that list needs every entry to have a value, so adding an
@@ -246,6 +256,8 @@ jobs:
       #   PASSWORD_BREACH_CHECK       `off` disables the breached-password lookup.
       #   HEARTBEAT_URL               https URL an external monitor expects a GET from every
       #                               5 minutes (the Worker pings it after a fully OK */5 chain).
+      #   STOCK_ALERT_THRESHOLD       low-stock alert floor in GB (the app falls back to 10 when
+      #                               it is unset, so it must not be able to fail a deploy).
       #   UPSTREAM_COST_PER_GB_USD    what a GB costs us wholesale, for the profit figures on
       #                               /admin and /admin/cycles. Kept out of the source on
       #                               purpose; unset, those pages say "not set" instead of
@@ -272,9 +284,10 @@ jobs:
           REFERRAL_IP_SALT: ${{ secrets.REFERRAL_IP_SALT }}
           PASSWORD_BREACH_CHECK: ${{ secrets.PASSWORD_BREACH_CHECK }}
           UPSTREAM_COST_PER_GB_USD: ${{ secrets.UPSTREAM_COST_PER_GB_USD }}
+          STOCK_ALERT_THRESHOLD: ${{ secrets.STOCK_ALERT_THRESHOLD }}
           HEARTBEAT_URL: ${{ secrets.HEARTBEAT_URL }}
         run: |
-          names="TURNSTILE_SECRET_KEY MFA_ENCRYPTION_KEY MFA_ENCRYPTION_KEY_PREVIOUS INVOICE_SELLER_NAME INVOICE_SELLER_ADDRESS INVOICE_SELLER_TAX_ID SUPABASE_CAPTCHA_ENABLED REFERRAL_IP_SALT PASSWORD_BREACH_CHECK UPSTREAM_COST_PER_GB_USD HEARTBEAT_URL"
+          names="TURNSTILE_SECRET_KEY MFA_ENCRYPTION_KEY MFA_ENCRYPTION_KEY_PREVIOUS INVOICE_SELLER_NAME INVOICE_SELLER_ADDRESS INVOICE_SELLER_TAX_ID SUPABASE_CAPTCHA_ENABLED REFERRAL_IP_SALT PASSWORD_BREACH_CHECK UPSTREAM_COST_PER_GB_USD STOCK_ALERT_THRESHOLD HEARTBEAT_URL"
           for name in $names; do
             [ -z "${!name}" ] && echo "::notice::$name is not set in GitHub secrets — leaving the Worker's current value untouched"
           done
