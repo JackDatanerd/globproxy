@@ -31,6 +31,8 @@ export const REFRESH_MARGIN_S = 90
 // `sb-<project ref>-auth-token`, optionally chunked as `.0`, `.1`, ... Deliberately does
 // not match `...-auth-token-code-verifier` (the PKCE verifier cookie).
 const SESSION_COOKIE = /^sb-.+-auth-token(?:\.(\d+))?$/
+const SESSION_BASE = /^sb-.+-auth-token$/
+const CHUNK_NAME = /^(.*)\.(0|[1-9][0-9]*)$/
 
 function b64urlDecode(s: string): string {
   const b64 = s.replace(/-/g, '+').replace(/_/g, '/')
@@ -40,61 +42,86 @@ function b64urlDecode(s: string): string {
   return new TextDecoder().decode(bytes)
 }
 
-function parseCookieHeader(header: string): Map<string, string> {
+// THE PROBE MUST SEE EXACTLY WHAT THE SERVER SEES. Every rule below mirrors the code that
+// actually runs on the request, because any difference is a way to send a cookie the probe
+// reads as "fresh" / "unreadable" while the server still calls Supabase Auth to refresh it:
+//  - Next's cookie parser (@edge-runtime/cookies parseCookie): pairs split on `; *`, names
+//    NOT trimmed, a value that fails decodeURIComponent is skipped, and when a name repeats
+//    the LAST one wins (an earlier version took the first).
+//  - @supabase/ssr combineChunks: the exact `sb-<ref>-auth-token` cookie wins when it is
+//    non-empty; only otherwise are `.0`, `.1`, ... read, stopping at the first missing or
+//    empty index (later chunks are ignored). They are never mixed.
+//  - auth-js __loadSession: a stored value is a session only if it is an object holding the
+//    keys access_token, refresh_token and expires_at; it is expired when
+//    `expires_at ? expires_at * 1000 - now < 90s : false`, evaluated with JavaScript's own
+//    coercion (a string "1" counts as expired; null / 0 count as NOT expired). There is no
+//    fallback to the JWT's `exp`: a session without the keys is dropped without a network call.
+function parseCookieJar(header: string): Map<string, string> {
   const out = new Map<string, string>()
-  for (const part of header.split(';')) {
-    const eq = part.indexOf('=')
-    if (eq === -1) continue
-    const name = part.slice(0, eq).trim()
-    if (!name || out.has(name)) continue
-    out.set(name, part.slice(eq + 1).trim())
+  for (const pair of header.split(/; */)) {
+    if (!pair) continue
+    const eq = pair.indexOf('=')
+    if (eq === -1) { out.set(pair, 'true'); continue }
+    try {
+      out.set(pair.slice(0, eq), decodeURIComponent(pair.slice(eq + 1)))
+    } catch { /* Next skips a value it cannot decode */ }
   }
   return out
 }
 
-/** Expiry (epoch seconds) from a parsed session object, falling back to the access token's own `exp`. */
-function expiryOf(session: any): number | null {
-  if (typeof session?.expires_at === 'number' && Number.isFinite(session.expires_at)) return session.expires_at
-  const jwt = session?.access_token
-  if (typeof jwt === 'string') {
-    const payload = jwt.split('.')[1]
-    if (payload) {
-      try {
-        const exp = JSON.parse(b64urlDecode(payload))?.exp
-        if (typeof exp === 'number' && Number.isFinite(exp)) return exp
-      } catch { /* fall through */ }
-    }
+/** The storage key @supabase/supabase-js derives from a project URL, or null if it cannot be derived. */
+export function sessionKeyFromUrl(supabaseUrl: string | null | undefined): string | null {
+  if (!supabaseUrl) return null
+  try {
+    const host = new URL(supabaseUrl).hostname.split('.')[0]
+    return host ? `sb-${host}-auth-token` : null
+  } catch {
+    return null
   }
-  return null
 }
 
-export function classifySession(cookieHeader: string | null | undefined, nowMs: number): SessionState {
+/**
+ * `onlyKey`: the one cookie key the server's Supabase client reads (sessionKeyFromUrl). When
+ * given, other `sb-*-auth-token` cookies are ignored, exactly as the server ignores them; when
+ * absent every such key is checked, which can only over-brake the sender of an odd cookie.
+ */
+export function classifySession(cookieHeader: string | null | undefined, nowMs: number, onlyKey?: string | null): SessionState {
   if (!cookieHeader) return 'none'
-  const jar = parseCookieHeader(cookieHeader)
+  const jar = parseCookieJar(cookieHeader)
 
-  // Group chunks by cookie base name, in index order.
-  const groups = new Map<string, { idx: number; value: string }[]>()
-  for (const [name, value] of jar) {
-    const m = SESSION_COOKIE.exec(name)
-    if (!m) continue
-    const base = m[1] === undefined ? name : name.slice(0, name.lastIndexOf('.'))
-    const list = groups.get(base) ?? []
-    list.push({ idx: m[1] === undefined ? 0 : Number(m[1]), value })
-    groups.set(base, list)
+  const bases = new Set<string>()
+  for (const name of jar.keys()) {
+    if (SESSION_BASE.test(name)) bases.add(name)
+    else {
+      const m = CHUNK_NAME.exec(name)
+      if (m && SESSION_BASE.test(m[1])) bases.add(m[1])
+    }
   }
-  if (groups.size === 0) return 'none'
+  if (onlyKey) {
+    if (!bases.has(onlyKey)) return 'none'
+    bases.clear()
+    bases.add(onlyKey)
+  }
+  if (bases.size === 0) return 'none'
 
   let sawReadable = false
-  for (const list of groups.values()) {
-    list.sort((a, b) => a.idx - b.idx)
-    let raw = list.map((c) => c.value).join('')
+  for (const base of bases) {
+    let raw = jar.get(base) || ''
+    if (!raw) {
+      for (let i = 0; ; i++) {
+        const chunk = jar.get(`${base}.${i}`)
+        if (!chunk) break
+        raw += chunk
+      }
+    }
+    if (!raw) continue
     try {
       if (raw.startsWith('base64-')) raw = b64urlDecode(raw.slice('base64-'.length))
-      else raw = decodeURIComponent(raw)
-      const exp = expiryOf(JSON.parse(raw))
-      if (exp === null) continue
+      const session = JSON.parse(raw)
+      if (typeof session !== 'object' || session === null || !('access_token' in session) || !('refresh_token' in session) || !('expires_at' in session)) continue
       sawReadable = true
-      if (exp * 1000 <= nowMs + REFRESH_MARGIN_S * 1000) return 'refresh'
+      const ea = (session as { expires_at: any }).expires_at
+      if (ea ? ea * 1000 - nowMs < REFRESH_MARGIN_S * 1000 : false) return 'refresh'
     } catch {
       continue
     }

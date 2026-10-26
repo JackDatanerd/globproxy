@@ -185,6 +185,24 @@ test('over budget, a PAGE carries on as an anonymous visitor; a plain API call i
   assert.equal(api.headers.get('x-frame-options'), 'SAMEORIGIN')
 })
 
+test('cookies crafted to hide an expired session from the probe are still braked', async () => {
+  const h = harness({ limiter: { allow: false } })
+  h.env.NEXT_PUBLIC_SUPABASE_URL = 'https://abc.supabase.co'
+  const expired = sessionCookie(-60).split('=').slice(1).join('=')
+  const K = 'sb-abc-auth-token'
+  const crafted = [
+    `${K}=${expired}; ${K}.0=zzz`,
+    `${K}.0=${expired}; ${K}.2=zzz`,
+    `${K}=${sessionCookie(3000).split('=').slice(1).join('=')}; ${K}=${expired}`,
+    `${K}=base64-${b64url(JSON.stringify({ access_token: 'x.y.z', refresh_token: 'r', expires_at: '1' }))}`,
+  ]
+  for (const cookie of crafted) {
+    const res = await h.get('/api/dashboard/proxies', { cookie, 'cf-connecting-ip': '203.0.113.9' })
+    assert.equal(res.status, 429, cookie.slice(0, 60))
+  }
+  assert.equal(h.calls.app, 0, 'none of them reached the app (and so Supabase Auth)')
+})
+
 test('over budget, sign-in requests still reach the app, body intact, without the stale session', async () => {
   const h = harness({ limiter: { allow: false } })
   const res = await h.send('/api/auth/login', {

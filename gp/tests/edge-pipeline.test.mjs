@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { canonicalEmail, targetBuckets, TARGET_PER_ADDRESS_MAX, TARGET_PER_ADDRESS_WINDOW_S, TARGET_GLOBAL_MAX, TARGET_GLOBAL_WINDOW_S } from '../lib/targetThrottle.ts'
-import { classifySession, REFRESH_MARGIN_S, stripSessionCookies } from '../lib/sessionProbe.ts'
+import { classifySession, sessionKeyFromUrl, REFRESH_MARGIN_S, stripSessionCookies } from '../lib/sessionProbe.ts'
 import { edgeRequestId, guardResponse } from '../lib/edgeGuard.ts'
 import { SECURITY_HEADERS, applySecurityHeaders } from '../lib/securityHeaders.ts'
 import { cspHeaderName, cspEnforced } from '../lib/csp.ts'
@@ -79,17 +79,60 @@ test('chunked, legacy-encoded and JWT-only sessions are read; junk is "unreadabl
 
   assert.equal(classifySession(cookie('sb-abc-auth-token', encodeURIComponent(session(-100))), NOW), 'refresh', 'plain URL-encoded JSON')
 
+  // No `expires_at` key: auth-js drops it without a network call, and never reads the JWT's exp.
   const exp = Math.floor(NOW / 1000) - 10
   const jwt = `h.${b64url(JSON.stringify({ exp }))}.s`
-  assert.equal(classifySession(cookie('sb-abc-auth-token', 'base64-' + b64url(JSON.stringify({ access_token: jwt, refresh_token: 'r' }))), NOW), 'refresh', 'falls back to the access token exp')
+  assert.equal(classifySession(cookie('sb-abc-auth-token', 'base64-' + b64url(JSON.stringify({ access_token: jwt, refresh_token: 'r' }))), NOW), 'unreadable', 'JWT-only session is dropped locally')
 
-  assert.equal(classifySession(cookie('sb-abc-auth-token', 'base64-%%%not-base64'), NOW), 'unreadable')
+  assert.equal(classifySession(cookie('sb-abc-auth-token', 'base64-!!!not-base64'), NOW), 'unreadable')
+  assert.equal(classifySession(cookie('sb-abc-auth-token', 'base64-%%%not-base64'), NOW), 'none', 'Next cannot decode the value and drops the cookie altogether')
   assert.equal(classifySession(cookie('sb-abc-auth-token', 'base64-' + b64url('{"no":"expiry"}')), NOW), 'unreadable')
 
   assert.equal(classifySession(null, NOW), 'none')
   assert.equal(classifySession('', NOW), 'none')
   assert.equal(classifySession('gp_ref=ABC; theme=dark', NOW), 'none')
   assert.equal(classifySession(cookie('sb-abc-auth-token-code-verifier', 'whatever'), NOW), 'none', 'the PKCE verifier is not a session')
+})
+
+// The probe must classify a cookie jar exactly as Next + @supabase/ssr + auth-js read it. Each
+// case below was a way to make the server refresh against Supabase Auth while the probe said
+// "fresh" or "unreadable" (verified against the real client, 2026-10 edge-pipeline audit).
+test('session probe mirrors the real client: exact-vs-chunk precedence, gaps, duplicates, expires_at coercion', () => {
+  const K = 'sb-abc-auth-token'
+  const expired = 'base64-' + b64url(session(-100))
+  const freshV = 'base64-' + b64url(session(3000))
+
+  assert.equal(classifySession(`${K}=${expired}; ${K}.0=zzz`, NOW), 'refresh', 'exact cookie wins; a junk chunk beside it is ignored')
+  assert.equal(classifySession(`${K}.0=zzz; ${K}=${expired}`, NOW), 'refresh', 'same, whatever the header order')
+  assert.equal(classifySession(`${K}=${freshV}; ${K}.0=${expired}`, NOW), 'fresh', 'a fresh exact cookie is not made expired by a stale chunk')
+  assert.equal(classifySession(`${K}.0=${expired}; ${K}.2=zzz`, NOW), 'refresh', 'chunks stop at the first gap; what follows is ignored')
+  assert.equal(classifySession(`${K}.1=${expired}`, NOW), 'unreadable', 'without .0 there is no chunked value at all, so nothing to refresh')
+  assert.equal(classifySession(`${K}=; ${K}.0=${expired}`, NOW), 'refresh', 'an EMPTY exact cookie falls through to the chunks')
+
+  assert.equal(classifySession(`${K}=${freshV}; ${K}=${expired}`, NOW), 'refresh', 'the LAST duplicate wins (Next)')
+  assert.equal(classifySession(`${K}=${expired}; ${K}=${freshV}`, NOW), 'fresh', 'the LAST duplicate wins (Next), not the first')
+  assert.equal(classifySession(`${K}=${expired}; ${K}=%E0%A4%A`, NOW), 'refresh', 'a value Next cannot decode is skipped, the earlier one stays')
+
+  const withExp = (expires_at) => `${K}=base64-` + b64url(JSON.stringify({ access_token: 'x.y.z', refresh_token: 'r', expires_at }))
+  assert.equal(classifySession(withExp('1'), NOW), 'refresh', 'a string expires_at is coerced to a number, as auth-js does')
+  assert.equal(classifySession(withExp(null), NOW), 'fresh', 'a falsy expires_at is "not expired" to auth-js')
+  assert.equal(classifySession(withExp(0), NOW), 'fresh')
+  const noKey = `${K}=base64-` + b64url(JSON.stringify({ access_token: 'x.y.z', refresh_token: 'r' }))
+  assert.equal(classifySession(noKey, NOW), 'unreadable', 'a session missing expires_at is not a session')
+  assert.equal(classifySession(`${K}=base64-` + b64url('"just a string"'), NOW), 'unreadable')
+})
+
+test('with the project key known, other sb-*-auth-token cookies are ignored like the server ignores them', () => {
+  assert.equal(sessionKeyFromUrl('https://abcdref.supabase.co'), 'sb-abcdref-auth-token')
+  assert.equal(sessionKeyFromUrl('http://localhost:54321'), 'sb-localhost-auth-token')
+  assert.equal(sessionKeyFromUrl(''), null)
+  assert.equal(sessionKeyFromUrl(undefined), null)
+  assert.equal(sessionKeyFromUrl('not a url'), null)
+  const other = `sb-other-auth-token=base64-${b64url(session(-100))}`
+  const mine = `sb-abcdref-auth-token=base64-${b64url(session(3000))}`
+  assert.equal(classifySession(`${other}; ${mine}`, NOW), 'refresh', 'without the key, any expired one counts')
+  assert.equal(classifySession(`${other}; ${mine}`, NOW, 'sb-abcdref-auth-token'), 'fresh')
+  assert.equal(classifySession(other, NOW, 'sb-abcdref-auth-token'), 'none')
 })
 
 // ── edge cache decisions ───────────────────────────────────────────────────

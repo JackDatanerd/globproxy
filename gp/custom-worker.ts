@@ -46,7 +46,7 @@
 // @ts-ignore `.open-next/worker.js` is generated at build time
 import { default as handler } from './.open-next/worker.js'
 import { guardApiRequest, guardResponse, limitBody, edgeRequestId } from './lib/edgeGuard'
-import { classifySession, stripSessionCookies } from './lib/sessionProbe'
+import { classifySession, sessionKeyFromUrl, stripSessionCookies } from './lib/sessionProbe'
 import { SECURITY_HEADERS } from './lib/securityHeaders'
 import { clientKeyFromHeader } from './lib/ipParse'
 import { cookiesAreBenign, cacheAge } from './lib/edgeCache'
@@ -210,7 +210,7 @@ function degradesToAnonymous(pathname: string): boolean {
 
 async function sessionRefreshBrake(request: Request, url: URL, env: any, requestId: string): Promise<Brake> {
   try {
-    if (classifySession(request.headers.get('cookie'), Date.now()) !== 'refresh') return null
+    if (classifySession(request.headers.get('cookie'), Date.now(), sessionKeyFromUrl(env?.NEXT_PUBLIC_SUPABASE_URL)) !== 'refresh') return null
     const limiter = env?.SESSION_REFRESH_RATE_LIMITER as { limit: (o: { key: string }) => Promise<{ success: boolean }> } | undefined
     if (!limiter) return null
     const ip = clientKeyFromHeader(request.headers.get('cf-connecting-ip'))
