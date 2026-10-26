@@ -57,7 +57,7 @@ export default function AdminPendingPayouts({ rows }: { rows: PendingPayoutRow[]
     const failed: { payoutId: string; error: string }[] = []
     let aborted: string | null = null
     for (let i = 0; i < ids.length; i += CHUNK) {
-      const { ok, data } = await adminPost('/api/admin/bulk-mark-payouts-paid', { payoutIds: ids.slice(i, i + CHUNK), reference: ref })
+      const { ok, data } = await adminPost('/api/admin/bulk-mark-payouts-paid', { payoutIds: ids.slice(i, i + CHUNK), reference: ref, expectedAmounts: Object.fromEntries(ids.slice(i, i + CHUNK).map(id => [id, rows.find(r => r.id === id)?.amountUsd]).filter(([, a]) => a != null)) })
       const d = data as any
       if (!ok && d.paid == null) { aborted = d.error ?? 'Bulk action failed'; break }
       paidCount += d.paid ?? 0

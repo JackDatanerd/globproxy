@@ -72,7 +72,7 @@ export default function AdminAffiliateActions(props: Props) {
             kesAmount = n
           }
         }
-        path = '/api/admin/mark-payout-paid'; body = { payoutId: props.payoutId, reference: ref, ...(kesAmount ? { kesAmount } : {}) }; success = 'Marked as paid'
+        path = '/api/admin/mark-payout-paid'; body = { payoutId: props.payoutId, reference: ref, ...(props.amountUsd != null ? { expectedAmountUsd: props.amountUsd } : {}), ...(kesAmount ? { kesAmount } : {}) }; success = 'Marked as paid'
         break
       }
       case 'voidPayout': {

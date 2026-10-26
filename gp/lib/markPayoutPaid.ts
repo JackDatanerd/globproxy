@@ -16,14 +16,14 @@ export async function markPayoutPaid(
   adminId: string,
   payoutId: string,
   reference: string,
-  opts: { allowSuspended?: boolean; kesAmount?: number | null } = {}
+  opts: { allowSuspended?: boolean; kesAmount?: number | null; expectedAmountUsd?: number | null } = {}
 ): Promise<MarkPaidResult> {
   // A payout for a deleted account can never be paid (its destination was
   // erased on deletion). Deletion now removes pending payouts itself; this
   // also refuses any that predate that.
   const { data: pre } = await supabase
     .from('affiliate_payouts')
-    .select('status, referrer:referrer_id(is_deleted, is_suspended, affiliate_status)')
+    .select('status, amount_usd, referrer:referrer_id(is_deleted, is_suspended, affiliate_status)')
     .eq('id', payoutId)
     .maybeSingle()
   if (!pre) return { ok: false, status: 404, error: 'Payout not found' }
@@ -50,9 +50,19 @@ export async function markPayoutPaid(
     p_payout_id: payoutId,
     p_paid_by: adminId,
     p_reference: reference || null,
+    // Checked inside the same UPDATE that claims the payout (migration 0088).
+    p_expected_amount: opts.expectedAmountUsd ?? null,
   })
   if (rpcErr) return { ok: false, status: 500, error: rpcErr.message }
-  if (!claimed) return { ok: false, status: 409, error: 'This payout is not in a payable state (already paid?)' }
+  if (!claimed) {
+    // Not claimed: already paid / voided — or its amount changed after the admin looked
+    // (a refund shrank it). Say which, so nobody sends the old figure by hand.
+    const { data: now } = await supabase.from('affiliate_payouts').select('status, amount_usd').eq('id', payoutId).maybeSingle()
+    if (now?.status === 'pending' && opts.expectedAmountUsd != null && Math.round(Number(now.amount_usd) * 100) !== Math.round(opts.expectedAmountUsd * 100)) {
+      return { ok: false, status: 409, error: `This payout's amount changed to $${Number(now.amount_usd).toFixed(2)} (a refund landed) — reload and check before sending money.` }
+    }
+    return { ok: false, status: 409, error: 'This payout is not in a payable state (already paid?)' }
+  }
 
   const { data: payout } = await supabase
     .from('affiliate_payouts')
