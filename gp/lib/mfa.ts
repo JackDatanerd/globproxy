@@ -205,7 +205,14 @@ async function checkCode(
     if (parsed.kind === 'backup') {
       ok = await consumeBackupCode(supabase, userId, parsed.code)
       if (ok) {
-        await supabase.rpc('mfa_clear_failures', { p_user_id: userId })
+        // The 5th reservation locks the factor up front and only a success lifts it. The code is
+        // already spent, so a failure here must not throw (that would refund and report an error
+        // for a code that cannot be replayed) — but the lock must not outlive a correct sign-in.
+        const { error: clearErr } = await supabase.rpc('mfa_clear_failures', { p_user_id: userId })
+        if (clearErr) {
+          console.error('[mfa] mfa_clear_failures failed after an accepted backup code — lifting the lock instead', userId, clearErr.message)
+          await refundAttempt(supabase, userId, gate)
+        }
         await logSecurityEvent({ userId, event: 'mfa_backup_code_used', req: ctx?.req, admin: supabase })
       }
     } else {
@@ -225,7 +232,14 @@ async function checkCode(
         // tell the user to retry a code that can no longer be replayed).
         try {
           const plain = await decryptSecret(factor.secret, userId)
-          const { error: rwErr } = await supabase.from('mfa_totp_factors').update({ secret: await encryptSecret(plain, userId) }).eq('user_id', userId)
+          // Compare-and-set on the value that was just verified: if the secret changed in the
+          // meantime (a "Change authenticator" confirm, or disable + re-enrol, in another
+          // request) this matches no row, instead of overwriting the NEW secret with a
+          // re-encrypted copy of the old one and locking the owner out of their new app.
+          const { error: rwErr } = await supabase.from('mfa_totp_factors')
+            .update({ secret: await encryptSecret(plain, userId) })
+            .eq('user_id', userId)
+            .eq('secret', factor.secret)
           if (rwErr) console.error('[mfa] secret rewrite failed', userId, rwErr.message)
         } catch (rwEx) {
           console.error('[mfa] secret rewrite threw', userId, rwEx)

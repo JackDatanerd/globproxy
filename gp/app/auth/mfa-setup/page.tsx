@@ -50,6 +50,12 @@ function MfaSetupFlow() {
           headers: { Authorization: `Bearer ${session.access_token}` },
         })
         const data = await res.json().catch(() => ({}))
+        // An account that already has 2FA but has not passed it in this browser lands here too
+        // (middleware leaves this page open); send it to the code prompt instead of a dead end.
+        if (res.status === 403 && data?.code === 'mfa_required') {
+          router.replace(`/auth/mfa-verify?next=${encodeURIComponent('/dashboard/settings')}`)
+          return
+        }
         if (!res.ok) throw new Error(data.error || 'Could not start MFA setup.')
         if (cancelled) return
         setSecret(data.secret)
