@@ -3,7 +3,7 @@ import { useState, useMemo, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { buildProxyUsername, getProxyPort, deriveSessionId } from '@/lib/proxyEndpoint'
-import { apiJson, apiFetch, copyText, saveTextFile, toastApiError } from '@/lib/clientApi'
+import { apiJson, apiFetch, copyText, saveTextFile, toastApiError, hasAtMostDecimals } from '@/lib/clientApi'
 import { formatGb, formatPct, formatDurationMinutes } from '@/lib/format'
 import SessionManager from '@/components/dashboard/SessionManager'
 import IpWhitelist from '@/components/dashboard/IpWhitelist'
@@ -313,8 +313,9 @@ export default function ProxyCard({ cred, index, availableGb, expanded, onToggle
     e.stopPropagation()
     setRetrying(true)
     try {
-      await apiJson('POST', `/api/dashboard/proxies/${cred.id}/retry`)
-      toast.success('Session is now active')
+      const res = await apiJson<{ status?: string; message?: string }>('POST', `/api/dashboard/proxies/${cred.id}/retry`)
+      if (res?.status === 'active') toast.success('Session is now active')
+      else toast(res?.message || 'Still setting up — we’ll keep retrying automatically.', { icon: '⏳', duration: 6000 })
       router.refresh()
     } catch (err: any) {
       toastApiError(err)
@@ -330,6 +331,7 @@ export default function ProxyCard({ cred, index, availableGb, expanded, onToggle
       if (!Number.isFinite(t) || t < 0) { toast.error('Threshold must be 0 or greater'); return }
       if (!Number.isFinite(a) || a <= 0) { toast.error('Top-up amount must be greater than 0'); return }
       if (a <= t) { toast.error('The amount added must be larger than the threshold, or it would re-trigger immediately.'); return }
+      if (!hasAtMostDecimals(t, 4) || !hasAtMostDecimals(a, 4)) { toast.error('Use at most 4 decimal places.'); return }
     }
     setAutoLoading(true)
     try {

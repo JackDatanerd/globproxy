@@ -244,7 +244,7 @@ export default function ProxyList({ creds, availableGb, rotationEnabled, warnPct
 
   async function runBulk(kind: 'pause' | 'resume' | 'delete' | 'topup' | 'retarget') {
     if (bulkBusy) return
-    const targets = kind === 'pause' ? canPause : kind === 'resume' ? canResume : kind === 'topup' || kind === 'retarget' ? selectedCreds.filter(c => c.status === 'active' || c.status === 'pending' || (kind === 'topup' && c.status === 'suspended' && c.suspended_reason === 'customer')) : selectedCreds
+    const targets = kind === 'pause' ? canPause : kind === 'resume' ? canResume : kind === 'topup' || kind === 'retarget' ? selectedCreds.filter(c => c.status === 'active' || c.status === 'pending') : selectedCreds
     if (targets.length === 0) return
     const extra: Record<string, unknown> = {}
     if (kind === 'topup') {

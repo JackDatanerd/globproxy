@@ -29,6 +29,11 @@ export function redirectToMfa(data: any): void {
 
 // Shows an API failure as a toast — except the 2FA step-up, where the page is
 // already redirecting to verification and a red toast would only flash.
+// Mirrors the server's decimal-places rule for auto top-up values, so an
+// over-precise number is caught at the form instead of after a round trip.
+export const hasAtMostDecimals = (n: number, d: number): boolean =>
+  Math.abs(n * 10 ** d - Math.round(n * 10 ** d)) < 1e-6
+
 export function toastApiError(err: any, fallback = 'Something went wrong'): void {
   if (err?.code === 'mfa_required' || err?.code === 'reauth_required') return
   toast.error(err?.message || fallback)

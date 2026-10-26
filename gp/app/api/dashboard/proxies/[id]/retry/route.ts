@@ -58,5 +58,7 @@ export async function POST(
   const message = after?.pending_reason === 'capacity'
     ? 'We’re adding network capacity right now. Your bandwidth is reserved and this session will activate automatically — no action needed.'
     : 'The proxy network is still unreachable. We’ll keep retrying automatically.'
-  return NextResponse.json({ error: message }, { status: 502 })
+  // 200, not 502: nothing failed on the customer's side. The client shows
+  // this as an info toast instead of a red error.
+  return NextResponse.json({ success: false, status: 'pending', message })
 }

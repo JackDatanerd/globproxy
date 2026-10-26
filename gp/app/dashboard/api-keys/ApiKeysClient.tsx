@@ -1,7 +1,7 @@
 'use client'
 import { useState, useEffect } from 'react'
 import toast from 'react-hot-toast'
-import { apiFetch, apiJson, copyText } from '@/lib/clientApi'
+import { apiFetch, apiJson, copyText, toastApiError } from '@/lib/clientApi'
 
 const ENDPOINTS = [
   {
@@ -229,7 +229,7 @@ export default function ApiKeysClient({ canAllocate = false }: { canAllocate?: b
       toast.success('Key revoked')
       loadKeys()
     } catch (err: any) {
-      toast.error(err.message ?? 'Failed to revoke key')
+      toastApiError(err, 'Failed to revoke key')
     }
   }
 
@@ -292,7 +292,7 @@ export default function ApiKeysClient({ canAllocate = false }: { canAllocate?: b
       toast.success(`${d.revoked ?? 0} key(s) revoked`)
       loadKeys()
     } catch (err: any) {
-      toast.error(err.message ?? 'Failed to revoke keys')
+      toastApiError(err, 'Failed to revoke keys')
     }
   }
 

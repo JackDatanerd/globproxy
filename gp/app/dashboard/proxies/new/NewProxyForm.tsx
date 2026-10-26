@@ -1,7 +1,7 @@
 'use client'
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
-import { apiFetch, apiJson } from '@/lib/clientApi'
+import { apiFetch, apiJson, hasAtMostDecimals } from '@/lib/clientApi'
 import { formatGb, formatDurationMinutes } from '@/lib/format'
 import {
   fetchCountryList, fetchCountryDetail, POPULAR_COUNTRY_CODES,
@@ -194,6 +194,10 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup, initial, d
       }
       if (form.auto_topup_amount_gb <= form.auto_topup_threshold_gb) {
         toast.error('The auto-allocate amount must be larger than the threshold, or it would re-trigger immediately.')
+        return
+      }
+      if (!hasAtMostDecimals(form.auto_topup_threshold_gb, 4) || !hasAtMostDecimals(form.auto_topup_amount_gb, 4)) {
+        toast.error('Auto-allocate values can have at most 4 decimal places.')
         return
       }
     }

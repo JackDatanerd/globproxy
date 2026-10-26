@@ -6,7 +6,7 @@ import toast from 'react-hot-toast'
 import TwoFactorSettings from '@/components/dashboard/TwoFactorSettings'
 import { ChangePasswordCard, ChangeEmailCard, SecurityActivityCard, ActiveSessionsCard } from '@/components/dashboard/AccountSecurityCards'
 import { WEBHOOK_EVENTS, WEBHOOK_EVENT_LABELS, WEBHOOK_WILDCARD } from '@/lib/webhookEvents'
-import { apiFetch, apiJson, copyText, redirectToMfa, saveBlob } from '@/lib/clientApi'
+import { apiFetch, apiJson, copyText, redirectToMfa, saveBlob, hasAtMostDecimals } from '@/lib/clientApi'
 import { fetchCountryList } from '@/lib/geoTargeting'
 import { fetchWithReauth } from '@/lib/reauthPrompt'
 import { formatGb } from '@/lib/format'
@@ -293,6 +293,9 @@ function SettingsPageInner() {
       }
       if (defaultAuto.amount_gb <= defaultAuto.threshold_gb) {
         toast.error('The amount added must be larger than the threshold, or it would re-trigger immediately.'); return
+      }
+      if (!hasAtMostDecimals(defaultAuto.threshold_gb, 4) || !hasAtMostDecimals(defaultAuto.amount_gb, 4)) {
+        toast.error('Use at most 4 decimal places.'); return
       }
     }
     setDefaultAutoLoading(true)
@@ -994,7 +997,7 @@ function SettingsPageInner() {
         {deletionScheduledAt ? (
           <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
             <p className="text-sm text-amber-800 font-medium mb-1">
-              Your account is scheduled to be deleted on {new Date(deletionScheduledAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}.
+              Your account is scheduled to be deleted on {new Date(deletionScheduledAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })}.
             </p>
             <p className="text-sm text-amber-800 mb-3">Until then nothing changes. Cancel any time before then to keep your account.</p>
             <button onClick={cancelDeletion} disabled={cancellingDeletion}
