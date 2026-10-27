@@ -87,7 +87,7 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
 
   try {
     const ips = await addWhitelistedIp(cred.upstream_sub_user_id, ip, description)
-    await mirrorWhitelist(await createAdminClient(), id, user.id, ips)
+    await mirrorWhitelist(await createAdminClient(), id, user.id, ips, cred.upstream_sub_user_id)
     await notifyWhitelistChanged(user.id, id, 'added', 1, 'dashboard')
     return NextResponse.json({ ips }, { status: 201 })
   } catch (e) {
@@ -123,7 +123,7 @@ export async function DELETE(req: Request, context: { params: Promise<{ id: stri
 
   try {
     const ips = await removeWhitelistedIp(cred.upstream_sub_user_id, ip)
-    await mirrorWhitelist(await createAdminClient(), id, user.id, ips)
+    await mirrorWhitelist(await createAdminClient(), id, user.id, ips, cred.upstream_sub_user_id)
     await notifyWhitelistChanged(user.id, id, 'removed', 1, 'dashboard')
     return NextResponse.json({ ips })
   } catch (e) {

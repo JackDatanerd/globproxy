@@ -12,7 +12,7 @@ import { fetchAllRows } from '@/lib/dbPaging'
 import { isUuidString } from '@/lib/cursor'
 import { recordUsageDeltas } from '@/lib/usageLedger'
 import { replayWhitelist } from '@/lib/whitelistMirror'
-import { IDEMPOTENCY_WINDOW_MS } from '@/lib/idempotency'
+import { IDEMPOTENCY_WINDOW_MS, claimIdempotencyKey, releaseIdempotencyKey } from '@/lib/idempotency'
 import { parseLabel, parseTargeting, parseSessionOptions, parseFiniteNumber, MAX_ENDPOINT_COUNT, type CreateCredentialInput } from '@/lib/apiValidation'
 
 // The single implementation of credential create / delete / top-up /
@@ -919,7 +919,33 @@ async function verifyRotation(host: string, baseUser: string, oldPass: string, n
   return 'unknown'
 }
 
+// Two rotations of the same session running at once could interleave their upstream writes (A sets X,
+// B sets Y) and then commit X to the database while the proxy network held Y — the customer would be
+// handed a password that does not work. One rotation per session at a time, via a short-lived claim in
+// api_idempotency_keys (the claim goes stale after two minutes, so a crashed attempt cannot wedge it).
 export async function rotateCredentialPassword(
+  admin: Admin, userId: string, id: string
+): Promise<CredResult<{ password: string }>> {
+  const lockKey = `rotate:${id}`
+  let claimed = false
+  try {
+    const claim = await claimIdempotencyKey(admin, userId, lockKey, '', 'rotate-password')
+    if (claim.kind !== 'proceed') {
+      return fail(409, 'conflict', 'This session\u2019s password is already being changed. Wait a moment and check the result before trying again.')
+    }
+    claimed = true
+  } catch (e) {
+    // The lock table being unreachable must not take rotation down with it.
+    console.error('[credentials] rotate: could not take the rotation lock — continuing without it', id, e)
+  }
+  try {
+    return await rotateCredentialPasswordLocked(admin, userId, id)
+  } finally {
+    if (claimed) await releaseIdempotencyKey(admin, userId, lockKey)
+  }
+}
+
+async function rotateCredentialPasswordLocked(
   admin: Admin, userId: string, id: string
 ): Promise<CredResult<{ password: string }>> {
   if (!passwordRotationEnabled()) {

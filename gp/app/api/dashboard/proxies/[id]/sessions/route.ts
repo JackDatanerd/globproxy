@@ -73,7 +73,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return NextResponse.json({ error: 'Sessions only apply to sticky credentials' }, { status: 400 })
   }
 
-  const body = await req.json().catch(() => ({}))
+  const rawBody = await req.json().catch(() => null)
+  const body: Record<string, any> = rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody) ? rawBody : {}
   // One session (`label`) or a batch (`labels`, 1–MAX_BATCH) created in a single
   // insert — all rows or none, so a scraper that wants twenty fixed IPs doesn't
   // make twenty requests and end up with eleven if one of them fails.
@@ -113,7 +114,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (error) {
     // The database trigger is the authoritative cap / sticky-only / active-
     // account check; its messages are written for customers.
-    if (error.code === '23514') return NextResponse.json({ error: error.message }, { status: 409 })
+    if (error.code === '23514') {
+      // Only the trigger's own customer-facing wording is passed through; any other check
+      // violation would leak a constraint name.
+      const m = typeof error.message === 'string' ? error.message : ''
+      const safe = m.length > 0 && m.length <= 200 && !/violates|constraint|relation|"/i.test(m)
+      if (!safe) console.error('[dashboard/proxies/[id]/sessions] check violation:', error)
+      return NextResponse.json({ error: safe ? m : 'Could not create the session. You may be at the session limit.' }, { status: 409 })
+    }
     if (error.code === '42501') return NextResponse.json({ error: 'Account is not active.' }, { status: 403 })
     console.error('[dashboard/proxies/[id]/sessions] db error:', error)
     return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })

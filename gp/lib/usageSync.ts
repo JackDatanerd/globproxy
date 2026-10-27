@@ -64,13 +64,22 @@ async function applyChanges(
   let bulkOk = true
   for (let i = 0; i < changes.length; i += BULK_UPDATE_CHUNK) {
     const chunk = changes.slice(i, i + BULK_UPDATE_CHUNK)
-    const { error } = await supabase.rpc('bulk_update_credential_usage', { updates: chunk.map(({ id, gb_used }) => ({ id, gb_used })) })
+    const { data: written, error } = await supabase.rpc('bulk_update_credential_usage', { updates: chunk.map(({ id, gb_used }) => ({ id, gb_used })) })
     if (error) {
       bulkOk = false
       console.error('bulk_update_credential_usage failed:', error)
     } else {
-      // Credited only for rows that were actually written.
-      await recordUsageDeltas(supabase, chunk.filter(c => c.user_id).map(c => ({ user_id: c.user_id as string, gb: c.delta })))
+      // Credited only for rows that were actually written, and only for what this write
+      // changed: the function returns the gb_used it replaced, which can differ from the snapshot
+      // this run read minutes earlier (a live refresh or another sync moved it in between —
+      // crediting the snapshot delta then counted that slice twice). An empty result means the
+      // function predates migration 0100: fall back to the snapshot delta.
+      const replaced = new Map<string, number>()
+      if (Array.isArray(written)) for (const w of written as { id: string; prev: number | string }[]) replaced.set(w.id, Number(w.prev))
+      await recordUsageDeltas(supabase, chunk.filter(c => c.user_id).map(c => {
+        const prev = replaced.get(c.id)
+        return { user_id: c.user_id as string, gb: prev === undefined ? c.delta : c.gb_used - prev }
+      }))
     }
   }
   // Always recalc, even with zero changes — a previous partial failure

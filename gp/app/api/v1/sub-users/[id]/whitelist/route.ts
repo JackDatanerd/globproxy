@@ -59,7 +59,7 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
       if (!cred.upstream_sub_user_id) return apiError(409, 'conflict', 'This sub-user is still being provisioned — try again shortly.')
 
       const ips = await addWhitelistedIp(cred.upstream_sub_user_id, ip, description)
-      await mirrorWhitelist(supabase, id, user.id, ips)
+      await mirrorWhitelist(supabase, id, user.id, ips, cred.upstream_sub_user_id)
       await notifyWhitelistChanged(user.id, id, 'added', 1, 'api')
       return NextResponse.json({ ips }, { status: 201 })
     } catch (e) {
@@ -83,7 +83,7 @@ export async function DELETE(req: Request, context: { params: Promise<{ id: stri
       if (!cred.upstream_sub_user_id) return apiError(409, 'conflict', 'This sub-user is still being provisioned — try again shortly.')
 
       const ips = await removeWhitelistedIp(cred.upstream_sub_user_id, ip)
-      await mirrorWhitelist(supabase, id, user.id, ips)
+      await mirrorWhitelist(supabase, id, user.id, ips, cred.upstream_sub_user_id)
       await notifyWhitelistChanged(user.id, id, 'removed', 1, 'api')
       return NextResponse.json({ ips })
     } catch (e) {

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import type { createAdminClient } from '@/lib/supabase/server'
+import { claimIdempotencyKey, releaseIdempotencyKey } from '@/lib/idempotency'
 import {
   listWhitelistedIps, bulkAddWhitelistedIps, subUserExists, isUpstreamNotFound, MAX_BULK_ITEMS, whitelistErrorResponse,
 } from '@/lib/ipWhitelist'
@@ -17,7 +18,39 @@ type Admin = Awaited<ReturnType<typeof createAdminClient>>
 
 // Replaces the mirror for one session with `ips` (the authoritative list). Never throws —
 // a failed mirror only means the backfill will redo it.
-export async function mirrorWhitelist(admin: Admin, credentialId: string, userId: string, ips: WhitelistedIp[]): Promise<void> {
+//
+// `upstreamSubUserId` makes the copy order-safe. Two edits finishing close together each hold the
+// full list as THEIR upstream call returned it; written in the other order than they happened,
+// the older list wins and the mirror keeps an IP the customer had removed — which a later
+// re-provision would put back. With the id, mirror writes for one session are serialized and each
+// re-reads the supplier's current list under that lock, so the last write always reflects the
+// state after every edit that finished before it. Without it (or if the re-read fails) the list
+// passed in is written as before.
+export async function mirrorWhitelist(admin: Admin, credentialId: string, userId: string, ips: WhitelistedIp[], upstreamSubUserId?: string | null): Promise<void> {
+  const lockKey = `whitelist-mirror:${credentialId}`
+  let claimed = false
+  if (upstreamSubUserId) {
+    for (let attempt = 0; attempt < 4 && !claimed; attempt++) {
+      try {
+        const claim = await claimIdempotencyKey(admin, userId, lockKey, '', 'whitelist-mirror')
+        if (claim.kind === 'proceed') { claimed = true; break }
+      } catch (e) { console.error('[whitelist-mirror] lock unavailable — writing without it', credentialId, e); break }
+      await new Promise((r) => setTimeout(r, 200))
+    }
+    if (claimed) {
+      try { ips = await listWhitelistedIps(upstreamSubUserId) } catch (e) {
+        console.error('[whitelist-mirror] fresh read failed — mirroring the list from the change', credentialId, e)
+      }
+    }
+  }
+  try {
+    await writeMirror(admin, credentialId, userId, ips)
+  } finally {
+    if (claimed) await releaseIdempotencyKey(admin, userId, lockKey)
+  }
+}
+
+async function writeMirror(admin: Admin, credentialId: string, userId: string, ips: WhitelistedIp[]): Promise<void> {
   try {
     const rows = ips.slice(0, 1000).map((i) => ({
       credential_id: credentialId, user_id: userId, ip: i.ip, description: (i.description ?? '').slice(0, 100),

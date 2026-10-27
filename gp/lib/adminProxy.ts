@@ -32,7 +32,12 @@ export async function disableCredential(supabase: AdminSupabase, cred: CredRow, 
     const usedGb = await getSubUserUsage(cred.upstream_sub_user_id)
     await updateSubUserTrafficLimit(cred.upstream_sub_user_id, Math.max(1, Math.ceil(usedGb * 1024)))
   }
-  const { error } = await supabase.from('proxy_credentials').update({ status: 'suspended', suspended_reason: reason }).eq('id', cred.id)
+  let q = supabase.from('proxy_credentials').update({ status: 'suspended', suspended_reason: reason }).eq('id', cred.id)
+  // An account-level suspend must not overwrite a stronger reason set in the meantime (the owner
+  // paused it, or an admin disabled it): the later account re-enable would then resume a session
+  // that someone deliberately held. It only turns an ACTIVE session into an account-suspended one.
+  if (reason === 'account') q = q.eq('status', 'active')
+  const { error } = await q
   if (error) throw new Error(error.message)
 }
 

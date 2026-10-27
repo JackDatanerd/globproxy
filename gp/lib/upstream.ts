@@ -42,9 +42,14 @@ async function gfetchOnce(url: string, init: RequestInit, timeoutMs: number): Pr
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
   try {
+    // The timer is deliberately NOT cleared once the headers arrive: the abort signal also covers
+    // reading the body, so a provider that sends headers and then stalls cannot hold the request
+    // (and a reservation behind it) open until the platform kills the Worker. Firing after the body
+    // has been read is a no-op. Only a failed fetch clears it.
     return await fetch(url, { ...init, signal: ctrl.signal })
-  } finally {
+  } catch (e) {
     clearTimeout(timer)
+    throw e
   }
 }
 
