@@ -18,6 +18,10 @@ function blockWordCount(block: ContentBlock): number {
       return block.title.split(/\s+/).length + block.text.split(/\s+/).length
     case 'table':
       return block.rows.reduce((sum, row) => sum + row.join(' ').split(/\s+/).length, 0)
+    case 'code':
+      // Snippets are skimmed and copied, not read at prose speed — count a
+      // fraction so a code-heavy guide doesn't claim a 20-minute read.
+      return Math.round(block.code.split(/\s+/).filter(Boolean).length / 4)
     default:
       return 0
   }

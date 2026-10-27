@@ -1,4 +1,5 @@
 import type { ContentBlock, FaqItem } from '@/lib/blog/types'
+import CodeBlock from '@/components/blog/CodeBlock'
 
 function slugify(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
@@ -91,6 +92,8 @@ function Block({ block }: { block: ContentBlock }) {
           </table>
         </div>
       )
+    case 'code':
+      return <CodeBlock code={block.code} language={block.language} caption={block.caption} />
     default:
       return null
   }

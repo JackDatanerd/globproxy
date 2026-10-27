@@ -2,6 +2,334 @@ import type { BlogPost } from './types'
 
 export const BLOG_POSTS: BlogPost[] = [
   {
+    slug: 'how-to-connect-to-globproxy-proxy',
+    title: 'How to Connect to Your GlobProxy Proxy: A Step-by-Step Setup Guide',
+    description:
+      'Find your connection details, test with cURL, then set up Python, Node, Playwright, Puppeteer or a browser — plus fixes for the errors people hit first.',
+    excerpt:
+      'Four values, one test command, and you are connected. Where to find them, which port to use, and what to do when the first request fails.',
+    category: 'Guides',
+    publishedAt: '2026-10-27',
+    body: [
+      {
+        type: 'p',
+        text: 'Connecting a GlobProxy session takes four values and one test command. Nearly every failed first attempt comes from the same handful of mistakes: copying only part of the username, using the wrong port for the session type, or testing in the first few minutes before new credentials have finished syncing. This guide walks the whole path, then covers the errors people hit most.',
+      },
+      {
+        type: 'p',
+        text: 'One word to pin down first. In the dashboard, a session is one set of proxy credentials with its own GB allocation, listed under My Proxies. Sticky sessions (covered below) are named endpoints that live inside it.',
+      },
+      { type: 'h2', text: 'Before you start' },
+      {
+        type: 'p',
+        text: 'You need a session with bandwidth on it. If you have not created one yet, buy bandwidth first, then go to My Proxies and choose New session. If your account has no unallocated GB, the New session page sends you to Buy Bandwidth instead.',
+      },
+
+      { type: 'h2', text: 'Step 1: Find your connection details' },
+      {
+        type: 'ol',
+        items: [
+          'Sign in and open My Proxies in the left sidebar.',
+          'Click your session\'s row to expand it.',
+          'Open the Credentials tab. It shows four fields: Host, Port, Username and Password. The password stays hidden until you click show.',
+          'Use the copy button beside each field rather than retyping. The username is long, and everything after the first dash matters.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'For a one-click version, the copy button (⧉) on the session row copies the whole endpoint in host:port:username:password form, which is the format most scraping tools and anti-detect browsers import.',
+      },
+      { type: 'h3', text: 'What the username is made of' },
+      {
+        type: 'p',
+        text: 'The username is not just an ID. Your location choices are part of it, which is why a connection exits where you picked without any extra setup.',
+      },
+      {
+        type: 'code',
+        language: 'text',
+        caption: 'A rotating session targeted to Austin, Texas (your base ID will differ)',
+        code: 'gp_3f9a1c7e2b8d4a6f0c15-type-residential-country-us-state-texas-city-austin',
+      },
+      {
+        type: 'ul',
+        items: [
+          'gp_3f9a… is your session\'s base ID.',
+          '-type-residential is the network type.',
+          '-country-us-state-texas-city-austin is the location. State and city are optional; an ISP appears as -asn-<number> if you chose one. A session created with Any country has no location part at all.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'A sticky username adds two more parts that hold one exit IP for a set time:',
+      },
+      {
+        type: 'code',
+        language: 'text',
+        code: 'gp_3f9a1c7e2b8d4a6f0c15-type-residential-country-us-state-texas-city-austin-lifetime-60-session-Ab3dE9xQ',
+      },
+      {
+        type: 'p',
+        text: '-lifetime-60 is how many minutes the IP is held, and -session-Ab3dE9xQ identifies that one sticky IP. Because location lives in the username, changing a session\'s location later means copying the username again. Anything still using the old one keeps the old location.',
+      },
+
+      { type: 'h2', text: 'Step 2: Use the right port' },
+      {
+        type: 'table',
+        headers: ['Protocol', 'IP behaviour', 'Port', 'Typically used for'],
+        rows: [
+          ['HTTP / HTTPS', 'Rotating', '9000', 'Scrapers, browsers and most libraries'],
+          ['HTTP / HTTPS', 'Sticky', '10000', 'Logins and multi-step flows that must keep one IP'],
+          ['SOCKS5', 'Rotating', '11000', 'Tools that only speak SOCKS5'],
+          ['SOCKS5', 'Sticky', '12000', 'The same, with a fixed IP'],
+        ],
+      },
+      {
+        type: 'p',
+        text: 'You do not pick a port freely. It is fixed by the protocol and IP behaviour chosen for the session, and the Credentials tab always shows the matching one. Pairing a username with the wrong port is a common reason for a request that hangs or resets, so use the port on the card.',
+      },
+
+      { type: 'h2', text: 'Step 3: Test with one command' },
+      {
+        type: 'p',
+        text: 'Before touching your own code, confirm the proxy works. This request asks a public service which IP it sees:',
+      },
+      {
+        type: 'code',
+        language: 'bash',
+        code: 'curl -x "http://YOUR_USERNAME:YOUR_PASSWORD@proxy.globproxy.com:9000" https://ipinfo.io/json',
+      },
+      {
+        type: 'p',
+        text: 'For a SOCKS5 session, change the scheme and port: socks5h://…@proxy.globproxy.com:11000. The h makes the proxy resolve DNS, so your own resolver is not involved.',
+      },
+      {
+        type: 'callout',
+        title: 'On Windows PowerShell, type curl.exe',
+        text: 'In Windows PowerShell, plain curl is an alias for a different command and rejects the -x option. Use curl.exe instead, or run the command in Command Prompt or Git Bash.',
+      },
+      {
+        type: 'p',
+        text: 'You should get a small JSON reply with an ip, plus city, region and country. Check the country against your targeting. Public geolocation databases are estimates, so a nearby town in the reply does not mean targeting failed, but a different country does. On a rotating session, running the command twice should show two different IPs.',
+      },
+
+      { type: 'h2', text: 'Step 4: Set it up in your tool' },
+      {
+        type: 'p',
+        text: 'The Code snippets tab on each session generates all of the following with your real values already filled in. Copy from there when you can. The examples below show the shape with placeholders.',
+      },
+      { type: 'h3', text: 'Python (requests)' },
+      {
+        type: 'code',
+        language: 'python',
+        code: `import requests
+
+proxy = "http://YOUR_USERNAME:YOUR_PASSWORD@proxy.globproxy.com:9000"
+proxies = {"http": proxy, "https": proxy}
+
+response = requests.get("https://ipinfo.io/json", proxies=proxies, timeout=30)
+print(response.json())  # shows your proxy IP and location`,
+      },
+      {
+        type: 'p',
+        text: 'For SOCKS5, install pip install "requests[socks]" and use socks5h://YOUR_USERNAME:YOUR_PASSWORD@proxy.globproxy.com:11000 as the proxy value.',
+      },
+      { type: 'h3', text: 'Node.js' },
+      {
+        type: 'code',
+        language: 'javascript',
+        caption: 'npm install https-proxy-agent node-fetch@2',
+        code: `const { HttpsProxyAgent } = require("https-proxy-agent");
+const fetch = require("node-fetch");
+
+const agent = new HttpsProxyAgent(
+  "http://YOUR_USERNAME:YOUR_PASSWORD@proxy.globproxy.com:9000"
+);
+
+(async () => {
+  const res = await fetch("https://ipinfo.io/json", { agent });
+  console.log(await res.json()); // shows proxy IP and location
+})();`,
+      },
+      { type: 'h3', text: 'Playwright and Puppeteer' },
+      {
+        type: 'p',
+        text: 'Both drive Chromium, which cannot authenticate to a SOCKS5 proxy. Use a session set to HTTP / HTTPS for browser automation. You can change an existing session\'s protocol on its Edit tab.',
+      },
+      {
+        type: 'code',
+        language: 'javascript',
+        caption: 'Playwright — npm install playwright',
+        code: `const { chromium } = require("playwright");
+
+(async () => {
+  const browser = await chromium.launch({
+    proxy: {
+      server: "http://proxy.globproxy.com:9000",
+      username: "YOUR_USERNAME",
+      password: "YOUR_PASSWORD",
+    },
+  });
+  const page = await browser.newPage();
+  await page.goto("https://ipinfo.io/json");
+  console.log(await page.textContent("body"));
+  await browser.close();
+})();`,
+      },
+      {
+        type: 'code',
+        language: 'javascript',
+        caption: 'Puppeteer — npm install puppeteer',
+        code: `const puppeteer = require("puppeteer");
+
+(async () => {
+  const browser = await puppeteer.launch({
+    args: ["--proxy-server=http://proxy.globproxy.com:9000"],
+  });
+  const page = await browser.newPage();
+  await page.authenticate({ username: "YOUR_USERNAME", password: "YOUR_PASSWORD" });
+  await page.goto("https://ipinfo.io/json");
+  console.log(await page.evaluate(() => document.body.innerText));
+  await browser.close();
+})();`,
+      },
+      { type: 'h3', text: 'A regular browser' },
+      {
+        type: 'p',
+        text: 'A browser\'s own proxy settings do not take a username and password in one place, so a proxy-switching extension such as Proxy SwitchyOmega (Chrome and Firefox) is the simplest route. Enter:',
+      },
+      {
+        type: 'table',
+        headers: ['Field', 'Value'],
+        rows: [
+          ['Protocol', 'HTTP'],
+          ['Host', 'proxy.globproxy.com'],
+          ['Port', '9000 (or the port on your Credentials tab)'],
+          ['Username', 'The full username from Step 1'],
+          ['Password', 'Your session password'],
+        ],
+      },
+      { type: 'h3', text: 'Scrapers, anti-detect browsers and other tools' },
+      {
+        type: 'p',
+        text: 'Most of these accept one line per proxy in host:port:username:password form:',
+      },
+      {
+        type: 'code',
+        language: 'text',
+        code: 'proxy.globproxy.com:9000:gp_3f9a1c7e2b8d4a6f0c15-type-residential-country-us:YOUR_PASSWORD',
+      },
+      {
+        type: 'p',
+        text: 'On a rotating session, the Endpoint tab has copy all and .txt buttons that produce exactly this. On a sticky session, the Sticky sessions tab has the same for every named session. Treat the downloaded file like a password, because it contains one.',
+      },
+
+      { type: 'h2', text: 'Rotating or sticky: which endpoint am I using?' },
+      {
+        type: 'p',
+        text: 'A rotating endpoint gives each new connection a fresh IP. One endpoint serves any number of simultaneous connections, so there is no need to create several; they all draw from the same session bandwidth.',
+      },
+      {
+        type: 'p',
+        text: 'A sticky session holds one IP for its lifetime, which you can set from 1 minute to 24 hours. On a sticky session, the username on the Credentials tab is only a ready-made example. Open the Sticky sessions tab and choose + new session (you can create 1, 5, 10 or 25 at once, up to 200 per session). Each named session is its own fixed endpoint with its own IP. Remove hides one from the list but its IP keeps working until the lifetime ends; Delete frees the endpoint.',
+      },
+
+      { type: 'h2', text: 'If it does not connect' },
+      {
+        type: 'table',
+        headers: ['What you see', 'Likely cause', 'What to do'],
+        rows: [
+          [
+            '407 Proxy Authentication Required in the first minutes',
+            'New credentials take a few minutes to sync across the network. The card shows warming up for about 10 minutes after activation.',
+            'Wait a couple of minutes and retry. If it persists past 10 minutes, re-copy the username and password.',
+          ],
+          [
+            '407 that never goes away',
+            'The username or password is incomplete or out of date. Most often the username was truncated, or the password was rotated after you copied it (rotating invalidates the old one at once).',
+            'Re-copy both values in full from the Credentials tab.',
+          ],
+          [
+            'Request hangs, is refused or resets',
+            'Wrong port or protocol (for example a SOCKS5 client on an HTTP port), or your network blocks outbound traffic on that port.',
+            'Use the port shown on the card. Try from a different network to rule out a firewall.',
+          ],
+          [
+            'Exit IP is in the wrong country or city',
+            'Location lives in the username. You may be using a copy from before an edit, or the session was created with Any country.',
+            'Open the Edit tab, check Country, State and City, save, then copy the username again. Changes apply to new connections only.',
+          ],
+          [
+            'Session says it is queued',
+            'The network is adding capacity. Your GB is already reserved.',
+            'Nothing. It activates on its own.',
+          ],
+          [
+            'Red banner: not responding on our network',
+            'A fault on our side. We are alerted and your bandwidth is safe.',
+            'Retry in a while. Contact support if it lasts.',
+          ],
+          [
+            'Nothing works and Remaining shows 0 GB',
+            'The session\'s allocation is used up.',
+            'On the Bandwidth tab, top up from your unallocated balance, or buy more bandwidth first.',
+          ],
+          [
+            'Session shows as paused',
+            'It was paused, by you or by GlobProxy.',
+            'If you paused it, open the session and choose Resume session. If GlobProxy paused it, contact support.',
+          ],
+          [
+            'Playwright or Puppeteer fails on a SOCKS5 session',
+            'Chromium cannot authenticate to SOCKS5.',
+            'Use an HTTP / HTTPS session for browser automation.',
+          ],
+          [
+            'Stopped working after changes on the Whitelist tab',
+            'Whitelist entries are the one thing in this guide you may have changed beyond the four credentials.',
+            'Remove the entries, retest, and contact support if the problem remains.',
+          ],
+        ],
+      },
+
+      { type: 'h2', text: 'Keep your password private' },
+      {
+        type: 'p',
+        text: 'The password sits inside connection strings, which tend to end up in shell history, logs and repositories. Read it from an environment variable or secret store instead of hard-coding it. If it leaks, open the Credentials tab and choose Rotate password. The old password stops working immediately, so update everything that used it. Rotation is only offered where it is currently available.',
+      },
+      {
+        type: 'callout',
+        title: 'Still stuck?',
+        text: 'Open Support in the dashboard sidebar and quote the session\'s label. Include the exact error and the output of the Step 3 test, with the password removed. That is usually enough for us to find the cause without a back-and-forth.',
+      },
+    ],
+    faq: [
+      {
+        q: 'Do I need to whitelist my IP to connect?',
+        a: 'No. The setup in this guide uses only the username and password from the Credentials tab. There is no whitelist step.',
+      },
+      {
+        q: 'Should I choose HTTP or SOCKS5?',
+        a: 'HTTP / HTTPS works with browsers and almost every library, and it is the only option for Playwright and Puppeteer. Choose SOCKS5 only for tools that specifically require it.',
+      },
+      {
+        q: 'Can several machines or threads use the same endpoint at once?',
+        a: 'Yes. One rotating endpoint serves any number of simultaneous connections. They all use the same session bandwidth, so heavy parallel use draws it down faster.',
+      },
+      {
+        q: 'Why does my IP change on every request?',
+        a: 'That is what a rotating session does. If you need the same IP across requests, use a sticky session and connect through one of its named sessions.',
+      },
+      {
+        q: 'Will changing a session\'s location break connections already running?',
+        a: 'Editing a session\'s location does not touch your bandwidth, and it applies to new connections. Anything still using the old username keeps the old location until you swap in the new one.',
+      },
+      {
+        q: 'Does it work with HTTPS websites?',
+        a: 'Yes. The examples above request an HTTPS address through an HTTP proxy port, which tunnels the encrypted connection.',
+      },
+    ],
+  },
+  {
     slug: 'non-expiring-proxy-bandwidth',
     title: 'Why Your Residential Proxy Bandwidth Keeps Expiring (And What It Actually Costs You)',
     description:

@@ -12,6 +12,10 @@ export type ContentBlock =
   | { type: 'quote'; text: string; cite?: string }
   | { type: 'callout'; title: string; text: string; tone?: 'accent' | 'accent2' }
   | { type: 'table'; headers: string[]; rows: string[][] }
+  // A copy-paste snippet (commands, config, connection strings). `code` is
+  // rendered verbatim in a monospace block with a copy button — newlines and
+  // indentation are kept. `caption` is an optional one-line label above it.
+  | { type: 'code'; code: string; language?: string; caption?: string }
 
 export type BlogCategory =
   | 'Bandwidth & Pricing'
