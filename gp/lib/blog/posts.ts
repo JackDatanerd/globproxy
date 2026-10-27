@@ -2,6 +2,225 @@ import type { BlogPost } from './types'
 
 export const BLOG_POSTS: BlogPost[] = [
   {
+    slug: 'paid-but-no-bandwidth-payment-not-showing',
+    title: 'Paid but No Bandwidth? What to Do When a Payment Doesn\'t Show Up',
+    description:
+      'Card or M-Pesa payment taken but no GB yet? What each message means, how long to wait, what is safe to do, and what to send support if it stays missing.',
+    excerpt:
+      'Almost every missing payment is a delay, not a loss. Here is how to tell which it is, what to leave alone, and when to contact us.',
+    category: 'Guides',
+    publishedAt: '2026-10-27',
+    body: [
+      {
+        type: 'p',
+        text: 'You paid, money left your card or your M-Pesa, and your balance has not moved. That is stressful, but in almost every case it is a delay: the payment has gone through and the credit is still on its way. This guide explains how a payment becomes bandwidth, what each message on screen means, what you can safely leave alone, and exactly what to send us if it really is stuck.',
+      },
+      {
+        type: 'callout',
+        title: 'The short version',
+        text: 'Do not pay again and do not worry yet. Wait about 10 minutes, then check Billing. A confirmed payment is credited automatically even if the page said something went wrong. If it is still missing after an hour, contact support with the details listed at the end of this guide.',
+      },
+
+      { type: 'h2', text: 'How a payment becomes bandwidth' },
+      {
+        type: 'ol',
+        items: [
+          'You start a purchase on Buy Bandwidth. We create an order, which shows as pending in Billing.',
+          'You pay by card, or approve the M-Pesa prompt on your phone.',
+          'Our payment provider confirms the payment to us. This normally takes seconds. When it arrives, the order becomes paid and the GB are added to your account.',
+          'You get an email titled "Your N GB is ready" and an invoice appears in Billing.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'Step 3 happens in two independent ways. The payment provider notifies us directly, and the page you paid on also asks us to double-check. On top of that there is a third safety net: every 5 minutes we look for orders that were paid but not yet credited and check them with the payment provider ourselves. So a single lost message does not lose your credit.',
+      },
+      {
+        type: 'p',
+        text: 'That safety net looks at an order starting about 5 minutes after it was created. If the first check cannot settle it, it looks again roughly every hour for 3 days, and then once a day up to 14 days after the purchase. Past that point nothing checks it automatically, so an older missing payment needs a message to support.',
+      },
+
+      { type: 'h2', text: 'Where your bandwidth lands' },
+      {
+        type: 'p',
+        text: 'Credit goes to your account balance, not to a session. Your Overview page shows it as, for example, "of 20 GB purchased · 20 GB not yet assigned to a session". Nothing appears under My Proxies until you create a session and allocate some of that balance to it. Many "missing bandwidth" reports are really this: the payment worked and the GB are sitting unassigned. If the purchased figure on Overview went up, you are fine.',
+      },
+
+      { type: 'h2', text: 'What the messages mean' },
+      {
+        type: 'table',
+        headers: ['You see', 'What it means', 'What to do'],
+        rows: [
+          [
+            '"Confirming your payment..." and then "Bandwidth credited to your account!"',
+            'Everything worked.',
+            'Nothing. Create a session from your new balance.',
+          ],
+          [
+            '"Your payment is still being processed. Your bandwidth will appear automatically once it\'s confirmed."',
+            'The payment has not settled yet. This is normal for card checks that need a code, and for M-Pesa.',
+            'Wait. Keep your phone near you if you paid by M-Pesa.',
+          ],
+          [
+            '"Your payment is confirmed — your bandwidth will appear in a few minutes."',
+            'The money arrived, and the credit has not committed yet. We complete it automatically.',
+            'Wait and check Billing in a few minutes.',
+          ],
+          [
+            '"Waiting for you to confirm the M-Pesa prompt on your phone."',
+            'The prompt has not been approved yet.',
+            'Open the prompt and enter your M-Pesa PIN.',
+          ],
+          [
+            '"Payment not successful: …" followed by a reason',
+            'The payment was declined, and the reason comes from your bank or M-Pesa. You have not been charged.',
+            'Fix the cause (funds, card limit, wrong PIN) and use Try again in Billing.',
+          ],
+          [
+            '"The payment was not completed. You have not been charged."',
+            'The checkout was abandoned, or the M-Pesa prompt expired before it was approved.',
+            'Start again from Buy Bandwidth.',
+          ],
+          [
+            '"Payment amount mismatch. Please contact support."',
+            'The amount confirmed by the payment provider did not match the order, so we deliberately did not credit it. Our team is alerted.',
+            'Contact support with the order ID. Do not pay again.',
+          ],
+          [
+            '"This payment was reversed." or "This order has been refunded."',
+            'The money went back to you.',
+            'If that is unexpected, contact support.',
+          ],
+          [
+            '"New purchases are on hold for this account…"',
+            'A hold is on the account, for example after a payment dispute. It stops new purchases.',
+            'Contact support at the address in the message.',
+          ],
+        ],
+      },
+
+      { type: 'h2', text: 'What the order statuses in Billing mean' },
+      {
+        type: 'table',
+        headers: ['Status', 'Meaning'],
+        rows: [
+          ['paid', 'Credited. An invoice link appears beside it.'],
+          ['pending', 'Started, not confirmed yet. You may pay again or cancel it.'],
+          ['failed', 'Declined or not completed. The reason is shown, with a Try again button.'],
+          ['cancelled', 'Closed by you, or replaced when you started a newer purchase, or cleaned up automatically.'],
+          ['refunded', 'The money was returned. Partial refunds show the refunded amount, with a credit note.'],
+        ],
+      },
+      {
+        type: 'callout',
+        title: 'A "failed" or "cancelled" order can still be credited',
+        text: 'These labels are about what we knew at the time. If the payment provider later confirms the money arrived, the order is credited and becomes paid, exactly as it would have been the first time. So if you are sure you paid, do not assume a failed or cancelled label means the money is lost, and do not pay a second time. Wait for the safety net, and contact support if it does not resolve.',
+      },
+      {
+        type: 'p',
+        text: 'Two small cautions. Cancel only affects an order that is still pending, so use it only when you know you did not pay. And Pay again starts a fresh order and retires your other pending ones; if you paid the earlier one, it is still credited when its payment is confirmed.',
+      },
+
+      { type: 'h2', text: 'Paying with a card' },
+      {
+        type: 'ul',
+        items: [
+          'Cards are charged in US dollars, and the invoice is in dollars.',
+          'Some cards ask for a one-time code from your bank. Until you enter it the payment stays pending, and it can finish even after you close the page.',
+          'A declined card shows the reason from your bank. You are not charged for a declined payment.',
+          'If you try a second card after a decline and it works, the decline email can be ignored. The email says the same thing.',
+        ],
+      },
+
+      { type: 'h2', text: 'Paying with M-Pesa' },
+      {
+        type: 'p',
+        text: 'Choose M-Pesa on the Buy Bandwidth page. You pay in Kenya shillings, and you get an M-Pesa prompt on your phone. Enter your PIN to confirm.',
+      },
+      {
+        type: 'ul',
+        items: [
+          'The shilling amount is fixed when you start the order, from a displayed exchange rate. The page shows the rate and the shilling total, and the invoice is still issued in dollars.',
+          'If the rate changes between you opening the page and clicking pay, you will see "The exchange rate just updated. Please review the new amount and try again." Check the new total and pay again. Nothing was charged.',
+          'Keep the page open while you approve the prompt. It waits for about a minute for the payment to settle. If it stops waiting, the payment can still complete, so check Billing.',
+          'For the first 10 minutes after you start, an unconfirmed prompt is treated as "waiting for you", not as a failure. After that, an unapproved prompt is closed as not completed, and you have not been charged.',
+          'If M-Pesa is unavailable, for example while the exchange rate cannot be fetched, the page tells you and you can pay by card.',
+          'Refunds of M-Pesa payments go back to your M-Pesa in shillings, at the rate that applied when you placed the order.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'If you got the M-Pesa confirmation message from Safaricom but there is no bandwidth after an hour, keep that message. The transaction code in it is the fastest way for us to find the payment.',
+      },
+
+      { type: 'h2', text: 'Charged twice, or want your money back' },
+      {
+        type: 'p',
+        text: 'Two charges for the same order are eligible for a refund. For any refund, use Request refund beside the paid order in Billing. It asks for a short reason and sends the request to our team, and it checks the policy for you.',
+      },
+      {
+        type: 'ul',
+        items: [
+          'A request inside the policy is paid within 72 hours of the payment, with nothing used since that purchase.',
+          'You can still send a request outside those conditions. It is flagged for a person to review, and the answer depends on the circumstances.',
+          'We reply within 2 business days. An approved refund takes 5 to 10 business days to reach you.',
+          'Refunds go back the way you paid, can be partial, and come with a credit note. The bandwidth that matches a refund is taken back from your balance. We cannot take back bandwidth that is already allocated to a session.',
+          'An order with an open payment dispute cannot be refunded through the button. Contact support.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'Please contact us before starting a chargeback with your bank. While a payment dispute is open, new purchases from your account are paused, and if a dispute is decided against the account, a hold stays on it until we have reviewed it.',
+      },
+
+      { type: 'h2', text: 'If it is still missing: what to send us' },
+      {
+        type: 'p',
+        text: 'Open Support in the dashboard sidebar, or email support@globproxy.com, and include:',
+      },
+      {
+        type: 'ol',
+        items: [
+          'The email address on your GlobProxy account.',
+          'The order ID from Billing, if the order is listed there.',
+          'The date and time of the payment, and the amount you paid.',
+          'For a card: the last four digits and a screenshot of the bank charge. For M-Pesa: the full Safaricom confirmation message.',
+          'The exact message the page showed, if you saw one.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'Never send a full card number, a CVV or an M-Pesa PIN. We never need them.',
+      },
+    ],
+    faq: [
+      {
+        q: 'How long until my bandwidth appears?',
+        a: 'Usually seconds, and normally within a few minutes. If something delays it, an automatic check starts about 5 minutes after the order and repeats about hourly for 3 days. Contact support if it is still missing after an hour.',
+      },
+      {
+        q: 'Should I pay again if nothing shows up?',
+        a: 'No. A second payment would be a second charge. A confirmed payment is credited automatically, even if the page showed an error.',
+      },
+      {
+        q: 'My order says failed or cancelled but I was charged. What now?',
+        a: 'Those labels reflect what we knew at the time. If the payment is confirmed later, the order is credited and becomes paid. If it has not changed after an hour, contact support with the order ID.',
+      },
+      {
+        q: 'Why is my M-Pesa amount different from the dollar price?',
+        a: 'M-Pesa is charged in Kenya shillings at the exchange rate shown when you start the order. The total in shillings is fixed for that order, and the invoice stays in dollars.',
+      },
+      {
+        q: 'I paid but there is nothing under My Proxies.',
+        a: 'Bandwidth is credited to your account balance first. Check Overview for the unassigned balance, then create a session and allocate some of it.',
+      },
+      {
+        q: 'How do I get a refund?',
+        a: 'Use Request refund beside the order in Billing. Requests within 72 hours of payment with nothing used are within policy, and we reply within 2 business days.',
+      },
+    ],
+  },
+  {
     slug: 'auto-allocate-and-auto-recharge-never-run-dry',
     title: 'Auto-Allocate and Auto-Recharge: How to Keep a Session From Running Dry',
     description:
