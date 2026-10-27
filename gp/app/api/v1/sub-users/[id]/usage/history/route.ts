@@ -17,7 +17,7 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
     const url = new URL(req.url)
 
     const rawDays = url.searchParams.get('days')
-    const days = rawDays === null ? 7 : Number(rawDays)
+    const days = rawDays === null || rawDays === '' ? 7 : Number(rawDays)
     if (!Number.isInteger(days) || days < 1 || days > MAX_DAYS) {
       return apiError(400, 'invalid_request', `days must be a whole number between 1 and ${MAX_DAYS}.`)
     }

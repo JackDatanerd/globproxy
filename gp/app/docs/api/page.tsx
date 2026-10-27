@@ -136,7 +136,7 @@ export default function ApiDocsPage() {
             On the <span className="font-mono text-ink">API Keys</span> page you can <strong>edit</strong> a key's label, IP allowlist, access level and expiry in place
             (narrowing applies instantly; widening a key asks for 2FA or your password), <strong>rotate</strong> it (a replacement with the same settings is issued and the
             old key keeps working for 24 hours so you can switch over — or choose &ldquo;Revoke the old key now&rdquo; if it leaked; that works even when you already hold 25 active keys),
-            <strong> revoke</strong> one or all of them, and see each key's <strong>activity</strong>: every change (POST / PATCH / DELETE) made with it in the last 30 days,
+            <strong> revoke</strong> one or all of them, and see each key's <strong>activity</strong>: every change (POST / PATCH / DELETE) made with it in the last 30 days, plus rejected attempts of any method (revoked or expired key, IP not allowed, missing scope),
             with the IP, status and request id. The same data is at <span className="font-mono text-ink">GET /api/v1/account/activity</span>.
             A key with an expiry sends you an e-mail and an <span className="font-mono text-ink">api_key_expiring</span> webhook 7 days before it lapses.
           </p>

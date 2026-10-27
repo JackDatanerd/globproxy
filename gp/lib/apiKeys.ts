@@ -148,13 +148,13 @@ export async function planKeyUpdate(
 
   let nextScopes: string[] = (current.scopes as string[]) ?? ['read', 'write']
   if (body?.scopes !== undefined) {
-    const s = parseScopes(body.scopes, { canAllocate: canAllocate(owner) })
+    const s = parseScopes(body.scopes, { canAllocate: canAllocate(owner) || nextScopes.includes('allocate') })
     if (!s.ok) return fail(400, s.error)
     if (s.value.some((x) => !nextScopes.includes(x))) loosens = true
     nextScopes = s.value
     patch.scopes = s.value
   }
-  if (nextScopes.includes('allocate')) {
+  if (nextScopes.includes('allocate') && (body?.scopes !== undefined || body?.allowed_ips !== undefined)) {
     const problem = allocateAllowlistProblem(nextIps)
     if (problem) return fail(400, problem)
   }

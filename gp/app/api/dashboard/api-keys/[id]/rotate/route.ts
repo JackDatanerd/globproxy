@@ -4,7 +4,7 @@ import { requireActiveUser } from '@/lib/apiAuth'
 import { rateLimitedUser } from '@/lib/rateLimit'
 import { requireStepUp } from '@/lib/reauth'
 import { logSecurityEvent, notifySecurityChange } from '@/lib/securityEvents'
-import { rotateApiKey, notifyKeyEvent, graceInput } from '@/lib/apiKeys'
+import { rotateApiKey, notifyKeyEvent, graceInput, loadKeyOwner, canUseApi } from '@/lib/apiKeys'
 
 // POST /api/dashboard/api-keys/:id/rotate   body (optional): { grace_hours?: 0–72 (default 24) }
 // Issues a replacement key (same label, scopes, IP allowlist and lifespan) and
@@ -30,6 +30,9 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
   const grace = graceInput(body?.grace_hours, 24)
 
   const admin = await createAdminClient()
+  const owner = await loadKeyOwner(admin, user.id)
+  if (!owner) return NextResponse.json({ error: 'Could not verify your account right now. Please try again.' }, { status: 503 })
+  if (!canUseApi(owner)) return NextResponse.json({ error: 'API access is not enabled for your account.' }, { status: 403 })
   const r = await rotateApiKey(admin, user.id, id, grace)
   if (!r.ok) return NextResponse.json({ error: r.message }, { status: r.status })
 

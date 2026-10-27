@@ -2,6 +2,7 @@ import { createAdminClient, createClient } from '@/lib/supabase/server'
 import { rateLimitedUser } from '@/lib/rateLimit'
 import { NextResponse } from 'next/server'
 import { requireStepUp } from '@/lib/reauth'
+import { requireMfaVerified } from '@/lib/mfa'
 import { logSecurityEvent, notifySecurityChange } from '@/lib/securityEvents'
 import { parseAllowedIps } from '@/lib/ipAllowlist'
 import {
@@ -13,13 +14,15 @@ import { requireActiveUser } from '@/lib/apiAuth'
 const err = (message: string, status: number, code?: string) => NextResponse.json({ error: message, ...(code ? { code } : {}) }, { status })
 
 // List this user's keys (hash never returned).
-export async function GET() {
+export async function GET(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return err('Unauthorized', 401)
 
   const suspended = await requireActiveUser(user.id)
   if (suspended) return suspended
+  const mfaBlock = await requireMfaVerified(req, user.id)
+  if (mfaBlock) return mfaBlock
 
   const { data, error } = await supabase
     .from('api_keys')
@@ -104,6 +107,8 @@ export async function PATCH(req: Request) {
 
   const throttled = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'api-key-update')
   if (throttled) return throttled
+  const mfaBlock = await requireMfaVerified(req, user.id)
+  if (mfaBlock) return mfaBlock
 
   const body = await req.json().catch(() => ({}))
   if (!body?.id || typeof body.id !== 'string') return err('Missing key id', 400)
@@ -154,6 +159,13 @@ export async function DELETE(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return err('Unauthorized', 401)
+
+  const throttled = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'api-key-revoke')
+  if (throttled) return throttled
+  const mfaBlock = await requireMfaVerified(req, user.id)
+  if (mfaBlock) return mfaBlock
+  const inactive = await requireActiveUser(user.id)
+  if (inactive) return inactive
 
   const body = await req.json().catch(() => ({}))
   const all = body?.all === true

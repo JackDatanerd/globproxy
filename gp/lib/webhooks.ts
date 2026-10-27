@@ -566,10 +566,16 @@ export async function runWebhookRetries(limit = RETRIES_PER_RUN) {
     let failStreak = 0
     for (const d of group) {
       if (failStreak >= GROUP_STOP_AFTER_FAILURES) break
+      if (d.attempts >= MAX_ATTEMPTS) {
+        await supabase.from('webhook_deliveries')
+          .update({ status: 'failed', next_attempt_at: null, last_error: 'Gave up: the result of the last attempt could not be recorded' })
+          .eq('id', d.id).eq('status', 'retrying').eq('attempts', d.attempts)
+        continue
+      }
       const { data: claimed } = await supabase
         .from('webhook_deliveries')
-        .update({ next_attempt_at: new Date(Date.now() + CLAIM_LEASE_MS).toISOString() })
-        .eq('id', d.id).eq('status', 'retrying').lte('next_attempt_at', nowIso)
+        .update({ next_attempt_at: new Date(Date.now() + CLAIM_LEASE_MS).toISOString(), attempts: d.attempts + 1 })
+        .eq('id', d.id).eq('status', 'retrying').eq('attempts', d.attempts).lte('next_attempt_at', nowIso)
         .select('id')
       if (!claimed?.length) continue
 
@@ -723,9 +729,17 @@ export async function runIntegrationHousekeeping(
 
   // Claim the slot first: a duplicate run (overlapping ticks) is harmless — both
   // steps are idempotent — but a stuck failure must not retry every 5 minutes.
-  const { error: claimErr } = await supabase.from('platform_settings')
-    .upsert({ key: 'integration_housekeeping_at', value: new Date().toISOString() }, { onConflict: 'key' })
-  if (claimErr) { console.error('[webhooks] housekeeping claim failed', claimErr); return { ran: false as const } }
+  const stamp = new Date().toISOString()
+  if (row?.value !== undefined && row?.value !== null) {
+    const { data: won, error: claimErr } = await supabase.from('platform_settings')
+      .update({ value: stamp }).eq('key', 'integration_housekeeping_at').eq('value', row.value).select('key')
+    if (claimErr) { console.error('[webhooks] housekeeping claim failed', claimErr); return { ran: false as const } }
+    if (!won?.length) return { ran: false as const }
+  } else {
+    const { error: claimErr } = await supabase.from('platform_settings')
+      .insert({ key: 'integration_housekeeping_at', value: stamp })
+    if (claimErr) { if (claimErr.code !== '23505') console.error('[webhooks] housekeeping claim failed', claimErr); return { ran: false as const } }
+  }
 
   const pruned = await pruneIntegrationData().catch((e) => {
     console.error('pruneIntegrationData failed:', e)

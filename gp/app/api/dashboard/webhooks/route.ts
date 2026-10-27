@@ -4,16 +4,21 @@ import { requireActiveUser } from '@/lib/apiAuth'
 import { listEndpoints, createEndpoint } from '@/lib/webhookEndpoints'
 import { NextResponse } from 'next/server'
 import { requireStepUp } from '@/lib/reauth'
+import { requireMfaVerified } from '@/lib/mfa'
 import { auditWebhookChange, hostOf } from '@/lib/integrationAudit'
 
 // All webhook-endpoint rules live in lib/webhookEndpoints.ts, shared with
 // /api/v1/webhooks. `secret` is never selected on list — only the create
 // (and rotate-secret) response ever returns it, once.
-export async function GET() {
+export async function GET(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  const mfaBlock = await requireMfaVerified(req, user.id)
+  if (mfaBlock) return mfaBlock
+  const inactive = await requireActiveUser(user.id)
+  if (inactive) return inactive
   const r = await listEndpoints(await createAdminClient(), user.id)
   if (!r.ok) return NextResponse.json({ error: r.message }, { status: r.status })
   return NextResponse.json({ webhooks: r.data })
