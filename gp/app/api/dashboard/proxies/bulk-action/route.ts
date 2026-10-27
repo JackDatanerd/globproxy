@@ -57,7 +57,12 @@ export async function POST(req: Request) {
   }
 
   const admin = await createAdminClient()
-  if (action === 'pause' && ids.length > 5) await syncUserUsage(user.id).catch((e) => console.error('[dashboard bulk] pre-pause usage sync failed', e))
+  // Only tell pauseCredential the usage is fresh when the up-front sync actually succeeded;
+  // after a failed sync each pause must refresh its own session, or it caps at stale usage.
+  let usageSynced = false
+  if (action === 'pause' && ids.length > 5) {
+    usageSynced = await syncUserUsage(user.id).then(() => true, (e) => { console.error('[dashboard bulk] pre-pause usage sync failed', e); return false })
+  }
 
   const results: { id: string; ok: boolean; error?: string; code?: string }[] = []
   const seen = new Set<string>()
@@ -74,7 +79,7 @@ export async function POST(req: Request) {
         : action === 'retarget'
           ? await updateCredentialSettings(admin, user.id, id, { country }, 'dashboard')
           : action === 'pause'
-            ? await pauseCredential(admin, user.id, id, { usageSynced: ids.length > 5 })
+            ? await pauseCredential(admin, user.id, id, { usageSynced })
             : await resumeCredential(admin, user.id, id)
     } catch (e) {
       // A database error on one item must not discard the results of the ones already done.

@@ -32,8 +32,11 @@ export async function POST(req: Request) {
     // One usage sync for a LARGE batch (see pauseCredential). A whole-account sync walks every active
     // sub-user at the provider (up to ~100 calls) and a small batch counts as only a few writes, so it
     // was a cheap way to multiply provider traffic. Small batches refresh just their own sessions.
-    const syncWholeAccount = action === 'pause' && ids.length > BULK_SYNC_MIN
-    if (syncWholeAccount) await syncUserUsage(user.id).catch((e) => console.error('[bulk-action] pre-pause usage sync failed', e))
+    // Only reported as synced when the sync actually succeeded; after a failure each pause refreshes its own session.
+    let syncWholeAccount = false
+    if (action === 'pause' && ids.length > BULK_SYNC_MIN) {
+      syncWholeAccount = await syncUserUsage(user.id).then(() => true, (e) => { console.error('[bulk-action] pre-pause usage sync failed', e); return false })
+    }
 
     const results: any[] = []
     const seen = new Set<string>()

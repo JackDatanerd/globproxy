@@ -157,7 +157,14 @@ test('pass 6: webhook queue drains bursts but a dead endpoint cannot burn the ti
 test('pass 6: bulk pause does a whole-account sync only for large batches', () => {
   assert.match(src('app/api/v1/sub-users/bulk-action/route.ts'), /ids\.length > BULK_SYNC_MIN/)
   const d = src('app/api/dashboard/proxies/bulk-action/route.ts')
-  assert.match(d, /action === 'pause' && ids\.length > 5/); assert.match(d, /usageSynced: ids\.length > 5/)
+  assert.match(d, /action === 'pause' && ids\.length > 5/); assert.match(d, /\{ usageSynced \}/)
+  // Dashboard UI pass: a failed up-front sync must not be reported to pauseCredential as fresh.
+  assert.match(d, /usageSynced = await syncUserUsage\(user\.id\)\.then\(\(\) => true,/)
+})
+
+test('dashboard UI pass: session PATCH/DELETE reject a malformed id with 404, not a 500', () => {
+  const s = src('app/api/dashboard/sessions/[sessionId]/route.ts')
+  assert.equal((s.match(/!isUuidString\(sessionId\)/g) ?? []).length, 2)
 })
 
 test('pass 6: idempotency stamps on sessions lapse with the 24h claim window', () => {

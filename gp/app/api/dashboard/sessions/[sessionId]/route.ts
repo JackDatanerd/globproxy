@@ -2,10 +2,13 @@ import { requireMfaVerified } from '@/lib/mfa'
 import { createClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { rateLimitedUser } from '@/lib/rateLimit'
+import { isUuidString } from '@/lib/cursor'
 import { NextResponse } from 'next/server'
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ sessionId: string }> }) {
   const { sessionId } = await params
+  // A malformed id reached the uuid column filter and came back as a 500 (the sibling GET/POST already guard this).
+  if (!isUuidString(sessionId)) return NextResponse.json({ error: 'Session not found' }, { status: 404 })
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -49,6 +52,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ sessio
 
 export async function DELETE(req: Request, { params }: { params: Promise<{ sessionId: string }> }) {
   const { sessionId } = await params
+  if (!isUuidString(sessionId)) return NextResponse.json({ error: 'Session not found' }, { status: 404 })
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
