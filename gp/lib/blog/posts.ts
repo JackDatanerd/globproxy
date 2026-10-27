@@ -2,6 +2,226 @@ import type { BlogPost } from './types'
 
 export const BLOG_POSTS: BlogPost[] = [
   {
+    slug: 'auto-allocate-and-auto-recharge-never-run-dry',
+    title: 'Auto-Allocate and Auto-Recharge: How to Keep a Session From Running Dry',
+    description:
+      'Auto-allocate tops up a session from your balance; auto-recharge buys more with a saved card. How each works, how to size them, and how to use both.',
+    excerpt:
+      'A session that hits zero stops mid-job. Auto-allocate and auto-recharge prevent that, but they do different things. Here is how to set them up and size them.',
+    category: 'Guides',
+    publishedAt: '2026-10-27',
+    body: [
+      {
+        type: 'p',
+        text: 'Nothing is more annoying than a long job that stops halfway because a session ran out of bandwidth. Two separate settings exist to prevent it, and people often mix them up. Auto-allocate moves GB you already own from your account balance onto a session. Auto-recharge buys new GB with a saved card. You can use either alone, but a job that must never stop usually wants both, in a chain.',
+      },
+      {
+        type: 'table',
+        headers: ['', 'Auto-allocate', 'Auto-recharge'],
+        rows: [
+          ['What it does', 'Adds GB from your unassigned balance to one session', 'Buys a plan with your saved card and adds it to your balance'],
+          ['Costs money', 'No. It only moves GB you already bought.', 'Yes, each time it fires'],
+          ['Where it lives', 'Per session, on its Bandwidth tab. A default can be set in Settings.', 'Account-wide, on the Billing page'],
+          ['Fires when', 'The session\'s remaining GB falls to your trigger level', 'Your unassigned balance falls below your threshold'],
+          ['Safety limit', 'Can only spend what your balance holds', 'A spending cap per rolling 30 days'],
+        ],
+      },
+      {
+        type: 'p',
+        text: 'Think of it as two buckets. Auto-recharge keeps the big bucket (your account balance) filled from your card. Auto-allocate keeps each small bucket (a session) filled from the big one.',
+      },
+
+      { type: 'h2', text: 'Auto-allocate: top up a session from your balance' },
+      { type: 'h3', text: 'Turn it on' },
+      {
+        type: 'ol',
+        items: [
+          'Open My Proxies, expand the session and open its Bandwidth tab.',
+          'Switch Auto-allocate on.',
+          'Under When remaining falls below, enter the GB level that should trigger a top-up.',
+          'Under Add, enter how many GB to add each time.',
+          'Choose Save auto-allocate settings.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'You can also set it while creating a session, in the Auto-allocate section of the New session form. If you want the same numbers on every new session, tick the option there to save them as your default, or set Default auto-allocate on the Settings page. The default only pre-fills the form. Each session keeps its own settings, and you can still change them before you create it or afterwards.',
+      },
+      { type: 'h3', text: 'The rules' },
+      {
+        type: 'ul',
+        items: [
+          'Add must be larger than the trigger level. If it were not, a top-up would leave the session still below the level and fire again at the next check.',
+          'A trigger level of 0 means the session is only topped up once it is empty. That is allowed, but it leaves no cushion (see sizing below).',
+          'Values can have up to 4 decimal places, and neither number can exceed 100,000 GB.',
+          'It works on active sessions. A paused session is not topped up, and neither is one that is still queued. A session allocated to you by a reseller cannot use it.',
+          'It never takes more than your balance holds. See what happens when the balance is short, below.',
+        ],
+      },
+      { type: 'h3', text: 'How often it checks' },
+      {
+        type: 'p',
+        text: 'Usage is read about every 5 minutes, and auto-allocate runs straight after each read. So it reacts within a few minutes of a session crossing your trigger level, not instantly. The remaining GB shown on a session are refreshed on the same cycle, and the Bandwidth tab has a Refresh usage button when you want the exact current figure.',
+      },
+      {
+        type: 'callout',
+        title: 'Why the trigger level needs a cushion',
+        text: 'Between two checks a busy session keeps spending. If the trigger level is lower than what the session can burn in a few minutes, it can reach zero before the next check, and traffic stops until the top-up lands. A level of 0 is the extreme case of this.',
+      },
+      { type: 'h3', text: 'Sizing it' },
+      {
+        type: 'p',
+        text: 'Work out the most GB the session could use in about 10 minutes at your busiest, which covers a missed check, and set the trigger level at least that high. Then set Add to a comfortable multiple of the trigger level.',
+      },
+      {
+        type: 'table',
+        headers: ['If the session peaks at', 'About 10 minutes of that', 'Trigger level', 'Add'],
+        rows: [
+          ['1 GB per hour', 'under 0.2 GB', '1 GB', '5 GB'],
+          ['10 GB per hour', 'under 2 GB', '3 GB', '15 GB'],
+          ['60 GB per hour', '10 GB', '15 GB', '60 GB'],
+        ],
+      },
+      {
+        type: 'p',
+        text: 'These are starting points, not guarantees. The first two columns are arithmetic on the peak rate you give them. If a session ever stalls, raise the trigger level.',
+      },
+      { type: 'h3', text: 'When your balance is short' },
+      {
+        type: 'table',
+        headers: ['Situation', 'What happens'],
+        rows: [
+          ['Your balance covers the full Add', 'The session is topped up in full. Nothing else to do.'],
+          ['Your balance is less than Add, but at least 0.01 GB', 'It adds everything the balance can cover and tells you once by email that the top-up was partial.'],
+          ['Your balance has less than 0.01 GB', 'Nothing is added. You get one email saying so, the session shows a warning on its Bandwidth tab, and it keeps working until its current allocation runs out. Buy more bandwidth and it resumes by itself on the next check.'],
+          ['The top-up would take the session above 100,000 GB', 'Nothing is added. You are told once by email. Lower Add, or put new traffic on another session.'],
+        ],
+      },
+      {
+        type: 'p',
+        text: 'Each kind of notice is sent once per episode, not on every check. The warning clears by itself once the session is healthy again. If you use webhooks, auto_topup_triggered and auto_topup_failed events report these, so a script can react too.',
+      },
+
+      { type: 'h2', text: 'Auto-recharge: buy more with a saved card' },
+      {
+        type: 'p',
+        text: 'Auto-allocate can only move what you already own. When the balance itself runs low, auto-recharge buys more.',
+      },
+      { type: 'h3', text: 'Set it up' },
+      {
+        type: 'ol',
+        items: [
+          'Save a card first. On the Buy Bandwidth page, pay by card once with Save this card for auto-recharge ticked. Nothing extra is charged for saving it. Automatic recharges are made to a saved card only.',
+          'Open Billing and expand Auto-recharge.',
+          'Set When unassigned bandwidth drops below, a number from 1 to 500 GB.',
+          'Under Buy, choose one of the plans or a custom amount (a whole number of GB from 1 to 499). The line beneath shows exactly what each top-up costs.',
+          'Set Never spend more than, a limit in USD per 30 days, from $1 to $5,000.',
+          'Choose the button to turn it on. You can also save the settings with it off.',
+        ],
+      },
+      { type: 'h3', text: 'The safeguards' },
+      {
+        type: 'ul',
+        items: [
+          'Your 30-day limit is a hard ceiling. A recharge that would take your spend over it is not made, and the panel shows how much of the limit you have used.',
+          'It never attempts a recharge more than once every 30 minutes, so a charge that is still settling cannot be bought twice.',
+          'It checks about every 5 minutes, so, like auto-allocate, it reacts within minutes rather than instantly.',
+          'If the card is declined three times in a row, auto-recharge switches itself off and tells you why. It also switches off if the card is removed or expires, and the panel warns you in the month before the card expires.',
+          'To replace a card, pay once by card with Save this card ticked, then turn auto-recharge back on.',
+        ],
+      },
+      {
+        type: 'callout',
+        title: 'Card payments only',
+        text: 'Auto-recharge charges a saved card. If you normally pay another way, such as mobile money, it cannot top you up automatically, so keep a healthy balance and rely on auto-allocate, or buy ahead of big jobs.',
+      },
+
+      { type: 'h2', text: 'Putting the two together' },
+      {
+        type: 'p',
+        text: 'For a job that must not stop, set both. Choose the auto-recharge threshold large enough to cover several auto-allocate top-ups, so the balance is refilled before the sessions need it. For example, if your sessions top up by 10 GB each and you run three of them, a recharge threshold of 50 GB leaves room for a busy hour before the balance itself is in danger.',
+      },
+      {
+        type: 'ol',
+        items: [
+          'Decide the most you are willing to spend in a month and enter it as the 30-day limit. That number is your real safety net.',
+          'Set each busy session\'s auto-allocate with a trigger level above 10 minutes of peak use.',
+          'Set the auto-recharge threshold above the total your sessions might draw before the next check.',
+          'Run a small test job and watch the first top-up arrive before you rely on it for something important.',
+        ],
+      },
+
+      { type: 'h2', text: 'Problems and fixes' },
+      {
+        type: 'table',
+        headers: ['What you see', 'Cause', 'What to do'],
+        rows: [
+          [
+            'Release is refused: "Releasing that much would immediately trigger auto-allocate"',
+            'After the release the session would sit at or below its trigger level, so it would be topped straight back up.',
+            'Release less, or turn auto-allocate off for that session first.',
+          ],
+          [
+            'The session still ran out',
+            'The trigger level was lower than what it spends between checks, or your balance was empty.',
+            'Raise the trigger level and check your unassigned balance on the Overview page.',
+          ],
+          [
+            'Auto-allocate did not fire',
+            'The session is paused or queued, the remaining GB are still above the trigger level, or it was allocated by a reseller.',
+            'Resume the session and check the numbers on its Bandwidth tab.',
+          ],
+          [
+            'Red warning on the Bandwidth tab',
+            'Your balance is empty or too low to fund the top-up.',
+            'Buy more bandwidth. It resumes on the next check.',
+          ],
+          [
+            'Auto-recharge turned itself off',
+            'The card was declined repeatedly, expired or was removed.',
+            'The panel shows the reason. Fix the card, then turn it back on.',
+          ],
+          [
+            'A recharge did not happen',
+            'Your 30-day limit would be exceeded, the 30-minute pause since the last attempt has not passed, or the threshold has not been reached.',
+            'Check how much of your limit is used, and raise it if it is too low.',
+          ],
+          [
+            'New sessions come with auto-allocate already on',
+            'A default is set under Settings.',
+            'Change or turn off Default auto-allocate there, or untick it while creating the session.',
+          ],
+        ],
+      },
+    ],
+    faq: [
+      {
+        q: 'Does auto-allocate cost anything?',
+        a: 'No. It only moves GB you have already bought from your unassigned balance onto a session. Nothing new is charged.',
+      },
+      {
+        q: 'What is the difference between auto-allocate and auto-recharge?',
+        a: 'Auto-allocate fills one session from your balance and costs nothing. Auto-recharge buys new bandwidth with a saved card and does cost money, up to the 30-day limit you set.',
+      },
+      {
+        q: 'Can I stop auto-recharge from overspending?',
+        a: 'Yes. The Never spend more than limit is a hard cap per rolling 30 days, between $1 and $5,000. A recharge that would exceed it is not made.',
+      },
+      {
+        q: 'How quickly does a top-up arrive?',
+        a: 'Within a few minutes of a session crossing your trigger level, since usage is checked about every 5 minutes. Pick a trigger level with enough cushion to cover that gap.',
+      },
+      {
+        q: 'Can I use auto-allocate on every session?',
+        a: 'Yes, on any active session you bought yourself. A default in Settings pre-fills it for new ones. Sessions allocated to you by a reseller cannot use it.',
+      },
+      {
+        q: 'Does a paused session get topped up?',
+        a: 'No. Auto-allocate only acts on active sessions. Resume the session and it is covered again.',
+      },
+    ],
+  },
+  {
     slug: 'sticky-sessions-keep-same-ip',
     title: 'Sticky Sessions on GlobProxy: Keep the Same IP, Step by Step',
     description:
