@@ -206,8 +206,22 @@ function finishApiResponse(res: Response, requestId: string): Response {
 // once. Other /api/* calls still get the 429: they are the ones a script can hammer.
 type Brake = { response: Response } | { request: Request } | null
 
+// Only routes that work WITHOUT a session may carry on as an anonymous visitor: the sign-in family
+// and the sign-out cleanup (which reads the gp_mfa cookie, not the Supabase session). Every other
+// /api/auth/* route (password, change-email, reauth, sessions, signout-others, mfa/*) needs the
+// session: stripping it there turned a rate-limit answer into a misleading 401 "not signed in".
+const SESSIONLESS_API_ROUTES = new Set([
+  '/api/auth/login',
+  '/api/auth/signup',
+  '/api/auth/reset',
+  '/api/auth/resend-confirmation',
+  '/api/auth/mfa/logout',
+])
+
 function degradesToAnonymous(pathname: string): boolean {
-  return !pathname.startsWith('/api/') || pathname.startsWith('/api/auth/')
+  if (!pathname.startsWith('/api/')) return true
+  const p = pathname.length > 1 && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname
+  return SESSIONLESS_API_ROUTES.has(p)
 }
 
 async function sessionRefreshBrake(request: Request, url: URL, env: any, requestId: string): Promise<Brake> {

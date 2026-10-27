@@ -34,12 +34,64 @@ const SESSION_COOKIE = /^sb-.+-auth-token(?:\.(\d+))?$/
 const SESSION_BASE = /^sb-.+-auth-token$/
 const CHUNK_NAME = /^(.*)\.(0|[1-9][0-9]*)$/
 
+// A line-for-line port of @supabase/ssr's stringFromBase64URL (utils/base64url.js), NOT atob() +
+// TextDecoder. The library is far more lenient than both, and every difference is a cookie the
+// probe reads as "unreadable" while the server decodes it fine and calls Supabase Auth to refresh:
+//  - spaces, tabs, newlines and `=` are skipped ANYWHERE in the value (atob accepts `=` only as
+//    trailing padding of the right length, and rejects a length that is 1 mod 4);
+//  - leftover bits are dropped instead of being an error;
+//  - the UTF-8 decoder does not check continuation bytes, so an overlong sequence such as
+//    C0 A2 decodes to a double quote (TextDecoder turns it into U+FFFD and breaks the JSON).
+// Characters outside the base64url alphabet (including `+` and `/`) and malformed lead bytes throw,
+// exactly as in the library (the server drops such a cookie, so no refresh call is made).
+// tests/session-probe-diff.mjs compares this against the real library on random input.
+const B64URL_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+const B64URL_LOOKUP: number[] = (() => {
+  const map: number[] = new Array(128).fill(-1)
+  for (const ch of ' \t\n\r=') map[ch.charCodeAt(0)] = -2
+  for (let i = 0; i < B64URL_ALPHABET.length; i++) map[B64URL_ALPHABET.charCodeAt(i)] = i
+  return map
+})()
+
 function b64urlDecode(s: string): string {
-  const b64 = s.replace(/-/g, '+').replace(/_/g, '/')
-  const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4)
-  const bin = atob(padded)
-  const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0))
-  return new TextDecoder().decode(bytes)
+  const out: string[] = []
+  const state = { utf8seq: 0, codepoint: 0 }
+  const emitByte = (byte: number) => {
+    if (state.utf8seq === 0) {
+      if (byte <= 0x7f) { out.push(String.fromCodePoint(byte)); return }
+      for (let leadingBit = 1; leadingBit < 6; leadingBit += 1) {
+        if (((byte >> (7 - leadingBit)) & 1) === 0) { state.utf8seq = leadingBit; break }
+      }
+      if (state.utf8seq === 2) state.codepoint = byte & 31
+      else if (state.utf8seq === 3) state.codepoint = byte & 15
+      else if (state.utf8seq === 4) state.codepoint = byte & 7
+      else throw new Error('Invalid UTF-8 sequence')
+      state.utf8seq -= 1
+    } else if (state.utf8seq > 0) {
+      if (byte <= 0x7f) throw new Error('Invalid UTF-8 sequence')
+      state.codepoint = (state.codepoint << 6) | (byte & 63)
+      state.utf8seq -= 1
+      if (state.utf8seq === 0) out.push(String.fromCodePoint(state.codepoint))
+    }
+  }
+  let queue = 0
+  let queuedBits = 0
+  for (let i = 0; i < s.length; i += 1) {
+    const bits = B64URL_LOOKUP[s.charCodeAt(i)]
+    if (bits > -1) {
+      queue = ((queue << 6) | bits) & 0xffff
+      queuedBits += 6
+      while (queuedBits >= 8) {
+        emitByte((queue >> (queuedBits - 8)) & 0xff)
+        queuedBits -= 8
+      }
+    } else if (bits === -2) {
+      continue
+    } else {
+      throw new Error('Invalid Base64-URL character')
+    }
+  }
+  return out.join('')
 }
 
 // THE PROBE MUST SEE EXACTLY WHAT THE SERVER SEES. Every rule below mirrors the code that

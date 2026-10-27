@@ -218,6 +218,29 @@ test('over budget, sign-in requests still reach the app, body intact, without th
   assert.equal(login.status, 200)
 })
 
+test('over budget, only session-less auth routes degrade to anonymous; routes that need the session get the 429', async () => {
+  const h = harness({ limiter: { allow: false } })
+  const post = (path) => h.send(path, {
+    method: 'POST',
+    headers: { cookie: sessionCookie(-60), 'cf-connecting-ip': '203.0.113.9', origin: 'https://globproxy.com', 'content-type': 'application/json' },
+    body: '{}',
+  })
+  for (const path of ['/api/auth/login', '/api/auth/signup', '/api/auth/reset', '/api/auth/resend-confirmation', '/api/auth/mfa/logout']) {
+    const before = h.calls.app
+    const res = await post(path)
+    assert.equal(res.status, 200, path)
+    assert.equal(h.calls.app, before + 1, path + ' reaches the app')
+    assert.equal(h.calls.cookies[h.calls.cookies.length - 1], null, path + ' without the stale session')
+  }
+  for (const path of ['/api/auth/password', '/api/auth/change-email', '/api/auth/reauth', '/api/auth/signout-others', '/api/auth/sessions', '/api/auth/mfa/verify', '/api/auth/mfa/disable']) {
+    const before = h.calls.app
+    const res = await post(path)
+    assert.equal(res.status, 429, path + ' needs the session, so it is refused rather than answered 401')
+    assert.equal(res.headers.get('retry-after'), '60')
+    assert.equal(h.calls.app, before, path + ' never reached the app')
+  }
+})
+
 test('every /api answer carries X-Request-Id, a route\'s own is kept, a supplied one is honoured', async () => {
   const h = harness()
   const plain = await h.get('/api/health')
