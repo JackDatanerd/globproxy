@@ -2,6 +2,201 @@ import type { BlogPost } from './types'
 
 export const BLOG_POSTS: BlogPost[] = [
   {
+    slug: 'retarget-session-or-get-bandwidth-back',
+    title: 'Wrong Location on Your Session? How to Retarget It or Get Your GB Back',
+    description:
+      'Created a session without choosing a country, or put all your GB on one session? You can change its location in place, release unused GB, or start over.',
+    excerpt:
+      'Nothing is lost. You can change a session\'s country, state or city without touching its bandwidth, or move unused GB back to your balance and create a new one.',
+    category: 'Guides',
+    publishedAt: '2026-10-27',
+    body: [
+      {
+        type: 'p',
+        text: 'It is easy to do on a first session: you click use all so the whole balance is ready, leave the country on Any country, and create it. Then you realise you wanted traffic exiting in one specific place, and every GB you own is sitting on a session that is not targeted there. Nothing has gone wrong and nothing is lost. This guide shows how to fix it, which option fits which situation, and why a release sometimes refuses.',
+      },
+      {
+        type: 'table',
+        headers: ['What you want', 'Do this', 'What happens to your GB'],
+        rows: [
+          ['Same session, different location', 'Edit tab: change country, state or city', 'Nothing. The GB stay on the session.'],
+          ['A second session in another location', 'Release unused GB, then create a new session', 'Unused GB move back to your balance, then onto the new session.'],
+          ['Throw the session away', 'Delete session', 'Unused GB return to your balance. GB already used are not refunded.'],
+        ],
+      },
+
+      { type: 'h2', text: 'How your bandwidth is organised' },
+      {
+        type: 'p',
+        text: 'There are two layers, and the confusion usually sits between them. The bandwidth you buy goes into your account balance. Your Overview page shows it as, for example, "of 20 GB purchased · 5 GB not yet assigned to a session". That second number is your unallocated balance. When you create a session you choose how much of the balance to allocate to it, and from then on those GB belong to that session. They come back to the balance only if you release them or delete the session.',
+      },
+      {
+        type: 'p',
+        text: 'Two things draw on the unallocated balance: creating a new session, and topping up an existing one from its Bandwidth tab. That is why a session holding everything leaves nothing for a second one until you release some.',
+      },
+
+      { type: 'h2', text: 'Option A: change the location in place' },
+      {
+        type: 'p',
+        text: 'If the only problem is the location, you do not need your GB back at all. A session\'s location is stored as a setting and built into the username you connect with, so it can be changed without recreating anything:',
+      },
+      {
+        type: 'ol',
+        items: [
+          'Open My Proxies and click the session to expand it.',
+          'Open the Edit tab.',
+          'Choose the Country, then State / region, then City you want. Leave a level on Any to keep it broad.',
+          'Choose Save. You will see "Session updated".',
+          'Open the Credentials tab and copy the username again, or copy a fresh snippet from the Code snippets tab.',
+          'Put the new username into whatever was using the old one.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'The Edit tab itself says it plainly: changes apply to new connections, and your bandwidth is not affected. Here is what actually changes for a rotating session:',
+      },
+      {
+        type: 'code',
+        language: 'text',
+        caption: 'Before: created with Any country',
+        code: 'gp_3f9a1c7e2b8d4a6f0c15-type-residential',
+      },
+      {
+        type: 'code',
+        language: 'text',
+        caption: 'After: Edit tab set to United States, Texas, Austin',
+        code: 'gp_3f9a1c7e2b8d4a6f0c15-type-residential-country-us-state-texas-city-austin',
+      },
+      {
+        type: 'p',
+        text: 'Anything still connecting with the old username keeps using the old behaviour until you swap the new one in. Once you do, run the cURL test from our connection guide to confirm the exit country. The same Edit tab can also change the label, protocol, rotating or sticky behaviour, and sticky duration. Changing protocol or IP behaviour changes the port too, so copy the whole connection again.',
+      },
+
+      { type: 'h3', text: 'How the location pickers work' },
+      {
+        type: 'ul',
+        items: [
+          'The order is fixed: Country, then State / region, then City. The City list stays disabled until a state or region is chosen, and changing the country clears the state and city below it.',
+          'Every option comes from the network\'s supported locations, so a choice in the picker is always one the network recognises. There are around 26,000 cities across 207 countries; Texas alone lists 392, including Austin, Dallas and Houston.',
+          'If a city is not in the list, it cannot be targeted. Pick the state or region instead.',
+          '"State / region" means whatever the country uses: states in the United States, nations such as England and Scotland in the United Kingdom, counties in Kenya.',
+          'A few territories have no region list, so you can target only the country. Right now these are Aruba, the Falkland Islands and Gibraltar.',
+          'Under Advanced targeting you can also pick an ISP. It is offered only after a country is chosen, and an ISP that does not exist in that country is rejected rather than saved.',
+        ],
+      },
+      {
+        type: 'callout',
+        title: 'Narrower is not always better',
+        text: 'One city plus one ISP draws from a much smaller pool of IPs than a whole country. If a tightly targeted session is slow or failing, widen it first (drop the ISP, then the city) before assuming something else is wrong.',
+      },
+
+      { type: 'h2', text: 'Option B: get unused GB back and make a second session' },
+      {
+        type: 'p',
+        text: 'Choose this when you want to keep the first session as it is and add another in a different location.',
+      },
+      {
+        type: 'ol',
+        items: [
+          'Open the session and go to its Bandwidth tab.',
+          'Find Release unused GB. The line above the box shows how much is releasable, for example "4.2 GB releasable · use max". Click it to fill in the maximum, or type an amount.',
+          'Choose Release GB. A message confirms how many GB were returned to your balance.',
+          'Create the new session from New session. Duplicate on the first session\'s card opens the same form pre-filled with its settings, so you only change the location.',
+          'In GB to allocate, enter the amount you released (or less).',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'The session you released from keeps working with the same credentials. Only its allocation shrinks. A release never takes GB the session has already used, and it always leaves a small safety margin on top of that (about 0.05 GB), which is why you cannot release literally everything. The smallest release is 0.01 GB. If you want the whole allocation back, delete the session instead.',
+      },
+      { type: 'h3', text: 'When a release is refused' },
+      {
+        type: 'table',
+        headers: ['Message or situation', 'Why', 'What to do'],
+        rows: [
+          [
+            '"Releasing that much would immediately trigger auto-allocate"',
+            'Auto-allocate is on, and the GB left after your release would be at or below its trigger level. It would top the session straight back up.',
+            'Turn Auto-allocate off on the same Bandwidth tab and save, or release less. Note that new sessions copy your account-wide auto-allocate default, so a session you created with it on has it on.',
+          ],
+          [
+            '"Only X GB can be released from this session right now"',
+            'The rest is used or held as the safety margin.',
+            'Release up to the figure shown, or use max.',
+          ],
+          [
+            '"Could not confirm this session\'s live usage, so nothing was released"',
+            'We refuse to release against a stale usage figure, in case it hands back GB you have actually consumed. This is temporary.',
+            'Wait a minute and try again.',
+          ],
+          [
+            'No Bandwidth tab on the session',
+            'Paused and still-queued sessions do not show the tabs.',
+            'If you paused it, choose Resume session first. If it is queued, wait for it to activate. Queued sessions have their GB reserved, and deleting one returns them.',
+          ],
+          [
+            'Message about a reseller allocation',
+            'A session allocated to you by a reseller cannot be changed or released by you.',
+            'Ask the reseller who allocated it.',
+          ],
+        ],
+      },
+
+      { type: 'h2', text: 'Option C: delete it and start over' },
+      {
+        type: 'p',
+        text: 'Deleting makes sense when the session is brand new, has used almost nothing, and you want clean credentials. Choose Delete session at the bottom of the expanded card and confirm. The card states the rule before you click: deleting returns the session\'s unused GB to your account, and GB already used are not refunded. After it succeeds you will see how many GB were returned.',
+      },
+      {
+        type: 'p',
+        text: 'Deleting also removes the endpoint, so anything connected to it stops working. If you only need a different location, Option A is almost always the better choice. If you do want a clean copy, press Duplicate before you delete so you have the settings ready.',
+      },
+
+      { type: 'h2', text: 'How to avoid this next time' },
+      {
+        type: 'ul',
+        items: [
+          'Start small. A new session defaults to 1 GB, and use all puts your entire unallocated balance on that one session. Top up later from the Bandwidth tab as you need it.',
+          'Check the Country field before you create. Any country is the default and means the exit can be anywhere.',
+          'Put the location in the label (for example "US Austin") so a list of sessions stays readable.',
+          'Need several identical sessions? Number of sessions on the New session form creates 2, 3, 5, 10 or 20 at once, each with its own allocation, so size the GB per session accordingly.',
+          'Keep Auto-allocate off until you want it. It is useful, but it is the usual reason a release refuses.',
+        ],
+      },
+      {
+        type: 'callout',
+        title: 'Still not sure which option fits?',
+        text: 'Open Support in the dashboard sidebar and tell us what you set up and what you wanted instead, including the session\'s label. We can usually point to the quickest fix straight away.',
+      },
+    ],
+    faq: [
+      {
+        q: 'Do I lose any bandwidth by editing a session\'s location?',
+        a: 'No. Editing changes only the session\'s settings. Its GB allocation, credentials and usage are untouched.',
+      },
+      {
+        q: 'Will my IP change after I edit the location?',
+        a: 'New connections use the new location, so on a rotating session you will start seeing IPs from the new place once you connect with the updated username. Connections already running with the old username keep their old behaviour until you swap it.',
+      },
+      {
+        q: 'Can I release all the GB from a session?',
+        a: 'Not quite. GB already used stay with the session, and a small safety margin always remains. To remove the whole allocation, delete the session instead, which returns whatever is unused.',
+      },
+      {
+        q: 'Do released GB show up straight away?',
+        a: 'Yes. They return to your unallocated balance as soon as the release succeeds. Refresh the page if the figure has not updated.',
+      },
+      {
+        q: 'Does releasing change my credentials or interrupt the session?',
+        a: 'No. The session keeps the same host, port, username and password. Only its allocation gets smaller.',
+      },
+      {
+        q: 'Can I get back GB that were already used in the wrong location?',
+        a: 'Used bandwidth cannot be moved back to your balance. If you think something went wrong on our side, contact support and include the session\'s label.',
+      },
+    ],
+  },
+  {
     slug: 'how-to-connect-to-globproxy-proxy',
     title: 'How to Connect to Your GlobProxy Proxy: A Step-by-Step Setup Guide',
     description:
