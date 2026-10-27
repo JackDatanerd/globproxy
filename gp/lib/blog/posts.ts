@@ -2,6 +2,245 @@ import type { BlogPost } from './types'
 
 export const BLOG_POSTS: BlogPost[] = [
   {
+    slug: 'sticky-sessions-keep-same-ip',
+    title: 'Sticky Sessions on GlobProxy: Keep the Same IP, Step by Step',
+    description:
+      'Create a sticky session, make named sessions that each hold their own IP, set how long the IP is held, and fix the common problems when the IP changes.',
+    excerpt:
+      'A sticky session holds one exit IP for the time you choose. Here is how to set one up, how named sessions give you many fixed IPs, and how to get a fresh one.',
+    category: 'Guides',
+    publishedAt: '2026-10-27',
+    body: [
+      {
+        type: 'p',
+        text: 'A rotating session gives every connection a new IP. A sticky session does the opposite: it holds one exit IP for a time you choose, so a login, a multi-step checkout or a long browsing session all look like they come from one place. This guide is the hands-on companion to our explainer on choosing between the two. It covers how to create a sticky session, how named sessions let you hold many different IPs at once, and what to do when an IP changes when you did not expect it to.',
+      },
+      {
+        type: 'p',
+        text: 'Throughout, a session means one set of proxy credentials with its own GB allocation, listed under My Proxies. A named session is a fixed endpoint inside a sticky session, described below.',
+      },
+
+      { type: 'h2', text: 'How stickiness actually works' },
+      {
+        type: 'p',
+        text: 'There is nothing to switch on at the connection. The stickiness is carried by the username you connect with. A sticky username ends with two extra parts:',
+      },
+      {
+        type: 'code',
+        language: 'text',
+        code: 'gp_3f9a1c7e2b8d4a6f0c15-type-residential-country-us-state-texas-city-austin-lifetime-60-session-Ab3dE9xQ',
+      },
+      {
+        type: 'ul',
+        items: [
+          '-lifetime-60 is how long, in minutes, the IP should be held.',
+          '-session-Ab3dE9xQ is an identifier. Connections that use the same identifier within that window are routed to the same IP. A different identifier gets a different IP.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'That is the whole mechanism, and it explains most behaviour you will see. Keep the identifier and you keep the IP. Change the identifier and you get a new IP. Because the identifier lives in the username, you can generate as many as you like without creating anything on our side, and a named session is simply a saved identifier with a label, so you can find it again.',
+      },
+      {
+        type: 'p',
+        text: 'Sticky sessions use their own ports. With HTTP / HTTPS it is 10000, and with SOCKS5 it is 12000, against 9000 and 11000 for rotating. The Credentials tab always shows the right one for your session, so copy it from there.',
+      },
+
+      { type: 'h2', text: 'Step 1: Create a sticky session' },
+      {
+        type: 'ol',
+        items: [
+          'Open My Proxies and choose New session.',
+          'Under Location, pick the country, and a state and city if you need them.',
+          'Under Protocol & session type, choose Sticky ("Same IP per session"). A Sticky duration row appears.',
+          'Choose how long to hold the IP: 1 min, 10 min, 30 min, 1 hour, 6 hours, 12 hours or 24 hours, or Custom for any number of minutes from 1 to 1440. The default is 10 minutes.',
+          'Set GB to allocate and create the session.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'Already have a rotating session? Open its Edit tab, change IP behaviour to Sticky, choose a duration and save. The port changes with it, so copy the connection details again afterwards. Your bandwidth is not affected.',
+      },
+      { type: 'h3', text: 'Choosing a duration' },
+      {
+        type: 'table',
+        headers: ['Task', 'Reasonable starting point'],
+        rows: [
+          ['A single login and a few actions', '10 to 30 minutes'],
+          ['A checkout or form with several steps', '30 to 60 minutes'],
+          ['Working in an account for a session or an afternoon', '6 to 12 hours'],
+          ['A long-running identity for the day', '24 hours (the maximum)'],
+        ],
+      },
+      {
+        type: 'p',
+        text: 'Longer is not automatically better. Residential IPs belong to real connections, so one can drop out before your window ends, and you gain nothing from asking for 24 hours on a five-minute job. Pick the shortest window that covers the task.',
+      },
+
+      { type: 'h2', text: 'Step 2: Get a sticky endpoint' },
+      {
+        type: 'p',
+        text: 'On a sticky session, the Credentials tab shows a ready-made example username, and the copy button on the session row copies a complete sticky endpoint. That example is derived from the session, so it stays the same every time you open the page and never moves your IP on a reload. It is fine for a quick test, but for real work use named sessions.',
+      },
+      {
+        type: 'p',
+        text: 'To test it, run the same request twice through one endpoint:',
+      },
+      {
+        type: 'code',
+        language: 'bash',
+        code: `PROXY="http://YOUR_STICKY_USERNAME:YOUR_PASSWORD@proxy.globproxy.com:10000"
+curl -s -x "$PROXY" https://ipinfo.io/ip; echo
+curl -s -x "$PROXY" https://ipinfo.io/ip; echo`,
+      },
+      {
+        type: 'p',
+        text: 'Both lines should print the same IP. Run the same two commands with a different session identifier at the end of the username and you should see a different one.',
+      },
+
+      { type: 'h2', text: 'Step 3: Named sessions, one fixed IP each' },
+      {
+        type: 'p',
+        text: 'If you run several accounts or browser profiles, you want each to keep its own IP. That is what named sessions are for.',
+      },
+      {
+        type: 'ol',
+        items: [
+          'Open the sticky session and go to the Sticky sessions tab.',
+          'Choose + new session. The dropdown beside it lets you make 1, 5, 10 or 25 at once.',
+          'Each one appears in the list with a label such as Session 1, and its own complete endpoint. Click the label to rename it, for example to the account it belongs to.',
+          'Use copy for one endpoint, or copy all and .txt for the lot. The downloaded file contains the password, so treat it like one.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'Every named session has its own identifier, so each holds its own IP, and they all draw from the same GB allocation as the session they sit in. The star pins one to the top of the list, and the arrow hides or shows its endpoint line. Limits: 25 can be created in one go, and up to 200 live named sessions can exist per sticky session.',
+      },
+      {
+        type: 'callout',
+        title: 'Rotating sessions have no named sessions',
+        text: 'Named sessions exist only on sticky sessions. If you open a rotating session you will not see the tab, and the API refuses to create them on one. That is by design: a rotating endpoint already gives every connection its own IP.',
+      },
+
+      { type: 'h2', text: 'Getting a fresh IP' },
+      {
+        type: 'table',
+        headers: ['You want', 'Do this'],
+        rows: [
+          ['A new IP for the same job', 'Create a new named session and use its endpoint. It has a new identifier, so it gets a different IP.'],
+          ['To stop using a named session', 'Remove hides it from your list. The IP is not released early and simply expires when its window ends.'],
+          ['To free up its slot completely', 'Delete. You are asked to confirm, and it stops being listed. Point any job that still used it at another session first.'],
+          ['A different location', 'Edit tab on the session, then copy the username again. See our guide on changing a session\'s location.'],
+        ],
+      },
+      {
+        type: 'p',
+        text: 'Removed sessions are kept out of sight for about a week and then purged automatically, so there is nothing to clean up. They do count towards a stored-session ceiling in the meantime, which you will only ever reach if you create and remove very large numbers.',
+      },
+
+      { type: 'h2', text: 'Using named sessions in code' },
+      {
+        type: 'p',
+        text: 'Paste one endpoint per worker or per account. A Python example that gives each account its own IP:',
+      },
+      {
+        type: 'code',
+        language: 'python',
+        code: `import requests
+
+# One endpoint per account: host:port:username:password
+ENDPOINTS = {
+    "account_a": "http://USERNAME_A:YOUR_PASSWORD@proxy.globproxy.com:10000",
+    "account_b": "http://USERNAME_B:YOUR_PASSWORD@proxy.globproxy.com:10000",
+}
+
+for name, proxy in ENDPOINTS.items():
+    s = requests.Session()
+    s.proxies = {"http": proxy, "https": proxy}
+    ip = s.get("https://ipinfo.io/ip", timeout=30).text.strip()
+    print(name, ip)  # each account keeps its own IP while its window lasts`,
+      },
+      {
+        type: 'p',
+        text: 'USERNAME_A and USERNAME_B are the full sticky usernames of two named sessions. They share everything except the final identifier. API users can create named sessions with POST /api/v1/sub-users/:id/sessions, described in the API reference.',
+      },
+
+      { type: 'h2', text: 'When the IP changes, or does not' },
+      {
+        type: 'table',
+        headers: ['What you see', 'Likely cause', 'What to do'],
+        rows: [
+          [
+            'A new IP on every request',
+            'You are on a rotating session or the rotating port, or the identifier is different on each request.',
+            'Confirm the session is Sticky, the port is 10000 or 12000, and the username ends in -lifetime-…-session-…, with the same identifier every time.',
+          ],
+          [
+            'The IP changed after the time you set',
+            'The window ended. The same identifier can be given a new IP afterwards.',
+            'Choose a longer duration on the Edit tab, or create a new named session when you want a deliberate change.',
+          ],
+          [
+            'The IP changed before the window ended',
+            'A residential IP can go offline, because it belongs to a real device. The identifier is then given another IP.',
+            'Retry the request. For anything fragile, handle a mid-session change in your code and use a shorter job per IP.',
+          ],
+          [
+            'Two accounts share one IP',
+            'They are using the same session identifier.',
+            'Give each account its own named session.',
+          ],
+          [
+            'All named sessions changed after I edited the session',
+            'Duration, location and protocol belong to the sticky session, not to each named session. Changing them changes every username.',
+            'Copy the endpoints again after editing and update anything still using the old ones.',
+          ],
+          [
+            'Nothing connects on a sticky port',
+            'Wrong port for the protocol, or the session is still warming up.',
+            'Use 10000 for HTTP or 12000 for SOCKS5, and allow the first few minutes after activation.',
+          ],
+          [
+            'Cannot create more named sessions',
+            'You hit the 200 live limit, or the 25-at-once limit.',
+            'Delete sessions you do not use, or create in batches of up to 25.',
+          ],
+        ],
+      },
+      {
+        type: 'callout',
+        title: 'Check the exit location too',
+        text: 'A sticky IP is only as good as its location. If the country or city looks wrong, widen the targeting first. A narrow city plus a narrow ISP has a smaller pool to choose from and is the usual cause of both slow connections and surprise changes.',
+      },
+    ],
+    faq: [
+      {
+        q: 'How long can a sticky IP be held?',
+        a: 'You choose, from 1 minute to 24 hours (1440 minutes). The default is 10 minutes. Set it when you create the session, or change it later on the Edit tab.',
+      },
+      {
+        q: 'Do named sessions cost extra bandwidth or money?',
+        a: 'No. They are saved identifiers that draw on the same GB allocation as the sticky session they belong to. There is no separate charge for creating them.',
+      },
+      {
+        q: 'Can I change the duration of one named session on its own?',
+        a: 'No. The duration belongs to the sticky session and applies to all of its named sessions. If you need two durations, create two sticky sessions.',
+      },
+      {
+        q: 'Can I switch a rotating session to sticky later?',
+        a: 'Yes. Use the Edit tab. The port changes, so copy the connection details again. Your GB are untouched.',
+      },
+      {
+        q: 'What happens to a named session when its time runs out?',
+        a: 'The hold ends, so the IP is no longer reserved for that identifier. The named session stays in your list, and connecting with it again starts a new window, which may land on a different IP.',
+      },
+      {
+        q: 'How many fixed IPs can I hold at once?',
+        a: 'Up to 200 live named sessions per sticky session, each with its own IP, and you can have more than one sticky session.',
+      },
+    ],
+  },
+  {
     slug: 'pause-resume-delete-session-bandwidth',
     title: 'Pause, Resume or Delete a Session: What Happens to Your Bandwidth',
     description:
