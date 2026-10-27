@@ -2,6 +2,151 @@ import type { BlogPost } from './types'
 
 export const BLOG_POSTS: BlogPost[] = [
   {
+    slug: 'pause-resume-delete-session-bandwidth',
+    title: 'Pause, Resume or Delete a Session: What Happens to Your Bandwidth',
+    description:
+      'What pausing, resuming and deleting a session does to your GB, credentials and connections, how to do it in bulk, and what to do when a resume is refused.',
+    excerpt:
+      'Pausing keeps everything but stops traffic. Deleting returns what is unused and removes the endpoint. Here is exactly what each one does to your GB.',
+    category: 'Guides',
+    publishedAt: '2026-10-27',
+    body: [
+      {
+        type: 'p',
+        text: 'Pausing, releasing and deleting all look like ways to stop a session spending bandwidth, but they do different things to your GB and to your credentials. Picking the wrong one is how people end up with an endpoint they deleted by mistake, or bandwidth they thought they had recovered that is still sitting on a paused session. This guide explains each one precisely.',
+      },
+      {
+        type: 'table',
+        headers: ['', 'Pause', 'Release unused GB', 'Delete'],
+        rows: [
+          ['Connections', 'Stop working', 'Keep working', 'Stop working for good'],
+          ['Credentials and settings', 'Kept', 'Kept', 'Removed'],
+          ['GB on the session', 'Stay on the session', 'Unused GB go back to your balance', 'Unused GB go back to your balance'],
+          ['GB already used', 'Stay counted', 'Stay on the session', 'Not refunded; kept in your usage totals'],
+          ['Can be undone', 'Yes, with Resume session', 'Yes, by topping the session up again', 'No'],
+        ],
+      },
+
+      { type: 'h2', text: 'Pausing a session' },
+      {
+        type: 'p',
+        text: 'Pause is for stopping traffic without losing anything. Open an active session and choose Pause at the bottom of the card. You will see "Session paused — it won\'t use bandwidth until you resume it". The session keeps its allocation, credentials and settings, but it will not connect until you resume it.',
+      },
+      {
+        type: 'ul',
+        items: [
+          'Only an active session can be paused. A session that is still queued cannot.',
+          'Pausing does not return any GB to your balance. The unused GB stay allocated to the paused session. If you want them back, you need to release or delete (see below), and a paused session has to be resumed first because its tabs are hidden while it is paused.',
+          'Auto-allocate does not top up a paused session. It only acts on active ones.',
+          'Pausing a session that is already paused does nothing harmful, so a repeated click or a retry after a timeout is safe.',
+        ],
+      },
+      { type: 'h3', text: 'What a paused session looks like' },
+      {
+        type: 'p',
+        text: 'In your list, a paused session carries a SUSPENDED badge, and the Suspended filter appears once you have at least one. That label does not mean anything has gone wrong. Open the session and read the banner, which says who stopped it:',
+      },
+      {
+        type: 'table',
+        headers: ['Banner says', 'Who did it', 'Can you undo it?'],
+        rows: [
+          ['You paused this session. It keeps its bandwidth and settings but won\'t connect until you resume it.', 'You', 'Yes. Choose Resume session.'],
+          ['This session is paused because your account is suspended.', 'Your account was suspended', 'It comes back when the account is reinstated. Nothing is lost.'],
+          ['This session was disabled by our team.', 'GlobProxy', 'No. Contact support from the banner. Your bandwidth is safe and nothing has been deducted.'],
+        ],
+      },
+
+      { type: 'h2', text: 'Resuming a session' },
+      {
+        type: 'p',
+        text: 'Choose Resume session on the banner. You will see "Session resumed" and the session is live again with its full allocation and the same credentials, so nothing needs to be re-copied. Only a pause you made yourself can be resumed from your dashboard.',
+      },
+      {
+        type: 'callout',
+        title: 'When a resume is refused',
+        text: 'An account can have at most 100 live sessions, counting active and queued ones. Paused sessions do not count, but resuming one adds it back. If you are already at 100, the resume is refused with "You already have 100 live sessions, so this one can\'t be resumed. Delete an unused session first, then resume it." Delete a session you no longer need, then resume.',
+      },
+
+      { type: 'h2', text: 'Deleting a session' },
+      {
+        type: 'p',
+        text: 'Delete is permanent. Choose Delete session at the bottom of the card, then Confirm delete. The button disarms itself after a few seconds, so a stray click later cannot delete anything. For sensitive actions you may also be asked to confirm with your password or authenticator code.',
+      },
+      {
+        type: 'ul',
+        items: [
+          'Unused GB return to your balance. The success message says how many, for example "Session deleted — 3.4 GB returned to your balance".',
+          'GB the session already used are not refunded. They stay counted in your account\'s usage totals, so your history still adds up after the session is gone.',
+          'Credentials stop working at once, and any named sticky sessions inside it are deleted too.',
+          'It works on a paused session and on one that is still queued. For a queued session, the GB reserved for it come straight back.',
+          'A session a reseller allocated to you cannot be deleted by you. Contact them.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'If all you want is some of the unused GB back, deleting is the wrong tool, because it also removes the endpoint. Use Release unused GB on the Bandwidth tab instead. If you want a copy of the settings before you delete, press Duplicate first.',
+      },
+
+      { type: 'h2', text: 'Doing it for many sessions at once' },
+      {
+        type: 'ol',
+        items: [
+          'In My Proxies, tick the checkbox on each session, or choose Select all shown to take everything matching your current search and filter.',
+          'A bar appears with Pause, Resume, Add GB, Change country and Delete. The counts on Pause and Resume show how many of your selection each action applies to, since only active sessions can be paused and only ones you paused can be resumed.',
+          'Confirm in the dialog. Delete tells you roughly how much unused bandwidth will return and that it cannot be undone.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'Selections larger than 20 are handled in batches of 20, and each session is handled independently. If a few fail, you get a message naming them and they stay selected so you can retry exactly those. Sessions hidden by your current filter are never touched.',
+      },
+
+      { type: 'h2', text: 'Which one should I use?' },
+      {
+        type: 'table',
+        headers: ['If you want to', 'Use'],
+        rows: [
+          ['Stop a job from spending bandwidth for a while, and come back to the same endpoint', 'Pause'],
+          ['Get some unused GB back and keep the session running', 'Release unused GB'],
+          ['Get all unused GB back and discard the session and its credentials', 'Delete session'],
+          ['Stop a leaked password from being used', 'Rotate password on the Credentials tab. Pausing also stops traffic, but only rotation changes the secret.'],
+          ['Make room under the 100-session limit', 'Delete sessions you no longer need'],
+        ],
+      },
+      {
+        type: 'callout',
+        title: 'Not sure? Pause first',
+        text: 'Pause can be undone in one click and loses nothing. Delete cannot be undone. When you are unsure whether you still need an endpoint, pause it, and delete it later once you are certain.',
+      },
+    ],
+    faq: [
+      {
+        q: 'My session says SUSPENDED. Has my account been banned?',
+        a: 'Not necessarily. The badge reads the same way for a session you paused yourself. Open the session and read the banner: it says whether you paused it, your account was suspended, or our team disabled it.',
+      },
+      {
+        q: 'Does pausing give me my unused GB back?',
+        a: 'No. A paused session keeps all of its allocation. To move unused GB back to your balance, resume the session and release them, or delete the session.',
+      },
+      {
+        q: 'Does a paused session use up bandwidth?',
+        a: 'No. A paused session cannot connect, so it uses nothing, and the GB stay where they are.',
+      },
+      {
+        q: 'Can I undo a delete?',
+        a: 'No. Credentials are removed permanently. You can create a new session and allocate GB to it, but it will have new credentials.',
+      },
+      {
+        q: 'Why can I not pause or delete a particular session?',
+        a: 'A session allocated to you by a reseller cannot be paused or deleted by you. Contact the reseller. A queued session cannot be paused but can be deleted.',
+      },
+      {
+        q: 'Does the 100-session limit count paused sessions?',
+        a: 'No, but resuming one needs a free slot. At the limit, delete one you do not need and then resume.',
+      },
+    ],
+  },
+  {
     slug: 'retarget-session-or-get-bandwidth-back',
     title: 'Wrong Location on Your Session? How to Retarget It or Get Your GB Back',
     description:
@@ -10,6 +155,7 @@ export const BLOG_POSTS: BlogPost[] = [
       'Nothing is lost. You can change a session\'s country, state or city without touching its bandwidth, or move unused GB back to your balance and create a new one.',
     category: 'Guides',
     publishedAt: '2026-10-27',
+    updatedAt: '2026-10-27',
     body: [
       {
         type: 'p',
@@ -66,6 +212,10 @@ export const BLOG_POSTS: BlogPost[] = [
         language: 'text',
         caption: 'After: Edit tab set to United States, Texas, Austin',
         code: 'gp_3f9a1c7e2b8d4a6f0c15-type-residential-country-us-state-texas-city-austin',
+      },
+      {
+        type: 'p',
+        text: 'Several sessions to fix? Tick them in My Proxies, choose Change country in the bar that appears, pick the country and press Move. It changes the country on every selected active or queued session and clears their state, city and ISP settings, which the confirmation dialog tells you before it proceeds. Use each session\'s Edit tab instead when you need a state or city.',
       },
       {
         type: 'p',
@@ -469,9 +619,9 @@ const agent = new HttpsProxyAgent(
             'On the Bandwidth tab, top up from your unallocated balance, or buy more bandwidth first.',
           ],
           [
-            'Session shows as paused',
-            'It was paused, by you or by GlobProxy.',
-            'If you paused it, open the session and choose Resume session. If GlobProxy paused it, contact support.',
+            'The session badge says SUSPENDED',
+            'It was paused by you, your account was suspended, or our team disabled it. The banner inside the session says which.',
+            'If you paused it, choose Resume session. Otherwise contact support from the banner.',
           ],
           [
             'Playwright or Puppeteer fails on a SOCKS5 session',
