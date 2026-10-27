@@ -35,7 +35,9 @@ export async function POST(req: Request) {
     const perUser = await rateLimitedUser('USER_EMAIL_RATE_LIMITER', user.id, 'apply-affiliate')
     if (perUser) return perUser
 
-    const body = await req.json().catch(() => ({}))
+    const rawBody = await req.json().catch(() => null)
+    // A JSON `null` / array / string body parses fine but has no fields: treat it as empty (-> 400 below), not a 500.
+    const body: Record<string, any> = rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody) ? rawBody : {}
     // Bounded, trimmed strings only — these end up in a jsonb column AND in
     // an email to the admin, so unbounded input was a storage / inbox-
     // flooding lever for any signed-up account.

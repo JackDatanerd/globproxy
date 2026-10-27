@@ -40,8 +40,8 @@ export default function PayoutMethodForm({ currentMethod, currentWalletAddress, 
       { method, bankDetails: { bankName: bankName.trim(), accountName: accountName.trim(), accountNumber: accountNumber.trim(), country: country.trim(), swift: swift.trim() } }
     setLoading(true)
     try {
-      await apiJson('POST', '/api/dashboard/update-payout-method', body)
-      toast.success('Payout method saved — check your email for confirmation')
+      const res = await apiJson<{ unchanged?: boolean }>('POST', '/api/dashboard/update-payout-method', body)
+      toast.success(res?.unchanged ? 'No changes — your payout method is already saved this way' : 'Payout method saved — check your email for confirmation')
       setEditing(false)
       // Re-fetch the server data (new updated_at / masked values) in place,
       // and drop what was typed: the full values must not linger in state.

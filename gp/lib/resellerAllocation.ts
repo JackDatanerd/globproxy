@@ -531,7 +531,7 @@ export async function listTransfers(
   const limit = Math.min(Math.max(Math.trunc(opts.limit ?? 50) || 50, 1), 200)
   let q = admin
     .from('reseller_transfers')
-    .select('id, gb_amount, reclaimed_gb, status, note, created_at, recipient:recipient_id(email)')
+    .select('id, gb_amount, reclaimed_gb, status, note, created_at, recipient:recipient_id(email, is_deleted)')
     .eq('reseller_id', resellerId)
     .order('created_at', { ascending: false }).order('id', { ascending: false })
     .limit(limit + 1) // one extra row: tells us whether another page really exists
@@ -547,7 +547,7 @@ export async function listTransfers(
   const fetched = data ?? []
   const hasMore = fetched.length > limit
   const transfers = fetched.slice(0, limit).map((r: any) => ({
-    id: r.id, recipient_email: r.recipient?.email ?? null,
+    id: r.id, recipient_email: r.recipient?.is_deleted ? null : (r.recipient?.email ?? null),
     gb_amount: Number(r.gb_amount), gb_reclaimed: Number(r.reclaimed_gb ?? 0), gb_net: Number(r.gb_amount) - Number(r.reclaimed_gb ?? 0),
     status: r.status, note: r.note ?? null, created_at: r.created_at,
   }))

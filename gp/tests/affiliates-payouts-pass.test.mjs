@@ -24,3 +24,23 @@ test('referrals page only says "awaiting the run" for money the run can take', (
   assert.match(page, /const runnable = payable - thisCycle/)
   assert.match(page, /runnable >= AFFILIATE_MIN_PAYOUT_USD/)
 })
+
+test('admin void of referral earnings queues the clawback notice like a refund does', () => {
+  for (const f of ['supabase/migrations/0099_affiliates_payouts_pass2.sql', 'supabase/schema.sql']) {
+    const sql = read(f)
+    const fn = sql.slice(sql.lastIndexOf('create or replace function public.admin_void_referral_earnings'))
+    const body = fn.slice(0, fn.indexOf('revoke all'))
+    assert.match(body, /insert into public\.referral_bonus_reversal_events/)
+    assert.match(body, /on conflict \(referral_id\) do nothing/)
+  }
+})
+
+test('apply routes survive a JSON null body; deleted clients get no email in the v1 transfer list; unchanged payout save is not reported as saved', () => {
+  for (const f of ['app/api/auth/apply-affiliate/route.ts', 'app/api/auth/apply-reseller/route.ts']) {
+    assert.match(read(f), /rawBody && typeof rawBody === 'object' && !Array\.isArray\(rawBody\)/)
+  }
+  const alloc = read('lib/resellerAllocation.ts')
+  assert.match(alloc, /recipient:recipient_id\(email, is_deleted\)/)
+  assert.match(alloc, /r\.recipient\?\.is_deleted \? null/)
+  assert.match(read('components/dashboard/PayoutMethodForm.tsx'), /res\?\.unchanged \?/)
+})
