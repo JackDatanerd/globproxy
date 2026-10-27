@@ -11,7 +11,12 @@ export const PROTECTED_PREFIXES = ['/dashboard', '/reseller', '/admin', '/invoic
  * those letters through the login gate and the signed-in CSP.
  */
 export function isProtectedPath(pathname: string): boolean {
-  return PROTECTED_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + '/'))
+  return PROTECTED_PREFIXES.some((p) => isUnderPrefix(pathname, p))
+}
+
+/** Whole-segment prefix test: `/admin` and `/admin/x` are under `/admin`, `/administrator` is not. */
+export function isUnderPrefix(pathname: string, prefix: string): boolean {
+  return pathname === prefix || pathname.startsWith(prefix + '/')
 }
 
 /** next.config.ts `headers()` source matching every path EXCEPT the protected areas (whole segments, like isProtectedPath). */

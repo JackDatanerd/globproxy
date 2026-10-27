@@ -3,7 +3,8 @@ import { createClient as createSupabaseJsClient } from '@supabase/supabase-js'
 import { NextResponse, type NextRequest } from 'next/server'
 import { isAuthOutage } from '@/lib/authOutage'
 import { buildCsp, cspHeaderName } from '@/lib/csp'
-import { isProtectedPath } from '@/lib/protectedPaths'
+import { isProtectedPath, isUnderPrefix } from '@/lib/protectedPaths'
+import { brokenSessionCookieNames, withoutBrokenSessionCookies, sessionCookieOptions } from '@/lib/sessionCookies'
 import { applySecurityHeaders } from '@/lib/securityHeaders'
 
 type CookieToSet = {
@@ -175,6 +176,18 @@ export async function middleware(request: NextRequest) {
   // to be forwarded on the request as well as set on the response. Public pages
   // keep the static policy from next.config.ts (they are served from the edge
   // cache, where a per-request nonce cannot work).
+  // A session cookie the Supabase client cannot decode makes auth.getUser() THROW (instead of
+  // reporting "no session"), which used to turn into a 503 on every protected page for that
+  // browser, forever, with the cookie never cleared. Treat it as no session: take it off the
+  // request (so this middleware and the server components behind it never see it) and expire it
+  // on whatever response goes out (see lib/sessionCookies.ts).
+  const brokenSession = brokenSessionCookieNames(request.cookies.getAll())
+  for (const name of brokenSession) request.cookies.delete(name)
+  const expireBrokenSession = (res: NextResponse) => {
+    for (const name of brokenSession) res.cookies.set(name, '', { path: '/', maxAge: 0 })
+    return res
+  }
+
   const nonce = isProtected ? btoa(crypto.randomUUID()) : null
   const nonceCsp = nonce ? buildCsp({ nonce }) : null
   const nextResponse = () => {
@@ -191,7 +204,7 @@ export async function middleware(request: NextRequest) {
     return res
   }
 
-  let response = nextResponse()
+  let response = expireBrokenSession(nextResponse())
 
   // Anything returned from here on must carry the cookies Supabase just set
   // on `response` — a refreshed session after getUser(), or the deletions
@@ -235,12 +248,13 @@ export async function middleware(request: NextRequest) {
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
       {
         cookies: {
-          getAll: () => request.cookies.getAll(),
+          getAll: () => withoutBrokenSessionCookies(request.cookies.getAll()),
           setAll: (toSet: CookieToSet[]) => {
             toSet.forEach(({ name, value }) => request.cookies.set(name, value))
-            response = nextResponse()
+            response = expireBrokenSession(nextResponse())
+            // Secure like every other cookie this app sets (the library's defaults omit it).
             toSet.forEach(({ name, value, options }) =>
-              response.cookies.set(name, value, options)
+              response.cookies.set(name, value, sessionCookieOptions(options, process.env.NODE_ENV === 'production'))
             )
           },
         },
@@ -345,12 +359,12 @@ export async function middleware(request: NextRequest) {
       }
 
       // Non-admin hitting /admin — send to dashboard
-      if (path.startsWith('/admin') && profile?.role !== 'admin') {
+      if (isUnderPrefix(path, '/admin') && profile?.role !== 'admin') {
         return redirectTo(new URL('/dashboard', request.url))
       }
 
       // Reseller-only routes
-      if (path.startsWith('/reseller') && !['reseller', 'admin'].includes(profile?.role ?? '')) {
+      if (isUnderPrefix(path, '/reseller') && !['reseller', 'admin'].includes(profile?.role ?? '')) {
         return redirectTo(new URL('/dashboard', request.url))
       }
 

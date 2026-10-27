@@ -23,7 +23,7 @@ export type SessionState =
   | 'none'       // no Supabase session cookie at all
   | 'fresh'      // readable and not near expiry: no refresh call will be made
   | 'refresh'    // readable and expired / about to expire: the server will try to refresh it
-  | 'unreadable' // a session cookie we cannot parse: the client library drops it without a network call
+  | 'unreadable' // a session cookie we cannot parse: no network call is made (the library drops it, or for an undecodable base64- value throws — lib/sessionCookies.ts)
 
 // supabase-js refreshes a token that expires within this margin.
 export const REFRESH_MARGIN_S = 90

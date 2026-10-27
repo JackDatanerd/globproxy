@@ -1,6 +1,7 @@
 import { createServerClient } from '@supabase/ssr'
 import { createClient as createSupabaseClient } from '@supabase/supabase-js'
 import { cookies } from 'next/headers'
+import { withoutBrokenSessionCookies, sessionCookieOptions } from '@/lib/sessionCookies'
 
 type CookieToSet = {
   name: string
@@ -15,11 +16,14 @@ export async function createClient() {
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        getAll: () => cookieStore.getAll(),
+        // A session cookie the client cannot decode would make getUser() throw (500 on a
+        // route, an error page on a server component). Read it as "no session"; middleware.ts
+        // is what expires it.
+        getAll: () => withoutBrokenSessionCookies(cookieStore.getAll()),
         setAll: (toSet: CookieToSet[]) => {
           try {
             toSet.forEach(({ name, value, options }) =>
-              cookieStore.set(name, value, options)
+              cookieStore.set(name, value, sessionCookieOptions(options, process.env.NODE_ENV === 'production'))
             )
           } catch {
             /* server component — safe to ignore */
