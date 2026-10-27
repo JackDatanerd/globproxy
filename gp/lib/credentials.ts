@@ -730,7 +730,10 @@ export async function updateCredentialSettings(
       country: 'country' in b ? b.country : cred.country,
       state: 'state' in b ? b.state : (countryChanged ? null : cred.state),
       city: 'city' in b ? b.city : (countryChanged || stateChanged ? null : cred.city),
-      asn: 'asn' in b ? b.asn : cred.asn,
+      // A new country invalidates the old ASN just like state/city (an ASN belongs to
+      // one country's inventory): without this, retargeting any ASN-pinned session to
+      // another country failed with "ASN ... isn't available in XX".
+      asn: 'asn' in b ? b.asn : (countryChanged ? null : cred.asn),
       // A legacy ASN that has since left the inventory must not block a
       // relabel; only check it when the ASN or country is actually changing.
     }, { checkAsn: asnChanged || countryChanged })

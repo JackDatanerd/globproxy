@@ -22,12 +22,12 @@ export async function mirrorWhitelist(admin: Admin, credentialId: string, userId
     const rows = ips.slice(0, 1000).map((i) => ({
       credential_id: credentialId, user_id: userId, ip: i.ip, description: (i.description ?? '').slice(0, 100),
     }))
-    const { error: delErr } = await admin.from('proxy_whitelist_entries').delete().eq('credential_id', credentialId)
-    if (delErr) throw delErr
-    for (let i = 0; i < rows.length; i += 200) {
-      const { error } = await admin.from('proxy_whitelist_entries').insert(rows.slice(i, i + 200))
-      if (error) throw error
-    }
+    // One transaction (delete + insert), so concurrent edits can't interleave into a
+    // half-old/half-new mirror.
+    const { error } = await admin.rpc('replace_whitelist_mirror', {
+      p_credential_id: credentialId, p_user_id: userId, p_entries: rows.map(({ ip, description }) => ({ ip, description })),
+    })
+    if (error) throw error
     await admin.from('proxy_credentials').update({ whitelist_mirrored_at: new Date().toISOString() }).eq('id', credentialId)
   } catch (e) {
     console.error('[whitelist-mirror] could not mirror', credentialId, e)

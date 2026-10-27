@@ -1,6 +1,8 @@
 import { requireMfaVerified } from '@/lib/mfa'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
+import { parseAutoTopup } from '@/lib/apiValidation'
+import { rateLimitedUser } from '@/lib/rateLimit'
 import { NextResponse } from 'next/server'
 
 // Sets the account-level default that the "new session" form pre-fills
@@ -16,25 +18,17 @@ export async function PATCH(req: Request) {
   const suspended = await requireActiveUser(user.id)
   if (suspended) return suspended
 
-  const body = await req.json().catch(() => ({}))
-  const enabled = Boolean(body?.enabled)
-  const thresholdGb = enabled ? Number(body?.threshold_gb) : null
-  const amountGb = enabled ? Number(body?.amount_gb) : null
+  const throttled = await rateLimitedUser('USER_ACTION_RATE_LIMITER', user.id, 'auto-topup-default')
+  if (throttled) return throttled
 
-  if (enabled) {
-    if (!Number.isFinite(thresholdGb) || (thresholdGb as number) < 0) {
-      return NextResponse.json({ error: 'threshold_gb must be a number ≥ 0' }, { status: 400 })
-    }
-    if (!Number.isFinite(amountGb) || (amountGb as number) <= 0) {
-      return NextResponse.json({ error: 'amount_gb must be a number greater than 0' }, { status: 400 })
-    }
-    // amount must exceed threshold: otherwise a top-up can leave the session
-    // still at/below its own threshold, and the cron re-fires every tick,
-    // draining the account balance into a session that never clears the line.
-    if ((amountGb as number) <= (thresholdGb as number)) {
-      return NextResponse.json({ error: 'amount_gb must be greater than threshold_gb' }, { status: 400 })
-    }
-  }
+  const body = await req.json().catch(() => null)
+  // Same strict validation as the per-session auto top-up (strict boolean, bounds,
+  // decimals, amount > threshold) so the default can never hold a value a session couldn't.
+  const parsed = parseAutoTopup(body)
+  if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 })
+  const enabled = parsed.value.enabled
+  const thresholdGb = parsed.value.enabled ? parsed.value.threshold_gb : null
+  const amountGb = parsed.value.enabled ? parsed.value.amount_gb : null
 
   const admin = await createAdminClient()
   const { error } = await admin.rpc('set_default_auto_topup', {
@@ -45,6 +39,7 @@ export async function PATCH(req: Request) {
   })
 
   if (error) {
+    if (error.code === 'P0002') return NextResponse.json({ error: 'Bandwidth account not found.' }, { status: 404 })
     if (error.code === 'P0001') return NextResponse.json({ error: error.message }, { status: 400 })
     console.error('[auto-topup-default] set_default_auto_topup failed', error)
     return NextResponse.json({ error: 'Could not save your default. Please try again.' }, { status: 500 })

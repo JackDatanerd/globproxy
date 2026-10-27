@@ -451,7 +451,14 @@ export async function listAllSubUsers(): Promise<{ subUsers: Map<string, SubUser
     const d = await res.json().catch(() => null)
     if (!d) return { subUsers, complete: false }
     const result = d.result ?? d.data ?? d
-    const docs = result.documents ?? []
+    // A reply without a documents array is a changed/odd response shape, not an empty
+    // account: calling it a complete empty listing would flag every live session as
+    // missing upstream and stamp usage sync healthy.
+    if (!Array.isArray(result?.documents)) {
+      console.error('Upstream listAllSubUsers: unexpected response shape')
+      return { subUsers, complete: false }
+    }
+    const docs = result.documents
     // The listing ends at an EMPTY page, not at "a page shorter than the
     // limit we asked for": if the provider ever caps its page size below 100
     // the old short-page rule declared a partial listing complete — stamping
