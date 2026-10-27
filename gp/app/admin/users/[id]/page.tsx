@@ -11,7 +11,7 @@ import AdminUserControls from '@/components/admin/AdminUserControls'
 import AdminCredentialAction from '@/components/admin/AdminCredentialAction'
 import AdminUserSecurityPanel, { type PanelSession, type PanelKey } from '@/components/admin/AdminUserSecurityPanel'
 import { formatGb } from '@/lib/format'
-import { formatRatePct } from '@/lib/rates'
+import { formatRatePct, DEFAULT_AFFILIATE_INTRO_RATE, DEFAULT_AFFILIATE_LIFETIME_RATE } from '@/lib/rates'
 
 export default async function AdminUserDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
@@ -274,7 +274,7 @@ export default async function AdminUserDetailPage({ params }: { params: Promise<
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
             <div><div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-1">Status</div><div className="font-mono text-ink">{profile.affiliate_status ?? 'not an affiliate'}</div></div>
-            <div><div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-1">Rates (intro / lifetime)</div><div className="font-mono text-ink">{isAffiliate ? `${formatRatePct(profile.affiliate_commission_rate)} / ${formatRatePct(profile.affiliate_commission_rate_lifetime)}` : '—'}</div></div>
+            <div><div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-1">Rates (intro / lifetime)</div><div className="font-mono text-ink">{isAffiliate ? `${formatRatePct(profile.affiliate_commission_rate ?? DEFAULT_AFFILIATE_INTRO_RATE)} / ${formatRatePct(profile.affiliate_commission_rate_lifetime ?? DEFAULT_AFFILIATE_LIFETIME_RATE)}` : '—'}</div></div>
             <div><div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-1">Referrals</div><div className="font-mono text-ink">{referralCount}{flaggedCount > 0 && <span className="text-amber-700"> ({flaggedCount} flagged)</span>}</div></div>
             <div><div className="text-[10px] font-mono text-muted uppercase tracking-widest mb-1">Verified since</div><div className="font-mono text-ink">{profile.verified_operator_since ? new Date(profile.verified_operator_since).toLocaleDateString('en-GB') : '—'}</div></div>
           </div>

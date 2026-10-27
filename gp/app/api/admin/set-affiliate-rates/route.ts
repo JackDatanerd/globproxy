@@ -34,12 +34,15 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'This affiliate is a Verified Operator — revoke that first to set custom rates.' }, { status: 409 })
   }
 
-  const { error } = await supabase
+  const { error, count } = await supabase
     .from('profiles')
-    .update({ affiliate_commission_rate: introRate as number, affiliate_commission_rate_lifetime: lifetimeRate as number })
+    .update({ affiliate_commission_rate: introRate as number, affiliate_commission_rate_lifetime: lifetimeRate as number }, { count: 'exact' })
     .eq('id', body.userId)
     .eq('is_verified_operator', false)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  // Zero rows = the account became a Verified Operator between the read above and now;
+  // nothing changed, so neither report success nor write an audit entry for it.
+  if (!count) return NextResponse.json({ error: 'This affiliate changed while you were editing (now a Verified Operator?) — reload and check.' }, { status: 409 })
 
   await logAdminAction(supabase, {
     adminId, action: 'affiliate.set_rates', targetUserId: body.userId,

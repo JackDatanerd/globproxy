@@ -4,6 +4,7 @@ import Link from 'next/link'
 import AdminCancelInvitation from '@/components/admin/AdminCancelInvitation'
 import { formatGb } from '@/lib/format'
 import { isUuid } from '@/lib/adminAuth'
+import { fetchAllRows } from '@/lib/dbPaging'
 
 // One reseller's ledger: stock, what they sent and reclaimed, open invitations
 // (cancellable), and their latest transfers. Support used to have nothing between
@@ -27,7 +28,14 @@ export default async function AdminResellerDetailPage({ params }: { params: Prom
       .eq('reseller_id', id).order('created_at', { ascending: false }).limit(25),
   ])
   const s = (summaryRows as any[])?.[0] ?? {}
-  const reserved = (invites ?? []).reduce((a: number, r: any) => a + Number(r.gb_amount), 0)
+  // The list above is capped at 100 rows for display; the reserved total and the count must
+  // cover every open invitation, so they are summed separately over all of them.
+  const allOpen = await fetchAllRows<{ gb_amount: number }>((from, to) => supabase.from('reseller_pending_transfers')
+    .select('gb_amount').eq('reseller_id', id).eq('status', 'pending').order('id').range(from, to))
+  const openCount = allOpen.error ? (invites?.length ?? 0) : allOpen.rows.length
+  const reserved = allOpen.error
+    ? (invites ?? []).reduce((a: number, r: any) => a + Number(r.gb_amount), 0)
+    : allOpen.rows.reduce((a, r) => a + Number(r.gb_amount), 0)
   const fmt = (d: string) => new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
   const tiles: [string, string][] = [
     ['Available', `${formatGb(bw?.available_gb)} GB`],
@@ -59,7 +67,7 @@ export default async function AdminResellerDetailPage({ params }: { params: Prom
       </div>
 
       <div className="bg-white border border-border rounded-xl overflow-hidden mb-8">
-        <div className="px-6 py-4 border-b border-border"><h2 className="font-display font-bold text-base text-ink">Open invitations ({invites?.length ?? 0})</h2></div>
+        <div className="px-6 py-4 border-b border-border"><h2 className="font-display font-bold text-base text-ink">Open invitations ({openCount}){allOpen.error ? ' — total could not be loaded' : openCount > (invites?.length ?? 0) ? ` — showing the newest ${invites?.length ?? 0}` : ''}</h2></div>
         {invites && invites.length > 0 ? (
           <table className="w-full">
             <thead><tr className="border-b border-border bg-surface">{['Address', 'GB', 'Sent', 'Expires', ''].map(h => <th key={h} className="text-left px-6 py-3 text-[10px] font-mono text-muted uppercase tracking-widest">{h}</th>)}</tr></thead>

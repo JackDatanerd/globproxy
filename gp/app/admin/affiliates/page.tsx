@@ -35,9 +35,12 @@ export default async function AdminAffiliatesPage({ searchParams }: { searchPara
     .select('id, full_name, email, created_at, is_verified_operator, verified_operator_since, affiliate_commission_rate, affiliate_commission_rate_lifetime', { count: 'exact' })
     .eq('affiliate_status', 'approved').eq('is_deleted', false)
   if (voOnly) activeQuery = activeQuery.eq('is_verified_operator', true)
+  // A failed lookup must not read as "no reviews due": it is surfaced in the banner below.
+  let dueErr: string | null = null
   if (dueOnly) {
     // Only the operators whose review is overdue (the Overview tile links here).
     const due = await listVerifiedOperatorsDue(supabase)
+    dueErr = due.error
     activeQuery = activeQuery.in('id', due.ids.length ? due.ids : ['00000000-0000-0000-0000-000000000000'])
   }
   if (q) activeQuery = activeQuery.or(`email.ilike.%${q}%,full_name.ilike.%${q}%`)
@@ -130,9 +133,9 @@ export default async function AdminAffiliatesPage({ searchParams }: { searchPara
         </div>
       </div>
 
-      {(activeErr || payoutsErr) && (
+      {(activeErr || payoutsErr || dueErr) && (
         <div className="mb-6 text-xs bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-2">
-          Some of this page could not be loaded ({[activeErr && 'affiliates', payoutsErr && 'pending payouts'].filter(Boolean).join(', ')}). What is empty below may not really be empty — reload before acting on it.
+          Some of this page could not be loaded ({[activeErr && 'affiliates', payoutsErr && 'pending payouts', dueErr && 'the reviews-due list'].filter(Boolean).join(', ')}). What is empty below may not really be empty — reload before acting on it.
         </div>
       )}
 
