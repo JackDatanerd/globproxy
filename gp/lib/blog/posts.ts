@@ -2,6 +2,192 @@ import type { BlogPost } from './types'
 
 export const BLOG_POSTS: BlogPost[] = [
   {
+    slug: 'two-factor-authentication-setup-backup-codes-recovery',
+    title: 'Two-Factor Authentication: Set Up, Backup Codes and Getting Back In',
+    description:
+      'Turn on 2FA with an authenticator app, save your backup codes, move to a new phone, and what to do if you lose your phone and your codes. Step by step.',
+    excerpt:
+      'How to turn on two-factor sign-in, what the backup codes are for, how to change phones, and the safe way back in if you lose everything.',
+    category: 'Guides',
+    publishedAt: '2026-10-27',
+    body: [
+      {
+        type: 'p',
+        text: 'Two-factor authentication (2FA) adds a second step to signing in: after your password, you type a 6-digit code from an app on your phone. If someone steals or guesses your password, they still cannot get into your proxies, billing or API keys without that code. It takes about five minutes to set up and it is optional for customer accounts (required for administrators).',
+      },
+      {
+        type: 'callout',
+        title: 'The one thing to do',
+        text: 'Save your 10 backup codes in a password manager when setup shows them. They are shown once and they are your way back in if you lose your phone. Everything else in this guide can be fixed later. Lost phone plus lost codes is the only slow case.',
+      },
+
+      { type: 'h2', text: 'Before you start' },
+      {
+        type: 'ul',
+        items: [
+          'An authenticator app on your phone, such as Google Authenticator, Authy, 1Password or similar. Any app that makes 6-digit codes will work.',
+          'About five minutes, and somewhere safe to store the backup codes (a password manager is best, not your email inbox).',
+        ],
+      },
+
+      { type: 'h2', text: 'Turn on two-factor authentication' },
+      {
+        type: 'ol',
+        items: [
+          'Sign in and open Settings in the dashboard sidebar. Find the Two-factor authentication card.',
+          'Click Enable two-factor authentication. The page "Set up two-factor authentication" opens with a QR code.',
+          'In your authenticator app, add a new account and scan the QR code. If you cannot scan it, click "Can\'t scan? Enter this code manually" and type the key into the app instead.',
+          'Your app now shows a 6-digit code that changes every 30 seconds. Type the current one into the 6-digit code box and click Verify & enable.',
+          'The next screen, "Save your backup codes", shows 10 codes. Use Download .txt or Copy to clipboard and put them somewhere safe.',
+          'Tick "I\'ve saved these codes somewhere safe. I understand GlobProxy can\'t show them to me again." and click Continue. 2FA is now on.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'Until you click Verify & enable, 2FA is not on, so closing the page early does no harm. After that it is on, so do not close the page before you have saved the codes. If you did, sign in with your app and use Regenerate backup codes in Settings.',
+      },
+
+      { type: 'h2', text: 'What signing in looks like now' },
+      {
+        type: 'p',
+        text: 'After your password you land on a "Verify it\'s you" page. Type the current 6-digit code from your app. Once you pass, that browser stays verified for 12 hours, roughly one working day, then asks again.',
+      },
+      {
+        type: 'p',
+        text: 'If you do not want to be asked every day on a computer you own, tick "Trust this browser for 30 days" on that page. Do not tick it on a shared or public computer. The option is not offered on administrator accounts.',
+      },
+      {
+        type: 'p',
+        text: 'If the code is rejected, check that your phone\'s clock is set to automatic, because the codes depend on the time. Each code can only be used once, so if you just used it, wait for the next one. After 5 wrong attempts the account is locked for 15 minutes. Resetting your password by email lifts the lock sooner.',
+      },
+
+      { type: 'h2', text: 'Backup codes: what they are and how to use one' },
+      {
+        type: 'p',
+        text: 'Backup codes are 10 single-use codes in the form ABCD-2345. If you cannot reach your authenticator app (lost, broken or wiped phone), a backup code works in place of the 6-digit code.',
+      },
+      {
+        type: 'ol',
+        items: [
+          'On the "Verify it\'s you" page, click "Lost your device? Use a backup code".',
+          'Type one backup code and continue. That code is now used up and will not work again.',
+          'If you are running low, the page tells you how many are left. Generate a new set from Settings soon.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'To go back to the app, click "Use your authenticator app instead".',
+      },
+      { type: 'h3', text: 'Get a fresh set of codes' },
+      {
+        type: 'ol',
+        items: [
+          'Open Settings, then the Two-factor authentication card. It shows how many backup codes you have left.',
+          'Click Regenerate backup codes.',
+          'Enter your current 6-digit code, or one of your backup codes, and click Confirm & regenerate. Using a backup code here uses that code up, the same as signing in with it.',
+          'Save the new codes. The old set stops working the moment you do this, so replace the copy you stored.',
+        ],
+      },
+
+      { type: 'h2', text: 'Moving to a new phone' },
+      {
+        type: 'p',
+        text: 'Do this while you can still open the old app, or have a backup code ready. Do not turn 2FA off and on again.',
+      },
+      {
+        type: 'ol',
+        items: [
+          'In Settings, on the Two-factor authentication card, click Change authenticator.',
+          'Confirm with your current 6-digit code or a backup code.',
+          'Scan the new QR code with the new phone\'s authenticator app, then enter the 6-digit code it shows and finish.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'You will see "Authenticator changed. Other trusted browsers will ask for a code again." Your backup codes stay the same. Once it works on the new phone, you can delete the old entry from the old app.',
+      },
+
+      { type: 'h2', text: 'Remove a browser you no longer use' },
+      {
+        type: 'p',
+        text: 'In Settings, the Verified & trusted browsers list shows every browser that has passed 2FA, with when it was verified and when that expires. Click Remove next to any you do not recognise or no longer use. Removing the browser you are on right now just asks you for a code again.',
+      },
+
+      { type: 'h2', text: 'Turn 2FA off' },
+      {
+        type: 'p',
+        text: 'In Settings, on the Two-factor authentication card, click Disable. Enter your current 6-digit code or a backup code and click Confirm disable. We recommend leaving it on. Administrator accounts cannot turn it off.',
+      },
+
+      { type: 'h2', text: 'Lost your phone and your backup codes' },
+      {
+        type: 'p',
+        text: 'This is deliberately slow. If it were quick, anyone who stole your password could use the same route. There are three steps and nothing is removed until the end.',
+      },
+      {
+        type: 'ol',
+        items: [
+          'Sign in with your password. When the "Verify it\'s you" page asks for a code, click "Lost your authenticator and your backup codes?" below the code box.',
+          'On the "Lost your authenticator?" page, enter your password and click E-mail me a confirmation link. The email "Confirm your request to remove two-factor authentication" goes to the address on your account and its link is valid for one hour.',
+          'Open the link ("Continue recovery") while signed in and click Start the waiting period. A 48-hour wait begins and a second email, "Two-factor recovery started", confirms it. 2FA stays on during the wait.',
+          'We do not send a reminder when the wait ends, so note the time. Settings also shows when it will be ready. After 48 hours, open the link from either email. It will say "The waiting period is over. You can now remove two-factor authentication." Click Remove two-factor authentication within 7 days, or the request expires and you start again.',
+          'Sign in with your password, then turn 2FA back on in Settings and save a new set of backup codes.',
+        ],
+      },
+      {
+        type: 'callout',
+        title: 'If you did not start this',
+        text: 'The email also lets you cancel. If a recovery request shows up that you did not make, cancel it from the email (no sign-in needed) or click Cancel removal in Settings, then change your password. Signing in successfully with a real 2FA code also cancels any open request.',
+        tone: 'accent2',
+      },
+      {
+        type: 'p',
+        text: 'If you cannot get into your email either, or you are on an administrator account, contact support@globproxy.com and we will verify it is really you before anything is reset. Administrator accounts cannot use the self-service route above.',
+      },
+
+      { type: 'h2', text: 'Keeping it from going wrong' },
+      {
+        type: 'ul',
+        items: [
+          'Store backup codes in a password manager or printed in a safe place, never only on the phone that holds your authenticator.',
+          'If you use a backup code to sign in, regenerate a new set that same day.',
+          'Back up or export your authenticator app if it supports it, before changing or wiping a phone.',
+          'Use Change authenticator when upgrading phones. Do not delete the old entry until the new one works.',
+        ],
+      },
+    ],
+    faq: [
+      {
+        q: 'Is two-factor authentication required?',
+        a: 'Not for customer or reseller accounts, but we recommend it. It is required for administrator accounts and cannot be turned off there. The dashboard shows a dismissible reminder until you turn it on.',
+      },
+      {
+        q: 'How often will I be asked for a code?',
+        a: 'About once every 12 hours on a browser. If you tick "Trust this browser for 30 days" on a computer you own, that browser is asked only every 30 days. Signing in on a new browser always asks.',
+      },
+      {
+        q: 'My code is always rejected. What is wrong?',
+        a: 'Most often the phone clock is off. Set date and time to automatic and try the next code. A code only works once, so a code you just used will be refused. After 5 wrong attempts the account locks for 15 minutes, or you can reset your password by email to unlock sooner.',
+      },
+      {
+        q: 'Can I see my backup codes again?',
+        a: 'No. They are shown once at setup and cannot be shown again. If you have lost them but can still sign in, use Regenerate backup codes in Settings. The old set stops working and you get 10 new ones.',
+      },
+      {
+        q: 'I lost my phone but I have my backup codes. What now?',
+        a: 'Sign in with a backup code, then use Change authenticator in Settings to link your new phone, and Regenerate backup codes. You do not need the 48-hour process.',
+      },
+      {
+        q: 'Why does recovery take 48 hours?',
+        a: 'It protects you. Anyone who has only your password cannot remove your second factor quickly, and you are emailed when it is requested and again when the waiting period starts, each with a way to cancel. If the real owner signs in with a valid code during the wait, the request is cancelled automatically.',
+      },
+      {
+        q: 'Will turning on 2FA interrupt my running proxies?',
+        a: 'No. 2FA only protects signing in to your account and sensitive account actions. Your proxy connections use their own credentials and are not affected.',
+      },
+    ],
+  },
+  {
     slug: 'paid-but-no-bandwidth-payment-not-showing',
     title: 'Paid but No Bandwidth? What to Do When a Payment Doesn\'t Show Up',
     description:
