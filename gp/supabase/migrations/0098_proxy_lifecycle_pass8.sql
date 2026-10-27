@@ -61,3 +61,7 @@ end;
 $$;
 revoke all on function public.replace_whitelist_mirror(uuid, uuid, jsonb) from public, anon, authenticated;
 grant execute on function public.replace_whitelist_mirror(uuid, uuid, jsonb) to service_role;
+
+insert into public.schema_migrations (filename) values
+  ('0098_proxy_lifecycle_pass8.sql')
+on conflict do nothing;
