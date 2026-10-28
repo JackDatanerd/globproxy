@@ -44,6 +44,9 @@ export const HELP_TOPICS: HelpTopic[] = [
   {
     title: 'Account security',
     blurb: 'Two-factor sign-in, backup codes and getting back into your account.',
-    slugs: ['two-factor-authentication-setup-backup-codes-recovery'],
+    slugs: [
+      'cant-sign-in-forgot-password-reset-link-problems',
+      'two-factor-authentication-setup-backup-codes-recovery',
+    ],
   },
 ]

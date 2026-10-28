@@ -2,6 +2,219 @@ import type { BlogPost } from './types'
 
 export const BLOG_POSTS: BlogPost[] = [
   {
+    slug: 'cant-sign-in-forgot-password-reset-link-problems',
+    title: 'Can\'t Sign In? Password Reset, Link Problems and Lockouts, Step by Step',
+    description:
+      'Fix sign-in errors, reset your password, handle a reset or confirmation link that does not work, and understand the 15-minute sign-in pause and password rules.',
+    excerpt:
+      'Most sign-in problems come down to a handful of causes. Find your message, see what it means and fix it in a few minutes.',
+    category: 'Guides',
+    section: 'help',
+    publishedAt: '2026-10-28',
+    body: [
+      {
+        type: 'p',
+        text: 'If you cannot get into your dashboard, the message on screen almost always tells you why. This guide goes through each one, then covers resetting your password, links that stop working, the short sign-in pause, and the rules for a new password. Nothing here needs support unless the last section applies to you.',
+      },
+      {
+        type: 'callout',
+        title: 'The short version',
+        text: 'Click Forgot password? on the sign-in page, enter your email and open the link we send, in the same browser you asked from, within an hour. Choose a new password and you are in. It also signs out every other device and lifts any sign-in pause.',
+      },
+
+      { type: 'h2', text: 'Find your message' },
+      {
+        type: 'table',
+        headers: ['What you see', 'What it means', 'What to do'],
+        rows: [
+          ['"Invalid login credentials"', 'The email or password does not match. We do not say which, on purpose.', 'Check the email is the one you signed up with, and the password has no stray space. If unsure, reset it.'],
+          ['"Please confirm your email address first."', 'You signed up but never clicked the confirmation link.', 'Use the "Resend the confirmation email" link that appears under the password box. See the confirmation section below.'],
+          ['"Please complete the verification check."', 'The human check above the Sign in button has not finished.', 'Wait for it to complete. If it will not load, disable a blocker for this page and refresh.'],
+          ['"Too many sign-in attempts from this connection. Wait 15 minutes and try again, or use Forgot password."', 'Ten wrong attempts in 15 minutes from the same connection.', 'Reset your password, or wait 15 minutes.'],
+          ['"There have been a lot of sign-in attempts on this account…"', 'Many attempts, from anywhere, on your account. New locations are paused.', 'Reset your password by email. That lifts the pause immediately. Or wait 15 minutes.'],
+          ['"Your account has been suspended. Contact support@globproxy.com."', 'The account is suspended.', 'Email support. A password reset will not change this.'],
+          ['"This account has been deleted."', 'The account was deleted.', 'It cannot be signed into. Email support if you think this is a mistake.'],
+          ['The page asks for a 6-digit code ("Verify it\'s you")', 'You have two-factor authentication on. Your password was right.', 'Enter the code from your authenticator app, or see our two-factor guide if you lost it.'],
+        ],
+      },
+      {
+        type: 'p',
+        text: 'The sign-in pause only slows the connection that kept guessing, so you are not locked out of your own account by someone else typing wrong passwords. It clears by itself after 15 minutes.',
+      },
+
+      { type: 'h2', text: 'Reset a forgotten password' },
+      {
+        type: 'ol',
+        items: [
+          'On the sign-in page click Forgot password?. The page "Reset password" opens.',
+          'Enter your email, complete the verification check and click Send reset link.',
+          'The page says "Check your inbox" and, deliberately, "If an account exists for…". It looks the same whether or not the address has an account, so nobody can use it to find out who is registered. Expect it to take a couple of seconds.',
+          'Open the email and click the link. Do it in the same browser and on the same device you used in step 2.',
+          'On "Set new password" type the new password twice and click Update password. You will see "Password updated!" and land in your dashboard.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'The link works for one hour, and once you have opened it you have 30 minutes to finish setting the password. If you have 2FA on, you will be asked for your code after the change. That is expected.',
+      },
+      { type: 'h3', text: 'What a reset also does' },
+      {
+        type: 'ul',
+        items: [
+          'Signs out every other device and browser, so anyone who had your old password is out.',
+          'Removes your trusted-browser status for two-factor, so each browser asks for a code again.',
+          'Lifts the sign-in pause and any lockout on your authenticator code.',
+          'Sends you an email, "Your GlobProxy password was changed". If you did not make the change, reset again straight away.',
+        ],
+      },
+
+      { type: 'h2', text: 'The reset email did not arrive' },
+      {
+        type: 'ol',
+        items: [
+          'Wait two minutes, then check spam and promotions folders for mail from GlobProxy.',
+          'Check the address. It must be the one on your account, spelled exactly. A typo gets no email and no error.',
+          'Do not click Send reset link repeatedly. After 4 requests for the same address within 10 minutes from one connection you will see "Too many requests for this email address from this connection. Please try again in a few minutes." Wait, then ask once more.',
+          'Suspended accounts are not sent reset emails. If you see the suspended message at sign-in, email support.',
+        ],
+      },
+
+      { type: 'h2', text: '"That reset link no longer works"' },
+      {
+        type: 'p',
+        text: 'You land back on Reset password with a notice at the top. In nearly every case it is one of these:',
+      },
+      {
+        type: 'ul',
+        items: [
+          'A newer link was requested since. Only the most recent link, in the browser that asked for it, can be used. Delete older emails and use the latest.',
+          'The link was opened in a different browser or device than the one you asked from. Open it where you made the request, or request a fresh one there.',
+          'More than an hour has passed.',
+          'You opened it from an email app that uses its own built-in browser, which counts as a different browser. Copy the link into the browser you asked from.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'The fix is the same each time: enter your email again, send a new link, and open it in that same browser straight away.',
+      },
+
+      { type: 'h2', text: 'Confirming a new account' },
+      {
+        type: 'p',
+        text: 'After signup we email a confirmation link. You cannot sign in until you have opened it.',
+      },
+      {
+        type: 'ol',
+        items: [
+          'On the "Check your inbox" page, type your email under "Didn\'t get it? Resend to".',
+          'Re-enter the password you chose in the box marked recommended. Then the new link keeps your password and you can sign in straight away. If you leave it blank, the link still confirms your email, but your first sign-in will need Forgot password.',
+          'Click Resend confirmation email. You can send again after 60 seconds.',
+          'Open the link in the same browser you signed up in.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'If a confirmation link seems to fail, your email may already be confirmed. Go to the sign-in page and try. If it says your address is not confirmed, resend. If it says the password is wrong, use Forgot password.',
+      },
+
+      { type: 'h2', text: 'Choosing a password that is accepted' },
+      {
+        type: 'ul',
+        items: [
+          'At least 8 characters, and no more than 72 bytes. Ordinary characters are one byte each; emoji and some accented letters are more, so a very long passphrase with them can go over.',
+          'Not only spaces, not one character repeated, and not the same as your email address.',
+          'Not a common password such as "password1", and not one that has appeared in known data breaches. We check this without sending your password anywhere in full.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'If you see "That password is too common" or "That password has appeared in known data breaches", it is not about your account. Pick something longer. Three or four unrelated words work well and are easy to remember. A password manager is better still.',
+      },
+
+      { type: 'h2', text: 'Change your password while signed in' },
+      {
+        type: 'ol',
+        items: [
+          'Open Settings in the dashboard and find the Change password card.',
+          'Enter your Current password, then the New password twice.',
+          'Click Update password. If 2FA is on, verify your code first when asked.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'You will see "Password updated. Other devices have been signed out." The new password must differ from the old one. A wrong current password gives "Your current password is incorrect.", and several wrong tries in a row pause the check for a few minutes. If you do not remember the current password, sign out and use Forgot password instead. The Set new password page is only for reset links, and tells you so if you open it while signed in normally.',
+      },
+
+      { type: 'h2', text: 'If you think someone else has your password' },
+      {
+        type: 'ol',
+        items: [
+          'Change your password now, using Settings or Forgot password.',
+          'In Settings, open Recent security activity and look for sign-ins or changes you do not recognise.',
+          'Under Where you\'re signed in, sign out any device you do not recognise, or click Sign out other devices.',
+          'Turn on two-factor authentication. Our two-factor guide takes five minutes.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'We also email you when someone signs in from a device or country we have not seen on your account, and whenever the password or email changes. The password and email change notices carry a reset button. Treat any of these you did not expect as the signal to do the steps above.',
+      },
+
+      { type: 'h2', text: 'When to contact us, and what to send' },
+      {
+        type: 'p',
+        text: 'Contact us if you still cannot get in after a fresh reset link opened in the right browser, if the reset email never arrives after 15 minutes and the address is right, or if you are told your account is suspended and do not know why. Email support@globproxy.com from the address on your account if you can. Please include:',
+      },
+      {
+        type: 'ul',
+        items: [
+          'The email address you sign in with.',
+          'The exact message you see, or a screenshot of it.',
+          'The time you tried, with your time zone.',
+          'What you have already tried: reset email sent, link opened, same browser or not.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'Never send your password, a backup code or an authenticator code. We will never ask for them.',
+      },
+    ],
+    faq: [
+      {
+        q: 'Why does it say "Invalid login credentials" without telling me which part is wrong?',
+        a: 'So that nobody can use the sign-in page to find out which emails have accounts. Check the email and password for typos, or reset the password.',
+      },
+      {
+        q: 'How long is a password reset link valid?',
+        a: 'One hour. After you open it you have 30 minutes to finish choosing the new password. If either runs out, request a fresh link.',
+      },
+      {
+        q: 'My reset link says it no longer works. Why?',
+        a: 'Usually a newer link was requested since, or it was opened in a different browser than the one you asked from. Request one new link and open it straight away in the same browser.',
+      },
+      {
+        q: 'Will resetting my password sign me out of my proxies?',
+        a: 'No. It signs out dashboard sessions on other devices and clears trusted browsers for two-factor. Your proxy logins have their own credentials and keep working.',
+      },
+      {
+        q: 'I am told too many sign-in attempts. How long do I wait?',
+        a: '15 minutes. Or reset your password by email, which lifts the pause at once.',
+      },
+      {
+        q: 'Why is my new password rejected?',
+        a: 'It is under 8 characters or over 72 bytes, is the same as your email, is a very common password, or has appeared in known data breaches. Pick a longer, less guessable one.',
+      },
+      {
+        q: 'I never got the confirmation email. What now?',
+        a: 'Check spam, then use Resend confirmation email on the page after signup. Re-enter your password there so the new link keeps it. Open the link in the browser you signed up in.',
+      },
+      {
+        q: 'Do I need my 2FA code to reset my password?',
+        a: 'Not to reset it, but after you set the new password you will be asked for a code to sign in. If you lost your authenticator, see our two-factor guide for backup codes and recovery.',
+      },
+    ],
+  },
+  {
     slug: 'api-quickstart-create-first-sub-user',
     title: 'API Quickstart: Create Your First Sub-User and Connect in 10 Minutes',
     description:
