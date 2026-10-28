@@ -59,12 +59,13 @@ const BULK_UPDATE_CHUNK = 500
 
 async function applyChanges(
   supabase: AdminClient,
-  changes: UsageChange[]
+  changes: UsageChange[],
+  readAt?: string
 ) {
   let bulkOk = true
   for (let i = 0; i < changes.length; i += BULK_UPDATE_CHUNK) {
     const chunk = changes.slice(i, i + BULK_UPDATE_CHUNK)
-    const { data: written, error } = await supabase.rpc('bulk_update_credential_usage', { updates: chunk.map(({ id, gb_used }) => ({ id, gb_used })) })
+    const { data: written, error } = await supabase.rpc('bulk_update_credential_usage', { updates: chunk.map(({ id, gb_used }) => ({ id, gb_used, ...(readAt ? { read_at: readAt } : {}) })) })
     if (error) {
       bulkOk = false
       console.error('bulk_update_credential_usage failed:', error)
@@ -78,7 +79,11 @@ async function applyChanges(
       if (Array.isArray(written)) for (const w of written as { id: string; prev: number | string }[]) replaced.set(w.id, Number(w.prev))
       await recordUsageDeltas(supabase, chunk.filter(c => c.user_id).map(c => {
         const prev = replaced.get(c.id)
-        return { user_id: c.user_id as string, gb: prev === undefined ? c.delta : c.gb_used - prev }
+        // Array result = the function reports what it wrote, so a row missing from it was SKIPPED
+        // (a fresher reading landed meanwhile — migration 0102): nothing to credit. A non-array
+        // result is the pre-0100 function, which wrote everything: use the snapshot delta.
+        if (prev === undefined) return { user_id: c.user_id as string, gb: Array.isArray(written) ? 0 : c.delta }
+        return { user_id: c.user_id as string, gb: c.gb_used - prev }
       }))
     }
   }
@@ -118,6 +123,7 @@ export async function syncAllUsage(admin?: AdminClient) {
   )
   if (credsErr) throw new Error(`Could not load credentials for usage sync: ${credsErr}`)
 
+  const readAt = new Date().toISOString() // before the supplier read: the bulk write skips rows refreshed after this
   const { subUsers, complete } = await listAllSubUsers()
   const usageMap = new Map<string, number>()
   // A sub-user whose usage figure the provider omitted is simply left out:
@@ -126,7 +132,7 @@ export async function syncAllUsage(admin?: AdminClient) {
 
   const active = creds.filter(c => c.status === 'active')
   const changes = buildChanges(active, usageMap)
-  const { recalcOk, bulkOk, healthy } = await applyChanges(supabase, changes)
+  const { recalcOk, bulkOk, healthy } = await applyChanges(supabase, changes, readAt)
 
   let limitsReconciled = 0
   let missingUpstream = 0
@@ -217,28 +223,46 @@ async function reconcileLimits(
   let patched = 0
   let attempts = 0
   let consecutiveFailures = 0
+
+  // Work out which credentials actually drifted BEFORE touching the network, then order them.
+  // Iterating `active` in id order with a hard attempt/failure budget meant a credential whose
+  // PATCH fails every time (upstream rejects it) sat at the front forever: 3 failures ended the
+  // pass each tick, so every credential after it — including suspended owners' caps — was never
+  // reached. Suspended-owner caps go first (they cut traffic off); the rest start from a
+  // rotating offset so each tick works a different slice of the drifted set.
+  type Drift = { c: any; kind: 'suspended' | 'limit'; cap?: number }
+  const suspendedDrift: Drift[] = []
+  const limitDrift: Drift[] = []
   for (const c of active) {
-    if (attempts >= MAX_LIMIT_PATCHES_PER_RUN || consecutiveFailures >= MAX_CONSECUTIVE_LIMIT_FAILURES) break
     const snap = subUsers.get(String(c.upstream_sub_user_id))
     if (!snap || snap.limitMb === null) continue // not on upstream, or no limit reported — nothing to compare
+    if (suspendedUsers.has(c.user_id)) {
+      if (snap.usedMb === null) continue // unknown usage — don't guess a cap
+      const cap = suspendedCapMb(snap.usedMb)
+      if (snap.limitMb > cap + 1) suspendedDrift.push({ c, kind: 'suspended', cap })
+      continue
+    }
+    const expected = expectedLimitMb(Number(c.gb_allocated))
+    // ±1 MB tolerates rounding between GB (4dp) and whole MB.
+    if (Math.abs(snap.limitMb - expected) > 1) limitDrift.push({ c, kind: 'limit' })
+  }
+  const rotate = <T,>(arr: T[]): T[] => {
+    if (arr.length < 2) return arr
+    const off = Math.floor(Date.now() / 300_000) % arr.length
+    return arr.slice(off).concat(arr.slice(0, off))
+  }
+  const queue = [...rotate(suspendedDrift), ...rotate(limitDrift)]
 
+  for (const d of queue) {
+    if (attempts >= MAX_LIMIT_PATCHES_PER_RUN || consecutiveFailures >= MAX_CONSECUTIVE_LIMIT_FAILURES) break
+    const c = d.c
     try {
-      if (suspendedUsers.has(c.user_id)) {
-        if (snap.usedMb === null) continue // unknown usage — don't guess a cap
-        const cap = suspendedCapMb(snap.usedMb)
-        if (snap.limitMb > cap + 1) {
-          attempts++
-          await updateSubUserTrafficLimit(c.upstream_sub_user_id, cap)
-          patched++
-          consecutiveFailures = 0
-        }
-        continue
-      }
-
-      const expected = expectedLimitMb(Number(c.gb_allocated))
-      // ±1 MB tolerates rounding between GB (4dp) and whole MB.
-      if (Math.abs(snap.limitMb - expected) > 1) {
-        attempts++
+      attempts++
+      if (d.kind === 'suspended') {
+        await updateSubUserTrafficLimit(c.upstream_sub_user_id, d.cap as number)
+        patched++
+        consecutiveFailures = 0
+      } else {
         // syncCredentialLimit re-reads gb_allocated immediately before the
         // PATCH, so a top-up that committed after this run's snapshot is not
         // overwritten with a stale number.
@@ -719,6 +743,7 @@ export async function syncUserUsage(userId: string) {
   // reporting a clean, empty run.
   if (credsErr) throw new Error(`Could not load credentials for usage sync: ${credsErr.message}`)
 
+  const readAt = new Date().toISOString()
   const usageMap = new Map<string, number>()
   let failures = 0
   for (const c of creds ?? []) {
@@ -734,7 +759,7 @@ export async function syncUserUsage(userId: string) {
   }
 
   const changes = buildChanges(creds ?? [], usageMap)
-  const { recalcOk, bulkOk } = await applyChanges(supabase, changes)
+  const { recalcOk, bulkOk } = await applyChanges(supabase, changes, readAt)
   // Settles this user's auto-top-ups immediately rather than waiting for the
   // next full tick — but not on a partial read of their usage.
   const autoTopup = failures === 0 ? await runAutoTopups(userId) : null

@@ -35,7 +35,7 @@ export async function POST(req: Request) {
     // Only reported as synced when the sync actually succeeded; after a failure each pause refreshes its own session.
     let syncWholeAccount = false
     if (action === 'pause' && ids.length > BULK_SYNC_MIN) {
-      syncWholeAccount = await syncUserUsage(user.id).then(() => true, (e) => { console.error('[bulk-action] pre-pause usage sync failed', e); return false })
+      syncWholeAccount = await syncUserUsage(user.id).then((r) => r.usage_fetch_failures === 0 && r.usage_write_ok && r.recalc_ok, (e) => { console.error('[bulk-action] pre-pause usage sync failed', e); return false })
     }
 
     const results: any[] = []

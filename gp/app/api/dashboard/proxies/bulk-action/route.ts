@@ -61,7 +61,7 @@ export async function POST(req: Request) {
   // after a failed sync each pause must refresh its own session, or it caps at stale usage.
   let usageSynced = false
   if (action === 'pause' && ids.length > 5) {
-    usageSynced = await syncUserUsage(user.id).then(() => true, (e) => { console.error('[dashboard bulk] pre-pause usage sync failed', e); return false })
+    usageSynced = await syncUserUsage(user.id).then((r) => r.usage_fetch_failures === 0 && r.usage_write_ok && r.recalc_ok, (e) => { console.error('[dashboard bulk] pre-pause usage sync failed', e); return false })
   }
 
   const results: { id: string; ok: boolean; error?: string; code?: string }[] = []

@@ -91,16 +91,27 @@ export async function replayWhitelist(admin: Admin, credentialId: string, upstre
   return restored
 }
 
+// Cron batches used to take the oldest `limit` rows every run, so rows that fail every time (the
+// supplier keeps erroring for them) filled the batch forever and starved everything behind them.
+// Read a wider window and start from a different place each tick.
+function rotatedBatch<T>(rows: T[] | null, limit: number): T[] {
+  const w = rows ?? []
+  if (w.length <= limit) return w
+  const off = Math.floor(Date.now() / 300_000) % w.length
+  return w.slice(off).concat(w.slice(0, off)).slice(0, limit)
+}
+
 // Cron: sessions whose whitelist replay failed at provisioning (proxy_credentials.whitelist_replay_pending).
 // Retried until it lands; a sub-user missing upstream is left to the usage sync's handling.
 export async function retryPendingWhitelistReplays(admin: Admin, limit = 15): Promise<{ checked: number; restored: number }> {
   const { data: rows, error } = await admin
     .from('proxy_credentials').select('id, upstream_sub_user_id')
     .eq('status', 'active').eq('whitelist_replay_pending', true).not('upstream_sub_user_id', 'is', null)
-    .order('created_at').limit(limit)
+    .order('created_at').limit(limit * 8)
   if (error) { console.error('[whitelist-mirror] replay retry read failed', error); return { checked: 0, restored: 0 } }
+  const batch = rotatedBatch(rows, limit)
   let restored = 0
-  for (const r of rows ?? []) {
+  for (const r of batch) {
     try {
       await replayWhitelist(admin, r.id, r.upstream_sub_user_id)
       await admin.from('proxy_credentials').update({ whitelist_replay_pending: false }).eq('id', r.id)
@@ -109,7 +120,7 @@ export async function retryPendingWhitelistReplays(admin: Admin, limit = 15): Pr
       if (!isUpstreamNotFound(e)) console.error('[whitelist-mirror] replay retry failed', r.id, e)
     }
   }
-  return { checked: rows?.length ?? 0, restored }
+  return { checked: batch.length, restored }
 }
 
 // Cron backfill: sessions created before the mirror existed (or whose mirror failed) have
@@ -118,20 +129,21 @@ export async function backfillWhitelistMirrors(admin: Admin, limit = 15): Promis
   const { data: rows, error } = await admin
     .from('proxy_credentials').select('id, user_id, upstream_sub_user_id')
     .eq('status', 'active').is('whitelist_mirrored_at', null).not('upstream_sub_user_id', 'is', null)
-    .order('created_at').limit(limit)
+    .order('created_at').limit(limit * 8)
   if (error) { console.error('[whitelist-mirror] backfill read failed', error); return { checked: 0, mirrored: 0 } }
+  const batch = rotatedBatch(rows, limit)
   let mirrored = 0
-  for (const r of rows ?? []) {
+  for (const r of batch) {
     try {
       const ips = await listWhitelistedIps(r.upstream_sub_user_id)
-      await mirrorWhitelist(admin, r.id, r.user_id, ips)
+      await mirrorWhitelist(admin, r.id, r.user_id, ips, r.upstream_sub_user_id)
       mirrored++
     } catch (e) {
       // 404 = sub-user missing upstream: the usage sync's missing-sub-user handling owns that.
       if (!isUpstreamNotFound(e)) console.error('[whitelist-mirror] backfill failed', r.id, e)
     }
   }
-  return { checked: rows?.length ?? 0, mirrored }
+  return { checked: batch.length, mirrored }
 }
 
 // A supplier 404 on a whitelist call can mean "that IP isn't listed" OR "this session's

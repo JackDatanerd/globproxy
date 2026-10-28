@@ -118,7 +118,7 @@ export async function runAutoTopups(userId?: string, admin?: Supa) {
   const { rows: allCandidates, error: fetchErr } = await fetchAllRows<any>((from, to) => {
     let q = supabase
       .from('proxy_credentials')
-      .select('id, user_id, label, gb_allocated, gb_used, auto_topup_threshold_gb, auto_topup_amount_gb, auto_topup_insufficient_alerted_at')
+      .select('id, user_id, label, gb_allocated, gb_used, auto_topup_threshold_gb, auto_topup_amount_gb, auto_topup_insufficient_alerted_at, auto_topup_alert_kind')
       .eq('auto_topup_enabled', true)
       .eq('status', 'active')
       .is('created_by', null) // reseller-allocated credentials are never eligible — same rule the RPC enforces
@@ -171,7 +171,11 @@ export async function runAutoTopups(userId?: string, admin?: Supa) {
     // can't fit used to fail on EVERY tick forever with nothing but a log
     // line; tell the customer once instead and don't even call the database.
     if (Number(cred.gb_allocated) + Number(cred.auto_topup_amount_gb) > MAX_GB_PER_CREDENTIAL) {
-      if (await alertOnce(supabase, cred, 'session_limit')) insufficientAlerts++
+      // Already told for this episode (flag set with this kind, or set before kinds existed):
+      // alertOnce would match nothing, but it is still a database call per stuck session per tick
+      // OUTSIDE the per-run cap — thousands of them eat the Worker's subrequest budget.
+      const alreadyTold = cred.auto_topup_insufficient_alerted_at && (!cred.auto_topup_alert_kind || cred.auto_topup_alert_kind === 'session_limit')
+      if (!alreadyTold && await alertOnce(supabase, cred, 'session_limit')) insufficientAlerts++
       continue
     }
 

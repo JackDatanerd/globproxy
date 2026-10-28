@@ -5,20 +5,28 @@ import { requireActiveUser } from '@/lib/apiAuth'
 import { bulkAddWhitelistedIps, bulkRemoveWhitelistedIps } from '@/lib/upstream'
 import { isValidIp, validateIpForAdd, validateDescription, notifyWhitelistChanged, MAX_BULK_ITEMS } from '@/lib/ipWhitelist'
 import { mirrorWhitelist, whitelistFailure } from '@/lib/whitelistMirror'
+import { isUuidString } from '@/lib/cursor'
 import { NextResponse } from 'next/server'
 
 async function loadOwnedCredential(_supabase: Awaited<ReturnType<typeof createClient>>, id: string, userId: string) {
   // Service role + an explicit user_id filter: customers can't SELECT the
   // upstream_* columns directly (migration 0059), and ownership is enforced here.
   const admin = await createAdminClient()
-  const { data: cred } = await admin
+  // A malformed id is simply "not found" (and never reaches the uuid column); a database error
+  // is NOT "not found" — it used to be swallowed into a 404 that told the customer their session
+  // had vanished during a brief database blip.
+  if (!isUuidString(id)) return null
+  const { data: cred, error } = await admin
     .from('proxy_credentials')
     .select('id, user_id, upstream_sub_user_id')
     .eq('id', id)
     .eq('user_id', userId)
     .maybeSingle()
+  if (error) throw new LookupError()
   return cred
 }
+
+class LookupError extends Error {}
 
 // Bulk add — mirrors POST /whitelisted-ips/bulk-create. Kept as a
 // separate route (rather than overloading the single-IP POST above with
@@ -58,7 +66,9 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
     items.push({ ip, description })
   }
 
-  const cred = await loadOwnedCredential(supabase, id, user.id)
+  let cred: Awaited<ReturnType<typeof loadOwnedCredential>>
+  try { cred = await loadOwnedCredential(supabase, id, user.id) }
+  catch { return NextResponse.json({ error: 'Could not load this session. Please try again.' }, { status: 503 }) }
   if (!cred) return NextResponse.json({ error: 'Credential not found' }, { status: 404 })
   if (!cred.upstream_sub_user_id) {
     return NextResponse.json({ error: 'This credential is still being provisioned — try again shortly.' }, { status: 409 })
@@ -110,7 +120,9 @@ export async function DELETE(req: Request, context: { params: Promise<{ id: stri
     ips.push(ip)
   }
 
-  const cred = await loadOwnedCredential(supabase, id, user.id)
+  let cred: Awaited<ReturnType<typeof loadOwnedCredential>>
+  try { cred = await loadOwnedCredential(supabase, id, user.id) }
+  catch { return NextResponse.json({ error: 'Could not load this session. Please try again.' }, { status: 503 }) }
   if (!cred) return NextResponse.json({ error: 'Credential not found' }, { status: 404 })
   if (!cred.upstream_sub_user_id) {
     return NextResponse.json({ error: 'This credential is still being provisioned — try again shortly.' }, { status: 409 })

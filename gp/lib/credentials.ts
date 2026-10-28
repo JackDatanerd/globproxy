@@ -409,6 +409,16 @@ export async function deleteCredential(
     }
   }
 
+  // The ledger credit below is (archived − the gb_used the row held when it was deleted). `cred`
+  // was read before the upstream calls above, which can take seconds — a usage sync that credited
+  // growth in that window made this credit the same slice a second time. Re-read right before the
+  // transaction so the baseline is as close to the deleted row as it can be.
+  let ledgerBaseline = Number(cred.gb_used ?? 0)
+  {
+    const { data: fresh } = await admin.from('proxy_credentials').select('gb_used').eq('id', id).eq('user_id', userId).maybeSingle()
+    if (fresh && fresh.gb_used !== null && fresh.gb_used !== undefined) ledgerBaseline = Number(fresh.gb_used)
+  }
+
   const { data: result, error } = await admin.rpc('delete_own_credential', {
     p_credential_id: id, p_user_id: userId, p_live_used_gb: liveUsedGb,
   })
@@ -422,7 +432,7 @@ export async function deleteCredential(
   const used = Number((result as any)?.archived_gb ?? 0)
   // Usage the session consumed since its last sync is credited to the daily history now —
   // the sync can no longer see it once the row is gone.
-  await recordUsageDeltas(admin, [{ user_id: userId, gb: used - Number(cred.gb_used ?? 0) }])
+  await recordUsageDeltas(admin, [{ user_id: userId, gb: used - ledgerBaseline }])
   await dispatchWebhook(userId, 'session_deleted', {
     credential_id: id, label: cred.label, gb_allocated: Number(cred.gb_allocated), gb_used: used, gb_released: released, source,
   })
@@ -642,7 +652,9 @@ export async function provisionPendingCredentials(
       // Neutral code + reason only — never the raw upstream text.
       try {
         await admin.from('proxy_credentials')
-          .update({ last_provision_error: errMsg(e), pending_reason: classifyUpstreamError(e) })
+          // Also frees the claim: left set, the row looked 'in progress' and the customer's retry got a
+          // 409 until the lease expired, even though nothing was running.
+          .update({ last_provision_error: errMsg(e), pending_reason: classifyUpstreamError(e), provisioning_claimed_at: null })
           .eq('id', cred.id).eq('status', 'pending')
       } catch { /* best effort */ }
     }
@@ -657,9 +669,14 @@ export async function reconcileLimitSync(limit = 5): Promise<{ checked: number; 
   const { data: rows } = await admin
     .from('proxy_credentials').select('id, gb_allocated, upstream_sub_user_id')
     .eq('status', 'active').eq('last_provision_error', LIMIT_SYNC_MARKER)
-    .not('upstream_sub_user_id', 'is', null).limit(limit)
+    .not('upstream_sub_user_id', 'is', null).order('id').limit(limit * 8)
+  // A row whose PATCH keeps failing used to sit first in the id-ordered batch every run and starve
+  // the rest. Look at a wider window and start from a different place each tick.
+  const window = rows ?? []
+  const off = window.length > limit ? Math.floor(Date.now() / 300_000) % window.length : 0
+  const batch = window.slice(off).concat(window.slice(0, off)).slice(0, limit)
   let fixed = 0
-  for (const r of rows ?? []) {
+  for (const r of batch) {
     try {
       // Re-reads gb_allocated immediately before the PATCH (and verifies after), so
       // a top-up that committed since this select is not overwritten with a stale
@@ -670,7 +687,7 @@ export async function reconcileLimitSync(limit = 5): Promise<{ checked: number; 
       console.error('[provision] limit sync retry failed', r.id, e)
     }
   }
-  return { checked: rows?.length ?? 0, fixed }
+  return { checked: batch.length, fixed }
 }
 
 // ── Edit in place ─────────────────────────────────────────────────────
