@@ -785,8 +785,14 @@ export async function updateCredentialSettings(
     return fail(500, 'internal_error', 'Could not update the sub-user.')
   }
   if (!data) return fail(404, 'not_found', 'Sub-user not found')
+  // `changed` lists only fields whose value actually differs from what the session had. The dashboard's
+  // Edit tab sends every field on every save, so listing the keys of the patch reported country, state,
+  // city, asn, protocol… as changed on a plain relabel. A save that changes nothing sends no event.
+  const sameValue = (a: unknown, b: unknown) => (a ?? null) === (b ?? null)
+  const changed = Object.keys(patch).filter((k) => k !== 'port' && !sameValue(patch[k], (cred as Record<string, unknown>)[k]))
+  if (changed.length === 0) return { ok: true, data: { cred: data } }
   await dispatchWebhook(userId, 'session_updated', {
-    credential_id: id, label: data.label ?? null, changed: Object.keys(patch).filter((k) => k !== 'port'),
+    credential_id: id, label: data.label ?? null, changed,
     protocol: data.protocol, session_type: data.session_type, sticky_duration: data.sticky_duration ?? null,
     country: data.country ?? null, state: data.state ?? null, city: data.city ?? null, asn: data.asn ?? null,
     endpoint_count: data.endpoint_count, source,

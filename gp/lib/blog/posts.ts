@@ -261,7 +261,7 @@ export const BLOG_POSTS: BlogPost[] = [
       {
         type: 'callout',
         title: 'Keep it as wide as the task allows',
-        text: 'One city plus one internet provider draws from a much smaller pool than a whole state. If a tightly targeted session is slow, repeats IPs or fails, widen it first: drop the ISP, then the city. Many tasks that feel like they need an exact city work well at state level.',
+        text: 'One city draws from a much smaller pool than a whole state, and one internet provider (ISP) from a smaller pool than a whole country. If a tightly targeted session is slow, repeats IPs or fails, widen it first: drop the city, then the state. An ISP is country-wide and is not combined with a state or city; if an ISP session fails with “no proxies available”, pick another ISP or use the country only. Many tasks that feel like they need an exact city work well at state level.',
         tone: 'accent2',
       },
 
@@ -274,7 +274,7 @@ export const BLOG_POSTS: BlogPost[] = [
         type: 'ul',
         items: [
           'The session\'s label and the Username from the Credentials tab, with the password removed.',
-          'The location you chose on the Edit tab (country, state, city, and any ISP).',
+          'The targeting you chose on the Edit tab (country, then either a state and city or an ISP).',
           'The date and time of the test, and your time zone.',
           'The IPs you got and what each lookup service said, for at least three runs.',
           'What your real task showed, if that is where you saw the problem.',
@@ -1150,7 +1150,7 @@ for name, proxy in ENDPOINTS.items():
       {
         type: 'callout',
         title: 'Check the exit location too',
-        text: 'A sticky IP is only as good as its location. If the country or city looks wrong, widen the targeting first. A narrow city plus a narrow ISP has a smaller pool to choose from and is the usual cause of both slow connections and surprise changes.',
+        text: 'A sticky IP is only as good as its location. If the country or city looks wrong, widen the targeting first. A narrow city, or a narrow ISP, has a smaller pool to choose from and is the usual cause of both slow connections and surprise changes.',
       },
     ],
     faq: [
@@ -1412,13 +1412,13 @@ for name, proxy in ENDPOINTS.items():
           'If a city is not in the list, it cannot be targeted. Pick the state or region instead.',
           '"State / region" means whatever the country uses: states in the United States, nations such as England and Scotland in the United Kingdom, counties in Kenya.',
           'A few territories have no region list, so you can target only the country. Right now these are Aruba, the Falkland Islands and Gibraltar.',
-          'Under Advanced targeting you can also pick an ISP. It is offered only after a country is chosen, and an ISP that does not exist in that country is rejected rather than saved.',
+          'Under Advanced targeting you can also pick an ISP. It is offered only after a country is chosen and only while the state and city are set to Any, because an ISP is country-wide. An ISP that does not exist in that country is rejected rather than saved.',
         ],
       },
       {
         type: 'callout',
         title: 'Narrower is not always better',
-        text: 'One city plus one ISP draws from a much smaller pool of IPs than a whole country. If a tightly targeted session is slow or failing, widen it first (drop the ISP, then the city) before assuming something else is wrong.',
+        text: 'One city draws from a much smaller pool of IPs than a whole country, and so does a single ISP. If a tightly targeted session is slow or failing, widen it first (drop the city, then the state, or pick another ISP) before assuming something else is wrong. An ISP is never combined with a state or city.',
       },
 
       { type: 'h2', text: 'Option B: get unused GB back and make a second session' },
@@ -1582,7 +1582,7 @@ for name, proxy in ENDPOINTS.items():
         items: [
           'gp_3f9a… is your session\'s base ID.',
           '-type-residential is the network type.',
-          '-country-us-state-texas-city-austin is the location. State and city are optional; an ISP appears as -asn-<number> if you chose one. A session created with Any country has no location part at all.',
+          '-country-us-state-texas-city-austin is the location. State and city are optional; an ISP appears as -asn-<number> if you chose one instead of a state or city (an ISP is country-wide, so it is not combined with them). A session created with Any country has no location part at all.',
         ],
       },
       {

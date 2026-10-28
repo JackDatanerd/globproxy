@@ -97,3 +97,21 @@ test('customer-facing ASN text never names the upstream supplier', () => {
     assert.equal(leaksSupplier(read(f)), false, f)
   }
 })
+
+test('help articles no longer present a city plus an ISP as a valid combination', () => {
+  const posts = read('lib/blog/posts.ts')
+  assert.doesNotMatch(posts, /One city plus one (ISP|internet provider)/)
+  assert.doesNotMatch(posts, /narrow city plus a narrow ISP/)
+  assert.doesNotMatch(posts, /drop the ISP, then the city/)
+  // every copy of the username explainer says an ISP replaces state/city
+  const explainers = posts.match(/an ISP appears as -asn-<number> if you chose one[^.]*\./g) ?? []
+  assert.ok(explainers.length >= 1)
+  for (const e of explainers) assert.match(e, /instead of a state or city/)
+})
+
+test('session_updated lists only fields that really changed, and a no-op save sends no event', () => {
+  const src = read('lib/credentials.ts')
+  assert.match(src, /!sameValue\(patch\[k\], \(cred as Record<string, unknown>\)\[k\]\)/)
+  assert.match(src, /if \(changed\.length === 0\) return \{ ok: true, data: \{ cred: data \} \}/)
+  assert.doesNotMatch(src, /changed: Object\.keys\(patch\)\.filter/)
+})
