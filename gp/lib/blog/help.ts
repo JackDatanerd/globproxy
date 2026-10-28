@@ -29,7 +29,11 @@ export const HELP_TOPICS: HelpTopic[] = [
   {
     title: 'Bandwidth and payments',
     blurb: 'Where your GB went, automatic top-ups, and payments that have not shown up.',
-    slugs: ['auto-allocate-and-auto-recharge-never-run-dry', 'paid-but-no-bandwidth-payment-not-showing'],
+    slugs: [
+      'usage-and-remaining-gb-not-matching',
+      'auto-allocate-and-auto-recharge-never-run-dry',
+      'paid-but-no-bandwidth-payment-not-showing',
+    ],
   },
   {
     title: 'Account security',

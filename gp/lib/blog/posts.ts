@@ -2,6 +2,153 @@ import type { BlogPost } from './types'
 
 export const BLOG_POSTS: BlogPost[] = [
   {
+    slug: 'usage-and-remaining-gb-not-matching',
+    title: 'Usage and Remaining GB Don\'t Match? Where Each Number Comes From',
+    description:
+      'Session, Overview and Usage page figures differ? How each number is worked out, why they lag by a few minutes, how to refresh, and when to contact support.',
+    excerpt:
+      'The numbers are rarely wrong, they are measuring different things at slightly different times. Here is how to read them and check them.',
+    category: 'Bandwidth & Pricing',
+    section: 'help',
+    publishedAt: '2026-10-28',
+    body: [
+      {
+        type: 'p',
+        text: 'You look at a session and it says one thing, the Usage page says another, and neither matches what you expected to have left. In nearly every case nothing is lost. The dashboard shows several different numbers, each measuring something slightly different, and they are updated on a short delay. This guide explains what each one is so you can work out which one to trust for your question.',
+      },
+      {
+        type: 'callout',
+        title: 'The short version',
+        text: 'Usage is read about every 5 minutes, so every figure can be a few minutes behind. Each session\'s Bandwidth tab has a Refresh usage button for an up-to-the-moment number on that session. Account totals catch up at the next update. If a figure has not moved at all after 15 minutes of real traffic, contact us with the details at the end.',
+      },
+
+      { type: 'h2', text: 'The four numbers, and where each one lives' },
+      {
+        type: 'table',
+        headers: ['Number', 'Where you see it', 'What it means'],
+        rows: [
+          ['Remaining (per session)', 'Bandwidth tab of a session in My Proxies', 'GB given to that session, minus what it has used.'],
+          ['Total purchased', 'Overview (the "GB purchased" line) and Usage page', 'Every GB you have bought, spread across your sessions and your free balance.'],
+          ['Used', 'Overview and Usage page', 'GB consumed by all your sessions, including paused ones and sessions you have since deleted.'],
+          ['Remaining (account)', 'Usage page (called Bandwidth left on the Overview)', 'Total purchased minus Used. This is what you still own, whether it is sitting on a session or not.'],
+          ['Free to assign', 'Overview and Usage page (the Overview card also words it as "not yet assigned to a session")', 'GB not given to any session yet. This is what a new session or a top-up draws from.'],
+        ],
+      },
+      {
+        type: 'p',
+        text: 'These fit together. Your account Remaining equals the Remaining on each of your sessions added up, plus Free to assign. If you create a session or top one up, Free to assign goes down by that amount and the session\'s Remaining goes up by the same amount, while Total purchased and Used do not change. That is why a new session can make "Free to assign" fall without you having used anything.',
+      },
+
+      { type: 'h2', text: 'Why the numbers can be a few minutes behind' },
+      {
+        type: 'ol',
+        items: [
+          'We read each session\'s usage from the proxy network about every 5 minutes and store it.',
+          'Your session cards use that stored figure. The Bandwidth tab says so: "Usage updates about every 5 minutes."',
+          'Your account totals, Used and Remaining, are recalculated from all your sessions at each of those updates.',
+          'Auto-allocate and the low-bandwidth alerts also act on the figure after each update, so they react within a few minutes, not instantly.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'So if you have just run a large job, the number on screen is probably the one from before it started. Give it five minutes, or refresh as below.',
+      },
+
+      { type: 'h2', text: 'Get an up-to-the-moment figure for one session' },
+      {
+        type: 'ol',
+        items: [
+          'In My Proxies, open the session and go to its Bandwidth tab.',
+          'Click Refresh usage next to the line "Usage updates about every 5 minutes. Need the exact figure now?"',
+          'You will see "Usage refreshed", and the session\'s Remaining updates straight away.',
+          'If you see "Already up to date — checked moments ago", there was nothing newer to read. Usually the figure was read in the last 30 seconds, so it is already current. Wait a little and try again if you need to.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'Refresh usage updates that one session. Your account totals on the Overview and Usage pages follow at the next regular update, within about 5 minutes, so the session can briefly look ahead of the totals. This works on active sessions. A paused session is not using anything, so there is nothing new to read.',
+      },
+
+      { type: 'h2', text: 'Why two pages can still disagree' },
+      {
+        type: 'ul',
+        items: [
+          'Deleted sessions. Their used GB stay in your Used total so your history adds up, but they no longer appear in the Per-session breakdown. The rows there will add up to less than Used if you have deleted sessions.',
+          'Paused sessions. They count in Used and show in the breakdown marked paused.',
+          'Rounding. Figures show two decimals, so a session that has used a few MB shows 0.00 GB. The usage chart switches to MB when the amounts are small.',
+          'Different update times. A session card, the Overview and the Usage chart may each have been refreshed a few minutes apart.',
+          'Days on the chart. The daily record behind "Usage over time" counts days in UTC, so late-evening use in some time zones lands on the next day.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'The chart and the host list ("Top hosts & countries") come from a different report than the headline totals. For the host list we look at your heaviest sessions, and the page tells you when a range has more than it can list. If a notice says some sessions could not be reached, the chart reflects the rest, and you can try again in a moment. Use Export full CSV for the full breakdown.',
+      },
+
+      { type: 'h2', text: 'If the GB went faster than you expected' },
+      {
+        type: 'p',
+        text: 'Anything your software sends through the proxy uses bandwidth: the page itself, but also images, scripts, video, retries after errors, and background requests. A browser that loads full pages uses far more than a script that fetches only the data it needs.',
+      },
+      {
+        type: 'ol',
+        items: [
+          'Open the Usage page and check Usage over time. Choose the session from the list to see its own daily line.',
+          'Scroll to Top hosts & countries to see which sites used the most.',
+          'Check for a client left running, such as a scheduled job or a browser tab, that kept making requests.',
+          'If one session is the heavy one, use its Bandwidth tab to see how much it has left, and decide whether to pause it.',
+        ],
+      },
+
+      { type: 'h2', text: 'Know before a session runs dry' },
+      {
+        type: 'p',
+        text: 'A session stops working when its own GB run out, even if you have more in Free to assign. The Remaining line on the session card turns amber and then red as it fills. In Settings, under Session usage alerts, you choose the two levels. A warning level is a heads-up and an urgent level means it is about to stop. They default to 80% and 95%. Auto-allocate can top a session up from your free balance for you, which is covered in our auto-allocate guide.',
+      },
+
+      { type: 'h2', text: 'When to contact us, and what to send' },
+      {
+        type: 'p',
+        text: 'Contact us if a session\'s figure has not moved after 15 minutes of real traffic and you have pressed Refresh usage, if Remaining is much lower than your traffic could explain, or if the totals do not add up even allowing for the points above. Open Support at the bottom of the dashboard sidebar and choose Report an issue. Please include:',
+      },
+      {
+        type: 'ul',
+        items: [
+          'The session\'s label and what its Bandwidth tab shows (Remaining and the GB allocated).',
+          'What the Usage page shows for Total purchased, Used, Remaining and Free to assign.',
+          'The time you checked, with your time zone, and roughly what traffic you ran just before.',
+          'The result of pressing Refresh usage.',
+        ],
+      },
+    ],
+    faq: [
+      {
+        q: 'How often is my usage updated?',
+        a: 'About every 5 minutes. Your session cards and account totals follow that cycle. Refresh usage on a session\'s Bandwidth tab reads that session\'s figure immediately, at most once every 30 seconds.',
+      },
+      {
+        q: 'Why does Remaining on a session not match Remaining on the Usage page?',
+        a: 'They measure different things. A session\'s Remaining is the GB given to that session minus what it used. The Usage page\'s Remaining is everything you have bought minus everything used, so it also includes your Free to assign balance.',
+      },
+      {
+        q: 'Why did Free to assign go down when I did not use anything?',
+        a: 'Creating a session or topping one up moves GB from Free to assign onto that session. Nothing is used up by that, and the session\'s Remaining rises by the same amount.',
+      },
+      {
+        q: 'Do deleted or paused sessions count in my Used total?',
+        a: 'Yes. The GB a session used stay counted after it is deleted or while it is paused, so your history still adds up. Only the GB it had not used are returned to your free balance on delete.',
+      },
+      {
+        q: 'Why do some days on the chart look different from my time zone?',
+        a: 'Our daily record counts days in UTC, so usage near midnight in your own time zone can appear on the neighbouring day.',
+      },
+      {
+        q: 'Does usage go up while a session is paused?',
+        a: 'No. A paused session does not carry traffic. It still shows in your totals because its earlier usage still counts.',
+      },
+    ],
+  },
+  {
     slug: 'ip-lookup-shows-wrong-city-proxy-location',
     title: 'IP Lookup Shows the Wrong City? How to Check Your Proxy\'s Location',
     description:
