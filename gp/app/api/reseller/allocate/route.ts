@@ -69,7 +69,10 @@ export async function POST(req: Request) {
       input.data
     )
     if (!result.ok) {
-      if (idem.key) await releaseIdempotencyKey(admin, user.id, idem.key)
+      // Free the key only for a DEFINITE failure. If the database call may have committed (dropped
+      // connection, timeout) the claim stays, so a retry gets "check Transfers" instead of a second transfer.
+      if (idem.key && !result.outcomeUnknown) await releaseIdempotencyKey(admin, user.id, idem.key)
+      if (result.outcomeUnknown) return NextResponse.json({ error: 'We could not confirm whether this transfer went through. Check Transfers before sending it again.', code: 'outcome_unknown' }, { status: 502 })
       // The only 429 this path produces is the daily new-recipient cap — a "come back tomorrow"
       // refusal, not a throttle. The code lets the bulk sender report it as a definite failure
       // instead of waiting out a per-minute retry loop that can never succeed.

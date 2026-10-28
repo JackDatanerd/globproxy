@@ -57,7 +57,7 @@ export async function POST(req: Request) {
       const result = await allocateBandwidth(supabase, { id: user.id, email: profile.email, full_name: profile.full_name }, input.data)
       // The shared lib answers 400 (the dashboard's long-standing status); over
       // the API a stock shortfall is 402, exactly as for POST /sub-users.
-      if (!result.ok) return { kind: 'fail', response: failFrom(result.code === 'insufficient_bandwidth' ? { ...result, status: 402 } : result) }
+      if (!result.ok) return { kind: 'fail', response: failFrom(result.code === 'insufficient_bandwidth' ? { ...result, status: 402 } : result), keepClaim: result.outcomeUnknown }
       return { kind: 'ok', status: 201, body: { transfer_id: result.data.transfer_id, status: result.data.status, pending_id: result.data.pending_id, expires_at: result.data.expires_at, gb: result.data.gb, recipient_email: result.data.recipient_email } }
     }, { allowStaleTakeover: false })
   }, { scope: 'allocate' })

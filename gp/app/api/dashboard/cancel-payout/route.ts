@@ -40,13 +40,16 @@ export async function POST(req: Request) {
     if (!own) return NextResponse.json({ error: 'Payout not found.' }, { status: 404 })
     if (own.status !== 'pending') return NextResponse.json({ error: 'Only a payout that has not been sent yet can be cancelled.' }, { status: 409 })
 
-    const { data, error } = await admin.rpc('void_affiliate_payout', { p_payout_id: own.id })
+    // owner_cancel_affiliate_payout refuses once an admin has picked the payout up for sending (or after
+    // 24 h): the money may already be on its way, and cancelling would release the same commissions again.
+    const { data, error } = await admin.rpc('owner_cancel_affiliate_payout', { p_payout_id: own.id, p_referrer_id: user.id })
     if (error) {
       console.error('[dashboard/cancel-payout] rpc failed', error)
       return NextResponse.json({ error: 'Could not cancel this payout.' }, { status: 500 })
     }
     if (!data) return NextResponse.json({ error: 'Only a payout that has not been sent yet can be cancelled.' }, { status: 409 })
     const d = data as any
+    if (d.locked) return NextResponse.json({ error: 'This payout is already being sent, so it can no longer be cancelled here. If the destination is wrong, contact support right away.' }, { status: 409 })
 
     await logSecurityEvent({ admin, userId: user.id, event: 'payout_method_changed', req, meta: { action: 'payout_cancelled_by_owner', payout_id: own.id, amount_usd: Number(d.amount_usd) } })
     await notifyPayoutVoided(admin, user.id, { amount_usd: Number(d.amount_usd), cycle_start: d.cycle_start, cycle_end: d.cycle_end }, 'You cancelled it from your Referrals page')

@@ -102,6 +102,10 @@ async function sendPayoutReminder(supabase: Awaited<ReturnType<typeof createAdmi
   const deductions = Number(t?.out_deductions_usd ?? 0)
   const { count: pendingPayouts } = await supabase.from('affiliate_payouts').select('id', { count: 'exact', head: true }).eq('status', 'pending')
 
+  // Nobody earned anything and nothing is waiting: an email saying "0 affiliates have $0" is noise.
+  // Not stamped, so it is re-checked next hour and still fires if something lands later that day.
+  if (people.size === 0 && total <= 0 && (pendingPayouts ?? 0) === 0) return { sent: false, reason: 'nothing waiting' }
+
   // Nothing to stamp (and nothing lost) when there is nobody to tell.
   if (!process.env.ADMIN_EMAIL) return { sent: false, reason: 'no ADMIN_EMAIL' }
   // Stamp before sending so two overlapping runs cannot both send, then take the

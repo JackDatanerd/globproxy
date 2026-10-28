@@ -149,7 +149,7 @@ export async function runItemOnce(
 
 export type IdempotentOutcome =
   | { kind: 'ok'; status: number; body: unknown }           // replayable success — stored under the key
-  | { kind: 'fail'; response: Response }                    // not replayable — key released, client may retry
+  | { kind: 'fail'; response: Response; keepClaim?: boolean } // not replayable — key released (unless keepClaim: the operation may have committed)
 
 // Wraps a mutating handler in the claim → run → store/release dance so every
 // endpoint does it identically. No Idempotency-Key header = just run it.
@@ -189,7 +189,9 @@ export async function runIdempotent(
   if (outcome.kind === 'fail') {
     // Failures are not replayable — free the key so the client can retry
     // (e.g. after buying bandwidth following a 402).
-    if (idem.key) await releaseIdempotencyKey(admin, userId, idem.key)
+    // keepClaim: the outcome is unknown (the database call may have committed), so the claim stays and
+    // a retry answers "outcome unknown" rather than repeating a money movement.
+    if (idem.key && !outcome.keepClaim) await releaseIdempotencyKey(admin, userId, idem.key)
     return outcome.response
   }
   if (idem.key) await completeIdempotencyKey(admin, userId, idem.key, outcome.status, outcome.body)

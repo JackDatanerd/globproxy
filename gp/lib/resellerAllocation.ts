@@ -23,9 +23,22 @@ export const MIN_ALLOCATION_GB = 0.1
 const NEW_RECIPIENTS_PER_DAY = 50
 const NEW_RECIPIENTS_MESSAGE = 'You have reached today\'s limit of 50 new recipients. Existing clients are not affected — try again tomorrow.'
 
-export type AllocFail = { ok: false; status: number; code: 'invalid_request' | 'not_found' | 'conflict' | 'insufficient_bandwidth' | 'rate_limited' | 'internal_error'; message: string }
+export type AllocFail = { ok: false; status: number; code: 'invalid_request' | 'not_found' | 'conflict' | 'insufficient_bandwidth' | 'rate_limited' | 'internal_error'; message: string
+  /** True when the database call may have COMMITTED before the failure reached us (a dropped connection, a
+   *  timeout). The caller must not free an Idempotency-Key for it: a retry could move the stock twice. */
+  outcomeUnknown?: boolean }
 export type AllocResult<T> = { ok: true; data: T } | AllocFail
 const fail = (status: number, code: AllocFail['code'], message: string): AllocFail => ({ ok: false, status, code, message })
+
+// A Postgres error carries a SQLSTATE and means the statement rolled back. postgrest-js reports a
+// transport failure (fetch failed, timeout, reset connection) as an error with NO code, and then
+// the transaction may or may not have committed on the database side.
+export function isAmbiguousDbError(error: { code?: string | null } | null | undefined): boolean {
+  return !!error && !error.code
+}
+// The generic "something unexpected failed" answer for a money-moving RPC.
+const failUnexpected = (error: { code?: string | null; message?: string | null }, message: string): AllocFail =>
+  ({ ...fail(500, 'internal_error', message), ...(isAmbiguousDbError(error) ? { outcomeUnknown: true } : {}) })
 
 export type Reseller = { id: string; email?: string | null; full_name?: string | null }
 
@@ -107,7 +120,7 @@ export async function allocateBandwidth(
     if (msg.includes('Too many new recipients')) return fail(429, 'rate_limited', NEW_RECIPIENTS_MESSAGE)
     if (msg.includes('Minimum allocation') || msg.includes('decimal places') || msg.includes('too large')) return fail(400, 'invalid_request', msg)
     console.error('[reseller/allocate] RPC failed', rpcError)
-    return fail(500, 'internal_error', 'Failed to complete transfer.')
+    return failUnexpected(rpcError, 'Failed to complete transfer.')
   }
   const transferId: string | null = (Array.isArray(rpcResult) ? rpcResult[0]?.transfer_id : (rpcResult as any)?.transfer_id) ?? null
 
@@ -216,7 +229,7 @@ async function inviteRecipient(
     if (msg.includes('Too many open invitations')) return fail(409, 'conflict', 'You have too many open invitations. Cancel some, or wait for them to be claimed.')
     if (msg.includes('Minimum allocation') || msg.includes('decimal places') || msg.includes('too large') || msg.includes('valid recipient')) return fail(400, 'invalid_request', msg)
     console.error('[reseller/allocate] invite RPC failed', error)
-    return fail(500, 'internal_error', 'Failed to complete transfer.')
+    return failUnexpected(error, 'Failed to complete transfer.')
   }
   const row = Array.isArray(data) ? data[0] : data
   const pendingId: string | null = row?.out_pending_id ?? null
@@ -474,7 +487,7 @@ export async function reclaimAllocation(
     if (msg.includes('Nothing to reclaim') || msg.includes('Nothing left')) return fail(409, 'conflict', msg.replace(/^.*?: /, ''))
     if (msg.includes('not found')) return fail(404, 'not_found', 'Transfer not found')
     console.error('[reseller/reclaim] RPC failed', error)
-    return fail(500, 'internal_error', 'Could not reclaim this transfer.')
+    return failUnexpected(error, 'Could not reclaim this transfer.')
   }
   const row = Array.isArray(data) ? data[0] : data
   const reclaimed = Number(row?.out_reclaimed_gb ?? 0)

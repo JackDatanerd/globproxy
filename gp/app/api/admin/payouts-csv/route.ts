@@ -40,6 +40,16 @@ export async function GET(req: Request) {
     let kesMarket: number | null = null
     if (rows.some(r => r.payout_method === 'mpesa' && r.status === 'pending')) { try { kesMarket = (await getKesQuote(auth.supabase as any))?.market ?? null } catch { kesMarket = null } }
 
+    // Exporting the pending payouts is the start of sending them: stamp the rows so the owner can no
+    // longer cancel one while the money is on its way (owner_cancel_affiliate_payout, migration 0103).
+    const pendingIds = rows.filter(r => r.status === 'pending').map(r => r.id)
+    for (let i = 0; i < pendingIds.length; i += 200) {
+      const { error: stampErr } = await auth.supabase.from('affiliate_payouts')
+        .update({ sending_started_at: new Date().toISOString() })
+        .in('id', pendingIds.slice(i, i + 200)).eq('status', 'pending').is('sending_started_at', null)
+      if (stampErr) { console.error('[admin/payouts-csv] could not stamp sending_started_at', stampErr); return NextResponse.json({ error: 'Export failed' }, { status: 500 }) }
+    }
+
     await logAdminAction(auth.supabase, { adminId: auth.adminId, action: 'payouts_exported', details: { status, method, rows: rows.length } })
 
     const csv = toCsv(rows, [

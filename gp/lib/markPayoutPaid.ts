@@ -61,6 +61,9 @@ export async function markPayoutPaid(
     if (now?.status === 'pending' && opts.expectedAmountUsd != null && Math.round(Number(now.amount_usd) * 100) !== Math.round(opts.expectedAmountUsd * 100)) {
       return { ok: false, status: 409, error: `This payout's amount changed to $${Number(now.amount_usd).toFixed(2)} (a refund landed) — reload and check before sending money.` }
     }
+    if (!now) {
+      return { ok: false, status: 409, error: 'This payout no longer exists — it was cancelled or voided after it was created. If you have not sent it, do not. If you already did, tell the affiliate and net the amount off their next payout so it is not paid twice.' }
+    }
     return { ok: false, status: 409, error: 'This payout is not in a payable state (already paid?)' }
   }
 

@@ -32,7 +32,7 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
       const limited = (await rateLimited(req, 'RESELLER_RATE_LIMITER', `reclaim:${user.id}`)) ?? (await rateLimitedUser('RESELLER_RATE_LIMITER', user.id, 'reclaim'))
       if (limited) return { kind: 'fail', response: asApiRateLimited(limited) }
       const result = await reclaimAllocation(supabase, { id: user.id, email: profile.email, full_name: profile.full_name }, input.data)
-      if (!result.ok) return { kind: 'fail', response: failFrom(result) }
+      if (!result.ok) return { kind: 'fail', response: failFrom(result), keepClaim: result.outcomeUnknown }
       return { kind: 'ok', status: 200, body: { transfer_id: id, reclaimed_gb: result.data.reclaimed_gb, remaining_gb: result.data.remaining_gb } }
     }, { allowStaleTakeover: false })
   }, { scope: 'allocate' })

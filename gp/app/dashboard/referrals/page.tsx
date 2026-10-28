@@ -66,7 +66,7 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
     // longer read (migration 0070).
     showMoney
       ? admin.from('affiliate_payouts')
-          .select('id, cycle_start, cycle_end, amount_usd, status, payout_method, paid_at, payment_reference, payout_local_amount, payout_local_currency, payout_fx_rate', { count: 'exact' })
+          .select('id, cycle_start, cycle_end, amount_usd, status, payout_method, paid_at, created_at, sending_started_at, payment_reference, payout_local_amount, payout_local_currency, payout_fx_rate', { count: 'exact' })
           .eq('referrer_id', user.id).order('created_at', { ascending: false }).order('id', { ascending: false }).limit(PAYOUT_PAGE)
       : Promise.resolve({ data: [] as any[], error: null, count: 0 as number | null }),
     // The referred user can't read their own `referrals` row through RLS
@@ -273,7 +273,7 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
                           {breakdown.get(p.id)!.deductions > 0 ? ` − ${usd(breakdown.get(p.id)!.deductions)} refund deductions` : ''}
                         </div>
                       )}
-                      {p.status === 'pending' && isAffiliate && <div className="mt-1"><CancelPayoutButton payoutId={p.id} /></div>}
+                      {p.status === 'pending' && isAffiliate && !p.sending_started_at && Date.now() - new Date(p.created_at).getTime() < 24 * 3_600_000 && <div className="mt-1"><CancelPayoutButton payoutId={p.id} /></div>}
                     </div>
                   ))}
                   {Number(payoutsCount ?? 0) > PAYOUT_PAGE && (
@@ -381,7 +381,7 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
         ) : status === 'rejected' ? (
           <div className="bg-white border border-border rounded-xl p-5">
             <div className="text-sm font-medium text-ink mb-1">Affiliate application not approved</div>
-            <div className="text-xs text-muted mb-3">You can still earn the standard GB bonus above, and you&apos;re welcome to apply again 7 days after your last application.</div>
+            <div className="text-xs text-muted mb-3">You can still earn the standard GB bonus above, and you&apos;re welcome to apply again 7 days after your application was reviewed.</div>
             <AffiliateApplyForm />
           </div>
         ) : profileErr ? null : (
