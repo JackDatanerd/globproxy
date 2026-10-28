@@ -62,6 +62,10 @@ function LoginForm() {
     } catch {
       toast.error('Network error. Please try again.')
       setLoading(false)
+      // The human-check token is single-use and may already have been spent by the
+      // request that just failed: without a fresh one the next attempt is refused.
+      setCaptcha(null)
+      setCaptchaReset(n => n + 1)
     }
   }
 

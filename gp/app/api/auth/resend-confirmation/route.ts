@@ -6,6 +6,8 @@ import { verifyTurnstile, captchaOptions } from '@/lib/turnstile'
 import { holdUntil } from '@/lib/constantTime'
 import { sameOriginUrl } from '@/lib/appUrl'
 import { validatePasswordStrict } from '@/lib/passwordPolicy'
+import { recordReferralSignup, recordSignupIp } from '@/lib/referrals'
+import { REF_COOKIE, REF_SUB_COOKIE, readCookie, hashIp } from '@/lib/referralAttribution'
 import { NextResponse } from 'next/server'
 
 // Until now a signup that never got its confirmation email (spam folder,
@@ -94,8 +96,30 @@ export async function POST(req: Request) {
           options: { data: meta, emailRedirectTo: safeRedirect, ...captchaOptions(turnstileToken) },
         })
         if (signErr) { console.error('[auth/resend-confirmation] re-signup failed:', signErr.status, signErr.message); return }
-        const { error: pwErr } = await admin.rpc('auth_replace_unconfirmed_password', { p_user_id: unconfirmedId as string, p_password: password })
-        if (pwErr) console.error('[auth/resend-confirmation] could not replace unconfirmed password:', pwErr.message)
+        const { data: replaced, error: pwErr } = await admin.rpc('auth_replace_unconfirmed_password', { p_user_id: unconfirmedId as string, p_password: password })
+        if (pwErr) { console.error('[auth/resend-confirmation] could not replace unconfirmed password:', pwErr.message); return }
+        if (!replaced) return
+        // "Newest signup wins" applies to the referral too, exactly as in /api/auth/signup:
+        // whoever typed this address first (not necessarily its owner) may have attached
+        // their own referral code to it, and the person now setting the password must not
+        // inherit that. Re-attributed from THIS browser's own referral cookie, so a code
+        // only survives if this visitor really arrived through it. Only while unconfirmed
+        // and before any reward (the RPC enforces both).
+        try {
+          const { error: resetErr } = await admin.rpc('reset_unconfirmed_referral', { p_user_id: unconfirmedId as string })
+          if (resetErr) { console.error('[auth/resend-confirmation] reset_unconfirmed_referral failed:', resetErr.message); return }
+          const ipHash = hashIp(req.headers.get('cf-connecting-ip'))
+          await recordSignupIp(admin, unconfirmedId as string, ipHash)
+          const cookieHeader = req.headers.get('cookie')
+          await recordReferralSignup(
+            admin,
+            readCookie(cookieHeader, REF_COOKIE),
+            unconfirmedId as string,
+            { subId: readCookie(cookieHeader, REF_SUB_COOKIE), ipHash },
+          )
+        } catch (e) {
+          console.error('[auth/resend-confirmation] re-attribution failed (non-fatal):', e)
+        }
       })().catch(e => console.error('[auth/resend-confirmation] re-signup threw', e))
       await holdUntil(startedAt, RESPONSE_FLOOR_MS, work)
       return respond()

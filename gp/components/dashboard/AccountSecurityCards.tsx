@@ -1,7 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
 import { SECURITY_EVENT_LABELS, countryName } from '@/lib/securityEventLabels'
 import toast from 'react-hot-toast'
 import { shortUa } from '@/lib/userAgent'
@@ -145,25 +144,31 @@ interface SecurityEventRow {
 }
 
 export function SecurityActivityCard({ className = 'mb-5' }: { className?: string }) {
+  const router = useRouter()
   const [rows, setRows] = useState<SecurityEventRow[] | null>(null)
   const [loadFailed, setLoadFailed] = useState(false)
   const [busy, setBusy] = useState(false)
 
   async function load() {
-    // RLS ("Own security events", migration 0039) limits this to the caller's own rows.
-    const { data, error } = await createClient()
-      .from('security_events')
-      .select('id, event, ip, user_agent, created_at, country:meta->>country')
-      .order('created_at', { ascending: false })
-      .limit(100)
-    if (error) { setLoadFailed(true); return }
+    // Served by a 2FA-gated route: the table is no longer readable from the browser,
+    // because it lists the IP / browser of every sign-in (migration 0101).
+    let data: SecurityEventRow[] = []
+    try {
+      const res = await fetch('/api/auth/security-events', { cache: 'no-store' })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        if (body.code === 'mfa_required') { router.push(`/auth/mfa-verify?next=${encodeURIComponent(window.location.pathname)}`); return }
+        setLoadFailed(true); return
+      }
+      data = Array.isArray(body.events) ? body.events : []
+    } catch { setLoadFailed(true); return }
     // Routine events (sign-ins, accepted / rejected 2FA codes) would otherwise
     // push the rare, important ones (password / 2FA / API-key changes) off a
     // short list: keep every other event but only the three most recent of
     // each routine kind.
     const ROUTINE = new Set(['login', 'mfa_verified', 'mfa_failed'])
     const seen: Record<string, number> = {}
-    const kept = ((data ?? []) as SecurityEventRow[]).filter(r => !ROUTINE.has(r.event) || (seen[r.event] = (seen[r.event] ?? 0) + 1) <= 3)
+    const kept = data.filter(r => !ROUTINE.has(r.event) || (seen[r.event] = (seen[r.event] ?? 0) + 1) <= 3)
     setRows(kept.slice(0, 15))
   }
 
@@ -175,8 +180,14 @@ export function SecurityActivityCard({ className = 'mb-5' }: { className?: strin
     try {
       const res = await fetch('/api/auth/signout-others', { method: 'POST' })
       const data = await res.json().catch(() => ({}))
-      if (!res.ok) toast.error(data.error ?? 'Could not sign out other devices.')
-      else {
+      if (!res.ok) {
+        if (data.code === 'mfa_required') {
+          toast.error('Please verify your two-factor code first.')
+          router.push(`/auth/mfa-verify?next=${encodeURIComponent(window.location.pathname)}`)
+        } else {
+          toast.error(data.error ?? 'Could not sign out other devices.')
+        }
+      } else {
         toast.success('Signed out of all other devices.')
         window.dispatchEvent(new Event('gp:sessions-changed'))   // the "Where you’re signed in" list below
         await load()

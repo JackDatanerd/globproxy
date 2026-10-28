@@ -25,15 +25,26 @@ function ResetForm() {
     if (turnstileConfigured && !captcha) { toast.error('Please complete the verification check.'); return }
     setLoading(true)
 
-    const res = await fetch('/api/auth/reset', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        email,
-        redirectTo: `${location.origin}/auth/callback?type=recovery`,
-        turnstileToken: captcha,
-      }),
-    })
+    // A thrown fetch (offline, DNS, dropped connection) used to leave the button stuck on
+    // "Sending…" with no way out but a reload.
+    let res: Response
+    try {
+      res = await fetch('/api/auth/reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email,
+          redirectTo: `${location.origin}/auth/callback?type=recovery`,
+          turnstileToken: captcha,
+        }),
+      })
+    } catch {
+      toast.error('Network error. Please check your connection and try again.')
+      setLoading(false)
+      setCaptcha(null)
+      setCaptchaReset(n => n + 1)
+      return
+    }
 
     const data = await res.json().catch(() => ({}))
 

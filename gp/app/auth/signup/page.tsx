@@ -83,22 +83,33 @@ function SignupForm() {
     if (turnstileConfigured && !captcha) { toast.error('Please complete the verification check.'); return }
     setLoading(true)
 
-    const res = await fetch('/api/auth/signup', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        email,
-        password,
-        full_name: name,
-        intended_role: isReseller ? 'reseller' : 'user',
-        emailRedirectTo: chosenPlan
-          ? `${location.origin}/auth/callback?next=${encodeURIComponent(`/dashboard/buy?plan=${chosenPlan}`)}`
-          : `${location.origin}/auth/callback`,
-        referral_code: referralCode.trim() || undefined,
-        sub_id: subForCode || undefined,
-        turnstileToken: captcha,
-      }),
-    })
+    // A thrown fetch (offline, DNS, dropped connection) used to leave the button stuck on
+    // "Sending…" with no way out but a reload.
+    let res: Response
+    try {
+      res = await fetch('/api/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email,
+          password,
+          full_name: name,
+          intended_role: isReseller ? 'reseller' : 'user',
+          emailRedirectTo: chosenPlan
+            ? `${location.origin}/auth/callback?next=${encodeURIComponent(`/dashboard/buy?plan=${chosenPlan}`)}`
+            : `${location.origin}/auth/callback`,
+          referral_code: referralCode.trim() || undefined,
+          sub_id: subForCode || undefined,
+          turnstileToken: captcha,
+        }),
+      })
+    } catch {
+      toast.error('Network error. Please check your connection and try again.')
+      setLoading(false)
+      setCaptcha(null)
+      setCaptchaReset(n => n + 1)
+      return
+    }
 
     const data = await res.json().catch(() => ({}))
 

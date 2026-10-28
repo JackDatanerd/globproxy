@@ -11,13 +11,19 @@ const inputCls = 'w-full bg-surface border border-border px-4 py-3 rounded-xl te
 const primary = 'w-full bg-accent text-white py-3 rounded-xl font-medium text-sm hover:opacity-90 disabled:opacity-60 transition-opacity'
 
 async function call(body: Record<string, unknown>) {
-  const res = await fetch('/api/auth/mfa/recovery', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  const data = await res.json().catch(() => ({}))
-  return { ok: res.ok, status: res.status, data }
+  // status 0 = the request never completed (offline, dropped connection). It used to throw,
+  // which left `busy` stuck on true and the status check as an unhandled rejection.
+  try {
+    const res = await fetch('/api/auth/mfa/recovery', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const data = await res.json().catch(() => ({}))
+    return { ok: res.ok, status: res.status, data }
+  } catch {
+    return { ok: false, status: 0, data: { error: 'Network error. Please check your connection and try again.' } as Record<string, any> }
+  }
 }
 
 // "I lost my authenticator AND my backup codes." Three steps, deliberately
@@ -34,6 +40,7 @@ function RecoveryFlow() {
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [sent, setSent] = useState(false)
+  const [loadFailed, setLoadFailed] = useState(false)
 
   useEffect(() => {
     createClient().auth.getSession().then(({ data: { session } }) => setSignedIn(!!session))
@@ -42,6 +49,9 @@ function RecoveryFlow() {
   async function refresh() {
     if (!token) return
     const r = await call({ action: 'status', token })
+    // A dropped connection is not "this link is invalid": say so and let them retry.
+    if (r.status === 0) { setLoadFailed(true); return }
+    setLoadFailed(false)
     setStatus(r.ok ? r.data : { state: 'unknown', ready_at: null })
   }
   useEffect(() => { refresh() }, [token]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -103,7 +113,13 @@ function RecoveryFlow() {
   return (
     <div className={card}>
       <h1 className="font-display font-bold text-2xl text-ink mb-2">Two-factor recovery</h1>
-      {status === null && <p className="text-sm text-muted">Loading…</p>}
+      {status === null && !loadFailed && <p className="text-sm text-muted">Loading…</p>}
+      {status === null && loadFailed && (
+        <p className="text-sm text-muted">
+          Couldn’t reach the server.{' '}
+          <button type="button" onClick={refresh} className="text-accent underline">Try again</button>
+        </p>
+      )}
       {state === 'unknown' && <p className="text-sm text-muted">This link isn’t valid. Start again from the sign-in screen.</p>}
       {state === 'expired' && <p className="text-sm text-muted">This link has expired. Start recovery again.</p>}
       {state === 'cancelled' && <p className="text-sm text-ink2">This recovery request was cancelled. Nothing was changed.</p>}

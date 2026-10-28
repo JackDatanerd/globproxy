@@ -32,7 +32,11 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
   const cpage = Math.max(1, Math.min(100_000, parseInt(sp.cpage ?? '1', 10) || 1))
   const accruing = currentAccruingCycle()
 
-  const { data: profile, error: profileErr } = await supabase.from('profiles')
+  // The saved payout destination is not selectable with the signed-in user's own token (migration
+  // 0101), so this row is read with the service role — scoped to the id getUser() just verified —
+  // and only ever masked forms (maskWallet / maskBank / maskPhone below) reach the page.
+  const admin = await createAdminClient()
+  const { data: profile, error: profileErr } = await admin.from('profiles')
     .select('referral_code, affiliate_status, affiliate_commission_rate, affiliate_commission_rate_lifetime, is_verified_operator, payout_method, payout_wallet_address, payout_bank_details, payout_mpesa_phone, payout_method_updated_at, payout_hold_reason')
     .eq('id', user.id)
     .single()
@@ -48,7 +52,6 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
   // service-role only, called here with the SESSION's own user id) — summing a client-fetched list silently capped
   // at 1000 rows, and "this cycle so far" used to be summed from only the
   // latest 20 commissions.
-  const admin = await createAdminClient()
   const [{ data: summaryRows, error: summaryErr }, { data: funnel, error: funnelErr }, { data: commissions, error: commissionsErr, count: commissionsCount }, { data: payouts, error: payoutsErr, count: payoutsCount }, { count: referredByAnyone, error: referredErr }, { count: purchaseCount, error: purchaseErr }, adjustmentsRes, tagsRes, deductionsRes] = await Promise.all([
     admin.rpc('my_affiliate_summary', { p_user_id: user.id, p_cycle_start: accruing.cycleStart, p_cycle_end: accruing.cycleEnd }),
     admin.rpc('my_referral_funnel', { p_user_id: user.id, p_limit: FUNNEL_PAGE, p_offset: (page - 1) * FUNNEL_PAGE }),
