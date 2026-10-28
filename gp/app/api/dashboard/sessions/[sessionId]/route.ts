@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { rateLimitedUser } from '@/lib/rateLimit'
 import { isUuidString } from '@/lib/cursor'
+import { parseLabel } from '@/lib/apiValidation'
 import { NextResponse } from 'next/server'
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ sessionId: string }> }) {
@@ -23,7 +24,12 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ sessio
   const body = await req.json().catch(() => ({}))
   const update: Record<string, any> = {}
 
-  if (typeof body.label === 'string') update.label = body.label.trim().slice(0, 100) || 'Session'
+  if (typeof body.label === 'string') {
+    // Same cleaning as session labels everywhere else (control characters stripped, length bounded).
+    const label = parseLabel(body.label)
+    if (!label.ok) return NextResponse.json({ error: label.error }, { status: 400 })
+    update.label = label.value || 'Session'
+  }
   if (typeof body.pinned === 'boolean') update.pinned = body.pinned
   if (typeof body.collapsed === 'boolean') update.collapsed = body.collapsed
   if (body.terminate === true) update.terminated_at = new Date().toISOString()
@@ -32,13 +38,14 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ sessio
     return NextResponse.json({ error: 'No valid fields to update' }, { status: 400 })
   }
 
-  const { data, error } = await supabase
+  let q = supabase
     .from('proxy_sessions')
     .update(update)
     .eq('id', sessionId)
     .eq('user_id', user.id)
-    .select()
-    .maybeSingle()
+  // Terminating twice used to overwrite terminated_at with a later time; only the first call counts.
+  if (body.terminate === true) q = q.is('terminated_at', null)
+  const { data, error } = await q.select().maybeSingle()
 
   if (error) {
     console.error('[dashboard/sessions/[sessionId]] db error:', error)

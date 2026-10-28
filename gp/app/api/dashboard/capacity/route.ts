@@ -16,7 +16,7 @@ export async function GET() {
 
   try {
     const admin = await createAdminClient()
-    const { data } = await admin.from('platform_settings').select('value').like('key', '%_stock').limit(1).maybeSingle()  // the one stock-snapshot row; matched by suffix so this file never spells the stored key (it names the supplier)
+    const { data } = await admin.from('platform_settings').select('value').eq('key', 'upstream_stock').maybeSingle()  // exact key: a suffix match could pick up any other *_stock setting
     if (!data?.value) return NextResponse.json({ constrained: false })
     const stock = typeof data.value === 'string' ? JSON.parse(data.value) : data.value
     const fresh = stock?.last_synced && Date.now() - new Date(stock.last_synced).getTime() < FRESH_MS

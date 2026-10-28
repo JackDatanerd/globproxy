@@ -58,7 +58,7 @@ export default async function AdminCredentialsPage({ searchParams }: { searchPar
   // by the usage sync, which used to e-mail the admin and point at a panel that had no action).
   const { data: missingRows } = await supabase.from('proxy_credentials')
     .select('id, user_id, label, gb_allocated, gb_used, upstream_missing_since, created_by')
-    .eq('status', 'active').not('upstream_missing_since', 'is', null)
+    .in('status', ['active', 'suspended']).not('upstream_missing_since', 'is', null)
     .order('upstream_missing_since', { ascending: true }).limit(50)
   const orphans = await readOrphanReport(supabase).catch(() => null)
 

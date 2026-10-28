@@ -165,8 +165,12 @@ export default function IpWhitelist({ credentialId }: Props) {
     const count = selected.size
     setBulkRemoving(true)
     try {
-      const data = await apiJson('DELETE', `/api/dashboard/proxies/${credentialId}/whitelist/bulk`, { ips: Array.from(selected) })
-      setIps(data.ips)
+      // The route caps one request at 150 IPs; "select all" on a longer list used to be refused outright.
+      const all = Array.from(selected)
+      for (let i = 0; i < all.length; i += 150) {
+        const data = await apiJson('DELETE', `/api/dashboard/proxies/${credentialId}/whitelist/bulk`, { ips: all.slice(i, i + 150) })
+        setIps(data.ips)
+      }
       toast.success(`${count} IP${count > 1 ? 's' : ''} removed`)
       setSelected(new Set())
     } catch (err: any) {

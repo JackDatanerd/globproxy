@@ -30,10 +30,11 @@ export async function POST(req: Request) {
 
   const { data: cred } = await supabase
     .from('proxy_credentials')
-    .select('id, user_id, label, status, created_by, upstream_sub_user_id, gb_allocated, gb_used, upstream_missing_since')
+    .select('id, user_id, label, status, created_by, upstream_sub_user_id, gb_allocated, gb_used, upstream_missing_since, suspended_reason')
     .eq('id', body.credentialId).maybeSingle()
   if (!cred) return NextResponse.json({ error: 'Credential not found' }, { status: 404 })
-  if (cred.status !== 'active' || !cred.upstream_sub_user_id) {
+  const pausedByCustomer = cred.status === 'suspended' && cred.suspended_reason === 'customer'
+  if ((cred.status !== 'active' && !pausedByCustomer) || !cred.upstream_sub_user_id) {
     return NextResponse.json({ error: `Only an active session with a proxy id can be remediated (status: ${cred.status})` }, { status: 409 })
   }
   if (cred.created_by) {

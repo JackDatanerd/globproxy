@@ -67,12 +67,14 @@ export function parseLabel(v: unknown): Parsed<string | null> {
 // `checkAsn` (default true): reject an ASN that doesn't exist in the chosen
 // country. Edits pass false when neither country nor ASN changed, so a legacy
 // session with an ASN that has since left the inventory can still be relabelled.
+// `checkCountry` (default true): edits pass false when the country is unchanged, so a legacy session
+// whose country is not in the catalogue can still be relabelled.
 // `allowLegacyAsnCombo` (default false): edits pass true when country, state, city and ASN are
 // all unchanged, so a session saved with an ASN AND a state/city (which the network cannot
 // serve — see buildProxyUsername) can still be relabelled instead of failing every save.
 export function parseTargeting(
   body: any,
-  opts: { checkAsn?: boolean; allowLegacyAsnCombo?: boolean } = {}
+  opts: { checkAsn?: boolean; allowLegacyAsnCombo?: boolean; checkCountry?: boolean } = {}
 ): Parsed<Pick<CreateCredentialInput, 'country' | 'state' | 'city' | 'asn'>> {
   const country = optionalString(body?.country, 'country'); if (!country.ok) return country
   const state = optionalString(body?.state, 'state');       if (!state.ok) return state
@@ -85,6 +87,13 @@ export function parseTargeting(
 
   const err = validateTargeting({ country: country.value, state: state.value, city: city.value, asn }, { allowLegacyAsnCombo: opts.allowLegacyAsnCombo })
   if (err) return { ok: false, error: err }
+
+  // A country the network doesn't serve ("uk" for "gb", a typo) was accepted on format alone: the
+  // session was created, GB reserved, and every connection then failed with no explanation. The ASN
+  // index carries every targetable country as a key, so it doubles as the country catalogue.
+  if ((opts.checkCountry ?? true) && country.value && !Object.prototype.hasOwnProperty.call(asnIndex, slugValue(country.value))) {
+    return { ok: false, error: `Unknown country "${country.value}". Use a 2-letter code from GET /api/v1/locations (for example "gb" for the United Kingdom, not "uk").` }
+  }
 
   // An ASN that isn't in the country's inventory never finds a peer: the
   // session would be created, billed against, and then fail every connection

@@ -12,6 +12,7 @@ import { fetchAllRows } from '@/lib/dbPaging'
 import { isUuidString } from '@/lib/cursor'
 import { recordUsageDeltas } from '@/lib/usageLedger'
 import { replayWhitelist } from '@/lib/whitelistMirror'
+import { checkLocationInCatalogue } from '@/lib/geoAssets'
 import { IDEMPOTENCY_WINDOW_MS, claimIdempotencyKey, releaseIdempotencyKey } from '@/lib/idempotency'
 import { parseLabel, parseTargeting, parseSessionOptions, parseFiniteNumber, MAX_ENDPOINT_COUNT, type CreateCredentialInput } from '@/lib/apiValidation'
 
@@ -166,6 +167,11 @@ export async function createCredential(
 ): Promise<CredResult<{ cred: any; warning?: string; replayed?: boolean }>> {
   const gb = input.gb_allocated
   const idemKey = opts.idempotencyKey ?? null
+
+  // Before anything is reserved or created: a state/city the network cannot serve would reserve GB for a
+  // session that can never connect.
+  const locErr = await checkLocationInCatalogue(input.country, input.state, input.city)
+  if (locErr) return fail(400, 'invalid_request', locErr)
 
   // An earlier attempt with this key already created the credential (it died
   // before recording its response, or this is a stale-claim takeover). Return
@@ -544,6 +550,9 @@ export async function topupCredential(
 }
 
 // ── Pending credentials: provisioning with retries ────────────────────
+// Just over claim_pending_credentials' 2-minute in-flight lease.
+const RETRY_CLAIM_AGE_MS = 2 * 60_000 + 5_000
+
 export async function provisionPendingCredentials(
   opts: { userId?: string; credentialId?: string; limit?: number; ignoreBackoff?: boolean } = {}
 ): Promise<{ claimed: number; activated: number; failed: number; skipped?: string }> {
@@ -652,9 +661,12 @@ export async function provisionPendingCredentials(
       // Neutral code + reason only — never the raw upstream text.
       try {
         await admin.from('proxy_credentials')
-          // Also frees the claim: left set, the row looked 'in progress' and the customer's retry got a
-          // 409 until the lease expired, even though nothing was running.
-          .update({ last_provision_error: errMsg(e), pending_reason: classifyUpstreamError(e), provisioning_claimed_at: null })
+          // Frees the claim WITHOUT erasing the attempt time: the claim is back-dated just past the 2-minute
+          // in-flight lease (so the customer's retry is not refused while nothing runs) but still marks when
+          // this attempt happened. Nulling it made claim_pending_credentials' exponential backoff (measured
+          // from this column) never apply: every failing session was retried every tick, and the oldest five
+          // failing ones starved every newer pending session.
+          .update({ last_provision_error: errMsg(e), pending_reason: classifyUpstreamError(e), provisioning_claimed_at: new Date(Date.now() - RETRY_CLAIM_AGE_MS).toISOString() })
           .eq('id', cred.id).eq('status', 'pending')
       } catch { /* best effort */ }
     }
@@ -721,7 +733,7 @@ export async function updateCredentialSettings(
   if (cred.created_by) {
     return fail(403, 'forbidden', 'This allocation was made by your reseller and cannot be edited. Contact them directly.')
   }
-  if (cred.status === 'suspended') return fail(403, 'forbidden', 'This session is suspended and cannot be edited.')
+  if (cred.status === 'suspended' && cred.suspended_reason !== 'customer') return fail(403, 'forbidden', 'This session is suspended and cannot be edited.')
 
   const patch: Record<string, unknown> = {}
 
@@ -756,11 +768,17 @@ export async function updateCredentialSettings(
       // relabel; only check it when the ASN or country is actually changing.
     }, {
       checkAsn: asnChanged || countryChanged,
+      checkCountry: countryChanged,
       // An ASN is country-wide: it cannot be stored together with a state/city. A session saved
       // that way before the rule existed is only tolerated while none of the four fields change.
       allowLegacyAsnCombo: !(asnChanged || countryChanged || stateChanged || cityChanged),
     })
     if (!t.ok) return fail(400, 'invalid_request', t.error)
+    // Only a location the caller is actually changing is held to the catalogue (a legacy value stays editable).
+    if (countryChanged || stateChanged || cityChanged) {
+      const locErr = await checkLocationInCatalogue(t.value.country, t.value.state, t.value.city)
+      if (locErr) return fail(400, 'invalid_request', locErr)
+    }
     Object.assign(patch, t.value)
   }
 

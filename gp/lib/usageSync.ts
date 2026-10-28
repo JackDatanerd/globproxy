@@ -116,7 +116,7 @@ export async function syncAllUsage(admin?: AdminClient) {
   const { rows: creds, error: credsErr } = await fetchAllRows<any>((from, to) =>
     supabase
       .from('proxy_credentials')
-      .select('id, user_id, label, status, created_by, upstream_sub_user_id, gb_used, gb_allocated, auto_topup_enabled, auto_topup_insufficient_alerted_at, exhausted_alerted_at, low_alerted_pct, upstream_missing_since')
+      .select('id, user_id, label, status, created_by, upstream_sub_user_id, gb_used, gb_allocated, auto_topup_enabled, auto_topup_insufficient_alerted_at, exhausted_alerted_at, low_alerted_pct, upstream_missing_since, suspended_reason')
       .not('upstream_sub_user_id', 'is', null)
       .order('id')
       .range(from, to)
@@ -144,7 +144,10 @@ export async function syncAllUsage(admin?: AdminClient) {
   if (complete) {
     const suspendedUsers = await loadSuspendedUserIds(supabase)
     limitsReconciled = await reconcileLimits(supabase, active, subUsers, suspendedUsers)
-    missingUpstream = await trackMissingUpstream(supabase, active, subUsers)
+    // Customer-paused sessions too: they are not walked for usage, but resuming one whose proxy has
+    // vanished fails, and nobody would otherwise ever hear about it.
+    const trackable = creds.filter(c => c.status === 'active' || (c.status === 'suspended' && c.suspended_reason === 'customer'))
+    missingUpstream = await trackMissingUpstream(supabase, trackable, subUsers)
     orphanCount = await sweepOrphans(supabase, creds, subUsers)
     exhaustedNotified = await notifyExhaustion(supabase, active, usageMap, suspendedUsers)
     lowNotified = await notifyLowBandwidth(supabase, active, usageMap, suspendedUsers)
@@ -327,7 +330,7 @@ async function trackMissingUpstream(
     await sendEmail({
       to: process.env.ADMIN_EMAIL,
       subject: `[MISSING UPSTREAM] ${persistent.length} active session(s) have no live proxy behind them`,
-      html: `<p>${persistent.length} credential(s) are marked <strong>active</strong> but their sub-user no longer exists at the
+      html: `<p>${persistent.length} credential(s) are marked <strong>active</strong> (or customer-paused) but their sub-user no longer exists at the
              proxy provider (seen on consecutive complete listings for over ${Math.round(UPSTREAM_MISSING_GRACE_MS / 60000)} minutes).
              Those customers' sessions do not work, and their dashboards now show a "needs attention" notice.</p>
              <p><strong>Credential ids (first 20):</strong> ${escapeHtml(persistent.slice(0, 20).map((c) => c.id).join(', '))}</p>

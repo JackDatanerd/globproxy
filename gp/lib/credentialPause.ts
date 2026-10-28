@@ -3,6 +3,7 @@ import { disableCredential, enableCredential, SessionLimitError } from '@/lib/ad
 import { refreshLiveUsage } from '@/lib/usageLive'
 import { dispatchWebhook } from '@/lib/webhooks'
 import { getOwnedCredential } from '@/lib/credentials'
+import { UpstreamApiError } from '@/lib/upstream'
 
 type Admin = Awaited<ReturnType<typeof createAdminClient>>
 type PauseResult =
@@ -60,6 +61,15 @@ export async function resumeCredential(admin: Admin, userId: string, id: string)
     await enableCredential(admin, cred)
   } catch (e) {
     if (e instanceof SessionLimitError) return fail(409, 'conflict', 'You already have 100 live sessions, so this one can\u2019t be resumed. Delete an unused session first, then resume it.')
+    // The supplier no longer has this session's proxy (404). "Retry shortly" would be false forever, and a
+    // paused session is not walked by the usage sync, so nobody else would find out: flag it for the admin
+    // panel (and the sync's alert e-mail) and tell the customer plainly. Their bandwidth is untouched.
+    if (e instanceof UpstreamApiError && e.status === 404) {
+      console.error('[pause] resume: sub-user missing upstream', id)
+      await admin.from('proxy_credentials').update({ upstream_missing_since: new Date().toISOString() })
+        .eq('id', id).is('upstream_missing_since', null).then(() => undefined, () => undefined)
+      return fail(409, 'conflict', 'This session\u2019s proxy needs to be restored by our team before it can be resumed. We have been notified \u2014 your bandwidth is safe.')
+    }
     console.error('[pause] enable failed', id, e)
     return fail(502, 'upstream_unavailable', 'Could not resume the sub-user right now. Nothing was changed — retry shortly.')
   }
