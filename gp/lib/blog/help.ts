@@ -37,6 +37,11 @@ export const HELP_TOPICS: HelpTopic[] = [
     ],
   },
   {
+    title: 'Resellers and the API',
+    blurb: 'Automate sub-users, top-ups and usage from your own code.',
+    slugs: ['api-quickstart-create-first-sub-user'],
+  },
+  {
     title: 'Account security',
     blurb: 'Two-factor sign-in, backup codes and getting back into your account.',
     slugs: ['two-factor-authentication-setup-backup-codes-recovery'],

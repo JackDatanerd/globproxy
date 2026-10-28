@@ -2,6 +2,239 @@ import type { BlogPost } from './types'
 
 export const BLOG_POSTS: BlogPost[] = [
   {
+    slug: 'api-quickstart-create-first-sub-user',
+    title: 'API Quickstart: Create Your First Sub-User and Connect in 10 Minutes',
+    description:
+      'Reseller API quickstart: get access, create a key, make your first sub-user with curl, connect through it, handle pending status, and fix common errors.',
+    excerpt:
+      'From zero to a working proxy login in about ten minutes: get API access, create a key, create a sub-user with one request and test it.',
+    category: 'Guides',
+    section: 'help',
+    publishedAt: '2026-10-28',
+    body: [
+      {
+        type: 'p',
+        text: 'The GlobProxy API lets a reseller create proxy logins (sub-users) for their own clients, top them up, watch their usage and be told when something changes, all from code instead of the dashboard. This guide takes you from nothing to one working sub-user, step by step. The full reference is in the API docs; this is the shortest safe path.',
+      },
+      {
+        type: 'callout',
+        title: 'The short version',
+        text: 'You need a reseller account with API access approved. Create a key on the API Keys page, copy it (it is shown once), then send POST /api/v1/sub-users with the GB to give the sub-user and where it should exit. The reply contains host, port, password and connection_username. Use connection_username, not username, to connect.',
+      },
+
+      { type: 'h2', text: 'Step 1: Get API access' },
+      {
+        type: 'p',
+        text: 'The API is for resellers. Access is granted in two stages, and each is a quick review by a person:',
+      },
+      {
+        type: 'ol',
+        items: [
+          'Become a reseller. If your account is a regular one, open API Keys in the dashboard sidebar. The page says "API access is for resellers" and has a Become a reseller button.',
+          'Once you are a reseller, API Keys shows a Request API access form. Describe what you plan to automate under "What are you planning to automate?" (a sentence or two, at least 10 characters), add your website if you have one, and click Submit request.',
+          'The page then reads "Request under review". When we approve it, the same page switches to your keys. If a request is not approved, the page says so and you can apply again with more detail about what you are building.',
+        ],
+      },
+
+      { type: 'h2', text: 'Step 2: Create an API key' },
+      {
+        type: 'ol',
+        items: [
+          'Open API Keys. Under Your keys, choose the access level. For this guide pick Full access (read + write). Read-only keys can look but not create.',
+          'Optionally choose an expiry (30 days, 90 days, 180 days or 1 year; the default is No expiry) and give the key a label such as "billing-server" so you can tell your keys apart later.',
+          'Optionally list Allowed IPs, the addresses your servers call from. If you leave it empty, the key works from anywhere.',
+          'Click Create new key. Your new key appears under "Your new API key" and starts with gp_live_.',
+          'Copy it into your secrets store or an environment variable, then click Done, I\'ve saved it. The key cannot be shown again. Until you click Done you cannot create another key or rotate one, so the only copy is not lost.',
+        ],
+      },
+      {
+        type: 'callout',
+        title: 'Keep the key like a password',
+        text: 'Anyone with the key can create sub-users and spend your bandwidth. Keep it on your server, never in browser code or a public repository. If it leaks, open API Keys and use Revoke on that key, or Rotate to swap it for a new one. Choosing "Revoke the old key now" on rotate cuts the old key off at once.',
+        tone: 'accent2',
+      },
+      {
+        type: 'p',
+        text: 'A few limits to know: you can have up to 25 active keys, and a key can list up to 20 allowed IPs. The two Allocate access levels exist for moving bandwidth between accounts and are not needed for anything in this guide.',
+      },
+
+      { type: 'h2', text: 'Step 3: Check the key works' },
+      {
+        type: 'p',
+        text: 'Put the key in an environment variable so it does not end up in your shell history or your code. Replace gp_live_... with your key.',
+      },
+      {
+        type: 'code',
+        language: 'bash',
+        caption: 'Who am I, and how much bandwidth can I give out?',
+        code: 'export GP_KEY="gp_live_..."\n\ncurl -s https://globproxy.com/api/v1/account \\\n  -H "Authorization: Bearer $GP_KEY"\n\ncurl -s https://globproxy.com/api/v1/account/bandwidth \\\n  -H "Authorization: Bearer $GP_KEY"',
+      },
+      {
+        type: 'p',
+        text: 'The first call returns your account, plus the key\'s own scopes, allowed_ips and expires_at. The second returns total_gb, used_gb, allocated_gb and available_gb. available_gb is what you can still hand to new sub-users. If it is 0, buy bandwidth first, because creating a sub-user takes its GB from that balance.',
+      },
+
+      { type: 'h2', text: 'Step 4: Create a sub-user' },
+      {
+        type: 'p',
+        text: 'This creates a sticky-session sub-user in Texas with 5 GB. Only gb_allocated is required; everything else has a default.',
+      },
+      {
+        type: 'code',
+        language: 'bash',
+        caption: 'POST /api/v1/sub-users',
+        code: 'curl -s -X POST https://globproxy.com/api/v1/sub-users \\\n  -H "Authorization: Bearer $GP_KEY" \\\n  -H "Content-Type: application/json" \\\n  -H "Idempotency-Key: client-a-signup-0001" \\\n  -d \'{\n    "label": "Client A",\n    "gb_allocated": 5,\n    "country": "us",\n    "state": "texas",\n    "session_type": "sticky",\n    "sticky_duration": 30,\n    "protocol": "http"\n  }\'',
+      },
+      {
+        type: 'ul',
+        items: [
+          'gb_allocated: from 0.01 to 100000. It is taken from your available balance straight away.',
+          'label: a name for your own reference.',
+          'country, state, city and asn: where the sub-user exits. Use a country code such as us. An asn (ISP) is country-wide and cannot be combined with a state or city. To see valid values, call GET /api/v1/locations first.',
+          'session_type: rotating (a new IP per connection) or sticky (the same IP for a while). sticky_duration is the lifetime in minutes, from 1 to 1440.',
+          'protocol: http or socks5.',
+          'endpoint_count and auto_topup are optional extras covered in the API docs.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'A successful create answers 201. The Idempotency-Key header is optional here but worth always sending: if your request times out and you send it again with the same key, you get the original answer back instead of a second sub-user and a second reservation of GB. Use a new key for each genuinely new sub-user. Keys are 8 to 128 characters and are remembered for 24 hours.',
+      },
+
+      { type: 'h2', text: 'Step 5: Read the response and connect' },
+      {
+        type: 'code',
+        language: 'json',
+        caption: 'An abbreviated 201 response',
+        code: '{\n  "id": "3f1a...",\n  "label": "Client A",\n  "status": "active",\n  "gb_allocated": 5,\n  "gb_used": 0,\n  "gb_remaining": 5,\n  "country": "us",\n  "state": "texas",\n  "session_type": "sticky",\n  "protocol": "http",\n  "host": "proxy.globproxy.com",\n  "port": 10000,\n  "username": "...",\n  "password": "...",\n  "connection_username": "...-country-us-state-texas-...",\n  "pending_reason": null\n}',
+      },
+      {
+        type: 'p',
+        text: 'Save the id: every later call about this sub-user uses it. To connect, put connection_username and password into your proxy settings with the returned host and port. connection_username carries the location and session settings. The plain username does not, so a client using it would not be targeted at all.',
+      },
+      {
+        type: 'table',
+        headers: ['Protocol', 'Rotating', 'Sticky'],
+        rows: [
+          ['http', '9000', '10000'],
+          ['socks5', '11000', '12000'],
+        ],
+      },
+      {
+        type: 'code',
+        language: 'bash',
+        caption: 'Test the new login',
+        code: 'curl -s -x "http://CONNECTION_USERNAME:PASSWORD@proxy.globproxy.com:10000" https://ipinfo.io/json',
+      },
+      {
+        type: 'p',
+        text: 'You should see an IP in the place you chose. Remember that a lookup site is an estimate, especially at city level, so a nearby town is normal; see our guide on IP lookups showing a different city. If you only asked for a country, expect different states.',
+      },
+
+      { type: 'h2', text: 'If the sub-user comes back "pending"' },
+      {
+        type: 'p',
+        text: 'Occasionally the sub-user is created but cannot go live immediately. The reply then has "status": "pending", and username, password and connection_username are null. Your GB are already reserved for it, and we keep retrying in the background, normally for no more than a few minutes. pending_reason tells you why: capacity (network capacity is being added), unavailable (a temporary outage) or error.',
+      },
+      {
+        type: 'ul',
+        items: [
+          'Do not create another sub-user for the same client. You would reserve GB twice.',
+          'Poll GET /api/v1/sub-users/ID every 30 to 60 seconds until status is active, then read the credentials from that response.',
+          'Or, better, subscribe to the session_activated webhook, which tells you the moment it goes live. Create one with POST /api/v1/webhooks and event_types ["session_activated"]. The secret is returned once, and every delivery is signed, so check the signature as shown in the API docs.',
+          'If it is still pending after 15 minutes, contact support with the id and the X-Request-Id of the create call.',
+        ],
+      },
+
+      { type: 'h2', text: 'Step 6: Watch usage and top up' },
+      {
+        type: 'code',
+        language: 'bash',
+        caption: 'Usage and top-up',
+        code: '# How much has it used? (gb_allocated, gb_used, gb_remaining)\ncurl -s https://globproxy.com/api/v1/sub-users/SUB_USER_ID/usage \\\n  -H "Authorization: Bearer $GP_KEY"\n\n# Add 5 GB from your available balance\ncurl -s -X POST https://globproxy.com/api/v1/sub-users/SUB_USER_ID/topup \\\n  -H "Authorization: Bearer $GP_KEY" \\\n  -H "Content-Type: application/json" \\\n  -H "Idempotency-Key: client-a-topup-0001" \\\n  -d \'{ "gb_amount": 5 }\'',
+      },
+      {
+        type: 'p',
+        text: 'Live usage is read from the network at most every 30 seconds per sub-user, so polling faster just returns the same number. Rather than polling, you can subscribe to the session_low and session_exhausted webhooks, or switch on auto-topup so the sub-user refills itself from your balance. A top-up spends balance, so always send an Idempotency-Key with it.',
+      },
+
+      { type: 'h2', text: 'Errors you are most likely to meet' },
+      {
+        type: 'p',
+        text: 'Errors are JSON with an error message and a code. Match on the code, not the message, because the wording can change.',
+      },
+      {
+        type: 'table',
+        headers: ['Status and code', 'Meaning', 'What to do'],
+        rows: [
+          ['401', 'Key missing, wrong, revoked or expired.', 'Check the header is exactly "Authorization: Bearer gp_live_..." and that the key still shows as active on API Keys.'],
+          ['403 reseller_required', 'The account is not a reseller.', 'Become a reseller first (Step 1).'],
+          ['403 api_access_disabled', 'API access is not approved for the account.', 'Request it on API Keys and wait for approval.'],
+          ['403 insufficient_scope', 'The key is read-only, or lacks the scope for that endpoint.', 'Create a Full access key. Creating, topping up and deleting need write access.'],
+          ['403 ip_not_allowed', 'The call came from an IP not on the key\'s Allowed IPs.', 'Add your server\'s address to the key, or call from an allowed one. Serverless hosts often change address, so check which one you are using.'],
+          ['400 invalid_request', 'A field is missing or out of range. The message names it.', 'Fix the field named in the message.'],
+          ['402 insufficient_bandwidth', 'Your available balance cannot cover the GB asked for.', 'Buy bandwidth or ask for fewer GB, then retry.'],
+          ['422 idempotency_conflict', 'You reused an Idempotency-Key with a different request.', 'Use a new key for a different request.'],
+          ['429 rate_limited', 'Too many requests.', 'Wait for the Retry-After header (a full minute). Limits are 120 requests a minute per key, and 30 a minute for requests that change something.'],
+          ['502', 'A step on the proxy network could not be completed, for example when deleting a sub-user or releasing GB. Nothing was changed.', 'Safe to retry shortly. Send the same Idempotency-Key if you used one.'],
+        ],
+      },
+
+      { type: 'h2', text: 'Good habits before you go live' },
+      {
+        type: 'ul',
+        items: [
+          'Always send an Idempotency-Key on create and top-up, and make it stable for one logical action (for example one per client signup), so a retry can never double-create.',
+          'Save the sub-user id and the password in your own system when you create it. You can read them again with GET /api/v1/sub-users/ID, but not from anywhere you have not stored them.',
+          'On a 429 or 5xx, wait and retry with the same Idempotency-Key. Do not loop faster.',
+          'Use one key per integration, with a label and the narrowest access it needs, so you can revoke one without breaking the others.',
+          'Fetch the list with GET /api/v1/sub-users using limit and offset (up to 500 per page, 100 by default) and filters such as status and label rather than downloading everything.',
+          'Machine-readable documentation is at /api/v1/openapi.json if you generate a client library.',
+        ],
+      },
+
+      { type: 'h2', text: 'If you need to contact us' },
+      {
+        type: 'p',
+        text: 'Open Support at the bottom of the dashboard sidebar and choose Report an issue, or email support@globproxy.com. Every API response carries an X-Request-Id header. Send us the id of the call that went wrong, along with the time, the endpoint and the status and code you got. Never send your full API key or a sub-user password; the first characters of the key (the key prefix) are enough for us to find it.',
+      },
+    ],
+    faq: [
+      {
+        q: 'Who can use the GlobProxy API?',
+        a: 'Resellers whose API access has been approved. If you are a regular account, become a reseller from the API Keys page, then request API access there. Each request is reviewed by a person.',
+      },
+      {
+        q: 'Which key access level do I need to create sub-users?',
+        a: 'Full access (read + write). A Read-only key can list and view but gets 403 insufficient_scope on anything that changes something. The Allocate levels are only for moving bandwidth between accounts.',
+      },
+      {
+        q: 'I lost my API key. Can I see it again?',
+        a: 'No. A key is shown once, when you create it. Create a new one, move your integration across, then revoke the old one. Rotate does this in one step and can keep the old key working for 24 hours so nothing breaks.',
+      },
+      {
+        q: 'Should I use username or connection_username?',
+        a: 'connection_username. It includes your country, state, city, ISP and session settings. The plain username has none of them, so a client using it would not be targeted.',
+      },
+      {
+        q: 'Why is my new sub-user pending, with no password?',
+        a: 'It was created but could not go live yet. The GB are reserved and activation is retried in the background, usually within a few minutes. Wait for the session_activated webhook or poll GET /api/v1/sub-users/ID. Do not create a second one.',
+      },
+      {
+        q: 'My request timed out. Is it safe to send it again?',
+        a: 'Yes, if you sent an Idempotency-Key. The same key returns the original result instead of creating or charging twice. Without a key, check GET /api/v1/sub-users for the sub-user before retrying.',
+      },
+      {
+        q: 'What are the API rate limits?',
+        a: '120 requests a minute per key, and 30 a minute for requests that create, change or delete. Over the limit you get 429 with a Retry-After header of 60 seconds. Usage history has its own tighter limit of 10 a minute.',
+      },
+      {
+        q: 'Why do I get ip_not_allowed?',
+        a: 'The key has an Allowed IPs list and your request came from an address that is not on it. Add the address, or edit the key to clear the list. Narrowing a key applies instantly; widening it asks you to confirm with 2FA or your password.',
+      },
+    ],
+  },
+  {
     slug: 'request-a-refund-eligibility-and-timeline',
     title: 'How to Request a Refund: Eligibility, Steps and What Happens Next',
     description:
