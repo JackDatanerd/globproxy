@@ -1,7 +1,7 @@
 'use client'
 import { useState } from 'react'
 import toast from 'react-hot-toast'
-import { apiJson } from '@/lib/clientApi'
+import { apiJson, toastApiError } from '@/lib/clientApi'
 
 type Status = 'pending' | 'approved' | 'rejected' | null
 
@@ -23,7 +23,7 @@ export default function ApiAccessRequestForm({ status: initialStatus }: { status
       toast.success("Request submitted! We'll review and get back to you.")
       setStatus('pending')
     } catch (err: any) {
-      if (err?.code !== 'mfa_required') toast.error(err?.message || 'Failed to submit request')
+      toastApiError(err, 'Failed to submit request')
     }
     setSubmitting(false)
   }

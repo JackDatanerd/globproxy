@@ -209,7 +209,7 @@ export default function ProxyCard({ cred, index, availableGb, expanded, onToggle
       toast.success(resume ? 'Session resumed' : 'Session paused — it won’t use bandwidth until you resume it')
       router.refresh()
     } catch (err: any) {
-      if (err?.code !== 'mfa_required') toast.error(err.message ?? (resume ? 'Could not resume' : 'Could not pause'))
+      toastApiError(err, resume ? 'Could not resume' : 'Could not pause')
     } finally {
       setPausing(false)
     }

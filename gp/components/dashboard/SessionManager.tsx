@@ -72,7 +72,7 @@ export default function SessionManager({ credentialId, cred, host, port, baseUse
       setSessions(prev => [...(prev ?? []), ...made])
       toast.success(made.length > 1 ? `${made.length} sessions created` : 'Session created')
     } catch (err: any) {
-      if (err?.code !== 'mfa_required') toastApiError(err)
+      toastApiError(err)
     } finally {
       setCreating(false)
     }

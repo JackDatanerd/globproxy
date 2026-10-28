@@ -1,7 +1,7 @@
 'use client'
 import { useState } from 'react'
 import toast from 'react-hot-toast'
-import { apiJson } from '@/lib/clientApi'
+import { apiJson, toastApiError } from '@/lib/clientApi'
 
 // Shown only to accounts that were never referred.
 export default function ClaimReferralForm() {
@@ -16,7 +16,7 @@ export default function ClaimReferralForm() {
       toast.success('Referral code applied')
       setTimeout(() => window.location.reload(), 600)
     } catch (err: any) {
-      if (err?.code !== 'mfa_required') toast.error(err?.message || 'Could not apply that code')
+      toastApiError(err, 'Could not apply that code')
     } finally {
       setLoading(false)
     }

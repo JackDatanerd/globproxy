@@ -67,7 +67,7 @@ export default function AutoRechargePanel() {
       setEnabled(false); setWhy(null)
       toast.success('Auto-recharge is off.')
     } catch (err: any) {
-      if (err?.code !== 'mfa_required') toast.error(err?.message || 'Could not switch off auto-recharge')
+      toastApiError(err, 'Could not switch off auto-recharge')
     }
     setSaving(false)
   }
@@ -99,7 +99,7 @@ export default function AutoRechargePanel() {
       setCard(null); setEnabled(false)
       toast.success('Card removed.')
     } catch (err: any) {
-      if (err?.code !== 'mfa_required') toast.error(err?.message || 'Could not remove the card')
+      toastApiError(err, 'Could not remove the card')
     }
     setSaving(false)
   }

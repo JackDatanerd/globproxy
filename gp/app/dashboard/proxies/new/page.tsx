@@ -9,11 +9,23 @@ export default async function NewProxyPage({ searchParams }: { searchParams: Pro
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/auth/login')
 
-  const { data: bw } = await supabase
+  const { data: bw, error: bwError } = await supabase
     .from('bandwidth_accounts')
     .select('available_gb, total_gb, used_gb, default_auto_topup_enabled, default_auto_topup_threshold_gb, default_auto_topup_amount_gb')
     .eq('user_id', user.id)
-    .single()
+    .maybeSingle()
+
+  // A failed lookup is not "no bandwidth": say so instead of sending the customer to Buy.
+  if (bwError) {
+    return (
+      <div className="max-w-2xl">
+        <h1 className="font-display font-bold text-2xl text-ink mb-4">New session</h1>
+        <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-5 py-4 text-sm">
+          We couldn&apos;t load your bandwidth balance right now. Refresh the page to try again.
+        </div>
+      </div>
+    )
+  }
 
   const available = bw?.available_gb ?? 0
 

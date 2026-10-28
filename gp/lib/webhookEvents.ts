@@ -56,7 +56,7 @@ export const WEBHOOK_EVENT_LABELS: Record<WebhookEvent, string> = {
   session_deleted: 'Session deleted',
   session_topped_up: 'Session topped up',
   session_released: 'Unused bandwidth released from a session',
-  session_low: 'Session below 20% / 5% bandwidth remaining',
+  session_low: 'Session crossed a usage alert level (80% / 95% used by default)',
   session_exhausted: 'Session ran out of bandwidth',
   session_suspended: 'Session suspended (paused by you, or by GlobProxy)',
   session_resumed: 'Session re-enabled',

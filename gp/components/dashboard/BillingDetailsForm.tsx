@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
-import { apiFetch, apiJson } from '@/lib/clientApi'
+import { apiFetch, apiJson, toastApiError } from '@/lib/clientApi'
 
 // Postal address + tax / VAT id printed on FUTURE invoices (invoices already
 // issued keep the details they were issued with).
@@ -30,7 +30,7 @@ export default function BillingDetailsForm() {
       toast.success('Billing details saved — they appear on your next invoices.')
       setOpen(false)
     } catch (err: any) {
-      if (err?.code !== 'mfa_required') toast.error(err?.message || 'Could not save billing details')
+      toastApiError(err, 'Could not save billing details')
     }
     setSaving(false)
   }

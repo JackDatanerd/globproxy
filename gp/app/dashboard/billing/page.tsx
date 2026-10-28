@@ -1,4 +1,5 @@
 'use client'
+import { redirectToMfa } from '@/lib/clientApi'
 import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
@@ -135,8 +136,10 @@ export default function BillingPage() {
         body: JSON.stringify({ order_id: o.id, reason }),
       })
       const d = await res.json().catch(() => ({}))
-      if (!res.ok) toast.error(d.error || 'Could not send your refund request')
-      else {
+      if (!res.ok) {
+        if (res.status === 403 && d?.code === 'mfa_required') redirectToMfa(d)
+        else toast.error(d.error || 'Could not send your refund request')
+      } else {
         toast.success(d.within_policy ? 'Refund request sent — it falls inside our refund window. We reply within 2 business days.' : 'Refund request sent — it is outside our standard window, so we will review it. We reply within 2 business days.', { duration: 8000 })
         setRequests(prev => ({ ...prev, [o.id]: { status: 'open', note: null } }))
         setRefundFor(null); setRefundReason('')

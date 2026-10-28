@@ -2,7 +2,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import toast from 'react-hot-toast'
-import { apiJson } from '@/lib/clientApi'
+import { apiJson, toastApiError } from '@/lib/clientApi'
 
 type Props = {
   currentMethod: 'usdt' | 'bank' | 'mpesa' | null
@@ -50,7 +50,7 @@ export default function PayoutMethodForm({ currentMethod, currentWalletAddress, 
     } catch (err: any) {
       // A network failure used to throw out of this handler and leave the
       // button on "Saving…" forever.
-      if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Failed to save payout method')
+      toastApiError(err, 'Failed to save payout method')
     } finally {
       setLoading(false)
     }
@@ -65,7 +65,7 @@ export default function PayoutMethodForm({ currentMethod, currentWalletAddress, 
       setEditing(true)
       router.refresh()
     } catch (err: any) {
-      if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Could not remove your payout method')
+      toastApiError(err, 'Could not remove your payout method')
     } finally {
       setLoading(false)
     }

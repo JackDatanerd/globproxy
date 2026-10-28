@@ -2,7 +2,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import toast from 'react-hot-toast'
-import { apiJson } from '@/lib/clientApi'
+import { apiJson, toastApiError } from '@/lib/clientApi'
 
 // Lets an affiliate cancel their own scheduled payout (nothing sent yet), e.g. when the
 // destination it was created with is wrong. The commissions return to their balance.
@@ -18,7 +18,7 @@ export default function CancelPayoutButton({ payoutId }: { payoutId: string }) {
       toast.success('Payout cancelled — the amount is back in your balance')
       router.refresh()
     } catch (err: any) {
-      if (err?.code !== 'mfa_required') toast.error(err?.message ?? 'Could not cancel this payout')
+      toastApiError(err, 'Could not cancel this payout')
     } finally {
       setLoading(false)
     }

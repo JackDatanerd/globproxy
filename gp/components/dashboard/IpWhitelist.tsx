@@ -83,7 +83,7 @@ export default function IpWhitelist({ credentialId }: Props) {
       setDescription('')
       toast.success('IP whitelisted')
     } catch (err: any) {
-      if (err?.code !== 'mfa_required') toastApiError(err)
+      toastApiError(err)
     } finally {
       setAdding(false)
     }

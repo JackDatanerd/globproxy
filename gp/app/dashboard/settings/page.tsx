@@ -6,7 +6,7 @@ import toast from 'react-hot-toast'
 import TwoFactorSettings from '@/components/dashboard/TwoFactorSettings'
 import { ChangePasswordCard, ChangeEmailCard, SecurityActivityCard, ActiveSessionsCard } from '@/components/dashboard/AccountSecurityCards'
 import { WEBHOOK_EVENTS, WEBHOOK_EVENT_LABELS, WEBHOOK_WILDCARD } from '@/lib/webhookEvents'
-import { apiFetch, apiJson, copyText, redirectToMfa, saveBlob, hasAtMostDecimals } from '@/lib/clientApi'
+import { apiFetch, apiJson, copyText, redirectToMfa, saveBlob, hasAtMostDecimals, toastApiError } from '@/lib/clientApi'
 import { fetchCountryList } from '@/lib/geoTargeting'
 import { fetchWithReauth } from '@/lib/reauthPrompt'
 import { formatGb } from '@/lib/format'
@@ -244,7 +244,7 @@ function SettingsPageInner() {
       toast.error('We could not schedule the deletion. Please try again.')
       setDeleting(false)
     } catch (err: any) {
-      if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Failed to delete account')
+      toastApiError(err, 'Failed to delete account')
       setDeleting(false)
     }
   }
@@ -336,7 +336,7 @@ function SettingsPageInner() {
       setNewWebhookUrl('')
       setNewWebhookDesc('')
     } catch (err: any) {
-      if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Failed to add webhook')
+      toastApiError(err, 'Failed to add webhook')
     }
     setCreatingWebhook(false)
   }
@@ -346,7 +346,7 @@ function SettingsPageInner() {
       const data = await apiJson('PATCH', `/api/dashboard/webhooks/${id}`, { enabled })
       setWebhooks(w => w.map(x => x.id === id ? { ...x, ...(data.webhook ?? { enabled }) } : x))
     } catch (err: any) {
-      if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Failed to update webhook')
+      toastApiError(err, 'Failed to update webhook')
     }
   }
 
@@ -366,7 +366,7 @@ function SettingsPageInner() {
       setEditingWebhookId(null)
       toast.success('Webhook updated')
     } catch (err: any) {
-      if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Failed to update webhook')
+      toastApiError(err, 'Failed to update webhook')
     }
     setSavingWebhook(false)
   }
@@ -380,7 +380,7 @@ function SettingsPageInner() {
       if (logId === id) { setLogId(null); logIdRef.current = null; logReqRef.current++; setLogLoading(false) }
       if (editingWebhookId === id) setEditingWebhookId(null)
     } catch (err: any) {
-      if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Failed to delete webhook')
+      toastApiError(err, 'Failed to delete webhook')
     }
   }
 
@@ -412,7 +412,7 @@ function SettingsPageInner() {
       setRevealedSecret({ url: webhooks.find(w => w.id === id)?.url ?? 'webhook', secret: data.secret })
       setRotatingWebhookId(null)
     } catch (err: any) {
-      if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Failed to rotate secret')
+      toastApiError(err, 'Failed to rotate secret')
     } finally {
       setRotatingSecret(false)
     }
@@ -484,7 +484,7 @@ function SettingsPageInner() {
       else if (r.stopped_early) toast.error(`Sent ${r.succeeded} of ${r.attempted}, then stopped: your endpoint is still failing`)
       else toast.success(`Redelivered ${r.succeeded} of ${r.attempted}${r.more_failed ? ' — click again for the rest' : ''}`)
     } catch (err: any) {
-      if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Redelivery failed')
+      toastApiError(err, 'Redelivery failed')
     }
     setRedeliveringAll(false)
     if (logIdRef.current === endpointId) await loadDeliveries(endpointId, null, logRows.length)
@@ -600,7 +600,7 @@ function SettingsPageInner() {
                   threshold_gb: Number.isFinite(defaultAuto.threshold_gb) ? defaultAuto.threshold_gb : 1,
                   amount_gb: Number.isFinite(defaultAuto.amount_gb) ? defaultAuto.amount_gb : 5 })
                   .then(() => toast.success('Default auto-allocate turned off'))
-                  .catch((err: any) => { setDefaultAuto(d => ({ ...d, enabled: true })); if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Failed to save default') })
+                  .catch((err: any) => { setDefaultAuto(d => ({ ...d, enabled: true })); toastApiError(err, 'Failed to save default') })
               }
             }}
             aria-pressed={defaultAuto.enabled}

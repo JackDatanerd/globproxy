@@ -1,7 +1,7 @@
 'use client'
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
-import { apiFetch, apiJson, hasAtMostDecimals } from '@/lib/clientApi'
+import { apiFetch, apiJson, hasAtMostDecimals, toastApiError } from '@/lib/clientApi'
 import { formatGb, formatDurationMinutes } from '@/lib/format'
 import {
   fetchCountryList, fetchCountryDetail, POPULAR_COUNTRY_CODES,
@@ -282,7 +282,7 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup, initial, d
       router.push('/dashboard/proxies')
       router.refresh()
     } catch (err: any) {
-      if (err?.code !== 'mfa_required') toast.error(err.message)
+      toastApiError(err)
     } finally {
       setLoading(false)
     }

@@ -1,7 +1,7 @@
 'use client'
 import { useState } from 'react'
 import toast from 'react-hot-toast'
-import { downloadFile } from '@/lib/clientApi'
+import { downloadFile, toastApiError } from '@/lib/clientApi'
 
 // A download that survives an expired 2FA session (redirects to verify) and
 // reports failures as a toast — see downloadFile.
@@ -15,7 +15,7 @@ export default function ExportButton({
     try {
       await downloadFile(url, filename)
     } catch (err: any) {
-      if (err?.code !== 'mfa_required') toast.error(err?.message ?? 'Export failed')
+      toastApiError(err, 'Export failed')
     } finally {
       setBusy(false)
     }

@@ -217,7 +217,7 @@ export default function ApiKeysClient({ canAllocate = false }: { canAllocate?: b
       setNewIps('')
       await loadKeys()
     } catch (err: any) {
-      if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Failed to create key')
+      toastApiError(err, 'Failed to create key')
     }
     setCreating(false)
   }
@@ -258,7 +258,7 @@ export default function ApiKeysClient({ canAllocate = false }: { canAllocate?: b
       setEditing(null)
       loadKeys()
     } catch (err: any) {
-      if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Failed to update key')
+      toastApiError(err, 'Failed to update key')
     }
   }
 
@@ -280,7 +280,7 @@ export default function ApiKeysClient({ canAllocate = false }: { canAllocate?: b
       setRotatingId(null)
       loadKeys()
     } catch (err: any) {
-      if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Failed to rotate key')
+      toastApiError(err, 'Failed to rotate key')
     }
     setRotating(false)
   }

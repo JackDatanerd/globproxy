@@ -258,14 +258,14 @@ export default function ProxyList({ creds, availableGb, rotationEnabled, warnPct
       const gb = Number(topupGb)
       if (!Number.isFinite(gb) || gb <= 0) { toast.error('Enter how many GB to add to each session.'); return }
       const total = gb * targets.length
-      if (total > availableGb) { toast.error(`That is ${formatGb(total)} GB in total but you have ${formatGb(availableGb)} GB unassigned.`); return }
+      if (total > availableGb + 0.005) { toast.error(`That is ${formatGb(total)} GB in total but you have ${formatGb(availableGb)} GB unassigned.`); return }
       if (!window.confirm(`Add ${formatGb(gb)} GB to each of ${targets.length} session${targets.length === 1 ? '' : 's'}? ${formatGb(total)} GB comes out of your unassigned balance.`)) return
       extra.gb_amount = gb
     }
     if (kind === 'retarget') {
       const name = countries.find(c => c.code === retargetCountry)?.name ?? 'any country'
       if (!retargetCountry) { toast.error('Choose a country.'); return }
-      if (!window.confirm(`Move ${targets.length} session${targets.length === 1 ? '' : 's'} to ${name}? Their state, city and ASN settings are cleared.`)) return
+      if (!window.confirm(`Move ${targets.length} session${targets.length === 1 ? '' : 's'} to ${name}? Any that are in a different country today have their state, city and ASN settings cleared.`)) return
       extra.country = retargetCountry
     }
     if (kind === 'delete') {
