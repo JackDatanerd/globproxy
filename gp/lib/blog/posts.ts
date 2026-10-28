@@ -1549,7 +1549,7 @@ const agent = new HttpsProxyAgent(
     slug: 'non-expiring-proxy-bandwidth',
     title: 'Why Your Residential Proxy Bandwidth Keeps Expiring (And What It Actually Costs You)',
     description:
-      'Most residential proxy plans reset unused GB every month. Here is how that math works against you, and how to check whether a provider actually lets bandwidth roll over.',
+      'Most residential proxy plans reset unused GB every month. See how that math works against you, and how to check whether a provider lets bandwidth roll over.',
     excerpt:
       'Monthly-reset bandwidth quietly resets your account to zero every 30 days whether you used it or not. Here is the real cost of that model, and how to spot it before you buy.',
     category: 'Bandwidth & Pricing',
@@ -1609,7 +1609,7 @@ const agent = new HttpsProxyAgent(
     slug: 'city-level-proxy-targeting-explained',
     title: 'City-Level Proxy Targeting: What It Actually Means (And When You Need It vs. Country-Level)',
     description:
-      'Country-level proxy targeting is enough for most tasks. Here is exactly when city-level targeting matters, how it works technically, and how to tell if a provider\'s "city targeting" is real.',
+      'Country targeting is enough for most tasks. See when city-level targeting matters, how it works, and how to tell if a provider\'s city targeting is real.',
     excerpt:
       'Not every task needs a proxy in a specific city — but for the ones that do, the difference between real and approximate targeting is the whole ballgame.',
     category: 'Geo-Targeting',
@@ -1684,10 +1684,10 @@ const agent = new HttpsProxyAgent(
         type: 'p',
         text: 'Rotating and sticky sessions are the two basic modes almost every residential proxy task falls into, and they solve opposite problems. Getting this choice wrong is one of the most common reasons a proxy setup that should work starts failing — not because the proxies are bad, but because the session type doesn\'t match what the target site expects to see.',
       },
-      { type: 'h2', text: 'Rotating sessions: a new IP on every request (or on a timer)' },
+      { type: 'h2', text: 'Rotating sessions: a new IP on every connection' },
       {
         type: 'p',
-        text: "A rotating session assigns a different IP address automatically — either on every single request, or on a set interval you configure. The identity behind each request is disposable. This is the right mode when the task is high-volume and stateless: you're not trying to look like one consistent visitor over time, you're trying to spread a large number of requests across many different IPs so no single IP takes on a suspiciously high request volume.",
+        text: "A rotating session assigns a different IP address automatically to every new connection. There is no timer to set; holding one IP for a chosen length of time is what a sticky session is for. The identity behind each request is disposable. This is the right mode when the task is high-volume and stateless: you're not trying to look like one consistent visitor over time, you're trying to spread a large number of requests across many different IPs so no single IP takes on a suspiciously high request volume.",
       },
       {
         type: 'ul',
@@ -1719,13 +1719,13 @@ const agent = new HttpsProxyAgent(
         type: 'callout',
         tone: 'accent',
         title: 'On GlobProxy',
-        text: 'Every proxy session supports both rotating and sticky modes from the same dashboard — no separate purchase or plan tier required to switch between them.',
+        text: 'Every proxy session supports both rotating and sticky modes — no separate purchase or plan tier required. Open the session\'s Edit tab, change IP behaviour, and save; the port changes with it, and your bandwidth is not affected.',
       },
     ],
     faq: [
       {
         q: 'How long can a sticky session last?',
-        a: 'Sticky session duration is configurable per session from the dashboard, long enough to cover typical login-to-checkout flows without the IP changing mid-task.',
+        a: 'You choose it per session in the dashboard, from 1 minute up to 24 hours (1440 minutes). The default is 10 minutes. Pick a length that covers the whole login-to-checkout flow so the IP does not change mid-task.',
       },
       {
         q: 'Does switching between rotating and sticky cost extra?',
@@ -1737,7 +1737,7 @@ const agent = new HttpsProxyAgent(
     slug: 'ad-verification-geo-targeted-proxies',
     title: 'How to Verify Geo-Targeted Ads Are Actually Showing the Right Creative in the Right City',
     description:
-      'Geo-targeted ad campaigns fail silently more often than advertisers realize. Here is how to actually verify what your ads look like in the markets you are paying to target.',
+      'Geo-targeted ad campaigns fail silently more often than advertisers realize. Here is how to verify what your ads look like in the markets you pay to target.',
     excerpt:
       'A campaign set to target three cities can be quietly showing the wrong creative, the wrong price, or a competitor\'s ad in one of them — and nothing in the ad platform\'s dashboard will tell you.',
     category: 'Use Cases',
@@ -1797,7 +1797,7 @@ const agent = new HttpsProxyAgent(
     slug: 'local-seo-rank-tracking-proxies',
     title: 'Local Rank Tracking Without Getting Flagged: A Proxy Setup Guide',
     description:
-      'Google\'s local search results vary by city, sometimes by neighborhood. Here is how to track local rankings accurately without triggering automated-traffic detection.',
+      'Google\'s local results vary by city, sometimes by neighborhood. Here is how to track local rankings accurately without triggering automated-traffic detection.',
     excerpt:
       'The rank your client sees from their office is not the rank a customer sees three miles away. Accurate local tracking means checking from where the customer actually is.',
     category: 'Use Cases',
@@ -1852,7 +1852,7 @@ const agent = new HttpsProxyAgent(
     slug: 'social-media-management-proxies',
     title: 'Managing Multiple Social Accounts Without Cross-Contamination: The Proxy Layer, Explained',
     description:
-      'Running several social accounts from one IP is the single fastest way to get them linked and flagged together. Here is how a proper proxy layer actually prevents that.',
+      'Running several social accounts from one IP is the fastest way to get them linked and flagged together. Here is how a proper proxy layer prevents that.',
     excerpt:
       'Platforms link accounts by more than login credentials — shared IPs, shared device fingerprints, and inconsistent location signals are the tells. The proxy layer is where most of that risk lives.',
     category: 'Use Cases',
@@ -1908,7 +1908,7 @@ const agent = new HttpsProxyAgent(
     slug: 'iproyal-alternative-non-expiring-bandwidth',
     title: 'Looking for an IPRoyal Alternative? Here Is How the Non-Expiring Bandwidth Math Compares',
     description:
-      'A direct, honest comparison of GlobProxy and IPRoyal on the dimension that actually varies most between residential proxy providers: what happens to bandwidth you buy but do not use.',
+      'An honest comparison of GlobProxy and IPRoyal on what varies most between residential proxy providers: what happens to bandwidth you buy but do not use.',
     excerpt:
       'IPRoyal is a solid pay-as-you-go option with a real non-expiring pitch of its own. Here is where GlobProxy differs, and where it does not.',
     category: 'Comparisons',
@@ -2009,7 +2009,7 @@ const agent = new HttpsProxyAgent(
     slug: 'proxy-pool-size-explained',
     title: 'What "35M+ IPs" Actually Means (And Why the Number Alone Doesn\'t Tell You Much)',
     description:
-      'Every residential proxy provider advertises a large IP pool number. Here is what that figure actually measures, and the questions that matter more than the headline size.',
+      'Every residential proxy provider advertises a big IP pool number. Here is what that figure measures, and the questions that matter more than the headline size.',
     excerpt:
       'A big pool number is easy to put on a homepage. Whether it\'s the right pool for your task depends on questions the number itself can\'t answer.',
     category: 'Bandwidth & Pricing',
@@ -2181,7 +2181,7 @@ const agent = new HttpsProxyAgent(
     slug: 'reseller-api-automating-sub-user-provisioning',
     title: 'Automating Sub-User Provisioning With the GlobProxy Reseller API',
     description:
-      'A walkthrough of the reseller API endpoints for creating, topping up, and managing client sub-users programmatically — for resellers who want this off their plate manually.',
+      'A walkthrough of the reseller API endpoints for creating, topping up and managing client sub-users programmatically, so you can take it off your plate.',
     excerpt:
       'Once you\'re past a handful of clients, creating sub-users by hand in the dashboard stops scaling. Here is what automating it actually looks like.',
     category: 'Reseller',
@@ -2244,7 +2244,7 @@ const agent = new HttpsProxyAgent(
     slug: 'reseller-auto-topup-client-bandwidth',
     title: 'Setting Up Auto-Topup So Client Bandwidth Never Silently Runs Out',
     description:
-      'A client whose proxy stops working mid-task because their allocation ran dry is a support ticket you can prevent entirely. Here is how auto-topup on the reseller API works.',
+      'A client whose proxy stops mid-task because their allocation ran dry is a support ticket you can prevent. Here is how auto-topup on the reseller API works.',
     excerpt:
       'The worst version of this problem is finding out a client ran dry from an angry message, not from your own dashboard.',
     category: 'Reseller',
@@ -2296,7 +2296,7 @@ const agent = new HttpsProxyAgent(
     slug: 'ip-whitelisting-client-proxy-credentials',
     title: 'IP Whitelisting for Client Proxy Credentials: A Practical Guide',
     description:
-      'Restricting which IPs can use a sub-user\'s credentials is one of the simplest ways to prevent credential leakage from becoming someone else\'s free bandwidth. Here is how to set it up.',
+      'Restricting which IPs can use a sub-user\'s credentials helps stop a leak becoming someone else\'s free bandwidth. Here is how to set it up.',
     excerpt:
       'A leaked or shared credential without IP restriction is an open tap. Whitelisting is the cheapest fix available.',
     category: 'Reseller',
@@ -2351,7 +2351,7 @@ const agent = new HttpsProxyAgent(
     slug: 'pricing-your-white-label-proxy-service',
     title: 'Pricing Your White-Label Proxy Service: What to Actually Charge',
     description:
-      'There is no universal reseller markup that works for every client base. Here is a framework for setting your own pricing based on your buy-in rate, support overhead, and client segment.',
+      'No universal reseller markup works for every client base. Here is a framework for pricing based on your buy-in rate, support overhead and client segment.',
     excerpt:
       'The wrong question is "what markup do other resellers use." The right one is what your specific costs and client base actually support.',
     category: 'Reseller',
