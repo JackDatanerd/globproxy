@@ -5,8 +5,9 @@ import toast from 'react-hot-toast'
 import { apiJson } from '@/lib/clientApi'
 
 // Sits in DashTopbar next to Sign out. Backend: app/api/support/report/route.ts
-// (writes to support_reports, migration 0036) + an immediate admin email —
-// doesn't require the @globproxy inbox to be active since it only sends.
+// (writes to support_reports, migration 0036) and files the report in the shared
+// support@globproxy.com inbox, which alerts the operator; falls back to a direct
+// e-mail if the inbox can't take it.
 export default function ReportIssueButton({ variant = 'topbar', context }: { variant?: 'topbar' | 'primary' | 'link'; context?: string }) {
   const router = useRouter()
   const [open, setOpen] = useState(false)

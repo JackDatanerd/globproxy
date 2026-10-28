@@ -3,15 +3,43 @@ import { rateLimitedUser } from '@/lib/rateLimit'
 import { createClient, createAdminClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { sendEmailSafe, escapeHtml } from '@/lib/email'
+import { ingestReport } from '@/lib/inboxIngest'
+import { notifyOperator } from '@/lib/inboxNotify'
 import { NextResponse } from 'next/server'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const SUPPORT_ADDRESS = 'support@globproxy.com'
 
 // Backs the "Report an issue" button (components/dashboard/ReportIssueButton.tsx).
-// Deliberately doesn't depend on the @globproxy inbox being activated — this
-// only ever sends via Resend to ADMIN_EMAIL, same as every other alert in
-// the app; nothing here needs to *receive* mail.
+//
+// A report is saved in support_reports (the customer's Support page and /admin/support) AND
+// filed in the shared inbox (support@globproxy.com, /admin/inbox) as a conversation from the
+// customer, so it is read and answered where support mail is handled, and the operator gets the
+// usual inbox alert at ADMIN_EMAIL. If filing in the inbox fails for any reason, the old direct
+// e-mail to ADMIN_EMAIL is sent instead: a report is never silent.
+
+// Files a report (or a follow-up) in the shared inbox and alerts the operator. True when the
+// message is in the inbox; false means the caller must fall back to a direct e-mail.
+async function fileInInbox(
+  supabase: Awaited<ReturnType<typeof createAdminClient>>,
+  p: { reportId: string; followUpId?: string; userId: string; email: string | null; pageUrl: string | null; message: string },
+): Promise<boolean> {
+  if (!p.email) return false
+  try {
+    const r = await ingestReport(supabase, { ...p, email: p.email })
+    if (r.status === 'duplicate') return true
+    if (r.status !== 'stored') return false
+    if (r.newThread || !r.wasUnread) {
+      await notifyOperator(p.followUpId ? 'report_followup' : 'report', {
+        customerEmail: r.customerEmail, subject: r.subject, threadId: r.threadId,
+      })
+    }
+    return true
+  } catch (e) {
+    console.error('[support/report] could not file in the inbox; falling back to a direct e-mail', p.reportId, e)
+    return false
+  }
+}
 
 // Per account, rolling 24 hours. The per-minute and per-hour limiters below bound the
 // RATE; this bounds the VOLUME (6/hour is still ~140 staff emails and rows a day).
@@ -79,14 +107,18 @@ export async function POST(req: Request) {
         .gte('created_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
       if (cErr) throw cErr
       if ((recentF ?? 0) >= 10) return NextResponse.json({ error: 'You have added a lot to this report today. Please wait for our reply before sending more.' }, { status: 429 })
-      const { error: insErr } = await supabase.from('support_report_replies')
+      const { data: fu, error: insErr } = await supabase.from('support_report_replies')
         .insert({ report_id: own.id, admin_id: null, from_customer: true, message: trimmed.slice(0, 2000) })
-      if (insErr) throw insErr
+        .select('id').single()
+      if (insErr || !fu) throw insErr ?? new Error('follow-up insert returned no row')
       if (own.status === 'resolved') {
         await supabase.from('support_reports').update({ status: 'open', resolved_at: null, resolved_by: null }).eq('id', own.id).eq('status', 'resolved')
       }
-      const adminTo = process.env.ADMIN_EMAIL
-      const notifiedF = adminTo ? await sendEmailSafe({
+      const inInboxF = await fileInInbox(supabase, {
+        reportId: own.id, followUpId: fu.id, userId: caller.id, email: caller.email, pageUrl, message: trimmed.slice(0, 2000),
+      })
+      const adminTo = inInboxF ? undefined : process.env.ADMIN_EMAIL
+      const notifiedF = inInboxF ? true : adminTo ? await sendEmailSafe({
         to: adminTo,
         replyTo: caller.email ?? undefined,
         subject: `[ISSUE FOLLOW-UP] ${caller.email ?? caller.id}`,
@@ -98,7 +130,7 @@ export async function POST(req: Request) {
                <p>${escapeHtml(trimmed).replace(/\n/g, '<br/>')}</p>
                <a href="${appUrl()}/admin/support">Open support reports →</a>`,
       }) : false
-      if (!notifiedF) console.error('[support/report] follow-up saved but the staff e-mail was NOT delivered', own.id)
+      if (!notifiedF) console.error('[support/report] follow-up saved but neither the inbox nor the staff e-mail took it', own.id)
       return NextResponse.json({ ok: true, id: own.id, followUp: true })
     }
 
@@ -122,8 +154,11 @@ export async function POST(req: Request) {
     // open count); the staff e-mail is the fast path. sendEmail() answers a refused
     // send with a non-OK response instead of throwing, which the old `.catch` never
     // saw — so say so loudly instead of dropping it.
-    const adminTo = process.env.ADMIN_EMAIL
-    const notified = adminTo ? await sendEmailSafe({
+    const inInbox = await fileInInbox(supabase, {
+      reportId: report.id, userId: caller.id, email: caller.email, pageUrl, message: trimmed,
+    })
+    const adminTo = inInbox ? undefined : process.env.ADMIN_EMAIL
+    const notified = inInbox ? true : adminTo ? await sendEmailSafe({
       to: adminTo,
       // Reply goes straight to the customer — the dashboard promises "we'll follow up by email".
       replyTo: caller.email ?? undefined,
@@ -152,7 +187,7 @@ export async function POST(req: Request) {
       })
       if (!sentReceipt) console.error('[support/report] receipt e-mail was not delivered', report.id)
     }
-    if (!notified) console.error('[support/report] report saved but the staff e-mail was NOT delivered', report.id, adminTo ? '' : '(ADMIN_EMAIL is not set)')
+    if (!notified) console.error('[support/report] report saved but neither the inbox nor the staff e-mail took it', report.id, process.env.ADMIN_EMAIL ? '' : '(ADMIN_EMAIL is not set)')
 
     return NextResponse.json({ ok: true, id: report.id })
   } catch (err: any) {

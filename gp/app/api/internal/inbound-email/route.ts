@@ -2,9 +2,7 @@ import { NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
 import { validatePayload } from '@/lib/inboxCore'
 import { ingestInbound } from '@/lib/inboxIngest'
-import { sendEmail, escapeHtml } from '@/lib/email'
-import { appUrl } from '@/lib/appUrl'
-import { INBOX_ADDRESSES } from '@/lib/inboxCore'
+import { notifyOperator } from '@/lib/inboxNotify'
 
 // Called ONLY by the Worker's email() handler (custom-worker.ts), through the app's own fetch
 // handler, with the same CRON_SECRET the scheduled() handler uses — nothing on the internet can
@@ -35,19 +33,14 @@ export async function POST(req: Request) {
     const supabase = await createAdminClient()
     const result = await ingestInbound(supabase, parsed.value)
 
-    // A brand-new human conversation: tell the operator once. Never to an inbox address (that
-    // would feed this very handler), and a failure here must not fail the delivery.
-    if (result.status === 'stored' && result.newThread && !result.auto) {
-      const to = process.env.ADMIN_EMAIL
-      if (to && !(INBOX_ADDRESSES as readonly string[]).includes(to.trim().toLowerCase())) {
-        await sendEmail({
-          to,
-          subject: `[INBOX] New message from ${result.customerEmail}`.replace(/[\r\n]+/g, ' '),
-          html: `<p><strong>${escapeHtml(result.customerEmail)}</strong> wrote to support@globproxy.com:</p>
-                 <p>${escapeHtml(result.subject)}</p>
-                 <p><a href="${appUrl()}/admin/inbox/${result.threadId}">Open in the inbox →</a></p>`,
-        }).catch((e) => console.error('[inbound-email] admin notice failed', e))
-      }
+    // Tell the operator: a brand-new human conversation always, and a customer's reply into an
+    // existing one when the conversation was not already waiting unread (so a long back-and-forth
+    // does not send a mail per message, but a reply to a closed or answered thread is never missed).
+    // Automatic mail (out-of-office, bounces) never alerts. A failure here must not fail the delivery.
+    if (result.status === 'stored' && !result.auto && (result.newThread || !result.wasUnread)) {
+      await notifyOperator(result.newThread ? 'new' : 'reply', {
+        customerEmail: result.customerEmail, subject: result.subject, threadId: result.threadId,
+      }).catch((e) => console.error('[inbound-email] admin notice failed', e))
     }
     return NextResponse.json({ status: result.status, ...(result.status !== 'stored' ? { reason: result.reason } : {}) })
   } catch (e) {
