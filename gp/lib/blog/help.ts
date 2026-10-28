@@ -23,6 +23,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       'retarget-session-or-get-bandwidth-back',
       'sticky-sessions-keep-same-ip',
       'pause-resume-delete-session-bandwidth',
+      'ip-lookup-shows-wrong-city-proxy-location',
     ],
   },
   {

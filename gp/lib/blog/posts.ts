@@ -2,6 +2,170 @@ import type { BlogPost } from './types'
 
 export const BLOG_POSTS: BlogPost[] = [
   {
+    slug: 'ip-lookup-shows-wrong-city-proxy-location',
+    title: 'IP Lookup Shows the Wrong City? How to Check Your Proxy\'s Location',
+    description:
+      'You picked a city but an IP lookup shows another. Why lookup sites disagree, how to test properly, what counts as a real problem, and what to send support.',
+    excerpt:
+      'A nearby town on a lookup site is usually normal; a different country is not. Here is how to tell which you have, and what to do about it.',
+    category: 'Geo-Targeting',
+    section: 'help',
+    publishedAt: '2026-10-28',
+    body: [
+      {
+        type: 'p',
+        text: 'You set a session to Austin, ran a lookup through it, and the lookup says Dallas, or Round Rock, or just "Texas". Before you assume targeting failed, it helps to know what a lookup site is really telling you. Most of the time this is normal. Sometimes it is not, and the checks below separate the two in about ten minutes.',
+      },
+      {
+        type: 'callout',
+        title: 'The short version',
+        text: 'A lookup site gives an estimate from its own database, and databases disagree about residential IPs, especially at city level. A different country is a real problem. A different state is worth checking. A neighbouring town or the nearest big city is normal. What matters most is what the site you actually work with sees, not what a lookup site says.',
+      },
+
+      { type: 'h2', text: 'Why a lookup can show a different city' },
+      {
+        type: 'p',
+        text: 'There is no official register of where an IP address physically is. Every lookup service builds its own estimate from internet registry data, network routing and its own measurements, and then sells or publishes that. Three things follow from that:',
+      },
+      {
+        type: 'ul',
+        items: [
+          'Different services give different answers for the same IP. It is common for one to say Austin and another to say Round Rock or San Antonio.',
+          'A home internet connection is often placed at the internet provider\'s regional hub or the nearest large city rather than at the street it really sits on.',
+          'Databases are updated on their own schedule, so an answer can be out of date for an IP that moved recently.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'Country is the most reliable level and city is the least. That is true of every proxy provider and every lookup service, which is why a nearby town in the reply does not mean the targeting failed.',
+      },
+
+      { type: 'h2', text: 'Step 1: Confirm what you actually asked for' },
+      {
+        type: 'ol',
+        items: [
+          'In My Proxies, open the session and go to its Edit tab. Check that Country, State / region and City are what you expect. If City says Any, you have not asked for a city at all.',
+          'Open the Credentials tab and read the Username. The location is spelled out at the end, for example -country-us-state-texas-city-austin. If there is no -city- part, the session is targeted at state or country level only.',
+          'If you changed the location recently, copy the Username again. Changes apply to new connections only, so anything still running with the old username keeps its old behaviour until you swap the new one in.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'The City list stays disabled until a state or region is chosen, and a city that is not in the list cannot be targeted. In that case choose the state or region instead.',
+      },
+
+      { type: 'h2', text: 'Step 2: Test more than once, and check the lookup is seeing the proxy' },
+      {
+        type: 'p',
+        text: 'One lookup tells you very little. Run the same test several times and look at the pattern. This sends five requests through a rotating session and prints the IP and the location each lookup reports. Replace YOUR_USERNAME and YOUR_PASSWORD with the values from the Credentials tab, and use the port shown there.',
+      },
+      {
+        type: 'code',
+        language: 'bash',
+        caption: 'Five lookups through a rotating session',
+        code: 'PROXY="http://YOUR_USERNAME:YOUR_PASSWORD@proxy.globproxy.com:9000"\nfor i in 1 2 3 4 5; do\n  curl -s -x "$PROXY" https://ipinfo.io/json | grep -E \'"(ip|city|region|country)"\'\n  echo "---"\ndone',
+      },
+      {
+        type: 'ul',
+        items: [
+          'If the answer shows your own location or your own internet provider, the proxy is not being used. Check that the proxy setting applies to https addresses and that the username and port are copied in full.',
+          'A rotating session should show a different IP on most runs. If you see the same one every time, check that you are using the rotating port on the card. A very narrow target, such as one city plus one internet provider, also has fewer IPs to choose from.',
+          'On a sticky session the IP should stay the same until its lifetime ends. A sticky session holds one IP for a time you choose, from 1 minute to 24 hours.',
+        ],
+      },
+
+      { type: 'h2', text: 'Step 3: Read the result' },
+      {
+        type: 'table',
+        headers: ['What the lookup says', 'What it usually means', 'What to do'],
+        rows: [
+          ['Same city', 'Targeting and the database agree.', 'Nothing.'],
+          ['Neighbouring town or the nearest big city', 'Normal for residential IPs. Databases disagree at this level.', 'Cross-check with a second lookup, then judge by what your target site sees.'],
+          ['Same country, different state', 'Worth a second look. Test several IPs and a second lookup site.', 'Widen to state level if the city does not matter, or contact us with the details below if it persists.'],
+          ['A different country', 'Not expected.', 'Repeat the test, confirm the username from Step 1, then contact us.'],
+          ['Your own location', 'The proxy is not in use.', 'Fix the client setup, see Step 2.'],
+        ],
+      },
+      {
+        type: 'p',
+        text: 'For the cross-check, use two or three different lookup services rather than one. If most agree on the area you asked for, the targeting is working even if one outlier disagrees.',
+      },
+
+      { type: 'h2', text: 'What your target site sees is what counts' },
+      {
+        type: 'p',
+        text: 'A lookup site is not the thing you care about. Google, an ad platform or a store each decide where a visitor is using their own data, and it can differ from every public lookup. If your goal is local search results or a city-specific price, test that directly: run the real task through the session and check that the results match the place you wanted. That is the test that matters, and it is the one to send us if something is wrong.',
+      },
+
+      { type: 'h2', text: 'If you need a specific city to be right' },
+      {
+        type: 'ol',
+        items: [
+          'Make sure State and City are both set, not just the country.',
+          'Use a sticky session so the IP stays put once you have checked it. On the Sticky sessions tab choose + new session, and create several at once (1, 5, 10 or 25). Each named session is its own fixed endpoint with its own IP.',
+          'Look up each session\'s IP and keep the ones whose location matches what you need. Use remove on the rest to take them off your list. Remove only hides a session from the list; its IP keeps working until its lifetime ends.',
+          'Create these fresh after changing a location, so you are sure you are testing the new setting.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'A lookup request is tiny, so checking several IPs costs almost no bandwidth.',
+      },
+      {
+        type: 'callout',
+        title: 'Keep it as wide as the task allows',
+        text: 'One city plus one internet provider draws from a much smaller pool than a whole state. If a tightly targeted session is slow, repeats IPs or fails, widen it first: drop the ISP, then the city. Many tasks that feel like they need an exact city work well at state level.',
+        tone: 'accent2',
+      },
+
+      { type: 'h2', text: 'When to contact us, and what to send' },
+      {
+        type: 'p',
+        text: 'Contact us if the country is wrong on repeated tests across more than one lookup site, if the state is consistently wrong, or if the session works but your real task still shows the wrong place. Open Support at the bottom of the dashboard sidebar and choose Report an issue. It helps a great deal if you include:',
+      },
+      {
+        type: 'ul',
+        items: [
+          'The session\'s label and the Username from the Credentials tab, with the password removed.',
+          'The location you chose on the Edit tab (country, state, city, and any ISP).',
+          'The date and time of the test, and your time zone.',
+          'The IPs you got and what each lookup service said, for at least three runs.',
+          'What your real task showed, if that is where you saw the problem.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'Never send your password. The username and the IPs are enough for us to investigate.',
+      },
+    ],
+    faq: [
+      {
+        q: 'Why does ipinfo show a different city from the one I chose?',
+        a: 'Because a lookup site estimates location from its own database, and residential IPs are often placed at the internet provider\'s regional hub or the nearest large city. A nearby town is normal. A different country is not.',
+      },
+      {
+        q: 'Different lookup sites give different cities for the same IP. Who is right?',
+        a: 'None of them is authoritative. Each builds its own estimate. If most agree on the area you asked for, the targeting is working. For results that matter, judge by what the site you actually use sees.',
+      },
+      {
+        q: 'Is targeting a state more reliable than a city?',
+        a: 'Yes. Country is the most reliable level, state next, city last. If your task does not truly need one city, state level is more dependable and draws from a larger pool of IPs.',
+      },
+      {
+        q: 'I changed my session\'s city but the IP did not change. Why?',
+        a: 'Changes apply to new connections only. Copy the Username from the Credentials tab again and use it for new connections. On a sticky session the IP is held until its lifetime ends, so create a fresh named session to test the new setting.',
+      },
+      {
+        q: 'The lookup shows my own location. What is wrong?',
+        a: 'The request is not going through the proxy. Check that the proxy is set for https addresses, that the username and password are copied in full, and that the port matches the one on the Credentials tab.',
+      },
+      {
+        q: 'Does targeting a city cost more?',
+        a: 'No. City and country targeting are priced the same; you pay for bandwidth, not for the precision of the selection.',
+      },
+    ],
+  },
+  {
     slug: 'two-factor-authentication-setup-backup-codes-recovery',
     title: 'Two-Factor Authentication: Set Up, Backup Codes and Getting Back In',
     description:
@@ -1271,7 +1435,7 @@ for name, proxy in ENDPOINTS.items():
         items: [
           'gp_3f9a… is your session\'s base ID.',
           '-type-residential is the network type.',
-          '-country-us-state-texas-city-austin is the location. State and city are optional; an ISP appears as -asn-<number> if you chose one instead of a state or city (an ISP is country-wide, so it is not combined with them). A session created with Any country has no location part at all.',
+          '-country-us-state-texas-city-austin is the location. State and city are optional; an ISP appears as -asn-<number> if you chose one. A session created with Any country has no location part at all.',
         ],
       },
       {
