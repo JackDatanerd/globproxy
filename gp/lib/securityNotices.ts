@@ -39,7 +39,7 @@ type NoticeProfile = { email: string; full_name: string | null }
 export type NoticeRow = { event: string; ip: string | null; user_agent: string | null; meta: Record<string, unknown> | null }
 
 export const DURABLE_NOTICE_EVENTS: ReadonlySet<string> = new Set([
-  'mfa_enabled', 'mfa_disabled', 'mfa_backup_regenerated', 'mfa_rekeyed', 'mfa_reset_by_admin', 'mfa_locked', 'login_throttled', 'login', 'mfa_recovery_completed',
+  'mfa_enabled', 'mfa_disabled', 'mfa_backup_regenerated', 'mfa_rekeyed', 'mfa_reset_by_admin', 'mfa_locked', 'login_throttled', 'login', 'mfa_recovery_completed', 'email_change_requested',
 ])
 
 export function renderSecurityNotice(row: NoticeRow, profile: NoticeProfile): { to: string; subject: string; html: string } | null {
@@ -80,6 +80,23 @@ export function renderSecurityNotice(row: NoticeRow, profile: NoticeProfile): { 
         p(`Hi ${name}, two-factor authentication was removed from your GlobProxy account (${email}) through the recovery process. Turn it back on in Settings as soon as you have a new authenticator.`) +
         p(`If this wasn't you, reset your password immediately and contact support.`) +
         resetButton() + supportLine())
+    case 'email_change_requested': {
+      // Goes to the address the account had WHEN the change was asked for (kept in meta), not
+      // profile.email: a retry after the change was confirmed would otherwise mail the new address.
+      const oldEmail = typeof row.meta?.old_email === 'string' && row.meta.old_email ? (row.meta.old_email as string) : profile.email
+      const target = escapeHtml(typeof row.meta?.to === 'string' ? (row.meta.to as string) : 'a new address')
+      return {
+        to: oldEmail,
+        subject: 'A change of email address was requested on your GlobProxy account',
+        html: securityNoticeHtml({
+          heading: 'Email change requested',
+          bodyHtml:
+            p(`Hi ${name}, a request was made to change the email address on your GlobProxy account from ${escapeHtml(oldEmail)} to ${target}. Nothing changes until the new address is confirmed.`) +
+            p(`If you didn't request this, reset your password right away and turn on two-factor authentication.`) +
+            resetButton() + supportLine(),
+        }),
+      }
+    }
     case 'mfa_locked':
       return make('Too many incorrect two-factor codes on your GlobProxy account', '2FA temporarily locked',
         p(`Hi ${name}, several incorrect two-factor codes were entered for your GlobProxy account${ip ? ` (most recently from ${escapeHtml(ip)})` : ''}, so code entry is paused for 15 minutes.`) +

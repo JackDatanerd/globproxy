@@ -80,3 +80,13 @@ test('sendEmailSafe: does not retry a 4xx (it would fail the same way)', async (
     assert.equal(calls.length, 1)
   })
 })
+
+test('email_change_requested is a durable notice sent to the address held when it was asked', async () => {
+  // securityNotices.ts imports through the '@/' alias, which plain node can't resolve — assert on source.
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../lib/securityNotices.ts', import.meta.url), 'utf8')
+  assert.match(src, /DURABLE_NOTICE_EVENTS[^]*'email_change_requested'[^]*\]\)/)
+  assert.match(src, /case 'email_change_requested'[^]*meta\?\.old_email[^]*to: oldEmail/)
+  const route = readFileSync(new URL('../app/api/auth/change-email/route.ts', import.meta.url), 'utf8')
+  assert.match(route, /recordAndNotify\(\{[^}]*email_change_requested[^}]*old_email/)
+})

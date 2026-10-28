@@ -360,8 +360,10 @@ export async function flushSecurityNoticesDetailed(userId?: string, minAgeMs = 0
     // Don't retry forever: a notice still undeliverable after a day is dropped.
     const stale = Date.now() - new Date(ev.created_at).getTime() > 24 * 60 * 60 * 1000
     if (ev.event === 'password_changed' && !stale) {
-      const { data: profile } = await admin.from('profiles').select('email, full_name, is_deleted').eq('id', ev.user_id).maybeSingle()
-      if (profile?.email && profile.email !== '[deleted]' && !profile.is_deleted) {
+      const { data: profile, error: profErr } = await admin.from('profiles').select('email, full_name, is_deleted').eq('id', ev.user_id).maybeSingle()
+      // A failed lookup is NOT "nothing to send": it must go back to the queue.
+      if (profErr) { console.error('[security_events] profile lookup failed', ev.id, profErr.message); ok = false }
+      else if (profile?.email && profile.email !== '[deleted]' && !profile.is_deleted) {
         ok = await sendEmailSafe({
           to: profile.email,
           subject: 'Your GlobProxy password was changed',
@@ -373,16 +375,18 @@ export async function flushSecurityNoticesDetailed(userId?: string, minAgeMs = 0
       // Goes to the OLD address — the profile already carries the new one.
       const meta = (ev.meta ?? {}) as { old_email?: string; new_email_masked?: string }
       if (meta.old_email) {
-        const { data: profile } = await admin.from('profiles').select('full_name').eq('id', ev.user_id).maybeSingle()
+        const { data: profile, error: profErr } = await admin.from('profiles').select('full_name').eq('id', ev.user_id).maybeSingle()
         // sendEmailSafe never throws — a failed provider call comes back as
         // false, which must send the event back to the queue (it is the
         // old address's only warning that the login email changed).
-        ok = await sendEmailChangedNotice(meta.old_email, profile?.full_name, meta.new_email_masked ?? 'your new address')
+        if (profErr) { console.error('[security_events] profile lookup failed', ev.id, profErr.message); ok = false }
+        else ok = await sendEmailChangedNotice(meta.old_email, profile?.full_name, meta.new_email_masked ?? 'your new address')
       }
     }
     if (DURABLE_NOTICE_EVENTS.has(ev.event) && !stale) {
-      const { data: profile } = await admin.from('profiles').select('email, full_name, is_deleted').eq('id', ev.user_id).maybeSingle()
-      if (profile?.email && profile.email !== '[deleted]' && !profile.is_deleted) {
+      const { data: profile, error: profErr } = await admin.from('profiles').select('email, full_name, is_deleted').eq('id', ev.user_id).maybeSingle()
+      if (profErr) { console.error('[security_events] profile lookup failed', ev.id, profErr.message); ok = false }
+      else if (profile?.email && profile.email !== '[deleted]' && !profile.is_deleted) {
         const msg = renderSecurityNotice(ev as NoticeRow, profile)
         if (msg) ok = await sendEmailSafe(msg)
       }

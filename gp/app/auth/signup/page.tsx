@@ -155,12 +155,7 @@ function SignupForm() {
               onBlur={onEmailBlur} placeholder="you@yourcompany.com"
               className={`w-full bg-surface border text-ink placeholder-muted px-4 py-3 rounded-xl text-sm focus:outline-none transition-colors ${emailErr ? 'border-red-300 focus:border-red-400' : 'border-border focus:border-accent'}`} />
             {emailErr && (
-              <p className="text-xs text-red-500 mt-1.5">
-                {emailErr}{' '}
-                {emailErr.includes('signing in') && (
-                  <Link href="/auth/login" className="underline font-medium">Sign in →</Link>
-                )}
-              </p>
+              <p className="text-xs text-red-500 mt-1.5">{emailErr}</p>
             )}
           </div>
           <div>

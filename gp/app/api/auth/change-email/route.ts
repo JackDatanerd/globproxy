@@ -8,13 +8,16 @@ import { mfaGate } from '@/lib/mfa'
 import { readCookie, verifySudoCookieValue, SUDO_COOKIE_NAME } from '@/lib/reauth'
 import { verifyCurrentPassword, PASSWORD_THROTTLED_MSG } from '@/lib/passwordCheck'
 import { appUrl } from '@/lib/appUrl'
-import { logSecurityEvent, sendEmailChangeNotice, maskEmail } from '@/lib/securityEvents'
+import { recordAndNotify, maskEmail } from '@/lib/securityEvents'
+import { holdUntil } from '@/lib/constantTime'
 
 // Email change used to have no UI at all (the Settings field is read-only)
 // even though /auth/callback already handles type=email_change. Changing the
 // login email is an account-takeover primitive, so: current password +
 // 2FA step-up (if enrolled), Supabase's own double-confirmation (both the
 // old and the new address must click), and a notice to the OLD address.
+const RESPONSE_FLOOR_MS = 1800
+
 export async function POST(req: Request) {
   const cross = rejectCrossSite(req)
   if (cross) return cross
@@ -72,10 +75,13 @@ export async function POST(req: Request) {
 
   // Same enumeration discipline as signup: an address that is banned or
   // already registered gets the identical response and nothing happens.
+  // The real path does a GoTrue write plus two e-mails, so the silent branches are padded up to
+  // a floor — otherwise response time alone would say whether the target is already registered.
+  const startedAt = Date.now()
   const { data: banned } = await admin.rpc('is_email_banned', { check_email: target })
-  if (banned) return generic
+  if (banned) { await holdUntil(startedAt, RESPONSE_FLOOR_MS); return generic }
   const { data: taken } = await admin.rpc('auth_email_exists', { check_email: target })
-  if (taken) return generic
+  if (taken) { await holdUntil(startedAt, RESPONSE_FLOOR_MS); return generic }
 
   const redirectTo = `${appUrl()}/auth/callback?type=email_change`
 
@@ -85,8 +91,8 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Could not start the email change. Please try again.' }, { status: 400 })
   }
 
-  await logSecurityEvent({ userId: user.id, event: 'email_change_requested', req, meta: { to: maskEmail(target) } })
-  const { data: profile } = await admin.from('profiles').select('full_name').eq('id', user.id).maybeSingle()
-  await sendEmailChangeNotice(user.email, profile?.full_name, maskEmail(target))
+  // Durable: stored first, e-mailed to the OLD address now, retried by the cron sweep if the provider fails.
+  await recordAndNotify({ userId: user.id, event: 'email_change_requested', req, meta: { to: maskEmail(target), old_email: user.email } })
+  await holdUntil(startedAt, RESPONSE_FLOOR_MS)
   return generic
 }

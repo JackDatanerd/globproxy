@@ -66,7 +66,7 @@ export async function POST(req: Request) {
   let verifiedBefore = false
   if (!isRecovery) {
     if (typeof current_password !== 'string' || !current_password) {
-      return NextResponse.json({ error: 'Enter your current password.' }, { status: 400 })
+      return NextResponse.json({ error: 'Enter your current password.', code: 'current_password_required' }, { status: 400 })
     }
     if (enrolled) {
       try {

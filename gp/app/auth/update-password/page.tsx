@@ -51,7 +51,11 @@ export default function UpdatePasswordPage() {
       if (!res.ok) {
         // A plain signed-in session (not one that just came from an email
         // link) has to prove the current password — that lives in Settings.
-        if (res.status === 400 && /current password/i.test(data.error ?? '')) {
+        if (data.code === 'mfa_required' && typeof data.redirect === 'string' && data.redirect.startsWith('/')) {
+          window.location.assign(data.redirect)
+          return
+        }
+        if (res.status === 400 && data.code === 'current_password_required') {
           toast.error('This page is only for reset links. To change your password while signed in, use Settings.')
         } else {
           toast.error(data.error ?? 'Could not update your password. Please try again.')
