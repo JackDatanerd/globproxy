@@ -410,9 +410,11 @@ async function handleDispute(supabase: Admin, kind: string, data: any) {
     if (curErr) throw curErr // transient — let Paystack redeliver
     if (cur) {
       flagged = true
-      if (cur.dispute_status === 'lost' || cur.dispute_status === 'won' || (opened && cur.dispute_status === 'resolved')) {
+      if (cur.dispute_status === 'lost' || cur.dispute_status === 'won' || (opened && (cur.dispute_status === 'resolved' || cur.dispute_status === 'open'))) {
         // An admin already settled it (or an earlier delivery of this event did):
-        // never overwrite a decided outcome with a plain 'resolved'.
+        // never overwrite a decided outcome with a plain 'resolved', and never let a
+        // duplicate 'create' re-stamp dispute_opened_at on a dispute that is already open
+        // (the admin reads that date to judge how much of Paystack's response window is left).
         settledBefore = cur.dispute_status
       } else {
         const patch = opened

@@ -564,8 +564,17 @@ async function runCleanup() {
     payment_status: 'failed',
     failure_reason: 'Abandoned — not paid within 24h',
     failed_at: new Date().toISOString(),
-  }).eq('payment_status', 'pending').eq('bandwidth_credited', false).lt('created_at', cutoff).select('id')
+  }).eq('payment_status', 'pending').eq('bandwidth_credited', false).eq('auto_recharge', false).lt('created_at', cutoff).select('id')
   if (abandonErr) console.error('[cleanup] abandoned-order sweep failed:', abandonErr)
+  // An automatic top-up is charged off-session, so the customer never "abandoned" it —
+  // one still unresolved after 24h is a charge whose outcome was never confirmed. Say that
+  // (the Billing page shows this reason), rather than blaming the customer.
+  const { error: abandonAutoErr } = await supabase.from('orders').update({
+    payment_status: 'failed',
+    failure_reason: 'Automatic top-up was not confirmed within 24h',
+    failed_at: new Date().toISOString(),
+  }).eq('payment_status', 'pending').eq('bandwidth_credited', false).eq('auto_recharge', true).lt('created_at', cutoff)
+  if (abandonAutoErr) console.error('[cleanup] auto top-up sweep failed:', abandonAutoErr)
 
   // Expired MFA "verified this browser" tokens (migration 0020). Already
   // functionally inert everywhere they're checked (every lookup filters
