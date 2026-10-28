@@ -1,4 +1,4 @@
-import { withApiAuth, readJsonBody, failFrom, parsePage, parseDateParam, likeEscape } from '@/lib/apiHelpers'
+import { withApiAuth, readJsonBody, failFrom, parsePage, parseDateParam, likeEscape, pagedQuery } from '@/lib/apiHelpers'
 import { apiError } from '@/lib/apiAuth'
 import { parseCreateCredential, parseCreateAutoTopup } from '@/lib/apiValidation'
 import { createCredential, toApiCredential, CRED_COLS } from '@/lib/credentials'
@@ -29,13 +29,13 @@ export async function GET(req: Request) {
     const before = parseDateParam(url, 'created_before')
     if (after === undefined || before === undefined) return apiError(400, 'invalid_request', 'created_after / created_before must be ISO 8601 timestamps.')
 
+    const build = () => {
     let q = supabase
       .from('proxy_credentials')
       .select(CRED_COLS, { count: 'exact' })
       .eq('user_id', user.id)
       .order('created_at', { ascending: false })
       .order('id', { ascending: false }) // stable tiebreak so pages never repeat/skip rows
-      .range(offset, offset + limit - 1)
     if (status) q = q.eq('status', status)
     if (label) q = q.ilike('label', `%${likeEscape(label)}%`)
     if (country) q = q.eq('country', country)
@@ -43,8 +43,10 @@ export async function GET(req: Request) {
     if (protocol) q = q.eq('protocol', protocol)
     if (after) q = q.gte('created_at', after)
     if (before) q = q.lt('created_at', before)
+    return q
+    }
 
-    const { data, count, error } = await q
+    const { data, count, error } = await pagedQuery(build, offset, limit)
     if (error) {
       console.error('[v1 GET sub-users] query failed', error)
       return apiError(500, 'internal_error', 'Internal error. Please try again.')

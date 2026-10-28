@@ -500,6 +500,11 @@ export async function redeliverFailedWebhooks(
     .from('webhook_deliveries')
     .select(DELIVERY_COLS)
     .eq('endpoint_id', endpointId).eq('user_id', userId).eq('status', 'failed').neq('event_type', 'test')
+    // Stalest attempt first (never-retried rows lead), then oldest. Ordering by created_at alone
+    // let two permanently-rejected deliveries hold the front of the queue forever: every call
+    // re-tried just those two, stopped, and never reached the newer failures behind them. A row
+    // that fails again gets a fresh last_attempt_at and moves to the back.
+    .order('last_attempt_at', { ascending: true, nullsFirst: true })
     .order('created_at', { ascending: true })
     .limit(cap + 1) // one extra: is anything left after this batch?
   if (error) { console.error('[webhooks] redeliver-failed lookup failed', error); return { ok: false, error: 'Could not load deliveries' } }
@@ -583,7 +588,17 @@ export async function runWebhookRetries(limit = RETRIES_PER_RUN) {
         .from('webhook_endpoints').select('id, user_id, url, secret, previous_secret, previous_secret_expires_at, enabled').eq('id', d.endpoint_id).maybeSingle()
       // A failed lookup is not "the endpoint is gone": it used to fail the delivery for good. The claim
       // lease (5 min) simply expires and the next tick tries again.
-      if (epErr) { console.error('[webhooks] endpoint lookup failed during retry', d.endpoint_id, epErr.message); continue }
+      if (epErr) {
+        console.error('[webhooks] endpoint lookup failed during retry', d.endpoint_id, epErr.message)
+        // Nothing was sent, so the attempt taken at claim time is given back (and the row is due again
+        // shortly rather than after the 5-minute lease). Otherwise a run of database blips used up the
+        // delivery's six attempts without a single request being made.
+        await supabase.from('webhook_deliveries')
+          .update({ attempts: d.attempts, next_attempt_at: new Date(Date.now() + 60_000).toISOString() })
+          .eq('id', d.id).eq('status', 'retrying').eq('attempts', d.attempts + 1)
+          .then(() => {}, (e: unknown) => console.error('[webhooks] could not release retry claim', d.id, e))
+        continue
+      }
       if (!ep || !ep.enabled) {
         await supabase.from('webhook_deliveries')
           .update({ status: 'failed', next_attempt_at: null, last_error: 'Endpoint disabled or deleted before delivery' })

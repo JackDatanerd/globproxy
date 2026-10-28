@@ -1,4 +1,4 @@
-import { withApiAuth, parsePage, parseDateParam, readJsonBody, asApiRateLimited } from '@/lib/apiHelpers'
+import { withApiAuth, parsePage, parseDateParam, readJsonBody, asApiRateLimited, pagedQuery } from '@/lib/apiHelpers'
 import { apiError } from '@/lib/apiAuth'
 import { runIdempotent } from '@/lib/idempotency'
 import { resolveOrder, CUSTOM_MIN_GB, CUSTOM_MAX_GB } from '@/lib/plans'
@@ -88,6 +88,7 @@ export async function GET(req: Request) {
     const before = parseDateParam(url, 'created_before')
     if (after === undefined || before === undefined) return apiError(400, 'invalid_request', 'created_after / created_before must be ISO 8601 timestamps.')
 
+    const build = () => {
     let q = supabase
       .from('orders')
       .select(ORDER_API_COLUMNS, { count: 'exact' })
@@ -95,12 +96,13 @@ export async function GET(req: Request) {
       .eq('is_canary', false)
       .order('created_at', { ascending: false })
       .order('id', { ascending: false })
-      .range(offset, offset + limit - 1)
     if (status) q = q.eq('payment_status', status)
     if (after) q = q.gte('created_at', after)
     if (before) q = q.lt('created_at', before)
+    return q
+    }
 
-    const { data, count, error } = await q
+    const { data, count, error } = await pagedQuery(build, offset, limit)
     if (error) {
       console.error('[v1 GET orders] query failed', error)
       return apiError(500, 'internal_error', 'Internal error. Please try again.')

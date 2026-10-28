@@ -548,7 +548,7 @@ export async function listTransfers(
   const hasMore = fetched.length > limit
   const transfers = fetched.slice(0, limit).map((r: any) => ({
     id: r.id, recipient_email: r.recipient?.is_deleted ? null : (r.recipient?.email ?? null),
-    gb_amount: Number(r.gb_amount), gb_reclaimed: Number(r.reclaimed_gb ?? 0), gb_net: Number(r.gb_amount) - Number(r.reclaimed_gb ?? 0),
+    gb_amount: Number(r.gb_amount), gb_reclaimed: Number(r.reclaimed_gb ?? 0), gb_net: Math.round((Number(r.gb_amount) - Number(r.reclaimed_gb ?? 0)) * 1000) / 1000,
     status: r.status, note: r.note ?? null, created_at: r.created_at,
   }))
   return { ok: true, data: { transfers, has_more: hasMore, next_before: hasMore ? cursorTs(transfers[transfers.length - 1].created_at) : null, next_before_id: hasMore ? transfers[transfers.length - 1].id : null } }

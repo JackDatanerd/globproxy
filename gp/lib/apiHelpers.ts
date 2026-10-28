@@ -155,3 +155,17 @@ export function parseDateParam(url: URL, name: string): string | null | undefine
 
 // Escapes LIKE wildcards so a user-supplied search string matches literally.
 export const likeEscape = (v: string) => v.replace(/[\\%_]/g, (c) => `\\${c}`)
+
+// Runs an offset-paged, counted query. PostgREST answers an offset past the end of the result with
+// 416 (PGRST103) instead of an empty page, which the list routes turned into a 500 for a request
+// that is simply "the page after the last one". That case now returns an empty page and the real
+// total (read with a one-row query), so `has_more` is false and clients can stop cleanly.
+export async function pagedQuery(build: () => any, offset: number, limit: number): Promise<{ data: any[] | null; count: number | null; error: any }> {
+  const r = await build().range(offset, offset + limit - 1)
+  if (r.error && (r.error.code === 'PGRST103' || /range not satisfiable/i.test(r.error.message ?? ''))) {
+    const c = await build().range(0, 0)
+    if (c.error) return c
+    return { data: [], count: c.count ?? 0, error: null }
+  }
+  return r
+}
