@@ -20,7 +20,7 @@ export default function Navbar() {
       <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
         <Link href="/" className="font-display font-black text-2xl text-ink tracking-tight">Glob<span className="text-accent">Proxy</span></Link>
         <div className="hidden md:flex items-center gap-7">
-          {[['/#features','Features'],['/#pricing','Pricing'],['/#reseller','Resellers'],['/#affiliates','Affiliates'],['/#compare','Compare'],['/blog','Blog']].map(([h,l]) => (
+          {[['/#features','Features'],['/#pricing','Pricing'],['/#reseller','Resellers'],['/#affiliates','Affiliates'],['/#compare','Compare'],['/blog','Blog'],['/help','Help']].map(([h,l]) => (
             <Link key={h} href={h} className="text-ink2 text-sm hover:text-ink transition-colors">{l}</Link>
           ))}
         </div>

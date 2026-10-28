@@ -38,6 +38,10 @@ export interface BlogPost {
   // Shown on the /blog index card. Can differ slightly from description.
   excerpt: string
   category: BlogCategory
+  // 'help' = a customer support how-to. Lives at /help/<slug>, is excluded from
+  // the /blog index and feeds, and /blog/<slug> permanently redirects to it
+  // (next.config.ts). Omit for ordinary blog posts.
+  section?: 'help'
   publishedAt: string // ISO date, e.g. '2026-08-20'
   updatedAt?: string
   body: ContentBlock[]

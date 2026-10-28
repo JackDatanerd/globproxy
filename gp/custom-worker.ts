@@ -153,6 +153,7 @@ const EDGE_CACHEABLE_PATHS: RegExp[] = [
   /^\/(privacy|terms|refunds)$/,
   /^\/docs\/api$/,
   /^\/blog(\/[^/]+)?$/,
+  /^\/help(\/[^/]+)?$/,
   /^\/locations(\/[^/]+)?$/,
 ]
 

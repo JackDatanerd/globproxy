@@ -1,11 +1,11 @@
 import Link from 'next/link'
 import type { BlogPost } from '@/lib/blog/types'
-import { readingTime } from '@/lib/blog/utils'
+import { postPath, readingTime } from '@/lib/blog/utils'
 
 export default function PostCard({ post, featured = false }: { post: BlogPost; featured?: boolean }) {
   return (
     <Link
-      href={`/blog/${post.slug}`}
+      href={postPath(post)}
       className={`group border border-border rounded-xl p-7 hover:border-accent hover:shadow-sm transition-all bg-white flex flex-col ${
         featured ? 'md:col-span-2' : ''
       }`}

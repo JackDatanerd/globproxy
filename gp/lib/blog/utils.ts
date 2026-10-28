@@ -33,21 +33,43 @@ export function readingTime(post: BlogPost): string {
   return `${minutes} min read`
 }
 
+// Blog posts only. Help-centre articles (section: 'help') are deliberately left
+// out so they never appear on /blog, in its static params or in related-reading;
+// they have their own accessors below.
 export function getAllPosts(): BlogPost[] {
-  return [...BLOG_POSTS].sort((a, b) => (a.publishedAt < b.publishedAt ? 1 : -1))
+  return sortNewestFirst(BLOG_POSTS.filter((p) => p.section !== 'help'))
+}
+
+export function getHelpArticles(): BlogPost[] {
+  return sortNewestFirst(BLOG_POSTS.filter((p) => p.section === 'help'))
+}
+
+function sortNewestFirst(posts: BlogPost[]): BlogPost[] {
+  return [...posts].sort((a, b) => (a.publishedAt < b.publishedAt ? 1 : -1))
 }
 
 export function getPostBySlug(slug: string): BlogPost | undefined {
-  return BLOG_POSTS.find((p) => p.slug === slug)
+  return BLOG_POSTS.find((p) => p.slug === slug && p.section !== 'help')
+}
+
+export function getHelpArticleBySlug(slug: string): BlogPost | undefined {
+  return BLOG_POSTS.find((p) => p.slug === slug && p.section === 'help')
+}
+
+// Where a post lives on the site.
+export function postPath(post: BlogPost): string {
+  return `${post.section === 'help' ? '/help' : '/blog'}/${post.slug}`
 }
 
 export function getPostsByCategory(category: string): BlogPost[] {
   return getAllPosts().filter((p) => p.category === category)
 }
 
-// Same category first, falls back to most recent, excludes self, caps at 3.
+// Same category first, falls back to most recent, excludes self, caps at 3. Stays
+// inside the post's own section: a help article is never "related" to a blog post.
 export function getRelatedPosts(post: BlogPost, limit = 3): BlogPost[] {
-  const others = getAllPosts().filter((p) => p.slug !== post.slug)
+  const pool = post.section === 'help' ? getHelpArticles() : getAllPosts()
+  const others = pool.filter((p) => p.slug !== post.slug)
   const sameCategory = others.filter((p) => p.category === post.category)
   const rest = others.filter((p) => p.category !== post.category)
   return [...sameCategory, ...rest].slice(0, limit)

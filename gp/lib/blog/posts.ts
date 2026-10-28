@@ -9,6 +9,7 @@ export const BLOG_POSTS: BlogPost[] = [
     excerpt:
       'How to turn on two-factor sign-in, what the backup codes are for, how to change phones, and the safe way back in if you lose everything.',
     category: 'Guides',
+    section: 'help',
     publishedAt: '2026-10-27',
     body: [
       {
@@ -195,6 +196,7 @@ export const BLOG_POSTS: BlogPost[] = [
     excerpt:
       'Almost every missing payment is a delay, not a loss. Here is how to tell which it is, what to leave alone, and when to contact us.',
     category: 'Guides',
+    section: 'help',
     publishedAt: '2026-10-27',
     body: [
       {
@@ -414,6 +416,7 @@ export const BLOG_POSTS: BlogPost[] = [
     excerpt:
       'A session that hits zero stops mid-job. Auto-allocate and auto-recharge prevent that, but they do different things. Here is how to set them up and size them.',
     category: 'Guides',
+    section: 'help',
     publishedAt: '2026-10-27',
     body: [
       {
@@ -634,6 +637,7 @@ export const BLOG_POSTS: BlogPost[] = [
     excerpt:
       'A sticky session holds one exit IP for the time you choose. Here is how to set one up, how named sessions give you many fixed IPs, and how to get a fresh one.',
     category: 'Guides',
+    section: 'help',
     publishedAt: '2026-10-27',
     body: [
       {
@@ -873,6 +877,7 @@ for name, proxy in ENDPOINTS.items():
     excerpt:
       'Pausing keeps everything but stops traffic. Deleting returns what is unused and removes the endpoint. Here is exactly what each one does to your GB.',
     category: 'Guides',
+    section: 'help',
     publishedAt: '2026-10-27',
     body: [
       {
@@ -1018,6 +1023,7 @@ for name, proxy in ENDPOINTS.items():
     excerpt:
       'Nothing is lost. You can change a session\'s country, state or city without touching its bandwidth, or move unused GB back to your balance and create a new one.',
     category: 'Guides',
+    section: 'help',
     publishedAt: '2026-10-27',
     updatedAt: '2026-10-27',
     body: [
@@ -1218,6 +1224,7 @@ for name, proxy in ENDPOINTS.items():
     excerpt:
       'Four values, one test command, and you are connected. Where to find them, which port to use, and what to do when the first request fails.',
     category: 'Guides',
+    section: 'help',
     publishedAt: '2026-10-27',
     body: [
       {

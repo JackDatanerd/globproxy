@@ -2,6 +2,7 @@ import type { NextConfig } from 'next'
 import { buildCsp, cspHeaderName } from './lib/csp'
 import { unprotectedSource } from './lib/protectedPaths'
 import { SECURITY_HEADERS } from './lib/securityHeaders'
+import { BLOG_POSTS } from './lib/blog/posts'
 
 // Content-Security-Policy. REPORT-ONLY by default: the browser evaluates every
 // rule below and posts violations to /api/csp-report (which logs them and counts
@@ -41,6 +42,18 @@ const nextConfig: NextConfig = {
   env: { CSP_MODE: process.env.CSP_MODE ?? '', CSP_MODE_PROTECTED: process.env.CSP_MODE_PROTECTED ?? '' },
   // Don't announce the framework on every response.
   poweredByHeader: false,
+  // Help articles were first published under /blog and those links are already in
+  // customers' hands (and search engines). Each one now lives at /help/<slug>; the
+  // old URL permanently redirects. Built from the same data the site renders, so a
+  // newly added help article gets its redirect automatically. (Next sends 308, the
+  // method-preserving form of 301, which search engines treat the same way.)
+  async redirects() {
+    return BLOG_POSTS.filter((p) => p.section === 'help').map((p) => ({
+      source: `/blog/${p.slug}`,
+      destination: `/help/${p.slug}`,
+      permanent: true,
+    }))
+  },
   async headers() {
     return [
       {

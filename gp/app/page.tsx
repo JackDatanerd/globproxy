@@ -276,7 +276,7 @@ export default async function Home() {
             </div>
             {[
               {title:'Product',links:[['/#features','Features'],['/#pricing','Pricing'],['/#reseller','Resellers'],['/#compare','Compare'],['/docs/api','API Docs']]},
-              {title:'Resources',links:[['/blog','Blog'],['/locations','Locations'],['/status','Network status']]},
+              {title:'Resources',links:[['/blog','Blog'],['/help','Help centre'],['/locations','Locations'],['/status','Network status']]},
               {title:'Support',links:[['mailto:support@globproxy.com','Contact us'],['mailto:sales@globproxy.com','Sales']]},
               {title:'Legal',links:[['/terms','Terms of Service'],['/privacy','Privacy Policy'],['/refunds','Refund Policy']]},
             ].map(col=>(
