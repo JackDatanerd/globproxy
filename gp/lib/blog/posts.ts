@@ -2,6 +2,182 @@ import type { BlogPost } from './types'
 
 export const BLOG_POSTS: BlogPost[] = [
   {
+    slug: 'request-a-refund-eligibility-and-timeline',
+    title: 'How to Request a Refund: Eligibility, Steps and What Happens Next',
+    description:
+      'When a refund is available, how to request one from Billing, how to prepare your GB, what each status means, where the money goes and how long it takes.',
+    excerpt:
+      'Within 72 hours of payment with nothing used, a refund is normally approved. Here is the whole process, step by step, including what to do first.',
+    category: 'Bandwidth & Pricing',
+    section: 'help',
+    publishedAt: '2026-10-28',
+    body: [
+      {
+        type: 'p',
+        text: 'If you bought bandwidth you do not need, or something went wrong with a payment, you can ask for a refund yourself from your Billing page. It takes a minute, and a real person decides. This guide covers who is eligible, the exact steps, one thing worth doing before you ask, and what happens afterwards.',
+      },
+      {
+        type: 'callout',
+        title: 'The short version',
+        text: 'Go to Billing, find the paid order and click Request refund. A request sent within 72 hours of payment, with none of that bandwidth used, is inside our policy and normally approved. We reply within 2 business days and approved refunds reach you in 5 to 10 business days. Before you ask, move any unused GB off your sessions and do not use the bandwidth while we review it.',
+      },
+
+      { type: 'h2', text: 'Who is eligible' },
+      { type: 'h3', text: 'A refund is available when' },
+      {
+        type: 'ul',
+        items: [
+          'You bought bandwidth, used 0 GB of it, and ask within 72 hours of purchase.',
+          'A technical failure on our side stopped you using it and we cannot fix it within 48 hours.',
+          'You were charged more than once for the same order because of a payment error.',
+        ],
+      },
+      { type: 'h3', text: 'A refund is not available for' },
+      {
+        type: 'ul',
+        items: [
+          'Bandwidth that has been partly or fully used.',
+          'Purchases where more than 72 hours have passed since payment.',
+          'Accounts suspended for breaking the Terms of Service.',
+          'Reseller bandwidth already allocated to sub-users.',
+          'Purchases made at a promotional or discounted rate.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'The full wording is on our refund policy page. If you are not sure whether you qualify, ask anyway: you can send a request that is outside the standard window, and our team will review it.',
+      },
+
+      { type: 'h2', text: 'Check you need a refund first' },
+      {
+        type: 'p',
+        text: 'Some problems that feel like refund cases have a quicker fix, and you keep your bandwidth:',
+      },
+      {
+        type: 'ul',
+        items: [
+          'All your GB are on a session in the wrong country: change its location or release the unused GB. Nothing is lost.',
+          'You paid but no GB have appeared: this is almost always a short delay. Do not pay again; see our guide to payments that have not shown up.',
+          'A session stopped because it ran out of GB: that is a top-up or auto-allocate question, not a refund one.',
+        ],
+      },
+
+      { type: 'h2', text: 'Before you request: free up the GB' },
+      {
+        type: 'p',
+        text: 'When a refund is approved, the bandwidth that matches it is taken back from your Free to assign balance. We cannot take back bandwidth that is already allocated to a session. So if you gave all of an order\'s GB to a session and have not used them, release them first:',
+      },
+      {
+        type: 'ol',
+        items: [
+          'In My Proxies, open the session and go to its Bandwidth tab.',
+          'Under Release unused GB, enter the amount, or click the "releasable · use max" link to fill in the most you can release, then click Release GB. A small safety margin always stays on the session.',
+          'Repeat for any other session holding GB from that order.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'Then do not use the bandwidth on that order while the request is open. A refund can only take back what has not been used.',
+      },
+
+      { type: 'h2', text: 'How to request a refund' },
+      {
+        type: 'ol',
+        items: [
+          'Open Billing in the dashboard and find the order in Order history.',
+          'Click Request refund at the end of its row. The button appears on paid orders that still have something left to refund, and not while a request on that order is already open.',
+          'A box opens titled "Request a refund of" and the amount. Write a short reason (a sentence is enough, 3 to 500 characters).',
+          'Click Send request. You will see a message saying the request is either inside our refund window or outside the standard window and will be reviewed. Either way it has been sent, and we reply within 2 business days.',
+          'You will get an email, "We received your GlobProxy refund request", and the order shows "Refund requested".',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'If the button is missing, the order is not paid, is already fully refunded, or already has a request open.',
+      },
+
+      { type: 'h2', text: 'What happens next' },
+      {
+        type: 'table',
+        headers: ['What you see', 'What it means', 'What to do'],
+        rows: [
+          ['Refund requested (on the order)', 'We have it and a person will review it.', 'Wait for our reply, within 2 business days. Do not use the bandwidth meanwhile.'],
+          ['Email: "Your GlobProxy refund of … was processed"', 'The refund has been sent back to the way you paid.', 'Nothing. The email says how many GB were removed from your balance.'],
+          ['Credit note CN-… on the order', 'The record of the refund, linked to your invoice.', 'Keep it for your accounts.'],
+          ['Status refunded', 'The whole order has been refunded.', 'Nothing.'],
+          ['Refund request declined, with a note', 'We were not able to approve it, and the note says why.', 'Read the note. Reply to the email or write to support if you think we have it wrong.'],
+        ],
+      },
+      {
+        type: 'p',
+        text: 'If a request is declined you can ask again, but once an order has had two declined requests, a third is refused with a message asking you to contact support.',
+      },
+
+      { type: 'h2', text: 'Where the money goes, and when' },
+      {
+        type: 'ul',
+        items: [
+          'Card payments go back to the card you paid with. Depending on your bank it can take a few business days to show.',
+          'M-Pesa payments go back to your M-Pesa in Kenya shillings, at the rate that applied when you placed the order. It normally reaches your M-Pesa within a short time, though it can take longer.',
+          'Our policy is to reply within 2 business days and to process approved refunds within 5 to 10 business days.',
+        ],
+      },
+
+      { type: 'h2', text: 'Partial refunds' },
+      {
+        type: 'p',
+        text: 'A refund can be for part of an order. The bandwidth taken back is in proportion. For example, refunding half the amount of a 20 GB order takes 10 GB back from your balance. The order stays marked paid, shows the amount refunded, and gets a credit note for each refund.',
+      },
+
+      { type: 'h2', text: 'Special cases' },
+      {
+        type: 'ul',
+        items: [
+          'Charged twice: request a refund on the extra order and say it was charged twice. If both charges are not showing as separate paid orders, contact support with the date and amount of each.',
+          'Open payment dispute: the button will tell you to contact support. Please talk to us before starting a chargeback with your bank. Refunding while a dispute is open could pay you twice, so we settle the dispute first.',
+          'Already used some of it: used bandwidth is not refundable. If something on our side stopped it working, tell us exactly what happened and we will look.',
+          'Deleting a session does not refund used GB. It only returns the GB the session had not used to your balance.',
+        ],
+      },
+
+      { type: 'h2', text: 'If you need to contact us' },
+      {
+        type: 'p',
+        text: 'Open Support at the bottom of the dashboard sidebar and choose Report an issue, or email support@globproxy.com. Please include the invoice number (open the Invoice for the order) or the order\'s date and amount, why you want the refund, and confirmation that none of the bandwidth has been used. Never send full card details.',
+      },
+    ],
+    faq: [
+      {
+        q: 'How long until I hear back about my refund request?',
+        a: 'We reply within 2 business days. You get an email when the request is received and another when it is processed or declined.',
+      },
+      {
+        q: 'How long until the money reaches me?',
+        a: 'Our policy is to process approved refunds within 5 to 10 business days. Card refunds can take a few business days to show with your bank, and M-Pesa refunds normally arrive within a short time, though it can take longer.',
+      },
+      {
+        q: 'Will I lose the bandwidth I bought?',
+        a: 'The GB that match the refunded amount are taken back from your balance. If you refund a full order, you lose that order\'s GB. GB that are already allocated to a session cannot be taken back, so release unused ones first.',
+      },
+      {
+        q: 'Can I get a refund after more than 72 hours?',
+        a: 'You can send the request and our team will review it, but it falls outside the standard policy, so approval is at our discretion. Technical failures on our side and duplicate charges are handled separately.',
+      },
+      {
+        q: 'Can I get a refund if I have used some of the GB?',
+        a: 'Used bandwidth is not refundable under the policy. If a technical problem on our side stopped you using what you paid for, tell us the details and we will look into it.',
+      },
+      {
+        q: 'Where do I find the credit note?',
+        a: 'On the order in Billing, as a link called Credit note followed by its number. It is also on your invoice.',
+      },
+      {
+        q: 'Does a refund request pause or cancel my account?',
+        a: 'No. Your account and sessions carry on as normal. Just avoid using the bandwidth on the order being reviewed, because used GB cannot be refunded.',
+      },
+    ],
+  },
+  {
     slug: 'usage-and-remaining-gb-not-matching',
     title: 'Usage and Remaining GB Don\'t Match? Where Each Number Comes From',
     description:
@@ -216,7 +392,7 @@ export const BLOG_POSTS: BlogPost[] = [
         type: 'ul',
         items: [
           'If the answer shows your own location or your own internet provider, the proxy is not being used. Check that the proxy setting applies to https addresses and that the username and port are copied in full.',
-          'A rotating session should show a different IP on most runs. If you see the same one every time, check that you are using the rotating port on the card. A very narrow target, such as one city plus one internet provider, also has fewer IPs to choose from.',
+          'A rotating session should show a different IP on most runs. If you see the same one every time, check that you are using the rotating port on the card. A very narrow target, such as a single city, also has fewer IPs to choose from.',
           'On a sticky session the IP should stay the same until its lifetime ends. A sticky session holds one IP for a time you choose, from 1 minute to 24 hours.',
         ],
       },

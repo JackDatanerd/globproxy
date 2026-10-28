@@ -31,6 +31,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     blurb: 'Where your GB went, automatic top-ups, and payments that have not shown up.',
     slugs: [
       'usage-and-remaining-gb-not-matching',
+      'request-a-refund-eligibility-and-timeline',
       'auto-allocate-and-auto-recharge-never-run-dry',
       'paid-but-no-bandwidth-payment-not-showing',
     ],
