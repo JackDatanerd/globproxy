@@ -93,14 +93,24 @@ export default function BuyPage() {
 
   useEffect(() => {
     let cancelled = false
-    fetch('/api/checkout/options')
-      .then(r => r.json())
-      .then(d => {
+    // A rate-limit (429) or server error is "don't know yet", not "M-Pesa is off": retry a couple
+    // of times before giving up, so a busy shared address does not hide M-Pesa from a customer.
+    async function loadOptions() {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt > 0) await new Promise(r => setTimeout(r, 2500 * attempt))
         if (cancelled) return
-        if (d?.mpesa?.available && Number(d.mpesa.rate) > 0) { setKesRate(Number(d.mpesa.rate)); return }
-        fallBackToCard()
-      })
-      .catch(() => { if (!cancelled) fallBackToCard() }) // card always works; M-Pesa just stays hidden
+        try {
+          const res = await fetch('/api/checkout/options')
+          if (!res.ok) continue
+          const d = await res.json()
+          if (cancelled) return
+          if (d?.mpesa?.available && Number(d.mpesa.rate) > 0) { setKesRate(Number(d.mpesa.rate)); return }
+          break // a real answer: M-Pesa is not offered right now
+        } catch { /* network blip: try again */ }
+      }
+      if (!cancelled) fallBackToCard() // card always works; M-Pesa just stays hidden
+    }
+    loadOptions()
     return () => { cancelled = true }
   }, [])
 

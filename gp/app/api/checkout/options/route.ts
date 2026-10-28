@@ -18,7 +18,8 @@ export async function GET(req: Request) {
     )
   } catch (e) {
     console.error('[checkout/options]', e)
-    // Card always works; failing to price M-Pesa just hides it.
-    return NextResponse.json({ mpesa: { available: false } }, { headers: { 'Cache-Control': 'no-store' } })
+    // Card always works. A 503 (not a 200 "unavailable") tells the buy page this is a failure to
+    // look it up, so it retries instead of treating M-Pesa as switched off.
+    return NextResponse.json({ mpesa: { available: false } }, { status: 503, headers: { 'Cache-Control': 'no-store' } })
   }
 }

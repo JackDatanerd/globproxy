@@ -38,8 +38,19 @@ export interface DisputeLossResult {
 export async function applyDisputeLoss(
   supabase: Admin,
   order: DisputedOrder,
-  opts: { source: string; amountUsd?: number; resolution?: string | null },
+  opts: { source: string; amountUsd?: number; resolution?: string | null; keepWon?: boolean },
 ): Promise<DisputeLossResult> {
+  // keepWon (the automatic webhook path): an admin who recorded this dispute as WON while the
+  // loss was being processed made a deliberate decision; the automatic path must not undo it
+  // (claw GB back, hold the account) on stale information. The admin's own 'lost' button leaves
+  // keepWon off — that is a deliberate override the other way.
+  if (opts.keepWon) {
+    const { data: cur, error: curErr } = await supabase.from('orders').select('dispute_status').eq('id', order.id).maybeSingle()
+    if (curErr) throw curErr
+    if (cur?.dispute_status === 'won') {
+      return { applied: false, reason: 'dispute_won', refundUsd: 0, gbClawed: 0, gbNotRecoverable: 0, creditNote: null }
+    }
+  }
   const remaining = Math.max(Math.round((Number(order.amount_usd) - Number(order.refunded_usd ?? 0)) * 100) / 100, 0)
   const wanted = opts.amountUsd != null ? Math.min(Math.round(opts.amountUsd * 100) / 100, remaining) : remaining
 
@@ -57,10 +68,12 @@ export async function applyDisputeLoss(
 
   // The dispute is now decided against us whether or not any GB could be taken
   // back (an order that was already fully refunded has nothing left to claw).
-  const { error: stErr } = await supabase.from('orders').update({
+  let lossWrite = supabase.from('orders').update({
     dispute_status: 'lost',
     ...(opts.resolution ? { dispute_resolution: String(opts.resolution).slice(0, 200) } : {}),
   }).eq('id', order.id)
+  if (opts.keepWon) lossWrite = lossWrite.neq('dispute_status', 'won') // never overwrite an admin's 'won'
+  const { error: stErr } = await lossWrite
   if (stErr) throw stErr
 
   const out: DisputeLossResult = {
@@ -112,7 +125,7 @@ export async function applyDisputeLoss(
         refundUsd: out.refundUsd, gbClawed: out.gbClawed, gbNotRecoverable: out.gbNotRecoverable, creditNote: out.creditNote,
       })
     }
-  } else if (out.reason && out.reason !== 'duplicate' && out.reason !== 'nothing_to_refund') {
+  } else if (out.reason && out.reason !== 'duplicate' && out.reason !== 'nothing_to_refund' && out.reason !== 'dispute_won') {
     await alertAdminPayment('Dispute lost but the bandwidth could not be taken back automatically', {
       order_id: order.id, source: opts.source, reason: out.reason,
     })

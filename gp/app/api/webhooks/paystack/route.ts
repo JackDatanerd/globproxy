@@ -456,7 +456,7 @@ async function handleDispute(supabase: Admin, kind: string, data: any) {
               order_id: cur.id, transaction_reference: txRef, refund_amount: data?.refund_amount,
             })
           } else {
-            const r = await applyDisputeLoss(supabase, cur, { source: 'webhook charge.dispute.resolve', resolution: String(resolution ?? 'merchant-accepted'), amountUsd: partialUsd })
+            const r = await applyDisputeLoss(supabase, cur, { source: 'webhook charge.dispute.resolve', resolution: String(resolution ?? 'merchant-accepted'), amountUsd: partialUsd, keepWon: true })
             lost = { applied: r.applied, refundUsd: r.refundUsd, gbClawed: r.gbClawed, gbNotRecoverable: r.gbNotRecoverable }
           }
         }

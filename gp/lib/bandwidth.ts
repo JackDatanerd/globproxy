@@ -43,6 +43,22 @@ export async function activateBandwidth(p: {
     console.error('[bandwidth] deleted-account check failed — continuing to credit', p.order_id, e)
   }
 
+  // An order whose chargeback was already LOST must not be credited afterwards (a late webhook,
+  // reconcile or an admin re-verify would hand the GB to a customer whose bank took the money
+  // back). Leave it uncredited, tell the admin once, and report "not claimable" so retries stop.
+  // A failed read here continues to credit, like the deleted-account check above.
+  try {
+    const { data: ord } = await supabase.from('orders').select('dispute_status').eq('id', p.order_id).maybeSingle()
+    if (ord?.dispute_status === 'lost') {
+      await alertMismatchOnce(supabase, p.order_id, 'Payment for an order whose dispute was LOST — NOT credited', {
+        order_id: p.order_id, user_id: p.user_id, reference: p.paystack_reference, amount_usd: p.amount_usd, gb: p.gb_amount,
+      })
+      return { status: 'already_credited' }
+    }
+  } catch (e) {
+    console.error('[bandwidth] lost-dispute check failed — continuing to credit', p.order_id, e)
+  }
+
   // 1 & 2. Atomically claim the order AND credit the GB in one call — see
   // migration 0015. These used to be two separate statements: claim first
   // (guarding the UPDATE on bandwidth_credited = false so a racing webhook
@@ -95,6 +111,21 @@ export async function activateBandwidth(p: {
   // un-refunded share of an order that was partly refunded before it was
   // credited (a refund.processed that beat charge.success). The webhook and the
   // confirmation e-mail used to announce the full purchase size regardless.
+  // An automatic top-up that is credited LATE (the charge timed out and the webhook / reconcile
+  // settled it) is a success all the same: clear the rule's failure streak, or old failures
+  // plus one more would switch auto-recharge off right after a top-up worked. Only the counter
+  // is touched — a rule disabled for another reason keeps its reason.
+  if (!p.is_canary) {
+    try {
+      const { data: ord } = await supabase.from('orders').select('auto_recharge').eq('id', p.order_id).maybeSingle()
+      if (ord?.auto_recharge) {
+        await supabase.from('auto_recharge').update({ consecutive_failures: 0, updated_at: new Date().toISOString() }).eq('user_id', p.user_id).gt('consecutive_failures', 0)
+      }
+    } catch (e) {
+      console.error('[bandwidth] could not reset the auto-recharge failure streak (credit is committed)', p.order_id, e)
+    }
+  }
+
   const creditedGb = await creditedGbFor(supabase, p)
   const announced = { ...p, gb_amount: creditedGb }
 
