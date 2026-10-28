@@ -183,3 +183,11 @@ test('pass 6: webhook secret rotation is compare-and-set; grace inputs are stric
     assert.doesNotMatch(src(f), /Number\(body\??\.grace_/, f)
   }
 })
+
+test('0105: webhook_deliveries has no browser-session select policy', () => {
+  const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'supabase')
+  const mig = readFileSync(path.join(root, 'migrations', '0105_api_integrations_deliveries_rls.sql'), 'utf8')
+  assert.match(mig, /drop policy if exists "Users can view own webhook deliveries" on public\.webhook_deliveries/)
+  const schema = readFileSync(path.join(root, 'schema.sql'), 'utf8')
+  assert.doesNotMatch(schema, /create policy "Users can view own webhook deliveries"/)
+})

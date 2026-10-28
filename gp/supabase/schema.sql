@@ -3,7 +3,7 @@
 -- Run this entire file in Supabase SQL Editor (fresh project)
 -- ============================================================
 --
--- INCLUDES MIGRATIONS THROUGH: 0104_proxy_lifecycle_pass12.sql
+-- INCLUDES MIGRATIONS THROUGH: 0105_api_integrations_deliveries_rls.sql
 --
 -- This line is the source of truth `scripts/check-schema-sync.mjs` reads
 -- to compare against supabase/migrations/ — it's what CI checks on every
@@ -1434,9 +1434,7 @@ create index webhook_deliveries_due_idx
 
 alter table public.webhook_deliveries enable row level security;
 
-create policy "Users can view own webhook deliveries"
-  on public.webhook_deliveries for select
-  using (auth.uid() = user_id);
+-- No policies: service role only (see 0105; dashboard reads are 2FA-gated).
 
 -- Atomic success/failure bookkeeping on the endpoint; auto-disables after
 -- p_disable_threshold consecutive failed attempts. Returns true only on
@@ -12248,5 +12246,6 @@ revoke all on function public.reprovision_credential(uuid, numeric) from public,
 grant execute on function public.reprovision_credential(uuid, numeric) to service_role;
 
 insert into public.schema_migrations (filename) values
-  ('0104_proxy_lifecycle_pass12.sql')
+  ('0104_proxy_lifecycle_pass12.sql'),
+  ('0105_api_integrations_deliveries_rls.sql')
 on conflict do nothing;
