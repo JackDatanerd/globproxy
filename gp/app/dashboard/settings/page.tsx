@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, Suspense } from 'react'
+import { useState, useEffect, useRef, Suspense } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
@@ -377,7 +377,7 @@ function SettingsPageInner() {
       await apiJson('DELETE', `/api/dashboard/webhooks/${id}`)
       toast.success('Webhook deleted')
       setWebhooks(w => w.filter(x => x.id !== id))
-      if (logId === id) setLogId(null)
+      if (logId === id) { setLogId(null); logIdRef.current = null; logReqRef.current++; setLogLoading(false) }
       if (editingWebhookId === id) setEditingWebhookId(null)
     } catch (err: any) {
       if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Failed to delete webhook')
@@ -418,22 +418,37 @@ function SettingsPageInner() {
     }
   }
 
-  async function loadDeliveries(id: string, cursor?: { before: string; id: string | null } | null) {
+  // The log shows one endpoint at a time and responses can arrive out of order, so every
+  // load is tagged: a response is applied only if it is still the latest request AND its
+  // endpoint is still the one open. logIdRef mirrors logId for use inside async handlers.
+  const logIdRef = useRef<string | null>(null)
+  const logReqRef = useRef(0)
+  useEffect(() => { logIdRef.current = logId }, [logId])
+
+  // cursor => append the next (older) page; otherwise replace the list. `depth` reloads at
+  // least that many rows so a refresh after redeliver keeps older pages the user had loaded.
+  async function loadDeliveries(id: string, cursor?: { before: string; id: string | null } | null, depth = 25) {
+    const req = ++logReqRef.current
     setLogLoading(true)
     try {
-      const data = await apiFetch(`/api/dashboard/webhooks/${id}/deliveries?limit=25${cursor ? `&before=${encodeURIComponent(cursor.before)}${cursor.id ? `&before_id=${encodeURIComponent(cursor.id)}` : ''}` : ''}`)
+      const limit = cursor ? 25 : Math.min(Math.max(depth, 25), 100)
+      const data = await apiFetch(`/api/dashboard/webhooks/${id}/deliveries?limit=${limit}${cursor ? `&before=${encodeURIComponent(cursor.before)}${cursor.id ? `&before_id=${encodeURIComponent(cursor.id)}` : ''}` : ''}`)
+      if (req !== logReqRef.current || logIdRef.current !== id) return
       setLogRows(prev => cursor ? [...prev, ...(data.deliveries ?? [])] : (data.deliveries ?? []))
       setLogNext(data.next_before ? { before: data.next_before, id: data.next_before_id ?? null } : null)
     } catch (err: any) {
-      setLogRows([])
+      if (req !== logReqRef.current || logIdRef.current !== id) return
+      // Keep what is already on screen (a failed "load more" must not wipe the loaded pages).
+      if (!cursor) setLogRows([])
       toast.error(err.message ?? 'Failed to load deliveries')
     }
-    setLogLoading(false)
+    if (req === logReqRef.current) setLogLoading(false)
   }
 
   async function toggleLog(id: string) {
-    if (logId === id) { setLogId(null); return }
-    setLogId(id); setDetailId(null); setDetail(null); setLogNext(null)
+    if (logId === id) { setLogId(null); logIdRef.current = null; logReqRef.current++; setLogLoading(false); return }
+    logIdRef.current = id
+    setLogId(id); setDetailId(null); setDetail(null); setLogNext(null); setLogRows([])
     await loadDeliveries(id)
   }
 
@@ -455,7 +470,7 @@ function SettingsPageInner() {
     } catch (err: any) {
       toast.error(err.message ?? 'Redelivery failed')
     }
-    await loadDeliveries(endpointId)
+    if (logIdRef.current === endpointId) await loadDeliveries(endpointId, null, logRows.length)
   }
 
   const [redeliveringAll, setRedeliveringAll] = useState(false)
@@ -472,7 +487,7 @@ function SettingsPageInner() {
       if (err?.code !== 'mfa_required') toast.error(err.message ?? 'Redelivery failed')
     }
     setRedeliveringAll(false)
-    await loadDeliveries(endpointId)
+    if (logIdRef.current === endpointId) await loadDeliveries(endpointId, null, logRows.length)
   }
 
   async function submitApplication(e: React.FormEvent) {
