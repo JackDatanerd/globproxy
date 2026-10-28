@@ -2,6 +2,196 @@ import type { BlogPost } from './types'
 
 export const BLOG_POSTS: BlogPost[] = [
   {
+    slug: 'manage-session-ip-whitelist-add-remove-errors',
+    title: 'Manage a Session\'s IP Whitelist: Add, Remove, Bulk Add and Fix Errors',
+    description:
+      'How to add, bulk add and remove IPs on a session\'s IP whitelist tab, which addresses are accepted, what each error means, and how to find the right IP.',
+    excerpt:
+      'Step-by-step use of the IP whitelist tab: what you can enter, how to add many at once, and what to do when an entry is refused.',
+    category: 'Guides',
+    section: 'help',
+    publishedAt: '2026-10-29',
+    body: [
+      {
+        type: 'p',
+        text: 'Every session has an IP whitelist tab where you can register the public IP addresses you connect from. This guide is about using that tab: what to enter, how to add and remove addresses, and how to fix the messages you may see. It does not replace keeping your username and password private, which matters whether or not you use the list.',
+      },
+      {
+        type: 'callout',
+        title: 'The short version',
+        text: 'Open the session in My Proxies, choose the IP whitelist tab, type the public IP of the machine that will connect, add a short description and click Add IP. One address per entry: no ranges, and no private addresses such as 192.168.x.x or 10.x.x.x. Keep your username and password private regardless; do not rely on the list alone.',
+      },
+
+      { type: 'h2', text: 'Add one IP address' },
+      {
+        type: 'ol',
+        items: [
+          'In My Proxies, open the session and click the IP whitelist tab.',
+          'Type the address in "Your public IP", or click "use my current IP" underneath to fill in the address our site sees from your browser. That button also fills a description for you.',
+          'Type a short Description, up to 100 characters, such as "Office IP" or "Build server". A description is required, and it is what helps you recognise the entry later.',
+          'Click Add IP. You will see "IP whitelisted" and the address appears in the list below, which is headed Whitelisted IPs with a count.',
+        ],
+      },
+      { type: 'h3', text: 'What is accepted' },
+      {
+        type: 'ul',
+        items: [
+          'One IPv4 or IPv6 address per entry. Ranges such as 203.0.113.0/24 are not accepted. List each address separately.',
+          'Public addresses only. A private or reserved address, for example 192.168.1.20, 10.0.0.5 or 172.16.x.x, is refused, because it can never be the address a connection arrives from. If your computer shows one of these, it is the address behind your router. Look up your public IP instead.',
+          'If you connect over both IPv4 and IPv6, add both addresses.',
+        ],
+      },
+
+      { type: 'h2', text: 'Make sure you add the right address' },
+      {
+        type: 'p',
+        text: 'The address that matters is the public IP of the machine that actually makes the connection, as the internet sees it. That is not always the one in front of you:',
+      },
+      {
+        type: 'ul',
+        items: [
+          'Your script runs on a server or in the cloud: add that server\'s public IP, not your laptop\'s. "Use my current IP" only knows the browser you are using right now.',
+          'You are on a VPN: the address is the VPN\'s exit address, and it can change when you reconnect.',
+          'Home and mobile connections: the provider can change your public IP without warning. If a saved address stops matching, remove it and add the new one.',
+          'Several machines: add each one, with a description saying which is which.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'To check an address, open any "what is my IP" site from the machine that will connect, or run curl https://ipinfo.io/ip there.',
+      },
+
+      { type: 'h2', text: 'Add many IPs at once' },
+      {
+        type: 'ol',
+        items: [
+          'On the IP whitelist tab click "bulk add multiple IPs".',
+          'Paste one entry per line, as the IP, a comma and a description. The description can be left out, in which case the entry is named "Bulk added" with today\'s date.',
+          'Click Add all. You will see how many were new, and how many were already on the list or merged.',
+        ],
+      },
+      {
+        type: 'code',
+        language: 'text',
+        caption: 'Example of what to paste',
+        code: '203.0.113.4, Office\n198.51.100.20, Build server\n2001:db8::1, Home IPv6',
+      },
+      {
+        type: 'p',
+        text: 'Use real public addresses; the examples above are reserved for documentation, so they would be refused. A single batch holds up to 150 addresses ("Max 150 IPs per bulk request"). If something is wrong, such as a description over 100 characters or an address that is refused, the message names the line or address, so you can fix it and try again. Click "back to single add" to return to the normal form.',
+      },
+
+      { type: 'h2', text: 'Remove IPs' },
+      {
+        type: 'ul',
+        items: [
+          'To remove one: click the ✕ at the end of its row. You will see "IP removed".',
+          'To remove several: tick their boxes, or tick select all, then click the red "remove N selected" button.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'You can always remove an entry, even one that could not be added today, so a bad old entry never gets stuck. The list updates straight away.',
+      },
+
+      { type: 'h2', text: 'Messages you may see' },
+      {
+        type: 'table',
+        headers: ['What you see', 'What it means', 'What to do'],
+        rows: [
+          ['"Enter a valid IPv4 or IPv6 address (no ranges)."', 'The text is not a single IP address, or it has a /24-style range on it.', 'Enter one address. Use bulk add for several.'],
+          ['"That is a private or reserved address, so it can never match a real connection…"', 'You entered an address that exists only inside a local network.', 'Use the public IP of the machine that connects, or click "use my current IP".'],
+          ['"Enter a short description" / "A description is required"', 'The description is empty.', 'Type a short label, 100 characters at most.'],
+          ['"That IP is already whitelisted, or the whitelist limit has been reached."', 'The address is already listed, or the session has as many entries as it can hold.', 'Check the list. If it is full, remove addresses you no longer use.'],
+          ['"This credential is still being provisioned — try again shortly." (or the amber notice on the tab)', 'A brand-new session is not fully set up yet.', 'Wait a minute or two and try again. It resolves by itself.'],
+          ['"This session\'s proxy is being restored, so its whitelist can\'t be changed right now."', 'We are re-creating this session and putting your entries back.', 'Try again shortly, and contact support if it lasts more than 15 minutes.'],
+          ['"IP whitelist service is temporarily unavailable."', 'A temporary problem on our side.', 'Wait a moment and try again. Nothing was changed.'],
+          ['Asked to verify your 2FA code', 'Changing the whitelist is a sensitive action when two-factor is on.', 'Verify your code, then repeat the change.'],
+        ],
+      },
+
+      { type: 'h2', text: 'If connections stop working after a change' },
+      {
+        type: 'ol',
+        items: [
+          'Check the list on the IP whitelist tab. Is the machine that is connecting really on it, with the address it currently has?',
+          'Compare with the live address: run curl https://ipinfo.io/ip on that machine, and see whether it matches an entry. Remember IPv4 and IPv6 are separate addresses.',
+          'If you are not sure, remove all the entries, test again, and add them back one at a time. This tells you straight away whether an entry is involved.',
+          'If it still fails with the list empty, the cause is elsewhere. Our guide to connecting to the proxy walks through username, password, port and protocol.',
+        ],
+      },
+
+      { type: 'h2', text: 'What the list is, and what it is not' },
+      {
+        type: 'p',
+        text: 'Addresses on the list are registered as authorised sources for that session. It is an extra setting, not a substitute for your login. Keep the username and password private, do not paste them into shared chats or public code, and do not rely on the list alone to keep other people out. If a login has leaked, treat it as compromised: stop using it and contact us so we can help you replace it.',
+      },
+      {
+        type: 'p',
+        text: 'Your entries are saved with the session. If a session ever has to be re-created on our side, the entries are put back automatically, and we keep retrying until they are all in place.',
+      },
+
+      { type: 'h2', text: 'Resellers and the API' },
+      {
+        type: 'p',
+        text: 'Anyone who holds a session can manage its list, including sessions a reseller allocated to them. Resellers can do the same from code: GET, POST and DELETE on /api/v1/sub-users/ID/whitelist, plus a bulk endpoint, and subscribe to the whitelist_changed webhook to hear about every change. A new sub-user answers 409 on these endpoints until it has finished setting up, which is not a real conflict. Wait and retry. See our API quickstart and the API docs.',
+      },
+
+      { type: 'h2', text: 'When to contact us, and what to send' },
+      {
+        type: 'p',
+        text: 'Contact us if an entry cannot be added and the message does not explain why, if the list is empty when you are sure you added entries, or if the tab shows an error for more than 15 minutes. Open Support at the bottom of the dashboard sidebar and choose Report an issue. Please include:',
+      },
+      {
+        type: 'ul',
+        items: [
+          'The session\'s label.',
+          'The exact message you saw, and the address you were adding (the address is not a secret).',
+          'Whether you were using the single form or bulk add.',
+          'The time, with your time zone.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'Never send your password.',
+      },
+    ],
+    faq: [
+      {
+        q: 'Can I whitelist a range of IPs, such as 203.0.113.0/24?',
+        a: 'No. Each entry is one IPv4 or IPv6 address. To add several, list each address, using bulk add for up to 150 at a time.',
+      },
+      {
+        q: 'Why is my 192.168.x.x or 10.x.x.x address refused?',
+        a: 'Those are private addresses that exist only inside your own network, so a connection can never arrive from one. Use the public IP of the machine that will connect.',
+      },
+      {
+        q: 'Which IP should I add if my script runs on a server?',
+        a: 'The server\'s public IP, not your laptop\'s. Check it from the server itself with curl https://ipinfo.io/ip.',
+      },
+      {
+        q: 'My IP changes every few days. What should I do?',
+        a: 'Add the new address when it changes and remove the old one. Home, mobile and VPN addresses change often, so a list works best for machines with a fixed address, such as servers.',
+      },
+      {
+        q: 'How many IPs can I add?',
+        a: 'Up to 150 in a single bulk request. A session also has an overall limit on entries, and you will see "the whitelist limit has been reached" if you hit it. Remove ones you no longer use.',
+      },
+      {
+        q: 'It says the credential is still being provisioned. Is something wrong?',
+        a: 'No. A brand-new session takes a short while to finish setting up. Try again in a minute or two.',
+      },
+      {
+        q: 'Do I still need to keep my username and password private?',
+        a: 'Yes, always. The whitelist is an extra setting, not a replacement for your login, so do not rely on it alone.',
+      },
+      {
+        q: 'Will my entries survive if the session is re-created?',
+        a: 'Yes. Entries are saved with the session and put back automatically if we ever have to re-create it.',
+      },
+    ],
+  },
+  {
     slug: 'cant-sign-in-forgot-password-reset-link-problems',
     title: 'Can\'t Sign In? Password Reset, Link Problems and Lockouts, Step by Step',
     description:
