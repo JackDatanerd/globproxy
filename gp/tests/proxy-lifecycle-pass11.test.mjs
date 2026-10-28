@@ -29,8 +29,8 @@ test('whitelist routes: uuid-validate and surface database errors as 503', () =>
   }
 })
 
-test('failed provisioning frees the claim; delete ledger baseline is re-read', () => {
-  assert.match(read('lib/credentials.ts'), /pending_reason: classifyUpstreamError\(e\), provisioning_claimed_at: null/)
+test('failed provisioning back-dates the claim (keeps backoff, frees the lease); delete ledger baseline is re-read', () => {
+  assert.match(read('lib/credentials.ts'), /pending_reason: classifyUpstreamError\(e\), provisioning_claimed_at: new Date\(Date\.now\(\) - RETRY_CLAIM_AGE_MS\)\.toISOString\(\)/)
   assert.match(read('lib/credentials.ts'), /gb: used - ledgerBaseline/)
 })
 
