@@ -19,7 +19,8 @@ test('password rotation takes a per-session lock and releases it', () => {
 })
 
 test('usage credit uses the gb_used the write replaced (migration 0100) with a snapshot fallback', () => {
-  assert.match(read('lib/usageSync.ts'), /gb: prev === undefined \? c\.delta : c\.gb_used - prev/)
+  assert.match(read('lib/usageSync.ts'), /gb: Array\.isArray\(written\) \? 0 : c\.delta/)
+  assert.match(read('lib/usageSync.ts'), /gb: c\.gb_used - prev/)
   assert.match(read('supabase/migrations/0100_proxy_lifecycle_pass10.sql'), /for update of pc/)
 })
 

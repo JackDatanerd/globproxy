@@ -159,7 +159,7 @@ test('pass 6: bulk pause does a whole-account sync only for large batches', () =
   const d = src('app/api/dashboard/proxies/bulk-action/route.ts')
   assert.match(d, /action === 'pause' && ids\.length > 5/); assert.match(d, /\{ usageSynced \}/)
   // Dashboard UI pass: a failed up-front sync must not be reported to pauseCredential as fresh.
-  assert.match(d, /usageSynced = await syncUserUsage\(user\.id\)\.then\(\(\) => true,/)
+  assert.match(d, /usageSynced = await syncUserUsage\(user\.id\)\.then\(\(r\) => r\.usage_fetch_failures === 0 && r\.usage_write_ok && r\.recalc_ok,/)
 })
 
 test('dashboard UI pass: session PATCH/DELETE reject a malformed id with 404, not a 500', () => {
