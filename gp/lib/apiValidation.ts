@@ -67,9 +67,12 @@ export function parseLabel(v: unknown): Parsed<string | null> {
 // `checkAsn` (default true): reject an ASN that doesn't exist in the chosen
 // country. Edits pass false when neither country nor ASN changed, so a legacy
 // session with an ASN that has since left the inventory can still be relabelled.
+// `allowLegacyAsnCombo` (default false): edits pass true when country, state, city and ASN are
+// all unchanged, so a session saved with an ASN AND a state/city (which the network cannot
+// serve — see buildProxyUsername) can still be relabelled instead of failing every save.
 export function parseTargeting(
   body: any,
-  opts: { checkAsn?: boolean } = {}
+  opts: { checkAsn?: boolean; allowLegacyAsnCombo?: boolean } = {}
 ): Parsed<Pick<CreateCredentialInput, 'country' | 'state' | 'city' | 'asn'>> {
   const country = optionalString(body?.country, 'country'); if (!country.ok) return country
   const state = optionalString(body?.state, 'state');       if (!state.ok) return state
@@ -80,7 +83,7 @@ export function parseTargeting(
     asn = String(body.asn).trim()
   }
 
-  const err = validateTargeting({ country: country.value, state: state.value, city: city.value, asn })
+  const err = validateTargeting({ country: country.value, state: state.value, city: city.value, asn }, { allowLegacyAsnCombo: opts.allowLegacyAsnCombo })
   if (err) return { ok: false, error: err }
 
   // An ASN that isn't in the country's inventory never finds a peer: the

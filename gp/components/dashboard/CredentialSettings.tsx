@@ -124,7 +124,7 @@ export default function CredentialSettings({ cred }: { cred: any }) {
         </div>
         <div>
           <label className="block text-[10px] font-mono text-muted uppercase tracking-widest mb-1">State / region</label>
-          <select value={state} onChange={e => { setState(e.target.value); setCity('') }}
+          <select value={state} onChange={e => { setState(e.target.value); setCity(''); if (e.target.value) setAsn('') }}
             disabled={!country || !detail || detail.states.length === 0} className={field}>
             <option value="">Any</option>
             {detail?.states.map(s => <option key={s.code} value={s.code}>{s.name}</option>)}
@@ -132,7 +132,7 @@ export default function CredentialSettings({ cred }: { cred: any }) {
         </div>
         <div>
           <label className="block text-[10px] font-mono text-muted uppercase tracking-widest mb-1">City</label>
-          <select value={city} onChange={e => setCity(e.target.value)} disabled={!state || !stateOption} className={field}>
+          <select value={city} onChange={e => { setCity(e.target.value); if (e.target.value) setAsn('') }} disabled={!state || !stateOption} className={field}>
             <option value="">Any</option>
             {stateOption?.cities.map(c => <option key={c.code} value={c.code}>{c.name}</option>)}
           </select>
@@ -142,7 +142,10 @@ export default function CredentialSettings({ cred }: { cred: any }) {
 
       <div className="max-w-[320px]">
         <label className="block text-[10px] font-mono text-muted uppercase tracking-widest mb-1">ISP / ASN <span className="normal-case">(optional)</span></label>
-        <AsnPicker country={country} value={asn} onChange={setAsn} className={field} />
+        <AsnPicker country={country} value={asn} onChange={setAsn} className={field}
+          blockedReason={!country ? 'Choose a country to pick an ISP.'
+            : (state || city) ? (asn.trim() ? 'This ISP is not used while a state or city is set — the location wins. Set the region to “Any” to use the ISP.' : 'ISP targeting is country-wide. Set the region to “Any” to pick an ISP.')
+            : undefined} />
       </div>
 
       <button type="submit" disabled={saving}

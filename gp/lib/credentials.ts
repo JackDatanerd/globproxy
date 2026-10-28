@@ -726,6 +726,7 @@ export async function updateCredentialSettings(
     const countryChanged = 'country' in b && normGeo(b.country) !== (cred.country ?? null)
     const stateChanged = 'state' in b && normGeo(b.state) !== (cred.state ?? null)
     const asnChanged = 'asn' in b && String(b.asn ?? '').trim() !== String(cred.asn ?? '')
+    const cityChanged = 'city' in b && normGeo(b.city) !== (cred.city ?? null)
     const t = parseTargeting({
       country: 'country' in b ? b.country : cred.country,
       state: 'state' in b ? b.state : (countryChanged ? null : cred.state),
@@ -736,7 +737,12 @@ export async function updateCredentialSettings(
       asn: 'asn' in b ? b.asn : (countryChanged ? null : cred.asn),
       // A legacy ASN that has since left the inventory must not block a
       // relabel; only check it when the ASN or country is actually changing.
-    }, { checkAsn: asnChanged || countryChanged })
+    }, {
+      checkAsn: asnChanged || countryChanged,
+      // An ASN is country-wide: it cannot be stored together with a state/city. A session saved
+      // that way before the rule existed is only tolerated while none of the four fields change.
+      allowLegacyAsnCombo: !(asnChanged || countryChanged || stateChanged || cityChanged),
+    })
     if (!t.ok) return fail(400, 'invalid_request', t.error)
     Object.assign(patch, t.value)
   }

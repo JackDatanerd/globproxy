@@ -49,7 +49,9 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup, initial, d
     country:         initial?.country ?? '',
     state:           initial?.state ?? '',
     city:            initial?.city ?? '',
-    asn:             initial?.asn ?? '',
+    // An ISP is country-wide and is not sent together with a state or city (see buildProxyUsername):
+    // a duplicated session that carries both starts with the location, which is what it connected with.
+    asn:             initial?.state || initial?.city ? '' : (initial?.asn ?? ''),
     protocol:        (initial?.protocol === 'socks5' ? 'socks5' : 'http') as 'http' | 'socks5',
     session_type:    (initial?.session_type === 'sticky' ? 'sticky' : 'rotating') as 'rotating' | 'sticky',
     sticky_duration: Number(initial?.sticky_duration) >= 1 && Number(initial?.sticky_duration) <= 1440 ? Number(initial?.sticky_duration) : 10,
@@ -133,8 +135,9 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup, initial, d
       .finally(() => { if (countryReq.current === v) setGeoLoading(false) })
   }
 
+  // Location wins over ISP: choosing a region clears any ISP (it could not be served inside one region).
   function setState(v: string) {
-    setForm(f => ({ ...f, state: v, city: '' }))
+    setForm(f => ({ ...f, state: v, city: '', asn: v ? '' : f.asn }))
   }
 
   const selectedStateOption = countryDetail?.states.find(s => s.code === form.state) ?? null
@@ -217,7 +220,7 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup, initial, d
           country: form.country || undefined,
           state: form.state || undefined,
           city: form.city || undefined,
-          asn: form.asn || undefined,
+          asn: form.asn && form.country && !form.state && !form.city ? form.asn : undefined,
           protocol: form.protocol,
           session_type: form.session_type,
           ...(form.session_type === 'sticky' ? { sticky_duration: form.sticky_duration } : {}),
@@ -398,8 +401,9 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup, initial, d
                 <label className="block text-xs text-ink2 font-medium mb-1.5">ASN / ISP <span className="text-muted font-normal">(optional)</span></label>
                 <AsnPicker
                   country={form.country} value={form.asn} onChange={v => set('asn', v)}
+                  blockedReason={!form.country ? 'Choose a country to pick an ISP.' : (form.state || form.city) ? 'ISP targeting is country-wide. Set the region to “Any” to pick an ISP, or keep the region and skip the ISP.' : undefined}
                   className="w-full bg-surface border border-border px-3.5 py-2.5 rounded-lg text-sm focus:outline-none focus:border-accent transition-colors" />
-                <p className="text-xs text-muted mt-1.5">Target a specific ISP. Pick a country first and you can search that country&apos;s ISPs by name or number; an ISP that doesn&apos;t exist in the chosen country is rejected rather than creating a session that can&apos;t connect.</p>
+                <p className="text-xs text-muted mt-1.5">Target a specific ISP across a whole country. Pick a country first and you can search that country&apos;s ISPs by name or number. An ISP can&apos;t be combined with a state or city, so choose either an ISP or a region, not both.</p>
               </div>
             )}
           </div>

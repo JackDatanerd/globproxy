@@ -6,7 +6,8 @@
 // This file is the one place that builds that suffixed username, so the
 // create form, ProxyCard, and the API routes can't drift out of sync again.
 //
-// Format, in order: <base>-type-residential-country-<cc>[-state-<state>][-city-<city>][-asn-<n>][-lifetime-<min>-session-<id>]
+// Format, in order: <base>-type-residential-country-<cc>[-state-<state>][-city-<city>] | [-asn-<n>] [-lifetime-<min>-session-<id>]
+// (a location OR an ASN, never both — see the ASN rule in buildProxyUsername)
 // Source: confirmed directly from live credential strings shared during
 // this project (Manchester, Anchorage, Crystal City, Fountain Inn) — state
 // and city are BOTH included together, not mutually exclusive as generic
@@ -96,6 +97,13 @@ export function deriveSessionId(seed: string, index = 0): string {
   return out
 }
 
+// True when the ASN is actually sent in the connection username: a country is set and no
+// state or city is (see buildProxyUsername). Used by the dashboard to tell the customer when
+// a saved ISP is being ignored.
+export function asnApplies(opts: Pick<TargetingOptions, 'country' | 'state' | 'city' | 'asn'>): boolean {
+  return !!opts.asn && !!opts.country && !opts.state && !opts.city
+}
+
 // sessionId is optional so callers generating multiple endpoints can pass a
 // distinct id per endpoint (each gets its own stable peer IP under sticky).
 //
@@ -106,9 +114,13 @@ export function deriveSessionId(seed: string, index = 0): string {
 // at the write path — see validateTargeting() below — so a caller can never
 // get this combination persisted in the first place.
 export function buildProxyUsername(baseUsername: string, opts: TargetingOptions, sessionId?: string): string {
-  // Confirmed from a live upstream dashboard export (2026-07):
+  // Syntax seen in a live upstream dashboard export (2026-07), which stacks every field:
   // prefix_xxx-type-residential-country-us-state-southcarolina-city-fountaininn-asn-13868-lifetime-1440-session-mBXMRo
-  // Order: type, country, state|city, asn, then (sticky only) lifetime, session.
+  // The network ACCEPTS that syntax but, in production (2026-10), state/city + asn almost always
+  // fails with HTTP 465 "no proxies available" — one ISP's addresses inside one city rarely exist.
+  // So the ASN is only sent without a state/city (see below). Do not "restore" the stacked form
+  // because an old export shows it: syntax being accepted does not mean the pool can serve it.
+  // Order: type, country, state|city OR asn, then (sticky only) lifetime, session.
   let u = `${baseUsername}-type-residential`
 
   if (opts.country) {
@@ -119,7 +131,13 @@ export function buildProxyUsername(baseUsername: string, opts: TargetingOptions,
     if (opts.city)  u += `-city-${slug(opts.city)}`
   }
 
-  if (opts.asn) {
+  // ISP (ASN) targeting is country-wide. Stacked on a state or city it asks the network for
+  // one ISP's addresses inside one city, which almost never exists, so the connection is
+  // refused with "no proxies available" (HTTP 465). A location the customer chose therefore
+  // wins over the ISP: with a state or city set the ASN is left out of the username. It also
+  // needs a country (an ASN with no country is rejected outright). This is the one place the
+  // username is built, so sessions saved with both before this rule connect again as well.
+  if (asnApplies(opts)) {
     u += `-asn-${slug(String(opts.asn))}`
   }
 
@@ -187,7 +205,15 @@ const COUNTRY_RE = /^[a-z]{2}$/
 const STATE_CITY_RE = /^[a-z0-9]{1,64}$/
 const ASN_RE = /^[0-9]{1,10}$/
 
-export function validateTargeting(opts: TargetingOptions): string | null {
+export const ASN_NEEDS_COUNTRY_ERROR = 'A country is required when specifying an ISP (ASN).'
+export const ASN_WITH_LOCATION_ERROR =
+  'ISP (ASN) targeting is country-wide and cannot be combined with a state or city. Clear the state and city to use an ISP, or clear the ISP (send asn: null) to keep the location.'
+
+// `allowLegacyAsnCombo`: sessions saved before the rule above can hold an ASN together with a
+// state/city (or with no country). Their ASN is already ignored when the username is built, so
+// an edit that touches neither the country, state, city nor ASN (a relabel, a protocol change)
+// must not start failing on it. Anything that sets or changes those fields is held to the rule.
+export function validateTargeting(opts: TargetingOptions, flags: { allowLegacyAsnCombo?: boolean } = {}): string | null {
   if ((opts.state || opts.city) && !opts.country) {
     return 'A country is required when specifying a state or city.'
   }
@@ -204,6 +230,11 @@ export function validateTargeting(opts: TargetingOptions): string | null {
   }
   if (opts.asn != null && opts.asn !== '' && !ASN_RE.test(String(opts.asn).trim())) {
     return 'ASN must be numeric.'
+  }
+  const hasAsn = opts.asn != null && String(opts.asn).trim() !== ''
+  if (hasAsn && !flags.allowLegacyAsnCombo) {
+    if (!opts.country) return ASN_NEEDS_COUNTRY_ERROR
+    if (opts.state || opts.city) return ASN_WITH_LOCATION_ERROR
   }
   return null
 }

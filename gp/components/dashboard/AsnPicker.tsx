@@ -5,13 +5,15 @@ import { fetchCountryAsns, type AsnOption } from '@/lib/geoTargeting'
 // ISP (ASN) targeting input. With a country selected it suggests the ISPs that
 // actually exist there (type a name or number); an ASN that isn't in that
 // country's list is flagged, because the API rejects it — a session pinned to
-// an ASN with no peers would otherwise connect to nothing. Without a country
-// it stays a plain numeric field. The value handed to the parent is always
-// digits only; the box itself keeps whatever the customer is typing so an ISP
-// *name* can be searched (the browser filters the list as they type).
+// an ASN with no peers would otherwise connect to nothing. ISP targeting is
+// country-wide: with no country, or with a state or city chosen, the box is
+// disabled (`blockedReason` says why) because the network cannot serve an ISP
+// inside one city. The value handed to the parent is always digits only; the
+// box itself keeps whatever the customer is typing so an ISP *name* can be
+// searched (the browser filters the list as they type).
 export default function AsnPicker({
-  country, value, onChange, className,
-}: { country: string; value: string; onChange: (v: string) => void; className: string }) {
+  country, value, onChange, className, blockedReason,
+}: { country: string; value: string; onChange: (v: string) => void; className: string; blockedReason?: string }) {
   const [options, setOptions] = useState<AsnOption[]>([])
   const [loaded, setLoaded] = useState(false)
 
@@ -34,6 +36,13 @@ export default function AsnPicker({
     if (digitsOf(text) !== value && !(value === '' && isSearching(text))) setText(value)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value])
+
+  // The box was blocked (a region was chosen, so the parent cleared the ISP): a half-typed ISP-name
+  // search left in the now-disabled input would look like a selection, so clear it.
+  useEffect(() => {
+    if (blockedReason && value === '' && isSearching(text)) setText('')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [blockedReason])
 
   const trimmed = value.trim()
   const match = options.find(o => o.code === trimmed)
@@ -59,6 +68,7 @@ export default function AsnPicker({
         value={text}
         onChange={e => handleChange(e.target.value)}
         onBlur={() => { if (searching) setText('') }}
+        disabled={!!blockedReason}
         inputMode={options.length > 0 ? 'search' : 'numeric'}
         list={options.length > 0 ? listId : undefined}
         placeholder={country && options.length > 0 ? 'Search ISP or number' : 'e.g. 7922'}
@@ -69,12 +79,13 @@ export default function AsnPicker({
           {options.map(o => <option key={o.code} value={o.code}>{o.name}</option>)}
         </datalist>
       )}
+      {blockedReason && <p className="text-[10.5px] text-muted mt-1">{blockedReason}</p>}
+      {!blockedReason && trimmed && <p className="text-[10.5px] text-muted mt-1">Not every ISP has addresses online at every moment. If a connection fails with “no proxies available”, pick another ISP or use the country only.</p>}
       {searching && options.length > 0 && <p className="text-[10.5px] text-muted mt-1">Pick an ISP from the list to select it.</p>}
       {trimmed && match && <p className="text-[10.5px] text-muted mt-1 truncate">{match.name}</p>}
       {trimmed && country && loaded && options.length > 0 && !match && (
         <p className="text-[10.5px] text-red-600 mt-1">AS{trimmed} isn’t available in this country — pick one from the list.</p>
       )}
-      {!country && <p className="text-[10.5px] text-muted mt-1">Choose a country to browse its ISPs.</p>}
     </div>
   )
 }

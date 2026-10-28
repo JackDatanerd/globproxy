@@ -387,9 +387,9 @@ export default function ApiDocsPage() {
               ['gb_allocated', 'number', 'Required. Bandwidth to reserve for this sub-user: between 0.01 and 100000.'],
               ['label', 'string', 'Optional. Your own name for this credential, up to 100 characters.'],
               ['country', 'string', '2-letter ISO code (e.g. "us"). Required if state, city, or asn is set.'],
-              ['state', 'string', 'Lowercase, no spaces/punctuation. Requires country.'],
-              ['city', 'string', 'Lowercase, no spaces/punctuation. Requires country. state and city can both be set together.'],
-              ['asn', 'string | number', 'Numeric ASN, e.g. "13868". Requires country, and must be an ASN that exists in that country — otherwise 400 (a session pinned to an ASN with no peers could never connect).'],
+              ['state', 'string', 'Lowercase, no spaces/punctuation. Requires country. Cannot be combined with asn.'],
+              ['city', 'string', 'Lowercase, no spaces/punctuation. Requires country. state and city can both be set together. Cannot be combined with asn.'],
+              ['asn', 'string | number', 'Numeric ASN, e.g. "13868". Country-wide ISP targeting: requires country, must exist in that country, and cannot be sent together with state or city (400 — choose a location or an ISP). Not every ISP has addresses online at every moment; a connection that fails with "no proxies available" means that ISP has none right now, so try another ISP or use the country only.'],
               ['session_type', 'string', '"rotating" (default) or "sticky".'],
               ['protocol', 'string', '"http" (default) or "socks5".'],
               ['sticky_duration', 'integer', 'Minutes (1–1440) the sticky session stays on the same peer. Only used when session_type is "sticky". Default 10.'],
@@ -449,7 +449,7 @@ export default function ApiDocsPage() {
             <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Body parameters</p>
             <Table rows={[
               ['label', 'string | null', 'Up to 100 characters.'],
-              ['country / state / city / asn', 'string | null', 'Same rules as creation; validated together with the values already on the sub-user.'],
+              ['country / state / city / asn', 'string | null', 'Same rules as creation; validated together with the values already on the sub-user. To move a session with an asn to a state or city, send asn: null in the same request (and the reverse: send state: null and city: null to add an asn).'],
               ['session_type', 'string', '"rotating" or "sticky". Changes the port.'],
               ['protocol', 'string', '"http" or "socks5". Changes the port.'],
               ['sticky_duration', 'integer | null', 'Minutes, 1–1440 (sticky only).'],
@@ -1156,12 +1156,12 @@ end`}</Code>
           <h2 className="font-display font-bold text-xl text-ink mb-3">Geo-targeting reference</h2>
           <p className="text-sm text-ink2 leading-relaxed mb-3">
             Targeting is encoded directly in <span className="font-mono text-ink">connection_username</span>, in a
-            fixed order: type, country, state and/or city, asn, then (sticky sessions only) lifetime and session id.
+            fixed order: type, country, then either state and/or city or an asn (never both), then (sticky sessions only) lifetime and session id.
           </p>
           <Table rows={[
             ['country', '2-letter ISO code, lowercase', 'Required if state, city, or asn is set.'],
-            ['state / city', 'lowercase, no spaces or punctuation', 'Both can be set together — they are not mutually exclusive.'],
-            ['asn', 'numeric string', 'e.g. "13868".'],
+            ['state / city', 'lowercase, no spaces or punctuation', 'Both can be set together — they are not mutually exclusive. Cannot be combined with asn.'],
+            ['asn', 'numeric string', 'e.g. "13868". ISP targeting is country-wide and needs a country; it cannot be combined with state or city.'],
           ]} />
           <p className="text-sm text-ink2 leading-relaxed mt-2">
             Invalid values (wrong length, disallowed characters) get rejected with a{' '}

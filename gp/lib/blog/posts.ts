@@ -1271,7 +1271,7 @@ for name, proxy in ENDPOINTS.items():
         items: [
           'gp_3f9a… is your session\'s base ID.',
           '-type-residential is the network type.',
-          '-country-us-state-texas-city-austin is the location. State and city are optional; an ISP appears as -asn-<number> if you chose one. A session created with Any country has no location part at all.',
+          '-country-us-state-texas-city-austin is the location. State and city are optional; an ISP appears as -asn-<number> if you chose one instead of a state or city (an ISP is country-wide, so it is not combined with them). A session created with Any country has no location part at all.',
         ],
       },
       {
