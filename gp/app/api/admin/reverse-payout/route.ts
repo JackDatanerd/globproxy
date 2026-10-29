@@ -35,6 +35,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'A commission in this payout was voided or recovered after it was paid. Resolve that first (Deductions), or contact engineering — reversing now would count it twice.' }, { status: 409 })
     }
 
+    if (d.blocked === 'refund_deductions') {
+      return NextResponse.json({ error: 'An order behind this payout was refunded after it was paid, so a deduction is waiting against the affiliate. Reversing now would pay the full amount and deduct it again. Waive the deduction first (Deductions), or void and re-run instead.' }, { status: 409 })
+    }
+
     await logAdminAction(supabase, {
       adminId, action: 'payout.reversed', targetUserId: d.referrer_id ?? null, targetRef: body.payoutId,
       details: { reason, amount_usd: Number(d.amount_usd), cycle_start: d.cycle_start, cycle_end: d.cycle_end, was_reference: d.payment_reference ?? undefined, commissions_reverted: d.commissions_reverted },

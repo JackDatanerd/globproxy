@@ -117,7 +117,7 @@ export default function ResellerUsersList({
     for (const [i, line] of lines.entries()) {
       const [email, gbRaw, ...noteParts] = line.split(',').map(s => s.trim())
       const gb = parseGb(gbRaw ?? '')
-      if (!email || !email.includes('@') || gb === null) { toast.error(`Line ${i + 1}: expected "email, GB[, note]" with at least ${MIN_GB} GB`); return }
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email) || gb === null) { toast.error(`Line ${i + 1}: expected "email, GB[, note]" with at least ${MIN_GB} GB`); return }
       rows.push({ email, gb, note: noteParts.join(', ') })
     }
     const sum = rows.reduce((s, r) => s + r.gb, 0)
@@ -143,7 +143,7 @@ export default function ResellerUsersList({
         res = await postAllocate(r.email, r.gb, r.note, key)
       }
       if (res.ok) { okCount++; if (res.data?.status === 'pending_signup') invitedCount++ }
-      else if ((res.status === 429 && res.data?.code !== 'new_recipient_limit') || res.status === 0 || (res.status === 409 && /did not finish|still being processed/.test(res.data?.error ?? ''))) {
+      else if ((res.status === 429 && res.data?.code !== 'new_recipient_limit') || res.status === 0 || res.data?.code === 'outcome_unknown' || (res.status === 409 && /did not finish|still being processed/.test(res.data?.error ?? ''))) {
         unknown.push(`${r.email} (${res.data?.error ?? 'no answer'})`)
       } else {
         failed.push({ line: [r.email, String(r.gb), r.note].filter(Boolean).join(', '), why: `${r.email}: ${res.data?.error ?? 'failed'}` })

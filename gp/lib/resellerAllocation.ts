@@ -19,6 +19,8 @@ import { INVITE_REMINDER_MAX } from '@/lib/reseller'
 type Admin = Awaited<ReturnType<typeof createAdminClient>>
 
 export const MIN_ALLOCATION_GB = 0.1
+// One address, no whitespace or second @, a dotted domain. Keep in step with create_pending_reseller_transfer (migration 0110).
+const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
 // Keep in step with the 50-per-24h check inside create_pending_reseller_transfer (migration 0070).
 const NEW_RECIPIENTS_PER_DAY = 50
 const NEW_RECIPIENTS_MESSAGE = 'You have reached today\'s limit of 50 new recipients. Existing clients are not affected — try again tomorrow.'
@@ -50,7 +52,7 @@ export function parseAllocationBody(body: any): AllocResult<{ recipientEmail: st
   const gb = cleanNumber(body?.gb_allocated)
   const note = body?.note === undefined || body?.note === null || body?.note === '' ? null : cleanText(body.note, 200)
 
-  if (!recipientEmail || !recipientEmail.includes('@')) return fail(400, 'invalid_request', 'A valid recipient email is required')
+  if (!recipientEmail || !EMAIL_SHAPE.test(recipientEmail)) return fail(400, 'invalid_request', 'A valid recipient email is required')
   if (gb === null || gb < MIN_ALLOCATION_GB) return fail(400, 'invalid_request', `Enter an amount of at least ${MIN_ALLOCATION_GB} GB`)
   if (gb > 1_000_000 || Math.abs(gb * 1000 - Math.round(gb * 1000)) > 1e-6) return fail(400, 'invalid_request', 'Use at most 3 decimal places (and a sensible amount)')
   if (body?.note !== undefined && body?.note !== null && body?.note !== '' && note === null) return fail(400, 'invalid_request', 'Note must be text up to 200 characters')
@@ -408,6 +410,8 @@ export async function sendInviteResolutionNotices(admin: Admin): Promise<{ claim
 
       const { data: reseller } = await admin.from('profiles').select('email, full_name').eq('id', r.reseller_id).maybeSingle()
       const resellerOk = reseller?.email && !String(reseller.email).startsWith('[')
+      // A deleted reseller's invitation rows were anonymised ('[removed]') by the account purge: there is no address to mail.
+      const inviteeOk = !String(r.recipient_email).startsWith('[')
       const gbLabel = escapeHtml(formatGb(Number(r.gb_amount)))
       const appUrl = getAppUrl()
 
@@ -425,7 +429,7 @@ export async function sendInviteResolutionNotices(admin: Admin): Promise<{ claim
               cta: { href: `${appUrl}/reseller/transfers`, label: 'View transfer history →' },
             }),
           }) : Promise.resolve(),
-          sendEmail({
+          inviteeOk ? sendEmail({
             to: r.recipient_email,
             subject: `${formatGb(Number(r.gb_amount))} of bandwidth was added to your account`,
             html: adminNoticeHtml({
@@ -433,7 +437,7 @@ export async function sendInviteResolutionNotices(admin: Admin): Promise<{ claim
               bodyHtml: `<strong>${gbLabel}</strong> from ${escapeHtml(reseller?.full_name) || 'your reseller'} has been added to your GlobProxy account. It's ready to use now.`,
               cta: { href: `${appUrl}/dashboard`, label: 'Go to dashboard →' },
             }),
-          }),
+          }) : Promise.resolve(),
         ])
       } else if (r.status === 'expired') {
         out.expired++
