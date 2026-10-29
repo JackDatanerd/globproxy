@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import toast from 'react-hot-toast'
 import { apiFetch, apiJson, copyText, toastApiError } from '@/lib/clientApi'
 
@@ -178,6 +178,7 @@ export default function ApiKeysClient({ canAllocate = false }: { canAllocate?: b
   const [justRotatedNote, setJustRotatedNote] = useState<string | null>(null)
   const [activityFor, setActivityFor] = useState<string | null>(null)
   const [activity, setActivity] = useState<any[] | null>(null)
+  const activityReqRef = useRef(0) // tags each activity request so a slow earlier one can't overwrite a later one
 
   async function loadKeys() {
     setLoading(true)
@@ -297,12 +298,14 @@ export default function ApiKeysClient({ canAllocate = false }: { canAllocate?: b
   }
 
   async function toggleActivity(id: string) {
+    const req = ++activityReqRef.current
     if (activityFor === id) { setActivityFor(null); setActivity(null); return }
     setActivityFor(id); setActivity(null)
     try {
       const d = await apiFetch(`/api/dashboard/api-keys/activity?key_id=${encodeURIComponent(id)}&limit=20`)
-      setActivity(d.activity ?? [])
+      if (req === activityReqRef.current) setActivity(d.activity ?? [])
     } catch (err: any) {
+      if (req !== activityReqRef.current) return // a newer click owns the panel now
       toast.error(err.message ?? 'Could not load activity')
       setActivityFor(null)
     }

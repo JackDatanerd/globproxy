@@ -88,6 +88,7 @@ function SettingsPageInner() {
   const [logNext, setLogNext] = useState<{ before: string; id: string | null } | null>(null) // cursor (next_before + next_before_id) for older deliveries
   const [detailId, setDetailId] = useState<string | null>(null)
   const [detail, setDetail] = useState<any | null>(null)
+  const detailReqRef = useRef(0) // tags each details request so a slow earlier one can't overwrite a later one
   const [logLoading, setLogLoading] = useState(false)
 
   // Reseller application form state
@@ -465,16 +466,19 @@ function SettingsPageInner() {
   async function toggleLog(id: string) {
     if (logId === id) { setLogId(null); logIdRef.current = null; logReqRef.current++; setLogLoading(false); return }
     logIdRef.current = id
-    setLogId(id); setDetailId(null); setDetail(null); setLogNext(null); setLogRows([])
+    detailReqRef.current++; setLogId(id); setDetailId(null); setDetail(null); setLogNext(null); setLogRows([])
     await loadDeliveries(id)
   }
 
   async function toggleDetail(endpointId: string, deliveryId: string) {
+    const req = ++detailReqRef.current
     if (detailId === deliveryId) { setDetailId(null); setDetail(null); return }
     setDetailId(deliveryId); setDetail(null)
     try {
-      setDetail(await apiFetch(`/api/dashboard/webhooks/${endpointId}/deliveries/${deliveryId}`))
+      const d = await apiFetch(`/api/dashboard/webhooks/${endpointId}/deliveries/${deliveryId}`)
+      if (req === detailReqRef.current) setDetail(d)
     } catch (err: any) {
+      if (req !== detailReqRef.current) return // a newer click owns the panel now
       toast.error(err.message ?? 'Failed to load delivery')
       setDetailId(null)
     }
