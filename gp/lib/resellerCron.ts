@@ -1,5 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/server'
-import { sendEmail, sendEmailSafe, escapeHtml } from '@/lib/email'
+import { sendEmailSafe, escapeHtml } from '@/lib/email'
 import { adminNoticeHtml, appUrl } from '@/lib/adminEmail'
 import { lastCompletedCycle, formatCycleLabel } from '@/lib/payoutCycle'
 import { formatGb, formatUsd } from '@/lib/format'
@@ -29,35 +29,39 @@ export async function runInviteNotices() {
 // remembering it.
 export async function runResellerMaintenance() {
   const out: Record<string, unknown> = {}
+  // Every failed step is collected and returned as `error` (the heartbeat only sees errors it
+  // is handed). The sweeps below used to just console.error: a broken database function left
+  // invitations unexpired and stock locked while the task showed green.
+  const problems: string[] = []
+  const finish = () => (problems.length ? { ...out, error: problems.slice(0, 5).join('; ') } : out)
   try {
     const supabase = await createAdminClient()
 
     // Invitations whose address was already a confirmed account (the signup
     // triggers only fire at the moment of confirmation).
     const { data: swept, error: sweepErr } = await supabase.rpc('claim_all_due_pending_transfers')
-    if (sweepErr) console.error('[cron resellers] claim sweep failed', sweepErr)
+    if (sweepErr) { console.error('[cron resellers] claim sweep failed', sweepErr); problems.push(`invitation claim sweep failed: ${sweepErr.message}`) }
     out.invitations_claimed = Number(swept ?? 0)
 
     const { data: expired, error: expErr } = await supabase.rpc('expire_pending_reseller_transfers')
-    if (expErr) console.error('[cron resellers] expire failed', expErr)
+    if (expErr) { console.error('[cron resellers] expire failed', expErr); problems.push(`invitation expiry failed: ${expErr.message}`) }
     out.invitations_expired = (expired as unknown[] | null)?.length ?? 0
 
     const { data: low, error: lowErr } = await supabase.rpc('reseller_low_stock_due')
-    if (lowErr) console.error('[cron resellers] low-stock query failed', lowErr)
+    if (lowErr) { console.error('[cron resellers] low-stock query failed', lowErr); problems.push(`low-stock query failed: ${lowErr.message}`) }
     let alerted = 0
     for (const r of (low ?? []) as { out_reseller_id: string; out_email: string; out_name: string | null; out_available_gb: number; out_threshold_gb: number }[]) {
       if (!r.out_email || r.out_email.startsWith('[')) continue
-      // Stamp first: if the send fails we'd rather miss one alert than mail a
-      // reseller every day.
+      // Claim first so two overlapping runs cannot both mail the reseller...
       const { data: won } = await supabase.from('profiles')
         .update({ reseller_low_stock_alerted_at: new Date().toISOString() })
         .eq('id', r.out_reseller_id).is('reseller_low_stock_alerted_at', null).select('id')
       if (!won?.length) continue
-      // Same moment, machine-readable: lets an integration restock or page someone.
-      await dispatchWebhook(r.out_reseller_id, 'reseller_low_stock', {
-        available_gb: Number(r.out_available_gb), low_stock_gb: Number(r.out_threshold_gb),
-      }, { defer: true })
-      await sendEmail({
+      // ...then take the claim back if the provider did not accept the message. The flag is
+      // only cleared when stock recovers, so a refused send used to mean this reseller was
+      // never warned about this dip at all (sendEmail answers a refusal with a non-OK
+      // response instead of throwing, which the old `.catch` never saw).
+      const delivered = await sendEmailSafe({
         to: r.out_email,
         subject: `Low bandwidth stock: ${formatGb(Number(r.out_available_gb))} left`,
         html: adminNoticeHtml({
@@ -66,7 +70,19 @@ export async function runResellerMaintenance() {
             ${escapeHtml(formatGb(Number(r.out_threshold_gb)))} alert level you set. Top up before your next client order. You can change or turn off this alert on your reseller dashboard.`,
           cta: { href: `${appUrl()}/dashboard`, label: 'Buy more bandwidth →' },
         }),
-      }).catch((e) => console.error('[cron resellers] low-stock email failed', e))
+      })
+      if (!delivered) {
+        const { error: rearmErr } = await supabase.from('profiles')
+          .update({ reseller_low_stock_alerted_at: null }).eq('id', r.out_reseller_id)
+        if (rearmErr) console.error('[cron resellers] could not re-arm low-stock alert', r.out_reseller_id, rearmErr)
+        problems.push('a reseller low-stock e-mail was not accepted by the mail provider')
+        continue // retried next hour; the webhook below goes out together with the e-mail
+      }
+      // Same moment, machine-readable: lets an integration restock or page someone. Sent only
+      // once the alert has really landed, so a retry cannot deliver the event twice.
+      await dispatchWebhook(r.out_reseller_id, 'reseller_low_stock', {
+        available_gb: Number(r.out_available_gb), low_stock_gb: Number(r.out_threshold_gb),
+      }, { defer: true })
       alerted++
     }
     out.low_stock_alerts = alerted
@@ -76,9 +92,9 @@ export async function runResellerMaintenance() {
     out.payout_reminder = await sendPayoutReminder(supabase)
   } catch (e: any) {
     console.error('[cron resellers] failed:', e)
-    return { ...out, error: String(e?.message ?? e) }
+    problems.push(String(e?.message ?? e))
   }
-  return out
+  return finish()
 }
 
 async function sendPayoutReminder(supabase: Awaited<ReturnType<typeof createAdminClient>>) {

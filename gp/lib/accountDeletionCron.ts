@@ -129,8 +129,13 @@ export async function runAccountDeletions() {
     if (remindErr) problems.push(`could not read reminders: ${remindErr.message}`)
     for (const p of toRemind ?? []) {
       try {
+        // The claim also requires the deletion to still be scheduled for the moment this row was
+        // read: a customer who cancelled (or cancelled and re-scheduled) while this loop was busy
+        // with an earlier account must not get a "deleted tomorrow" e-mail for a deletion that
+        // no longer exists.
         const { data: claimed } = await supabase.from('profiles')
-          .update({ deletion_reminder_sent_at: nowIso }).eq('id', p.id).is('deletion_reminder_sent_at', null).select('id')
+          .update({ deletion_reminder_sent_at: nowIso }).eq('id', p.id).eq('is_deleted', false)
+          .eq('deletion_scheduled_at', p.deletion_scheduled_at).is('deletion_reminder_sent_at', null).select('id')
         if (!claimed?.length || !p.email || String(p.email).startsWith('[')) continue
         const mail = deletionReminderEmail(p.full_name, p.deletion_scheduled_at)
         const sent = await sendEmailSafe({ to: p.email, ...mail })

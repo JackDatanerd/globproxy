@@ -33,8 +33,11 @@ if os.path.exists(INDEX_OUT):
     except (json.JSONDecodeError, OSError):
         _prev_index = None
 
-os.makedirs(OUT_DIR, exist_ok=True)
+# Build everything in memory first, check it, and only then touch the published files: the
+# refusal below used to run AFTER the per-country files had been rewritten, so a truncated
+# export overwrote them even though the script then said nothing had been changed.
 index = {}
+by_country = {}
 total = 0
 for c in countries:
     cc = c["code"]
@@ -49,13 +52,16 @@ for c in countries:
     if not rows:
         continue
     rows.sort(key=lambda r: r["name"].lower())
-    with open(os.path.join(OUT_DIR, f"{cc}.json"), "w", encoding="utf-8") as out:
-        json.dump(rows, out, ensure_ascii=False, separators=(",", ":"))
+    by_country[cc] = rows
     index[cc] = sorted((r["code"] for r in rows), key=int)
     total += len(rows)
 
 if _prev_index and len(index) < len(_prev_index) * 0.8:
-    sys.exit(f"REFUSING: only {len(index)} countries have ASNs but {len(_prev_index)} are published (a >20% drop looks like a truncated export). Re-pull upstream-targeting.json. Nothing was removed.")
+    sys.exit(f"REFUSING: only {len(index)} countries have ASNs but {len(_prev_index)} are published (a >20% drop looks like a truncated export). Re-pull upstream-targeting.json. Nothing was written or removed.")
+
+os.makedirs(OUT_DIR, exist_ok=True)
+for cc, rows in by_country.items():
+    _guard.write_text_atomic(os.path.join(OUT_DIR, f"{cc}.json"), json.dumps(rows, ensure_ascii=False, separators=(",", ":")))
 
 # A country that has lost all its ASNs is skipped above, which used to leave its old
 # file published (and offered in the ISP picker) while the server-side index no longer

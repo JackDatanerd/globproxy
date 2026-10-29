@@ -21,6 +21,7 @@ import { runAccountDeletions } from '@/lib/accountDeletionCron'
 import { listVerifiedOperatorsDue } from '@/lib/adminVo'
 import { runAutoRecharge, captureSavedCardIfRequested } from '@/lib/autoRecharge'
 import { ATTEMPT_OPEN_MS } from '@/lib/rechargeRules'
+import { summaryDaysDue, nextDay } from '@/lib/summaryDays'
 import { NextResponse } from 'next/server'
 
 // Secured with the CRON_SECRET Worker secret (pushed by .github/workflows/deploy.yml).
@@ -332,29 +333,16 @@ async function runBandwidthAlerts() {
 async function runDailySummary() {
   const supabase = await createAdminClient()
   const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0]
-  const today = new Date().toISOString().split('T')[0]
   const MARKER = 'daily_summary_sent_for'
 
   const adminTo = process.env.ADMIN_EMAIL
   if (!adminTo) return { error: 'ADMIN_EMAIL is not set — the daily summary has nowhere to go' }
 
+  // The marker is the LAST day that was sent. A day whose e-mail was refused is sent by the
+  // next run (up to SUMMARY_MAX_CATCHUP_DAYS back), oldest first, instead of being lost.
   const { data: marker } = await supabase.from('platform_settings').select('value').eq('key', MARKER).maybeSingle()
-  if (marker?.value === yesterday) return { skipped: true, reason: 'already_sent', day: yesterday }
-
-  const { data: statRows, error: statErr } = await supabase.rpc('admin_order_stats', {
-    p_start: `${yesterday}T00:00:00Z`, p_end: `${today}T00:00:00Z`,
-  })
-  if (statErr) return { error: `daily summary could not read order stats: ${statErr.message}` }
-  const st = (statRows?.[0] ?? null) as { revenue_usd: number; gb_sold: number; order_count: number } | null
-  const rev = Number(st?.revenue_usd ?? 0)
-  const gb = Number(st?.gb_sold ?? 0)
-  const orderCount = Number(st?.order_count ?? 0)
-
-  const { count: newUsers, error: usersErr } = await supabase.from('profiles')
-    .select('*', { count: 'exact', head: true })
-    .gte('created_at', `${yesterday}T00:00:00Z`)
-    .lt('created_at', `${today}T00:00:00Z`) // yesterday only, like the revenue figures above
-  if (usersErr) return { error: `daily summary could not count new users: ${usersErr.message}` }
+  const days = summaryDaysDue(marker?.value, yesterday)
+  if (days.length === 0) return { skipped: true, reason: 'already_sent', day: yesterday }
 
   // Verified Operator reviews that are overdue. Nothing else tells the admin: it was a tile on a
   // page nobody is obliged to open. A failed read just leaves the line out of the e-mail.
@@ -363,22 +351,48 @@ async function runDailySummary() {
     ? `<p style="color:#b45309"><strong>Verified Operator reviews overdue:</strong> ${voDue.ids.length} — <a href="${appUrl()}/admin/affiliates?due=1">review them →</a></p>`
     : ''
 
-  const delivered = await sendEmailSafe({
-    to: adminTo,
-    subject: `GlobProxy Daily Summary — ${yesterday}`,
-    html: `<div style="font-family:sans-serif">
-      <h2 style="color:#0057ff">Daily Summary — ${yesterday}</h2>
+  const sentDays: string[] = []
+  let last: { revenue: number; gb_sold: number; orders: number; new_users: number | null } | null = null
+  for (const day of days) {
+    const next = nextDay(day)
+    // Figures come from admin_order_stats — the same net-of-refunds basis the admin
+    // Overview and Cycles pages use, computed in the database.
+    const { data: statRows, error: statErr } = await supabase.rpc('admin_order_stats', {
+      p_start: `${day}T00:00:00Z`, p_end: `${next}T00:00:00Z`,
+    })
+    if (statErr) return { error: `daily summary could not read order stats: ${statErr.message}`, sent_days: sentDays }
+    const st = (statRows?.[0] ?? null) as { revenue_usd: number; gb_sold: number; order_count: number } | null
+    const rev = Number(st?.revenue_usd ?? 0)
+    const gb = Number(st?.gb_sold ?? 0)
+    const orderCount = Number(st?.order_count ?? 0)
+
+    const { count: newUsers, error: usersErr } = await supabase.from('profiles')
+      .select('*', { count: 'exact', head: true })
+      .gte('created_at', `${day}T00:00:00Z`)
+      .lt('created_at', `${next}T00:00:00Z`) // that day only, like the revenue figures above
+    if (usersErr) return { error: `daily summary could not count new users: ${usersErr.message}`, sent_days: sentDays }
+
+    const delivered = await sendEmailSafe({
+      to: adminTo,
+      subject: `GlobProxy Daily Summary — ${day}`,
+      html: `<div style="font-family:sans-serif">
+      <h2 style="color:#0057ff">Daily Summary — ${day}</h2>
       <p><strong>Revenue (net of refunds):</strong> $${rev.toFixed(2)}</p>
       <p><strong>GB sold:</strong> ${gb.toFixed(1)} GB</p>
       <p><strong>Orders:</strong> ${orderCount}</p>
       <p><strong>New users:</strong> ${newUsers ?? 0}</p>
-      ${voLine}
+      ${day === yesterday ? voLine : ''}
       <a href="${appUrl()}/admin">Open admin panel →</a>
     </div>`,
-  })
-  if (!delivered) return { error: 'daily summary e-mail was not accepted by the mail provider', revenue: rev }
-  await supabase.from('platform_settings').upsert({ key: MARKER, value: yesterday, updated_at: new Date().toISOString() }, { onConflict: 'key' })
-  return { revenue: rev, gb_sold: gb, orders: orderCount, new_users: newUsers }
+    })
+    // Stop at the first refusal: the marker stays on the last day that really went out, so the
+    // next run starts from the failed day.
+    if (!delivered) return { error: `daily summary e-mail for ${day} was not accepted by the mail provider`, sent_days: sentDays, revenue: rev }
+    await supabase.from('platform_settings').upsert({ key: MARKER, value: day, updated_at: new Date().toISOString() }, { onConflict: 'key' })
+    sentDays.push(day)
+    last = { revenue: rev, gb_sold: gb, orders: orderCount, new_users: newUsers }
+  }
+  return { sent_days: sentDays, ...(last ?? {}) }
 }
 
 // ── Reconcile uncredited orders against Paystack ──────────────────
