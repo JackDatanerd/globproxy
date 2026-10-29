@@ -124,7 +124,7 @@ export async function releaseIdempotencyKey(admin: Admin, userId: string, key: s
 // are kept; anything else frees the item's claim so it can be retried. A claim
 // whose outcome is unknown (the worker died mid-item) is never re-run — the item
 // answers 409 and the caller checks the sub-user's balance.
-export type ItemOutcome = { status: number; body: Record<string, unknown> }
+export type ItemOutcome = { status: number; body: Record<string, unknown>; keepClaim?: boolean } // keepClaim: the operation may have committed — keep the item's claim
 
 export async function runItemOnce(
   admin: Admin, userId: string, itemKey: string, scope: string, canonical: string,
@@ -143,7 +143,7 @@ export async function runItemOnce(
   }
   const out = await run()
   if (out.status >= 200 && out.status < 300) await completeIdempotencyKey(admin, userId, itemKey, out.status, out.body)
-  else await releaseIdempotencyKey(admin, userId, itemKey)
+  else if (!out.keepClaim) await releaseIdempotencyKey(admin, userId, itemKey)
   return out
 }
 

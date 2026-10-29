@@ -19,7 +19,7 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
 
     return runIdempotent(req, supabase, user.id, `POST /sub-users/${id}/topup`, JSON.stringify({ gb: gb.value }), async () => {
       const result = await topupCredential(supabase, user.id, id, gb.value, 'api')
-      if (!result.ok) return { kind: 'fail', response: failFrom(result) }
+      if (!result.ok) return { kind: 'fail', response: failFrom(result), keepClaim: result.outcomeUnknown }
       return {
         kind: 'ok', status: 200,
         body: {

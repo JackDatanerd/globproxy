@@ -33,9 +33,13 @@ export { subUserExists, getSubUserUsage }
 export type CredErrorCode =
   | 'invalid_request' | 'not_found' | 'forbidden' | 'conflict'
   | 'insufficient_bandwidth' | 'upstream_unavailable' | 'internal_error'
-export type CredFail = { ok: false; status: number; code: CredErrorCode; message: string }
+// outcomeUnknown: the database call failed WITHOUT a database error code (timeout, dropped connection), so the
+// change may have committed. Callers holding an idempotency claim must keep it rather than release it.
+export type CredFail = { ok: false; status: number; code: CredErrorCode; message: string; outcomeUnknown?: true }
 export type CredResult<T> = { ok: true; data: T } | CredFail
 const fail = (status: number, code: CredErrorCode, message: string): CredFail => ({ ok: false, status, code, message })
+const failAmbiguous = (error: { code?: string | null } | null | undefined, message: string): CredFail =>
+  ({ ...fail(500, 'internal_error', message), ...(error && !error.code ? { outcomeUnknown: true as const } : {}) })
 
 export function providerConfigured(): boolean {
   return upstreamConfigured()
@@ -584,7 +588,7 @@ export async function topupCredential(
     // other database error is logged and replaced with a generic message.
     if (topupErr.code !== 'P0001') {
       console.error('[credentials] topup_credential failed', id, topupErr)
-      return fail(500, 'internal_error', 'Could not add bandwidth to this session. Please try again.')
+      return failAmbiguous(topupErr, 'Could not add bandwidth to this session. Please check its allocation before trying again.')
     }
     return fail(400, 'invalid_request', msg)
   }
@@ -980,7 +984,7 @@ export async function releaseCredentialBandwidth(
     if (error.code === '42501') return fail(403, 'forbidden', msg)
     if (error.code === '22023') return fail(400, 'invalid_request', msg)
     console.error('[credentials] release_credential_gb failed', id, error)
-    return fail(500, 'internal_error', 'Could not release bandwidth. Please try again.')
+    return failAmbiguous(error, 'Could not release bandwidth. Please check the session\u2019s allocation before trying again.')
   }
 
   const newTotal = Number(rawTotal)

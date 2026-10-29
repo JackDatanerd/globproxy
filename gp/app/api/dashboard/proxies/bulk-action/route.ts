@@ -107,7 +107,7 @@ async function topupOnce(admin: Awaited<ReturnType<typeof createAdminClient>>, u
     const r = await topupCredential(admin, userId, id, gb, 'dashboard')
     return r.ok
       ? { status: 200, body: { ok: true } }
-      : { status: r.status, body: { error: r.message, code: r.code } }
+      : { status: r.status, body: { error: r.message, code: r.code }, keepClaim: r.outcomeUnknown }
   })
   if (out.status >= 200 && out.status < 300) return { ok: true }
   const e = (out.body as any)?.error

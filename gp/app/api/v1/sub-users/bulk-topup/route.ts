@@ -49,7 +49,7 @@ export async function POST(req: Request) {
           const r = await topupCredential(supabase, user.id, p.id, p.gb, 'api')
           return r.ok
             ? { status: 200, body: { id: p.id, gb_allocated: r.data.gb_allocated, gb_added: r.data.gb_added, ...(r.data.warning ? { warning: r.data.warning } : {}) } }
-            : { status: r.status, body: { id: p.id, error: { code: r.code, message: r.message } } }
+            : { status: r.status, body: { id: p.id, error: { code: r.code, message: r.message } }, keepClaim: r.outcomeUnknown }
         }
         // Without a key there is nothing to derive item keys from — run directly.
         const o = key ? await runItemOnce(supabase, user.id, `${key}#${i}`, 'POST /sub-users/bulk-topup item', `${p.id}:${p.gb}`, run) : await run()

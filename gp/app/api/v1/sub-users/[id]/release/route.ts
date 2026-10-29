@@ -22,7 +22,7 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
 
     return runIdempotent(req, supabase, user.id, `POST /sub-users/${id}/release`, JSON.stringify({ gb: gb.value }), async () => {
       const result = await releaseCredentialBandwidth(supabase, user.id, id, gb.value, 'api')
-      if (!result.ok) return { kind: 'fail', response: failFrom(result) }
+      if (!result.ok) return { kind: 'fail', response: failFrom(result), keepClaim: result.outcomeUnknown }
       return {
         kind: 'ok', status: 200,
         body: {

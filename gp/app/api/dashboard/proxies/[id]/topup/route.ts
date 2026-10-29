@@ -51,7 +51,7 @@ export async function POST(
 
   const result = await topupCredential(admin, user.id, id, gb.value, 'dashboard')
   if (!result.ok) {
-    if (idem.key) await releaseIdempotencyKey(admin, user.id, idem.key)
+    if (idem.key && !result.outcomeUnknown) await releaseIdempotencyKey(admin, user.id, idem.key)
     return NextResponse.json({ error: result.message }, { status: result.status })
   }
 

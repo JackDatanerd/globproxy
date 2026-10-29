@@ -583,7 +583,7 @@ export default function ApiDocsPage() {
   ],
   "succeeded": 1, "failed": 1
 }`}</Code>
-            <p className="text-sm text-ink2 mt-4">Re-sending the same request (same key) returns the same result without creating anything twice. To retry only the failed items, send them under a <em>new</em> key.</p>
+            <p className="text-sm text-ink2 mt-4">Re-sending the same request (same key) returns the same result without creating anything twice. To retry only the failed items, re-send the identical request with the same key: items that succeeded are replayed and only the failed ones run again.</p>
           </Endpoint>
 
           <Endpoint method="POST" path="/api/v1/sub-users/:id/pause" title="Pause / resume a sub-user">
