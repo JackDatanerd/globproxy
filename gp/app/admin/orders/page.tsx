@@ -51,7 +51,7 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
 
   const userIds = [...new Set(orders?.map(o => o.user_id).filter(Boolean) ?? [])]
   const { data: profiles } = userIds.length > 0
-    ? await supabase.from('profiles').select('id, email, full_name').in('id', userIds)
+    ? await supabase.from('profiles').select('id, email, full_name, is_deleted').in('id', userIds)
     : { data: [] }
   const profileMap = Object.fromEntries((profiles ?? []).map(p => [p.id, p]))
 
@@ -217,7 +217,13 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
                     {requestByOrder[o.id] && (
                       <div><AdminDeclineRequestButton requestId={requestByOrder[o.id].id} email={profile?.email || 'this customer'} /></div>
                     )}
-                    {o.payment_status === 'paid' && !o.is_canary && o.paystack_reference && Number(o.amount_usd) - refunded > 0.005 && (
+                    {/* Money received for a deleted account is never credited (the order stays pending/failed/
+                        cancelled), and the alert says "refund it by hand" — so that case gets the button too.
+                        The route confirms with Paystack that the charge succeeded before refunding. */}
+                    {!o.is_canary && o.paystack_reference && Number(o.amount_usd) - refunded > 0.005 && o.dispute_status !== 'lost' && (
+                      o.payment_status === 'paid'
+                      || (!o.bandwidth_credited && ['pending', 'failed', 'cancelled'].includes(o.payment_status) && (!profile || profile.is_deleted))
+                    ) && (
                       <div><AdminRefundButton orderId={o.id} remainingUsd={Math.round((Number(o.amount_usd) - refunded) * 100) / 100} email={profile?.email || 'this customer'} /></div>
                     )}
                   </td>

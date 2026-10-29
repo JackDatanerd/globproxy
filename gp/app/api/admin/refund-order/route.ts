@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { authorizeAdmin, readJson, isUuid, badRequest } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
-import { createRefund, RefundOutcomeUnknownError } from '@/lib/paystack'
+import { createRefund, RefundOutcomeUnknownError, verifyTransaction } from '@/lib/paystack'
 
 // POST { orderId, amountUsd?, reason } — starts a refund with Paystack.
 // Nothing local changes here: Paystack answers "pending", and the
@@ -24,13 +24,40 @@ export async function POST(req: Request) {
 
   const { data: order } = await supabase
     .from('orders')
-    .select('id, user_id, amount_usd, refunded_usd, payment_status, payment_method, paystack_reference, is_canary, pay_currency, pay_amount, dispute_status')
+    .select('id, user_id, amount_usd, refunded_usd, payment_status, payment_method, paystack_reference, is_canary, pay_currency, pay_amount, dispute_status, bandwidth_credited')
     .eq('id', body.orderId)
     .single()
   if (!order) return NextResponse.json({ error: 'Order not found' }, { status: 404 })
   if (order.is_canary) return NextResponse.json({ error: 'This is an automated test payment — refund it from the Paystack dashboard if needed.' }, { status: 409 })
-  if (order.payment_status !== 'paid') return NextResponse.json({ error: `Only a paid order can be refunded (status: ${order.payment_status}).` }, { status: 409 })
   if (!order.paystack_reference) return NextResponse.json({ error: 'This order has no Paystack reference.' }, { status: 409 })
+
+  // A payment that was received but never credited (typically a checkout paid after the
+  // account was deleted — the alert says "refund it by hand") still has the order in
+  // pending/failed/cancelled, because the credit step refused it. Paystack holds the
+  // customer's money, so it must be refundable: confirm with Paystack that the charge really
+  // succeeded, then refund the WHOLE remaining amount (apply_order_refund records it against
+  // the uncredited order, with nothing to claw back).
+  const uncreditedPayment = order.payment_status !== 'paid' && order.bandwidth_credited !== true
+    && ['pending', 'failed', 'cancelled'].includes(order.payment_status)
+  if (order.payment_status !== 'paid' && !uncreditedPayment) {
+    return NextResponse.json({ error: `Only a paid order can be refunded (status: ${order.payment_status}).` }, { status: 409 })
+  }
+  if (uncreditedPayment) {
+    if (order.dispute_status === 'lost') {
+      return NextResponse.json({ error: 'The bank already took this payment back (chargeback lost), so there is nothing left to refund.' }, { status: 409 })
+    }
+    if (body.amountUsd != null) {
+      return NextResponse.json({ error: 'An uncredited payment can only be refunded in full — leave the amount blank.' }, { status: 400 })
+    }
+    try {
+      const txn = await verifyTransaction(order.paystack_reference)
+      if (txn.status !== 'success') {
+        return NextResponse.json({ error: `Paystack reports this transaction as "${txn.status}" — no money was taken, so there is nothing to refund.` }, { status: 409 })
+      }
+    } catch (e: any) {
+      return NextResponse.json({ error: `Could not confirm the payment with Paystack: ${e?.message ?? 'unknown error'}` }, { status: 502 })
+    }
+  }
 
   // An open chargeback dispute: refunding on top of it can pay the customer twice
   // (the refund AND the dispute outcome). Settle the dispute first.

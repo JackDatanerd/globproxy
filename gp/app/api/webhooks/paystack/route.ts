@@ -187,7 +187,7 @@ async function handleChargeFailed(supabase: Admin, data: any) {
   const metaOrderId = data?.metadata?.order_id
   const order_id: string = typeof metaOrderId === 'string' && UUID_RE.test(metaOrderId) ? metaOrderId : ''
 
-  let orderQuery = supabase.from('orders').select('id, payment_status, amount_usd, gb_amount, user_id, is_canary, pay_currency, pay_amount, paystack_reference')
+  let orderQuery = supabase.from('orders').select('id, payment_status, amount_usd, gb_amount, user_id, is_canary, pay_currency, pay_amount, paystack_reference, auto_recharge')
   const lookup = order_id ? orderQuery.eq('id', order_id) : (reference ? orderQuery.eq('paystack_reference', reference) : null)
   const { data: order, error } = lookup ? await lookup.maybeSingle() : { data: null, error: null }
   if (error) throw error

@@ -2,6 +2,7 @@ import type { createAdminClient } from '@/lib/supabase/server'
 import { sendPaymentFailedEmail } from '@/lib/billingEmails'
 import { alertAdminPayment } from '@/lib/paymentAlerts'
 import { dispatchWebhook } from '@/lib/webhooks'
+import { recordAutoRechargeFailure } from '@/lib/autoRecharge'
 
 type Admin = Awaited<ReturnType<typeof createAdminClient>>
 
@@ -14,6 +15,7 @@ export interface FailableOrder {
   pay_currency?: string | null
   pay_amount?: number | string | null
   paystack_reference?: string | null
+  auto_recharge?: boolean | null
 }
 
 // The ONE place an order goes pending → failed because Paystack says the charge
@@ -48,6 +50,17 @@ export async function failPendingOrder(
     // fails means real customers' payments may be failing too.
     await alertAdminPayment('CANARY payment failed — the daily end-to-end payment test did not succeed', {
       order_id: order.id, reference: order.paystack_reference ?? '', reason: reason ?? 'Declined', source: opts.source,
+    })
+    return true
+  }
+
+  // An automatic top-up that Paystack declined AFTER accepting the request (discovered by reconcile,
+  // not at charge time): it counts against the rule exactly like a synchronous decline, so a dead
+  // card still switches auto-recharge off after a few tries — and the customer gets the
+  // auto-recharge e-mail, not a checkout "payment failed" for a purchase they never started.
+  if (order.auto_recharge) {
+    await recordAutoRechargeFailure(supabase, order.user_id, {
+      amountUsd: Number(order.amount_usd), gb: Number(order.gb_amount), reason: reason ?? null,
     })
     return true
   }

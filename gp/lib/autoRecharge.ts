@@ -178,6 +178,29 @@ async function defer(supabase: Admin, userId: string) {
   if (error) console.error('[auto-recharge] could not defer', userId, error)
 }
 
+// One failed automatic charge: counts it against the rule, switches the rule off after
+// RECHARGE_MAX_FAILURES in a row and tells the customer (the "failed" or "disabled" e-mail,
+// never the generic checkout one). Used both when Paystack declines synchronously (rechargeOne)
+// and when a decline is only discovered later, by the reconcile cron looking the reference up.
+export async function recordAutoRechargeFailure(
+  supabase: Admin, userId: string, p: { amountUsd: number; gb: number; reason: string | null },
+): Promise<void> {
+  const { data: rule, error } = await supabase.from('auto_recharge').select('enabled, consecutive_failures').eq('user_id', userId).maybeSingle()
+  if (error) { console.error('[auto-recharge] could not read the rule to record a failure', userId, error); return }
+  if (!rule) return
+  const failures = Number(rule.consecutive_failures ?? 0) + 1
+  const off = !!rule.enabled && failures >= RECHARGE_MAX_FAILURES
+  const { error: upErr } = await supabase.from('auto_recharge').update({
+    consecutive_failures: failures, updated_at: new Date().toISOString(),
+    ...(off ? { enabled: false, disabled_reason: `payment_failed: ${(p.reason ?? 'declined').slice(0, 120)}` } : {}),
+  }).eq('user_id', userId)
+  if (upErr) { console.error('[auto-recharge] could not record a failed charge', userId, upErr); return }
+  // A customer who already switched the rule off is not told about a charge they no longer expect.
+  if (!rule.enabled) return
+  await sendAutoRechargeProblemEmail(supabase, userId, { kind: off ? 'disabled' : 'failed', amountUsd: p.amountUsd, gb: p.gb, reason: p.reason })
+  if (off) await alertAdminPayment('Auto-recharge switched off after repeated failures', { user_id: userId, reason: p.reason ?? '' })
+}
+
 async function rechargeOne(supabase: Admin, r: any): Promise<Outcome> {
   const userId: string = r.user_id
 
@@ -297,16 +320,7 @@ async function rechargeOne(supabase: Admin, r: any): Promise<Outcome> {
       payment_status: 'failed', failure_reason: (gateway ?? 'Declined').slice(0, 300), failed_at: new Date().toISOString(),
     }).eq('id', order.id).eq('payment_status', 'pending').eq('bandwidth_credited', false)
 
-    const failures = Number(r.consecutive_failures ?? 0) + 1
-    const off = failures >= RECHARGE_MAX_FAILURES
-    await supabase.from('auto_recharge').update({
-      consecutive_failures: failures, updated_at: new Date().toISOString(),
-      ...(off ? { enabled: false, disabled_reason: `payment_failed: ${(gateway ?? 'declined').slice(0, 120)}` } : {}),
-    }).eq('user_id', userId)
-    await sendAutoRechargeProblemEmail(supabase, userId, {
-      kind: off ? 'disabled' : 'failed', amountUsd: quote.total, gb: quote.gb, reason: gateway,
-    })
-    if (off) await alertAdminPayment('Auto-recharge switched off after repeated failures', { user_id: userId, reason: gateway ?? '' })
+    await recordAutoRechargeFailure(supabase, userId, { amountUsd: quote.total, gb: quote.gb, reason: gateway })
     return 'failed'
   }
 
