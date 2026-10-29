@@ -163,8 +163,15 @@ export async function runAccountDeletions() {
     }
 
     // ── 4. Released credentials whose accounting settle did not land ───
-    const { data: unsettled } = await supabase.from('proxy_credentials')
-      .select('id').eq('suspended_reason', 'deleted').is('settled_at', null).limit(100)
+    // Only credentials that no longer point at a supplier sub-user. One that still carries an
+    // id / reserved username has a sub-user that could not be released and may still be
+    // consuming traffic: settling it now would zero its usage and mark it settled, so the
+    // live usage read at the eventual release would be thrown away ('already_settled').
+    // releaseUpstreamSubUsers settles it, with the live figure, once the release lands.
+    const { data: unsettled, error: unsettledErr } = await supabase.from('proxy_credentials')
+      .select('id').eq('suspended_reason', 'deleted').is('settled_at', null)
+      .is('upstream_sub_user_id', null).is('provision_username', null).limit(100)
+    if (unsettledErr) problems.push(`could not read unsettled credentials: ${unsettledErr.message}`)
     for (const c of unsettled ?? []) {
       const { error } = await supabase.rpc('settle_released_credential', { p_credential_id: c.id, p_live_used_gb: null })
       if (error) problems.push(`could not settle credential ${c.id}: ${error.message}`)
