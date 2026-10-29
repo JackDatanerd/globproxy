@@ -3,7 +3,7 @@
 -- Run this entire file in Supabase SQL Editor (fresh project)
 -- ============================================================
 --
--- INCLUDES MIGRATIONS THROUGH: 0105_api_integrations_deliveries_rls.sql
+-- INCLUDES MIGRATIONS THROUGH: 0106_api_integrations_api_keys_rls.sql
 --
 -- This line is the source of truth `scripts/check-schema-sync.mjs` reads
 -- to compare against supabase/migrations/ — it's what CI checks on every
@@ -12248,4 +12248,25 @@ grant execute on function public.reprovision_credential(uuid, numeric) to servic
 insert into public.schema_migrations (filename) values
   ('0104_proxy_lifecycle_pass12.sql'),
   ('0105_api_integrations_deliveries_rls.sql')
+on conflict do nothing;
+
+-- ============================================================
+-- 0106_api_integrations_api_keys_rls.sql (folded)
+-- ============================================================
+-- 0106 — api_keys: service role only.
+--
+-- 0005 gave every logged-in browser session a select policy on its own api_keys rows,
+-- with no column restriction. The dashboard's key list (GET /api/dashboard/api-keys) is
+-- gated by requireMfaVerified, but the policy let a session that had NOT passed 2FA
+-- step-up read the same rows (key_hash, allowed_ips, last_used_ip, scopes, labels)
+-- straight from PostgREST, around that gate. 0054 closed the same gap on
+-- webhook_endpoints and 0105 on webhook_deliveries; this closes it on api_keys.
+-- Every app read of this table goes through the service role (which bypasses RLS) —
+-- the dashboard list route now reads with the admin client — so nothing else changes.
+drop policy if exists "Users can view own api keys" on public.api_keys;
+-- Belt and braces: even if a policy is ever re-added, the browser roles get no SELECT.
+revoke select on public.api_keys from anon, authenticated;
+
+insert into public.schema_migrations (filename) values
+  ('0106_api_integrations_api_keys_rls.sql')
 on conflict do nothing;

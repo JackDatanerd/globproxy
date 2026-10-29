@@ -11,9 +11,10 @@ export async function GET(req: Request) {
     const { data: k, error } = await supabase
       .from('api_keys').select('id, key_prefix, label, scopes, allowed_ips, expires_at, created_at')
       .eq('id', key.id).maybeSingle()
-    const { data: p } = await supabase.from('profiles').select('role, email').eq('id', user.id).maybeSingle()
-    if (error || !k) {
-      console.error('[v1 GET account] lookup failed', error)
+    const { data: p, error: pErr } = await supabase.from('profiles').select('role, email').eq('id', user.id).maybeSingle()
+    // A failed lookup is not "no role": answering 200 with role: null told an integration it was not a reseller.
+    if (error || pErr || !k) {
+      console.error('[v1 GET account] lookup failed', error ?? pErr)
       return apiError(500, 'internal_error', 'Internal error. Please try again.')
     }
     return NextResponse.json({

@@ -7,6 +7,21 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // matched against a strict shape first (no quotes, commas or parentheses).
 const TS_RE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}(:?\d{2})?)?$/
 
+const ISO_RE = /^(\d{4})-(\d{2})-(\d{2})(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}(?::?\d{2})?)?)?$/
+
+// A calendar-valid ISO 8601 date, optionally followed by a time and a UTC offset. (Plain
+// Date.parse reads "2026-02-30" as March 2nd; Postgres rejects it.)
+export function isIsoTimestamp(v: string): boolean {
+  const m = ISO_RE.exec(v)
+  if (!m) return false
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])]
+  const t = new Date(Date.UTC(y, mo - 1, d))
+  if (t.getUTCFullYear() !== y || t.getUTCMonth() !== mo - 1 || t.getUTCDate() !== d) return false
+  const time = /[T ](\d{2}):(\d{2})(?::(\d{2}))?/.exec(v)
+  if (time && (Number(time[1]) > 23 || Number(time[2]) > 59 || Number(time[3] ?? 0) > 59)) return false
+  return true
+}
+
 export const isUuidString = (v: unknown): v is string => typeof v === 'string' && UUID_RE.test(v)
 
 // A cursor timestamp as it should be HANDED OUT. PostgREST returns timestamptz as
@@ -35,7 +50,11 @@ export function applyCursor<Q extends { lt: (c: string, v: string) => Q; or: (f:
 ): CursorResult<Q> {
   if (!before) return { ok: true, query: q }
   before = repairCursorTs(before)
-  if (Number.isNaN(Date.parse(before))) return { ok: false, message: 'before must be an ISO 8601 timestamp.' }
+  // Date.parse alone is far too lenient for a value that is handed to Postgres as a timestamptz
+  // literal: it accepts "1", "5", "2026", "0" and "2026-02-30", which Postgres refuses — and that
+  // used to come back as a 500. Anything that is not a real ISO 8601 date (optionally with a time)
+  // is a 400 here instead.
+  if (!isIsoTimestamp(before)) return { ok: false, message: 'before must be an ISO 8601 timestamp.' }
   if (!beforeId) return { ok: true, query: q.lt('created_at', before) }
   if (!TS_RE.test(before)) return { ok: false, message: 'before must be the next_before value from the previous page.' }
   const idOk = idKind === 'uuid' ? isUuidString(beforeId) : /^\d{1,18}$/.test(beforeId)

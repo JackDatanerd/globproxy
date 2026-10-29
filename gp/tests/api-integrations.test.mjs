@@ -21,7 +21,7 @@ const {
 } = await import('../lib/ssrfGuard.ts')
 const { ipAllowed, parseAllowedIps, allocateAllowlistProblem } = await import('../lib/ipAllowlist.ts')
 const { WEBHOOK_EVENTS, WEBHOOK_WILDCARD, parseEventTypes, subscribesTo } = await import('../lib/webhookEvents.ts')
-const { isUuidString } = await import('../lib/cursor.ts')
+const { isUuidString, isIsoTimestamp, applyCursor } = await import('../lib/cursor.ts')
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -190,4 +190,34 @@ test('0105: webhook_deliveries has no browser-session select policy', () => {
   assert.match(mig, /drop policy if exists "Users can view own webhook deliveries" on public\.webhook_deliveries/)
   const schema = readFileSync(path.join(root, 'schema.sql'), 'utf8')
   assert.doesNotMatch(schema, /create policy "Users can view own webhook deliveries"/)
+})
+
+test('cursor `before` only accepts calendar-valid ISO 8601 (Postgres rejects the rest, which used to be a 500)', () => {
+  const q = { lt: (c, v) => ({ lt: [c, v] }), or: (f) => ({ or: f }) }
+  for (const bad of ['1', '5', '2026', '0', 'now', '2026-02-30', '2026-13-01', '2026-10-23T25:00:00Z', '12/31/2026', 'Oct 5 2026', '2026-10-23T10:00:00Zjunk']) {
+    assert.equal(applyCursor(q, bad, null, 'uuid').ok, false, bad)
+    assert.equal(applyCursor(q, bad, '3f1a2b3c-0000-4000-8000-000000000000', 'uuid').ok, false, bad)
+  }
+  for (const good of ['2026-10-23', '2026-10-23T10:00:00Z', '2026-10-23T10:00:00.123456Z', '2026-10-23T10:00:00.123456+00:00', '2026-10-23 10:00:00+03:00', '2024-02-29']) {
+    assert.equal(isIsoTimestamp(good), true, good)
+    assert.equal(applyCursor(q, good, null, 'uuid').ok, true, good)
+  }
+  // the mangled "+" form a client produces by not encoding the cursor is still repaired
+  assert.equal(applyCursor(q, '2026-10-23T10:00:00.123456 00:00', null, 'uuid').ok, true)
+})
+
+test('0106: api_keys has no browser-session select, and the dashboard list reads with the admin client', () => {
+  const mig = readFileSync(path.join(root, 'supabase', 'migrations', '0106_api_integrations_api_keys_rls.sql'), 'utf8')
+  assert.match(mig, /drop policy if exists "Users can view own api keys" on public\.api_keys/)
+  assert.match(mig, /revoke select on public\.api_keys from anon, authenticated/)
+  const route = readFileSync(path.join(root, 'app/api/dashboard/api-keys/route.ts'), 'utf8')
+  const get = route.slice(route.indexOf('export async function GET'), route.indexOf('export async function POST'))
+  assert.match(get, /createAdminClient\(\)\)\s*\.from\('api_keys'\)/)
+  assert.doesNotMatch(get, /supabase\s*\.from\('api_keys'\)/)
+})
+
+test('GET /api/v1/account does not answer 200 with role null when the profile lookup fails', () => {
+  const src2 = readFileSync(path.join(root, 'app/api/v1/account/route.ts'), 'utf8')
+  assert.match(src2, /error: pErr/)
+  assert.match(src2, /error \|\| pErr \|\| !k/)
 })

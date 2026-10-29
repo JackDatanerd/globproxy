@@ -24,7 +24,10 @@ export async function GET(req: Request) {
   const mfaBlock = await requireMfaVerified(req, user.id)
   if (mfaBlock) return mfaBlock
 
-  const { data, error } = await supabase
+  // Read with the service role after the 2FA gate above: the browser session itself has no
+  // SELECT on api_keys any more (migration 0106), so a password-only session cannot list keys
+  // around this check by calling the database directly.
+  const { data, error } = await (await createAdminClient())
     .from('api_keys')
     .select(KEY_VIEW_COLS)
     .eq('user_id', user.id)
