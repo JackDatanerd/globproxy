@@ -10,6 +10,7 @@ import ExportButton from '@/components/dashboard/ExportButton'
 import { maskWallet, maskPhone, maskBank } from '@/lib/maskPayout'
 import { currentAccruingCycle, lastCompletedCycle, cycleIsPayable, formatCycleLabel } from '@/lib/payoutCycle'
 import { formatUsd } from '@/lib/format'
+import { appUrl } from '@/lib/appUrl'
 import { getKesQuote } from '@/lib/fx'
 import {
   REFERRAL_GB_BONUS, REFERRAL_MIN_ORDER_USD, AFFILIATE_MIN_PAYOUT_USD, AFFILIATE_HOLD_HOURS,
@@ -133,7 +134,7 @@ export default async function ReferralsPage({ searchParams }: { searchParams: Pr
   const funnelTotal = Number(funnelRows[0]?.total_count ?? 0)
   const funnelPages = Math.max(1, Math.ceil(funnelTotal / FUNNEL_PAGE))
   const commissionPages = Math.max(1, Math.ceil(Number(commissionsCount ?? 0) / COMMISSION_PAGE))
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'https://globproxy.com'
+  const baseUrl = appUrl()
 
   const commissionState = (c: any) => {
     if (c.status === 'void') return 'reversed'

@@ -116,7 +116,7 @@ export default async function ProxiesPage() {
           <div className="flex-1 min-w-[160px]">
             <div className="bg-surface rounded-full h-[7px] overflow-hidden">
               <div
-                className={`h-full rounded-full transition-all duration-700 ${pct > 80 ? 'bg-red-400' : pct > 50 ? 'bg-amber-400' : 'bg-gradient-to-r from-accent to-sky-400'}`}
+                className={`h-full rounded-full transition-all duration-700 ${pct >= urgentPct ? 'bg-red-400' : pct >= warnPct ? 'bg-amber-400' : 'bg-gradient-to-r from-accent to-sky-400'}`}
                 style={{ width: `${Math.min(pct, 100)}%` }}
               />
             </div>

@@ -153,6 +153,7 @@ export function SecurityActivityCard({ className = 'mb-5' }: { className?: strin
     // Served by a 2FA-gated route: the table is no longer readable from the browser,
     // because it lists the IP / browser of every sign-in (migration 0101).
     let data: SecurityEventRow[] = []
+    setLoadFailed(false)
     try {
       const res = await fetch('/api/auth/security-events', { cache: 'no-store' })
       const body = await res.json().catch(() => ({}))

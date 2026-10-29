@@ -13,6 +13,10 @@ export default function ReportIssueButton({ variant = 'topbar', context }: { var
   const [open, setOpen] = useState(false)
   const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(false)
+  // The server caps the whole message (context prefix included) at 5000 characters, so the prefix
+  // is bounded and the textarea limit leaves room for it.
+  const prefix = context ? `[${context.slice(0, 200)}]\n` : ''
+  const maxLen = 5000 - prefix.length
 
   // Escape closes the dialog (it had no keyboard exit at all).
   useEffect(() => {
@@ -26,7 +30,7 @@ export default function ReportIssueButton({ variant = 'topbar', context }: { var
     if (!message.trim()) return
     setLoading(true)
     try {
-      await apiJson('POST', '/api/support/report', { message: (context ? `[${context}]\n` : '') + message.trim(), page_url: window.location.pathname })
+      await apiJson('POST', '/api/support/report', { message: prefix + message.trim().slice(0, maxLen), page_url: window.location.pathname })
       toast.success('Thanks — we got it and will follow up by email.')
       setMessage('')
       setOpen(false)
@@ -67,7 +71,7 @@ export default function ReportIssueButton({ variant = 'topbar', context }: { var
               value={message}
               onChange={(e) => setMessage(e.target.value)}
               rows={4}
-              maxLength={5000}
+              maxLength={maxLen}
               autoFocus
               placeholder="What happened?"
               className="w-full text-sm text-ink bg-surface border border-border rounded-lg px-3 py-2 mb-3"

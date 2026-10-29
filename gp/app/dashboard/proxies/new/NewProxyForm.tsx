@@ -323,7 +323,7 @@ export default function NewProxyForm({ availableGb, defaultAutoTopup, initial, d
               </div>
               <span className="text-[10.5px] font-mono text-muted">optional</span>
             </div>
-            <input value={form.label} onChange={e => set('label', e.target.value)}
+            <input value={form.label} maxLength={100} onChange={e => set('label', e.target.value)}
               placeholder="e.g. US Scraper, UK Account Manager"
               className="w-full bg-surface border border-border px-3.5 py-2.5 rounded-lg text-[13.5px] focus:outline-none focus:border-accent transition-colors" />
           </div>

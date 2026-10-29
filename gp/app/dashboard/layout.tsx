@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation'
-import { cookies } from 'next/headers'
+import { cookies, headers } from 'next/headers'
+import { safeNextPath } from '@/lib/safeNext'
 import { createClient } from '@/lib/supabase/server'
 import { checkVerifiedSession, MFA_COOKIE_NAME } from '@/lib/mfa'
 import DashShell from '@/components/dashboard/DashShell'
@@ -40,7 +41,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
   // that HAS enabled it must hold a verified-session cookie.
   if (profile?.mfa_enabled) {
     const token = (await cookies()).get(MFA_COOKIE_NAME)?.value
-    if (!(await checkVerifiedSession(token, user.id))) redirect('/auth/mfa-verify?next=/dashboard')
+    if (!(await checkVerifiedSession(token, user.id))) redirect(`/auth/mfa-verify?next=${encodeURIComponent(safeNextPath((await headers()).get('x-return-path'), '/dashboard'))}`)
   }
 
   return (

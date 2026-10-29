@@ -77,7 +77,7 @@ export default async function UsagePage() {
                 <div key={c.id} className="px-6 py-5">
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-3">
-                      <span className="font-medium text-sm text-ink">{c.label||'Unnamed'}</span>
+                      <span className="font-medium text-sm text-ink truncate max-w-[16rem]">{c.label||'Unnamed'}</span>
                       {c.country && <span className="text-[11px] font-mono bg-accent-light text-accent px-2 py-0.5 rounded">{c.country}</span>}
                       {c.status === 'suspended' && <span className="text-[10px] font-mono bg-surface border border-border text-muted px-2 py-0.5 rounded-full">paused</span>}
                     </div>

@@ -7,6 +7,7 @@ import ReferralLinkCard from '@/components/dashboard/ReferralLinkCard'
 import { formatGb, formatPct, formatUsd } from '@/lib/format'
 import { getProxyPort } from '@/lib/proxyEndpoint'
 import { leaksSupplier } from '@/lib/supplierGuard'
+import { appUrl } from '@/lib/appUrl'
 import { REFERRAL_GB_BONUS, REFERRAL_MIN_ORDER_USD } from '@/lib/referrals'
 
 export default async function DashboardPage() {
@@ -122,7 +123,7 @@ export default async function DashboardPage() {
 
       {profile?.referral_code && (
         <div className="mb-4">
-          <ReferralLinkCard code={profile.referral_code} baseUrl={process.env.NEXT_PUBLIC_APP_URL ?? 'https://globproxy.com'}
+          <ReferralLinkCard code={profile.referral_code} baseUrl={appUrl()}
             isAffiliate={profile.affiliate_status === 'approved'} suspended={profile.affiliate_status === 'suspended'} bonusGb={REFERRAL_GB_BONUS} minOrderUsd={REFERRAL_MIN_ORDER_USD} />
         </div>
       )}
