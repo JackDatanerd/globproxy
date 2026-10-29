@@ -97,7 +97,9 @@ const CRON_TASKS: Record<string, string[]> = {
   // failed traffic-limit syncs; webhooks retries failed deliveries and fires
   // bandwidth-threshold events. Both keep per-tick work small because
   // Workers caps subrequests per invocation and the chain shares one.
-  '*/5 * * * *': ['reconcile', 'recharge', 'security', 'usage', 'provision', 'webhooks', 'invites'],
+  // broadcasts last: it is the only task here that exists to send mail in bulk, and a slow provider must never delay
+  // reconcile / usage / provisioning. It sends at most 4 batches of 100 per tick.
+  '*/5 * * * *': ['reconcile', 'recharge', 'security', 'usage', 'provision', 'webhooks', 'invites', 'broadcasts'],
   // resellers first: it never fails the chain, and invitation expiry / low-stock /
   // payout-day reminders are idempotent, so hourly is safe and doesn't depend on
   // the daily chain (a failing 'cleanup' must not swallow payout day).

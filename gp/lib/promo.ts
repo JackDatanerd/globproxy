@@ -106,3 +106,9 @@ export function endProblem(endsAt: string, startsAt: string | null, now: number 
   if (startsAt && Date.parse(startsAt) >= t) return 'The offer must end after it starts.'
   return null
 }
+
+/** The same instant in Nairobi (UTC+3, no daylight saving): "7 Nov 2026, 02:59 EAT". For announcements to Kenyan
+ *  customers, who otherwise read "23:59 UTC" as midnight local time. */
+export function formatEat(iso: string): string {
+  return formatUtc(new Date(Date.parse(iso) + 3 * 3_600_000).toISOString()).replace(' UTC', ' EAT')
+}

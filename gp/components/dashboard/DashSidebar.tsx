@@ -47,6 +47,7 @@ const adminNav = [
   { label: 'Credentials', href: '/admin/credentials' },
   { label: 'Inbox',       href: '/admin/inbox' },
   { label: 'Support',     href: '/admin/support' },
+  { label: 'Broadcasts',  href: '/admin/broadcasts' },
   { label: 'Banned Emails', href: '/admin/bans' },
   { label: 'Affiliates',  href: '/admin/affiliates' },
   { label: 'Sales Cycles', href: '/admin/cycles' },

@@ -60,7 +60,7 @@ export function securityNoticeHtml(opts: { heading: string; bodyHtml: string }):
   `
 }
 
-function htmlToText(html: string): string {
+export function htmlToText(html: string): string {
   return html
     .replace(/<a\s[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi, (_m, href: string, label: string) => `${label.replace(/<[^>]+>/g, '').trim()} (${href})`)
     .replace(/<(br|\/p|\/h\d|\/div)\s*\/?>/gi, '\n')
@@ -70,7 +70,19 @@ function htmlToText(html: string): string {
     .trim()
 }
 
-export async function sendEmail(p: { to: string; subject: string; html: string; replyTo?: string; idempotencyKey?: string }) {
+// Extra message headers (List-Unsubscribe ...). Names and values are checked here, not trusted from the caller:
+// CR/LF in either would let a value start a new header.
+function safeHeaders(h: Record<string, string> | undefined): Record<string, string> | undefined {
+  if (!h) return undefined
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(h)) {
+    if (!/^[A-Za-z][A-Za-z0-9-]*$/.test(k)) continue
+    out[k] = sanitizeHeaderValue(String(v))
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
+export async function sendEmail(p: { to: string; subject: string; html: string; replyTo?: string; idempotencyKey?: string; headers?: Record<string, string> }) {
   // Enforced here, not just at each call site, so a future caller that
   // interpolates user input into `subject` can't reintroduce this by
   // forgetting to sanitize it themselves.
@@ -95,6 +107,7 @@ export async function sendEmail(p: { to: string; subject: string; html: string; 
       // Lets staff answer a customer's report by simply hitting Reply. Header-safe:
       // CR/LF are stripped like the subject.
       ...(p.replyTo ? { reply_to: sanitizeHeaderValue(p.replyTo) } : {}),
+      ...(safeHeaders(p.headers) ? { headers: safeHeaders(p.headers) } : {}),
     }),
     // Without a bound, one hung provider call would hold every request that
     // awaits an e-mail (2FA confirm, disable, recovery, ...) until the platform kills it.
@@ -136,4 +149,39 @@ export async function sendEmailSafe(p: { to: string; subject: string; html: stri
     if (attempt === 0) await new Promise((r) => setTimeout(r, 700))
   }
   return false
+}
+
+// Up to 100 distinct messages in ONE provider call (a broadcast would otherwise spend one subrequest per
+// recipient, and Workers cap those per invocation). Reports the HTTP status instead of throwing so the
+// caller can tell "the provider did not take it" (429 / 5xx: safe to retry) from "we do not know" (a
+// timeout: it may have been delivered, so it must NOT be retried blindly). `status: null` = no answer.
+// The Idempotency-Key makes a retry of the same batch safe if the first attempt was in fact accepted.
+export async function sendEmailBatch(
+  items: Array<{ to: string; subject: string; html: string; headers?: Record<string, string> }>,
+  opts: { idempotencyKey?: string } = {},
+): Promise<{ status: number | null; detail?: string }> {
+  if (!process.env.RESEND_API_KEY) throw new Error('RESEND_API_KEY is not configured')
+  if (items.length === 0) return { status: 200 }
+  if (items.length > 100) throw new Error('a batch holds at most 100 messages')
+  try {
+    const res = await fetch('https://api.resend.com/emails/batch', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json',
+        ...(opts.idempotencyKey ? { 'Idempotency-Key': opts.idempotencyKey } : {}),
+      },
+      body: JSON.stringify(items.map(i => ({
+        from: resolveFromHeader(), to: i.to, subject: sanitizeHeaderValue(i.subject), html: i.html, text: htmlToText(i.html),
+        ...(safeHeaders(i.headers) ? { headers: safeHeaders(i.headers) } : {}),
+      }))),
+      signal: AbortSignal.timeout(25_000),
+    })
+    if (res.ok) return { status: res.status }
+    const detail = (await res.text().catch(() => '')).slice(0, 300)
+    console.error('[email] batch failed', { status: res.status, detail })
+    return { status: res.status, detail }
+  } catch (e) {
+    console.error('[email] batch threw', e)
+    return { status: null, detail: String((e as Error)?.message ?? e).slice(0, 300) }
+  }
 }

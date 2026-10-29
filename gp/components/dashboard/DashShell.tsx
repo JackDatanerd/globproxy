@@ -4,6 +4,7 @@ import DashSidebar from '@/components/dashboard/DashSidebar'
 import DashTopbar from '@/components/dashboard/DashTopbar'
 import MfaRecommendBanner from '@/components/dashboard/MfaRecommendBanner'
 import DeletionScheduledBanner from '@/components/dashboard/DeletionScheduledBanner'
+import AnnouncementBanner from '@/components/dashboard/AnnouncementBanner'
 
 // Holds the one piece of client state the dashboard chrome shares — whether
 // the mobile nav drawer is open — so the topbar's menu button and the
@@ -37,6 +38,7 @@ export default function DashShell({
         <main className="flex-1 min-w-0 p-4 sm:p-6 md:p-8">
           {deletionScheduledAt && <DeletionScheduledBanner when={deletionScheduledAt} />}
           {showMfaBanner && <MfaRecommendBanner role={role} userId={userId} />}
+          <AnnouncementBanner />
           {children}
         </main>
       </div>

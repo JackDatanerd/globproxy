@@ -27,6 +27,7 @@ export const CRON_MAX_AGE_SECONDS: Record<string, number> = {
   canary: 36 * 60 * 60,
   invites: 30 * 60,
   recharge: 30 * 60,
+  broadcasts: 30 * 60,
   resellers: 3 * 60 * 60,
   // Hourly: executes due account deletions (after the cool-off), sends the reminder and
   // retries deletions that finished with leftovers.

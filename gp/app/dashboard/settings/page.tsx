@@ -74,6 +74,9 @@ function SettingsPageInner() {
   const [rotateGrace, setRotateGrace] = useState<'1440' | '0'>('1440')
   const [rotatingSecret, setRotatingSecret] = useState(false)
   const [lowEmails, setLowEmails] = useState(true)
+  // Product news & offers (broadcasts). Default ON; every such e-mail also carries a one-click unsubscribe link.
+  const [marketingEmails, setMarketingEmails] = useState(true)
+  const [savingMarketing, setSavingMarketing] = useState(false)
   const [warnPct, setWarnPct] = useState('80')
   const [urgentPct, setUrgentPct] = useState('95')
   const [savingPcts, setSavingPcts] = useState(false)
@@ -157,6 +160,9 @@ function SettingsPageInner() {
       // and the page must still load (the toggle then just shows its default).
       const { data: prefs } = await sb.from('profiles').select('low_bandwidth_emails').eq('id', user.id).maybeSingle()
       if (prefs && typeof (prefs as any).low_bandwidth_emails === 'boolean') setLowEmails((prefs as any).low_bandwidth_emails)
+      // Tolerant like the line above (migration 0108): if it errors the toggle just shows its default.
+      const { data: mk } = await sb.from('profiles').select('marketing_emails').eq('id', user.id).maybeSingle()
+      if (mk && typeof (mk as any).marketing_emails === 'boolean') setMarketingEmails((mk as any).marketing_emails)
       // Alert levels (migration 0086) — tolerant for the same reason: defaults stay if it errors.
       const { data: lv } = await sb.from('profiles').select('usage_warn_pct, usage_urgent_pct').eq('id', user.id).maybeSingle()
       if (lv && (lv as any).usage_warn_pct != null) { setWarnPct(String((lv as any).usage_warn_pct)); setUrgentPct(String((lv as any).usage_urgent_pct)) }
@@ -194,6 +200,17 @@ function SettingsPageInner() {
     setSavingLowEmails(false)
     if (error) { setLowEmails(prev); toast.error('Couldn\u2019t save that preference. Please try again.'); return }
     toast.success(next ? 'Low-bandwidth e-mails on' : 'Low-bandwidth e-mails off')
+  }
+
+  async function toggleMarketing(next: boolean) {
+    if (savingMarketing || !profile) return
+    setSavingMarketing(true)
+    const prev = marketingEmails
+    setMarketingEmails(next) // optimistic; rolled back on failure
+    const { error } = await createClient().from('profiles').update({ marketing_emails: next }).eq('id', profile.id)
+    setSavingMarketing(false)
+    if (error) { setMarketingEmails(prev); toast.error('Couldn\u2019t save that preference. Please try again.'); return }
+    toast.success(next ? 'Product news & offers on' : 'Product news & offers off')
   }
 
   async function saveAlertLevels() {
@@ -558,6 +575,16 @@ function SettingsPageInner() {
             <span className="block text-xs text-muted mt-0.5">
               A heads-up when a session is running low (levels below), and when your account balance reaches 80% and 95%. We&apos;ll always e-mail you when a session runs out, and
               for security events and receipts. Webhooks are set up per endpoint and aren&apos;t affected by this.
+            </span>
+          </span>
+        </label>
+        <label className="flex items-start gap-3 cursor-pointer mt-4 pt-4 border-t border-border">
+          <input type="checkbox" checked={marketingEmails} disabled={savingMarketing || !profile}
+            onChange={e => toggleMarketing(e.target.checked)} className="mt-1" />
+          <span>
+            <span className="block text-sm text-ink">Product news &amp; offers</span>
+            <span className="block text-xs text-muted mt-0.5">
+              Occasional e-mails about new features and special offers. Receipts, security notices and important notices about your account are always sent.
             </span>
           </span>
         </label>

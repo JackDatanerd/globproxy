@@ -50,7 +50,7 @@ export async function GET(req: Request) {
       },
       profile: await get('profile', admin.from('profiles').select(
         'full_name, email, company_name, billing_address, tax_id, role, reseller_status, api_access, affiliate_status, referral_code, ' +
-        'payout_method, payout_mpesa_phone, payout_wallet_network, mfa_enabled, low_bandwidth_emails, created_at'
+        'payout_method, payout_mpesa_phone, payout_wallet_network, mfa_enabled, low_bandwidth_emails, marketing_emails, created_at'
       ).eq('id', user.id).maybeSingle()),
       bandwidth: await get('bandwidth', admin.from('bandwidth_accounts').select(
         'total_gb, used_gb, allocated_gb, available_gb, created_at, updated_at'
