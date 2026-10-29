@@ -62,10 +62,10 @@ export async function apiFetch<T = any>(url: string, init?: RequestInit): Promis
   return data as T
 }
 
-export function apiJson<T = any>(method: 'POST' | 'PATCH' | 'PUT' | 'DELETE', url: string, body?: unknown): Promise<T> {
+export function apiJson<T = any>(method: 'POST' | 'PATCH' | 'PUT' | 'DELETE', url: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<T> {
   return apiFetch<T>(url, {
     method,
-    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    headers: body === undefined && !extraHeaders ? undefined : { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...extraHeaders },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
 }

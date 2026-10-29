@@ -38,13 +38,14 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ sessio
     return NextResponse.json({ error: 'No valid fields to update' }, { status: 400 })
   }
 
-  let q = supabase
+  // A terminated session is gone (the v1 route answers the same): editing it used to return 200, and
+  // terminating twice used to overwrite terminated_at with a later time.
+  const q = supabase
     .from('proxy_sessions')
     .update(update)
     .eq('id', sessionId)
     .eq('user_id', user.id)
-  // Terminating twice used to overwrite terminated_at with a later time; only the first call counts.
-  if (body.terminate === true) q = q.is('terminated_at', null)
+    .is('terminated_at', null)
   const { data, error } = await q.select().maybeSingle()
 
   if (error) {

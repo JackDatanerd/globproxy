@@ -366,7 +366,42 @@ export async function createCredential(
 //      live read can never hand back too much.
 // A failure at (1) changes nothing and is safe to retry; a retry after a
 // failure at (2) completes cleanly because the upstream 404 counts as gone.
+// While a delete runs the session is FROZEN at its usage (cap = usage) before the supplier delete.
+// The limit reconciler must not "repair" that cap back up to the allocation in the meantime, or
+// traffic flows after the final usage read and is never counted. The delete holds a short-lived
+// claim (same table as the rotation lock; stale after two minutes) that syncCredentialLimit checks.
+const DELETE_LOCK_STALE_MS = 2 * 60_000
+const deleteLockKey = (id: string) => `delete:${id}`
+
+async function deleteInFlight(admin: Admin, userId: string, id: string): Promise<boolean> {
+  try {
+    const { data } = await admin.from('api_idempotency_keys').select('created_at')
+      .eq('user_id', userId).eq('key', deleteLockKey(id)).eq('status', 'in_progress').maybeSingle()
+    return !!data?.created_at && Date.now() - new Date(data.created_at as string).getTime() < DELETE_LOCK_STALE_MS
+  } catch { return false }
+}
+
 export async function deleteCredential(
+  admin: Admin, userId: string, id: string, source: 'api' | 'dashboard'
+): Promise<CredResult<{ gb_released: number; gb_used: number }>> {
+  if (!isUuidString(id)) return fail(404, 'not_found', 'Sub-user not found')
+  let claimed = false
+  try {
+    const claim = await claimIdempotencyKey(admin, userId, deleteLockKey(id), '', 'delete-credential')
+    if (claim.kind !== 'proceed') return fail(409, 'conflict', 'This session is already being deleted. Check My Proxies in a moment.')
+    claimed = true
+  } catch (e) {
+    // The lock table being unreachable must not take deletion down with it.
+    console.error('[credentials] delete: could not take the delete lock — continuing without it', id, e)
+  }
+  try {
+    return await deleteCredentialLocked(admin, userId, id, source)
+  } finally {
+    if (claimed) await releaseIdempotencyKey(admin, userId, deleteLockKey(id))
+  }
+}
+
+async function deleteCredentialLocked(
   admin: Admin, userId: string, id: string, source: 'api' | 'dashboard'
 ): Promise<CredResult<{ gb_released: number; gb_used: number }>> {
   const cred = await getOwnedCredential(admin, userId, id, '*')
@@ -396,6 +431,24 @@ export async function deleteCredential(
         const settled = await getSubUserUsage(cred.upstream_sub_user_id).catch(() => null)
         if (settled !== null && settled > liveUsedGb) liveUsedGb = settled
       } catch (e) { console.error('[credentials] could not freeze the session before delete (continuing)', id, e) }
+    }
+
+    // Persist what the frozen session has used BEFORE the supplier copy is destroyed. If the local
+    // transaction below then fails, a retry can no longer read live usage (the sub-user is gone) and
+    // would refund against the last-synced figure — handing back GB that were consumed. Compare-and-swap
+    // on the value just read (a concurrent sync write simply wins), and credit the daily ledger for the
+    // slice here: the final ledger credit below measures from the row, which now already holds it.
+    if (liveUsedGb !== null) {
+      try {
+        const { data: now } = await admin.from('proxy_credentials').select('gb_used').eq('id', id).eq('user_id', userId).maybeSingle()
+        const before = Number(now?.gb_used ?? 0)
+        if (now && liveUsedGb > before) {
+          const { data: won } = await admin.from('proxy_credentials')
+            .update({ gb_used: liveUsedGb, usage_synced_at: new Date().toISOString() })
+            .eq('id', id).eq('user_id', userId).eq('gb_used', before).select('id')
+          if (won?.length) await recordUsageDeltas(admin, [{ user_id: userId, gb: liveUsedGb - before }])
+        }
+      } catch (e) { console.error('[credentials] could not persist the final usage before delete (continuing)', id, e) }
     }
 
     try {
@@ -485,10 +538,13 @@ export function expectedLimitMb(gbAllocated: number): number {
 export async function syncCredentialLimit(admin: Admin, credentialId: string): Promise<string | null> {
   for (let round = 0; round < 2; round++) {
     const { data: cred } = await admin
-      .from('proxy_credentials').select('status, upstream_sub_user_id, gb_allocated, limit_sync_failed_since, last_provision_error')
+      .from('proxy_credentials').select('user_id, status, upstream_sub_user_id, gb_allocated, limit_sync_failed_since, last_provision_error')
       .eq('id', credentialId).maybeSingle()
     // 'pending' has no sub-user yet; provisioning reads gb_allocated fresh.
     if (!cred || cred.status !== 'active' || !cred.upstream_sub_user_id) return null
+    // A session being deleted is deliberately capped at its usage; lifting that cap here would let
+    // traffic through after the final usage read. The delete either removes it or restores the cap itself.
+    if (await deleteInFlight(admin, cred.user_id as string, credentialId)) return null
 
     const sent = Number(cred.gb_allocated)
     try {
@@ -608,7 +664,10 @@ export async function provisionPendingCredentials(
         upstream_sub_user_id: gcred.upstream_sub_user_id,
         upstream_username: gcred.username,
         upstream_password: gcred.password,
-        host: gcred.host, port: gcred.port,
+        // `port` is deliberately NOT written: it was set when the row was created and is rewritten by every
+        // protocol / session-type edit (updateCredentialSettings). gcred.port is derived from the values this
+        // run claimed minutes earlier, so writing it here undid an edit the customer made to a pending session.
+        host: gcred.host,
         activated_at: new Date().toISOString(),
         last_provision_error: null,
         pending_reason: null,
@@ -867,7 +926,7 @@ export async function releaseCredentialBandwidth(
   // Checked before anything touches the provider: an amount that rounds below the
   // minimum used to lower the live cap first and only then be refused by the database.
   if (!(gb >= 0.01)) return fail(400, 'invalid_request', 'Release amount must be at least 0.01 GB.')
-  const cred = await getOwnedCredential(admin, userId, id, 'id, label, status, gb_allocated, gb_used, upstream_sub_user_id, created_by')
+  const cred = await getOwnedCredential(admin, userId, id, 'id, label, status, gb_allocated, gb_used, upstream_sub_user_id, created_by, auto_topup_enabled, auto_topup_threshold_gb')
   if (!cred) return fail(404, 'not_found', 'Sub-user not found')
   if (cred.created_by) return fail(403, 'forbidden', 'This allocation was made by your reseller and cannot be changed directly. Contact them.')
   if (cred.status !== 'active' && cred.status !== 'pending') return fail(409, 'conflict', 'Only active or pending sessions can release bandwidth.')
@@ -891,6 +950,13 @@ export async function releaseCredentialBandwidth(
     return fail(400, 'invalid_request', maxReleasable >= 0.01
       ? `Only ${maxReleasable} GB can be released from this session right now (the rest is used or held as a safety margin).`
       : 'This session has no unused bandwidth that can be released right now.')
+  }
+
+  // The database refuses a release that would drop the session straight under its auto-allocate
+  // threshold (release_credential_gb, P0005). Refused HERE first, with the same rule and wording, so the
+  // live cap is not lowered and then put back for a request that was never going to be accepted.
+  if (cred.auto_topup_enabled && (target - used) <= Number(cred.auto_topup_threshold_gb ?? 0)) {
+    return fail(409, 'conflict', 'Releasing that much would immediately trigger auto-allocate. Lower the amount or turn auto-allocate off first.')
   }
 
   if (isActive) {

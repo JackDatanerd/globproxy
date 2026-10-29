@@ -7,6 +7,7 @@ import { parseGbAmount } from '@/lib/apiValidation'
 import { pauseCredential, resumeCredential } from '@/lib/credentialPause'
 import { syncUserUsage } from '@/lib/usageSync'
 import { isUuidString } from '@/lib/cursor'
+import { parseIdempotencyKey, runItemOnce } from '@/lib/idempotency'
 import { NextResponse } from 'next/server'
 
 const MAX_BULK = 20
@@ -56,6 +57,12 @@ export async function POST(req: Request) {
     country = body.country.trim()
   }
 
+  // Optional Idempotency-Key, honoured for top-ups only (the one bulk action that is not naturally
+  // repeatable). Each session claims "<key>#<id>", so a retry after a timeout re-runs only the sessions
+  // that did not land and replays the ones that did — GB are never added twice.
+  const idem = parseIdempotencyKey(req)
+  if (!idem.ok) return NextResponse.json({ error: idem.error }, { status: 400 })
+
   const admin = await createAdminClient()
   // Only tell pauseCredential the usage is fresh when the up-front sync actually succeeded;
   // after a failed sync each pause must refresh its own session, or it caps at stale usage.
@@ -75,7 +82,7 @@ export async function POST(req: Request) {
     r = action === 'delete'
       ? await deleteCredential(admin, user.id, id, 'dashboard')
       : action === 'topup'
-        ? await topupCredential(admin, user.id, id, gbAmount, 'dashboard')
+        ? await topupOnce(admin, user.id, id, gbAmount, idem.key)
         : action === 'retarget'
           ? await updateCredentialSettings(admin, user.id, id, { country }, 'dashboard')
           : action === 'pause'
@@ -90,4 +97,19 @@ export async function POST(req: Request) {
   }
   const succeeded = results.filter(r => r.ok).length
   return NextResponse.json({ results, succeeded, failed: results.length - succeeded })
+}
+
+// One session's top-up, optionally under a per-item idempotency claim. Returns the same shape the other
+// actions do ({ ok } / { ok:false, status, code, message }).
+async function topupOnce(admin: Awaited<ReturnType<typeof createAdminClient>>, userId: string, id: string, gb: number, key: string | null): Promise<any> {
+  if (!key) return topupCredential(admin, userId, id, gb, 'dashboard')
+  const out = await runItemOnce(admin, userId, `${key}#${id}`, 'bulk-topup', JSON.stringify({ id, gb }), async () => {
+    const r = await topupCredential(admin, userId, id, gb, 'dashboard')
+    return r.ok
+      ? { status: 200, body: { ok: true } }
+      : { status: r.status, body: { error: r.message, code: r.code } }
+  })
+  if (out.status >= 200 && out.status < 300) return { ok: true }
+  const e = (out.body as any)?.error
+  return { ok: false, status: out.status, code: (out.body as any)?.code ?? e?.code ?? 'conflict', message: typeof e === 'string' ? e : (e?.message ?? 'Could not top up this session.') }
 }

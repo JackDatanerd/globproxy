@@ -1,5 +1,5 @@
 'use client'
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { buildProxyUsername, getProxyPort, deriveSessionId } from '@/lib/proxyEndpoint'
@@ -54,6 +54,7 @@ export default function ProxyCard({ cred, index, availableGb, expanded, onToggle
 
   // Manual top-up
   const [topupAmount, setTopupAmount] = useState('')
+  const topupKeyRef = useRef<{ sig: string; key: string } | null>(null)
   const [topupLoading, setTopupLoading] = useState(false)
 
   // Auto-allocate — seeded from the credential row and re-seeded (effect
@@ -243,7 +244,12 @@ export default function ProxyCard({ cred, index, availableGb, expanded, onToggle
     }
     setTopupLoading(true)
     try {
-      const data = await apiJson('POST', `/api/dashboard/proxies/${cred.id}/topup`, { gb_amount: gb })
+      // The key stays the same for the same session + amount until the top-up is known to have landed, so
+      // pressing the button again after a timeout cannot add the GB twice.
+      const sig = `${cred.id}|${gb}`
+      if (topupKeyRef.current?.sig !== sig) topupKeyRef.current = { sig, key: crypto.randomUUID() }
+      const data = await apiJson('POST', `/api/dashboard/proxies/${cred.id}/topup`, { gb_amount: gb }, { 'Idempotency-Key': topupKeyRef.current.key })
+      topupKeyRef.current = null
       toast.success(`+${formatGb(gb)} GB added`)
       if (data.warning) toast(data.warning, { icon: '⚠️', duration: 6000 })
       setTopupAmount('')

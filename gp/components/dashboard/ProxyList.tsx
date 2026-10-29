@@ -9,6 +9,9 @@ import toast from 'react-hot-toast'
 import { saveTextFile, apiFetch, apiJson } from '@/lib/clientApi'
 import { fetchCountryList, type CountryListItem } from '@/lib/geoTargeting'
 
+// Idempotency keys of bulk top-up requests that have not been answered yet (see runBulk).
+const bulkTopupKeys = new Map<string, string>()
+
 interface Props {
   creds: any[]
   availableGb: number
@@ -288,7 +291,18 @@ export default function ProxyList({ creds, availableGb, rotationEnabled, warnPct
     for (let i = 0; i < targets.length && !stop; i += size) {
       const chunk = targets.slice(i, i + size)
       try {
-        const res = await apiJson('POST', '/api/dashboard/proxies/bulk-action', { action: kind, ids: chunk.map(c => c.id), ...extra })
+        // Top-ups carry an Idempotency-Key that stays the same for the same sessions + amount until a
+        // response arrives, so retrying after a timeout cannot add the GB twice.
+        let headers: Record<string, string> | undefined
+        let sig = ''
+        if (kind === 'topup') {
+          sig = `${chunk.map(c => c.id).sort().join(',')}|${JSON.stringify(extra)}`
+          let k = bulkTopupKeys.get(sig)
+          if (!k) { k = crypto.randomUUID(); bulkTopupKeys.set(sig, k) }
+          headers = { 'Idempotency-Key': k }
+        }
+        const res = await apiJson('POST', '/api/dashboard/proxies/bulk-action', { action: kind, ids: chunk.map(c => c.id), ...extra }, headers)
+        if (sig) bulkTopupKeys.delete(sig)
         for (const r of res.results ?? []) {
           if (r.ok) ok++
           else { failed.push(labelOf.get(r.id) ?? String(r.id).slice(0, 8)); leftIds.add(String(r.id)) }

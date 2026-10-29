@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { provisionPendingCredentials } from '@/lib/credentials'
 import { rateLimited, rateLimitedUser } from '@/lib/rateLimit'
+import { isUuidString } from '@/lib/cursor'
 import { NextResponse } from 'next/server'
 
 // "Retry now" for a credential stuck in 'pending' (the proxy network was
@@ -33,8 +34,14 @@ export async function POST(
 
   // Ownership check via the user's own session (RLS select policy) before
   // anything runs with service-role rights.
-  const { data: owned } = await supabase
+  if (!isUuidString(id)) return NextResponse.json({ error: 'Credential not found' }, { status: 404 })
+  const { data: owned, error: ownedErr } = await supabase
     .from('proxy_credentials').select('id, status').eq('id', id).eq('user_id', user.id).maybeSingle()
+  // A database error is not "not found": it used to tell the customer their session had vanished.
+  if (ownedErr) {
+    console.error('[retry] ownership lookup failed', id, ownedErr)
+    return NextResponse.json({ error: 'Could not load this session. Please try again.' }, { status: 503 })
+  }
   if (!owned) return NextResponse.json({ error: 'Credential not found' }, { status: 404 })
   if (owned.status !== 'pending') {
     return NextResponse.json({ error: 'This session is not waiting to be provisioned.' }, { status: 409 })
