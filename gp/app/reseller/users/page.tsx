@@ -30,7 +30,7 @@ export default async function ResellerUsersPage({
   // in SQL — the old client-side fold over an unpaginated query silently
   // truncated at 1000 transfers.
   const admin = await createAdminClient()
-  const [{ data: bw }, { data: clients }, { data: me }] = await Promise.all([
+  const [{ data: bw }, { data: clients, error: clientsErr }, { data: me }] = await Promise.all([
     supabase.from('bandwidth_accounts').select('available_gb').eq('user_id', user.id).maybeSingle(),
     admin.rpc('reseller_client_roster', {
       p_reseller_id: user.id,
@@ -42,6 +42,12 @@ export default async function ResellerUsersPage({
     }),
     admin.from('profiles').select('role, reseller_low_stock_gb').eq('id', user.id).maybeSingle(),
   ])
+  // A page past the end (a stale bookmark after the roster shrank) comes back empty, which used to
+  // read as "No clients yet" with no way back. Send the reseller to the first page of the same view.
+  if (page > 1 && (clientsErr || !(clients as any[] | null)?.length)) {
+    const qs = new URLSearchParams({ ...(q ? { q } : {}), ...(filter !== 'all' ? { filter } : {}), ...(sort !== 'recent' ? { sort } : {}) }).toString()
+    redirect(qs ? `/reseller/users?${qs}` : '/reseller/users')
+  }
   const total = Number((clients as any[])?.[0]?.total_count ?? 0)
 
   return (

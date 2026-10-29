@@ -151,6 +151,12 @@ export async function POST(req: Request) {
       display.phone = phone
     } else {
       const raw = body?.bankDetails
+      // An over-long SWIFT/BIC used to be dropped silently (cleanText answers null), saving a bank
+      // method with no SWIFT that then fails at wire time. Say so instead.
+      const swiftRaw = raw && typeof raw === 'object' && typeof raw.swift === 'string' ? raw.swift.trim() : ''
+      if (swiftRaw && swiftRaw.length > 20) {
+        return NextResponse.json({ error: 'That SWIFT/BIC code is too long — it should be 8 or 11 characters. Check it, or leave it blank.' }, { status: 400 })
+      }
       const bank: BankDetails | null = raw && typeof raw === 'object' && !Array.isArray(raw)
         ? {
             bankName: cleanText(raw.bankName, 100) ?? '',
