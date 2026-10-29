@@ -27,18 +27,39 @@ export type ProxyToggleResult = { changed: number; failed: { id: string; error: 
 // only the owner can resume it, and an account re-enable never touches it.
 export type SuspendReason = 'account' | 'admin' | 'customer'
 
-export async function disableCredential(supabase: AdminSupabase, cred: CredRow, reason: SuspendReason = 'admin'): Promise<void> {
+// Resolves true when the row was actually moved to 'suspended', false when it no longer needed it (an
+// account-level suspend that found the session already paused/disabled). Throws when the session is gone
+// or the database write fails — in that case the upstream cap lowered below is put back, so a session that
+// still reads 'active' here is never left unable to carry traffic.
+export async function disableCredential(supabase: AdminSupabase, cred: CredRow, reason: SuspendReason = 'admin'): Promise<boolean> {
+  let loweredCap = false
   if (cred.upstream_sub_user_id) {
     const usedGb = await getSubUserUsage(cred.upstream_sub_user_id)
     await updateSubUserTrafficLimit(cred.upstream_sub_user_id, Math.max(1, Math.ceil(usedGb * 1024)))
+    loweredCap = true
   }
   let q = supabase.from('proxy_credentials').update({ status: 'suspended', suspended_reason: reason }).eq('id', cred.id)
   // An account-level suspend must not overwrite a stronger reason set in the meantime (the owner
   // paused it, or an admin disabled it): the later account re-enable would then resume a session
   // that someone deliberately held. It only turns an ACTIVE session into an account-suspended one.
   if (reason === 'account') q = q.eq('status', 'active')
-  const { error } = await q
-  if (error) throw new Error(error.message)
+  const { data: updated, error } = await q.select('id')
+  if (error) {
+    if (loweredCap && cred.upstream_sub_user_id) {
+      await updateSubUserTrafficLimit(cred.upstream_sub_user_id, Math.round(Number(cred.gb_allocated ?? 0) * 1024))
+        .catch((e) => console.error('[admin-proxy] could not restore the cap after a failed disable — the usage sync will heal it', cred.id, e))
+    }
+    throw new Error(error.message)
+  }
+  if (!updated?.length) {
+    // No row matched: the session was deleted meanwhile (an admin/customer action must say so rather than
+    // report success), or an account-level suspend found it no longer active (nothing to do).
+    if (reason === 'account') return false
+    const { data: still } = await supabase.from('proxy_credentials').select('id, status').eq('id', cred.id).maybeSingle()
+    if (!still) throw new Error('This session no longer exists.')
+    return false
+  }
+  return true
 }
 
 // Thrown when re-activating would push the account past its live-session cap (the
@@ -54,12 +75,19 @@ export class SessionLimitError extends Error {
 // If the upstream call then fails, the row is put back to its previous suspended state — including a
 // NULL reason (suspended before the column existed = account-level), which must not become 'admin',
 // or a later account re-enable would never touch it again.
-export async function enableCredential(supabase: AdminSupabase, cred: CredRow & { suspended_reason?: string | null }): Promise<void> {
-  const { error } = await supabase.from('proxy_credentials')
-    .update({ status: 'active', suspended_reason: null }).eq('id', cred.id).eq('status', 'suspended')
+// Resolves true when the row was moved back to 'active', false when it was not suspended any more (someone
+// else resumed it first) — the upstream cap is then left alone. Throws when the session no longer exists.
+export async function enableCredential(supabase: AdminSupabase, cred: CredRow & { suspended_reason?: string | null }): Promise<boolean> {
+  const { data: updated, error } = await supabase.from('proxy_credentials')
+    .update({ status: 'active', suspended_reason: null }).eq('id', cred.id).eq('status', 'suspended').select('id')
   if (error) {
     if ((error as any).code === '23514') throw new SessionLimitError()
     throw new Error(error.message)
+  }
+  if (!updated?.length) {
+    const { data: still } = await supabase.from('proxy_credentials').select('id').eq('id', cred.id).maybeSingle()
+    if (!still) throw new Error('This session no longer exists.')
+    return false
   }
   if (cred.upstream_sub_user_id) {
     try {
@@ -71,6 +99,7 @@ export async function enableCredential(supabase: AdminSupabase, cred: CredRow & 
       throw e
     }
   }
+  return true
 }
 
 export async function disableUserCredentials(supabase: AdminSupabase, userId: string): Promise<ProxyToggleResult> {
@@ -88,7 +117,7 @@ export async function disableUserCredentials(supabase: AdminSupabase, userId: st
   const result: ProxyToggleResult = { changed: 0, failed: [] }
   for (const cred of creds ?? []) {
     try {
-      await disableCredential(supabase, cred, 'account')
+      if (!(await disableCredential(supabase, cred, 'account'))) continue
       result.changed++
       // The owner's integrations hear about it (deferred: one first-attempt per
       // credential inline could stall the admin request on a slow endpoint).
@@ -121,7 +150,7 @@ export async function enableUserCredentials(supabase: AdminSupabase, userId: str
   const result: ProxyToggleResult = { changed: 0, failed: [], kept_disabled: keptDisabled ?? 0 }
   for (const cred of creds ?? []) {
     try {
-      await enableCredential(supabase, cred)
+      if (!(await enableCredential(supabase, cred))) continue
       result.changed++
       await dispatchWebhook(userId, 'session_resumed', { credential_id: cred.id, label: cred.label ?? null, source: 'account' }, { defer: true })
     } catch (e: any) {

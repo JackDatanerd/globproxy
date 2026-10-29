@@ -37,10 +37,22 @@ const IPV6_RE =
 // client. The base matcher above rejected it.
 const IPV4_MAPPED_RE = new RegExp('^::ffff:' + IPV4_RE.source.slice(1), 'i')
 
+// IPv6 with a dotted-quad tail ("64:ff9b::1.2.3.4", "::1.2.3.4", "2a00::1.2.3.4"): rewritten as two hex groups
+// so the same validator and range checks apply. Only a well-formed IPv4 tail qualifies.
+function foldDottedTail(v: string): string | null {
+  const m = v.match(/^(.*:)(\d+\.\d+\.\d+\.\d+)$/)
+  if (!m || !m[1].includes(':') || !IPV4_RE.test(m[2])) return null
+  const [a, b, c, d] = m[2].split('.').map(Number)
+  const hex = (hi: number, lo: number) => ((hi << 8) | lo).toString(16)
+  return `${m[1]}${hex(a, b)}:${hex(c, d)}`
+}
+
 export function isValidIp(value: string): boolean {
   const v = value.trim()
   if (!v) return false
-  return IPV4_RE.test(v) || IPV6_RE.test(v) || IPV4_MAPPED_RE.test(v)
+  if (IPV4_RE.test(v) || IPV6_RE.test(v) || IPV4_MAPPED_RE.test(v)) return true
+  const folded = foldDottedTail(v)
+  return folded !== null && IPV6_RE.test(folded)
 }
 
 // ── Non-routable addresses ────────────────────────────────────────────
@@ -83,9 +95,13 @@ function v6NonPublic(h: number[]): boolean {
   if (h.every((n) => n === 0)) return true                       // ::
   if (h.slice(0, 7).every((n) => n === 0) && h[7] === 1) return true // ::1
   if ((h[0] & 0xffc0) === 0xfe80) return true                     // fe80::/10
+  if ((h[0] & 0xffc0) === 0xfec0) return true                     // fec0::/10 site-local (deprecated, never routed)
   if ((h[0] & 0xfe00) === 0xfc00) return true                     // fc00::/7
   if ((h[0] >> 8) === 0xff) return true                           // ff00::/8
   if (h[0] === 0x2001 && h[1] === 0x0db8) return true             // documentation
+  if (h[0] === 0x0064 && h[1] === 0xff9b) return true             // 64:ff9b::/96 and 64:ff9b:1::/48 NAT64 — a translator address, never a client's source
+  if (h.slice(0, 6).every((n) => n === 0)) return true            // ::a.b.c.d IPv4-compatible (deprecated) and ::/96
+  if (h.slice(0, 4).every((n) => n === 0) && h[4] === 0xffff && h[5] === 0) return true // ::ffff:0:0/96 SIIT translator
   if (h.slice(0, 5).every((n) => n === 0) && h[5] === 0xffff) {   // v4-mapped
     return v4NonPublic([h[6] >> 8, h[6] & 255, h[7] >> 8, h[7] & 255])
   }
@@ -97,7 +113,7 @@ export function isNonPublicIp(value: string): boolean {
   if (IPV4_RE.test(v)) return v4NonPublic(v.split('.').map(Number))
   const mapped = v.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i)
   if (mapped) return v4NonPublic(mapped[1].split('.').map(Number))
-  const h = expandV6(v)
+  const h = expandV6(foldDottedTail(v) ?? v)
   return h ? v6NonPublic(h) : false
 }
 

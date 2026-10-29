@@ -30,7 +30,7 @@ import { MAX_GB_PER_CREDENTIAL } from '@/lib/apiValidation'
 const MAX_TOPUPS_PER_RUN = 12
 const MIN_PARTIAL_GB = 0.01 // below this the balance can't fund even a minimum top-up
 
-type AlertKind = 'insufficient' | 'partial' | 'session_limit'
+type AlertKind = 'insufficient' | 'partial' | 'session_limit' | 'error'
 type Supa = Awaited<ReturnType<typeof createAdminClient>>
 
 const WRAP = (inner: string) => `
@@ -93,6 +93,13 @@ async function alertOnce(
           session can hold at most 100,000 GB, so the configured top-up can't be added. Lower the auto-allocate
           amount, or create another session for new traffic.</p>${CTA('/dashboard/proxies', 'Open my sessions →')}`),
       },
+      error: {
+        subject: `Auto-allocate couldn't top up your proxy`,
+        html: WRAP(`<h2 style="text-align:center;color:#111;">Auto-allocate couldn't top up</h2>
+          <p style="color:#444;text-align:center;">Hi ${name}, your session <strong>${label}</strong> has used up its allocation and
+          auto-allocate could not add more because of a temporary problem on our side. We keep retrying
+          automatically. If it doesn't resume soon, you can add bandwidth to the session manually.</p>${CTA('/dashboard/proxies', 'Open my sessions →')}`),
+      },
     }[kind]
     await sendEmail({ to: profile.email, subject: msg.subject, html: msg.html })
       .catch((e) => console.error('[auto-topup] alert email failed', cred.id, e))
@@ -100,7 +107,7 @@ async function alertOnce(
 
   await dispatchWebhook(cred.user_id, 'auto_topup_failed', {
     credential_id: cred.id,
-    reason: kind === 'insufficient' ? 'insufficient_balance' : kind === 'partial' ? 'partial_funding' : 'session_limit',
+    reason: kind === 'insufficient' ? 'insufficient_balance' : kind === 'partial' ? 'partial_funding' : kind === 'error' ? 'error' : 'session_limit',
     gb_allocated: cred.gb_allocated, gb_used: cred.gb_used, amount_gb: cred.auto_topup_amount_gb,
     ...(kind === 'partial' ? { gb_added: detail.added_gb ?? 0 } : {}),
   }, { defer: true })
@@ -152,7 +159,13 @@ export async function runAutoTopups(userId?: string, admin?: Supa) {
   let deferred = 0
   let attempts = 0
 
-  for (const cred of candidates) {
+  // Rotate the starting point every tick. The list is ordered by id and capped per run, so a handful of
+  // sessions that keep failing at the front used to use the whole cap every tick and starve everything
+  // behind them. The offset advances with the 5-minute cadence, so every candidate gets its turn.
+  const start = candidates.length > MAX_TOPUPS_PER_RUN ? Math.floor(Date.now() / 300_000) % candidates.length : 0
+  const ordered = start ? [...candidates.slice(start), ...candidates.slice(0, start)] : candidates
+
+  for (const cred of ordered) {
     const remaining = (cred.gb_allocated ?? 0) - (cred.gb_used ?? 0)
     const threshold = cred.auto_topup_threshold_gb ?? 0
 
@@ -210,6 +223,10 @@ export async function runAutoTopups(userId?: string, admin?: Supa) {
       }
       errors++
       console.error('[auto-topup] failed for credential', cred.id, topupErr.code, msg)
+      // A failure that is not the customer's to fix stayed log-only forever — even when the session had
+      // actually run out. Say so once the allocation is exhausted (not before: a transient blip on a
+      // session that still has headroom heals on the next tick without bothering anyone).
+      if (remaining <= 0) await alertOnce(supabase, cred, 'error')
       continue
     }
 

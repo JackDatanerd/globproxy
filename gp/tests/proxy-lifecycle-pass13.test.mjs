@@ -48,7 +48,7 @@ test('R2: release refuses an auto-allocate-triggering amount before touching the
 })
 
 test('R3: a delete holds a lock that the limit reconciler honours', () => {
-  assert.match(creds, /deleteLockKey = \(id: string\) => `delete:\$\{id\}`/)
+  assert.match(creds, /deleteLockKey = \(id: string\) => internalLockKey\('delete', id\)/)
   const sync = creds.slice(creds.indexOf('export async function syncCredentialLimit'), creds.indexOf('export async function topupCredential'))
   assert.match(sync, /deleteInFlight\(admin, cred\.user_id as string, credentialId\)/)
   assert.ok(sync.indexOf('deleteInFlight') < sync.indexOf('updateSubUserTrafficLimit'))

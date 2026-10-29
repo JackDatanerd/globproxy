@@ -13,7 +13,7 @@ test('sessions route tolerates a null / array body and never echoes a raw constr
 
 test('password rotation takes a per-session lock and releases it', () => {
   const src = read('lib/credentials.ts')
-  assert.match(src, /rotate:\$\{id\}/)
+  assert.match(src, /internalLockKey\('rotate', id\)/)
   assert.match(src, /rotateCredentialPasswordLocked/)
   assert.match(src, /releaseIdempotencyKey\(admin, userId, lockKey\)/)
 })
@@ -39,7 +39,7 @@ test('an account-level suspend only touches an active session', () => {
 })
 
 test('whitelist mirror writes are serialized and re-read upstream', () => {
-  assert.match(read('lib/whitelistMirror.ts'), /whitelist-mirror:\$\{credentialId\}/)
+  assert.match(read('lib/whitelistMirror.ts'), /internalLockKey\('whitelist-mirror', credentialId\)/)
   for (const f of ['app/api/dashboard/proxies/[id]/whitelist/route.ts', 'app/api/dashboard/proxies/[id]/whitelist/bulk/route.ts', 'app/api/v1/sub-users/[id]/whitelist/route.ts', 'app/api/v1/sub-users/[id]/whitelist/bulk/route.ts']) {
     assert.doesNotMatch(read(f), /mirrorWhitelist\([^)]*\b(ips|added|left|result)\)/)
   }

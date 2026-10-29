@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { internalLockKey } from '@/lib/lockKeys'
 import type { createAdminClient } from '@/lib/supabase/server'
 import { claimIdempotencyKey, releaseIdempotencyKey } from '@/lib/idempotency'
 import {
@@ -27,7 +28,7 @@ type Admin = Awaited<ReturnType<typeof createAdminClient>>
 // state after every edit that finished before it. Without it (or if the re-read fails) the list
 // passed in is written as before.
 export async function mirrorWhitelist(admin: Admin, credentialId: string, userId: string, ips: WhitelistedIp[], upstreamSubUserId?: string | null): Promise<void> {
-  const lockKey = `whitelist-mirror:${credentialId}`
+  const lockKey = internalLockKey('whitelist-mirror', credentialId)
   let claimed = false
   if (upstreamSubUserId) {
     for (let attempt = 0; attempt < 4 && !claimed; attempt++) {

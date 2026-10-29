@@ -1,7 +1,8 @@
 import { createAdminClient } from '@/lib/supabase/server'
+import { internalLockKey } from '@/lib/lockKeys'
 import { leaksSupplier } from '@/lib/supplierGuard'
 import {
-  createSubUser, createOrAdoptSubUser, memoizedSubUserLookup, newUpstreamIdentity, deleteSubUser, getSubUserUsage, updateSubUserTrafficLimit, updateSubUserPassword,
+  createSubUser, createOrAdoptSubUser, findSubUserByUsername, memoizedSubUserLookup, newUpstreamIdentity, deleteSubUser, getSubUserUsage, updateSubUserTrafficLimit, updateSubUserPassword,
   classifyUpstreamError, UpstreamApiError, upstreamConfigured, subUserExists, type UpstreamReason, type UpstreamIdentity, PROXY_HOST,
 } from '@/lib/upstream'
 import { sendEmail, escapeHtml } from '@/lib/email'
@@ -375,7 +376,7 @@ export async function createCredential(
 // traffic flows after the final usage read and is never counted. The delete holds a short-lived
 // claim (same table as the rotation lock; stale after two minutes) that syncCredentialLimit checks.
 const DELETE_LOCK_STALE_MS = 2 * 60_000
-const deleteLockKey = (id: string) => `delete:${id}`
+const deleteLockKey = (id: string) => internalLockKey('delete', id)
 
 async function deleteInFlight(admin: Admin, userId: string, id: string): Promise<boolean> {
   try {
@@ -426,7 +427,17 @@ async function deleteCredentialLocked(
   let frozen = false
   if (cred.upstream_sub_user_id) {
     try { liveUsedGb = await getSubUserUsage(cred.upstream_sub_user_id) }
-    catch (e) { console.error('[credentials] live usage check failed, falling back to synced gb_used', e) }
+    catch (e) {
+      // A sub-user the supplier no longer has (a retry after a delete that already reached it) is
+      // settled from the stored usage. Any OTHER failure used to fall back to the last-synced figure,
+      // refunding up to one sync interval of consumed traffic as unused. Release already refuses in
+      // that case; delete now does too. Nothing has changed yet.
+      if (!isGone(e)) {
+        console.error('[credentials] delete: live usage unavailable — nothing changed', id, e)
+        return fail(502, 'upstream_unavailable', 'Could not confirm this session’s live usage, so nothing was deleted. Please retry shortly.')
+      }
+      console.warn('[credentials] delete: sub-user already gone upstream — settling from the stored usage', id)
+    }
 
     if (liveUsedGb !== null) {
       try {
@@ -469,6 +480,30 @@ async function deleteCredentialLocked(
         }
         return fail(502, 'upstream_unavailable', 'Could not remove the proxy upstream. Nothing was changed — please retry shortly.')
       }
+    }
+  }
+
+  // A PENDING session has no sub-user id, but an attempt that ended ambiguously (timeout / 5xx after the
+  // supplier did create it) may have left one under the saved provisioning name. Deleting the row without
+  // looking made that sub-user an untracked orphan holding a full traffic limit until the sweep reclaimed it.
+  // Look it up by that exact name and delete it with the row. If the listing cannot be read the delete still
+  // goes ahead (blocking a way out of a stalled session during an outage is worse); the sweep is the backstop.
+  if (!cred.upstream_sub_user_id && cred.provision_username && providerConfigured()) {
+    try {
+      const found = await findSubUserByUsername(String(cred.provision_username))
+      if (found.id) {
+        try { await deleteSubUser(found.id) }
+        catch (e) {
+          if (!isGone(e)) {
+            console.error('[credentials] delete: could not remove the sub-user a pending attempt created — nothing changed', id, e)
+            return fail(502, 'upstream_unavailable', 'Could not remove the proxy upstream. Nothing was changed — please retry shortly.')
+          }
+        }
+      } else if (!found.complete) {
+        console.error('[credentials] delete: pending session lookup incomplete — relying on the orphan sweep', id)
+      }
+    } catch (e) {
+      console.error('[credentials] delete: pending sub-user lookup failed — relying on the orphan sweep', id, e)
     }
   }
 
@@ -1043,7 +1078,7 @@ async function verifyRotation(host: string, baseUser: string, oldPass: string, n
 export async function rotateCredentialPassword(
   admin: Admin, userId: string, id: string
 ): Promise<CredResult<{ password: string }>> {
-  const lockKey = `rotate:${id}`
+  const lockKey = internalLockKey('rotate', id)
   let claimed = false
   try {
     const claim = await claimIdempotencyKey(admin, userId, lockKey, '', 'rotate-password')

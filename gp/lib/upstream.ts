@@ -379,7 +379,7 @@ export async function getSubUserUsage(upstreamSubUserId: string): Promise<number
   )
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(`Upstream getSubUserUsage failed: ${res.status} ${JSON.stringify(err)}`)
+    throw new UpstreamApiError(`Upstream getSubUserUsage failed: ${res.status} ${JSON.stringify(err)}`, res.status, err)
   }
   const d = await res.json()
   const result = d.result ?? d.data ?? d

@@ -171,7 +171,7 @@ export default function ApiDocsPage() {
             ['422', 'Unprocessable', 'Idempotency-Key reused with a different request body.'],
             ['429', 'Too Many Requests', 'Rate limit exceeded — wait for the Retry-After interval.'],
             ['500', 'Internal Server Error', "Something went wrong on our end — safe to retry once; open a support ticket if it persists."],
-            ['502', 'Bad Gateway', 'The upstream proxy provider is temporarily unavailable. Nothing was changed — safe to retry.'],
+            ['502', 'Bad Gateway', 'The proxy network is temporarily unavailable. Nothing was changed — safe to retry.'],
             ['503', 'Service Unavailable', "We couldn't verify your account right now (a transient error on our side). The key is fine — retry after a few seconds; don't delete or re-issue it."],
           ]} />
           <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Error codes</p>
@@ -189,7 +189,7 @@ export default function ApiDocsPage() {
             ['ip_not_allowed', '403', "The request didn't come from one of the key's allowed IP addresses."],
             ['service_unavailable', '503', 'Transient failure verifying the account; safe to retry.'],
             ['rate_limited', '429', 'Too many requests.'],
-            ['upstream_unavailable', '502', 'The proxy provider could not be reached; nothing changed.'],
+            ['upstream_unavailable', '502', 'The proxy network could not be reached; nothing changed.'],
             ['internal_error', '500', 'Unexpected server error.'],
           ]} />
         </section>
@@ -204,8 +204,8 @@ export default function ApiDocsPage() {
             <span className="font-mono text-ink">code: "rate_limited"</span> and a <span className="font-mono text-ink">Retry-After</span>{' '}
             header — back off for that many seconds (always a full minute: the limits are per-minute windows). The limit that was hit
             is also sent as <span className="font-mono text-ink">X-RateLimit-Limit</span>. There is also a generous per-address ceiling that
-            only affects clients sending large volumes of invalid keys. <span className="font-mono text-ink">/usage/history</span> has its own, tighter limit of 10 per minute per key (each call fans out to many provider requests). Live usage on <span className="font-mono text-ink">/usage</span> is refreshed
-            from the provider at most every 30 seconds per sub-user, so polling it faster just returns the same number.
+            only affects clients sending large volumes of invalid keys. <span className="font-mono text-ink">/usage/history</span> has its own, tighter limit of 10 per minute per key (each call fans out to many network requests). Live usage on <span className="font-mono text-ink">/usage</span> is refreshed
+            from the network at most every 30 seconds per sub-user, so polling it faster just returns the same number.
           </p>
           <p className="text-sm text-ink2 leading-relaxed mt-3">
             Every response includes <span className="font-mono text-ink">X-RateLimit-Limit</span>: the per-minute limit that applies to that request (120 for a read, 30 for a change, 10 for <span className="font-mono text-ink">/usage/history</span>). The limiter cannot report how much of the current window is left, so on a{' '}
@@ -413,7 +413,7 @@ export default function ApiDocsPage() {
             <p className="text-sm text-ink2 mt-4">
               <span className="font-mono text-ink">status</span> can come back{' '}
               <span className="font-mono text-ink">"pending"</span> instead of{' '}
-              <span className="font-mono text-ink">"active"</span> if the upstream provisioning step is briefly
+              <span className="font-mono text-ink">"active"</span> if the provisioning step is briefly
               unavailable — the credential and bandwidth reservation are still created and activation is retried
               automatically in the background (typically within a few minutes). While pending,{' '}
               <span className="font-mono text-ink">username</span>, <span className="font-mono text-ink">password</span> and{' '}
@@ -459,7 +459,7 @@ export default function ApiDocsPage() {
           </Endpoint>
 
           <Endpoint method="GET" path="/api/v1/sub-users/:id/usage" title="Get sub-user usage">
-            <p className="text-sm text-ink2 mb-4">Current usage for a single sub-user, synced live from the upstream provider when the credential is active.</p>
+            <p className="text-sm text-ink2 mb-4">Current usage for a single sub-user, synced live from the proxy network when the credential is active.</p>
             <Code>{`curl https://globproxy.com/api/v1/sub-users/SUB_USER_ID/usage \\
   -H "Authorization: Bearer YOUR_KEY"`}</Code>
             <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
@@ -482,7 +482,7 @@ export default function ApiDocsPage() {
   "usage_synced_at": "2026-10-18T09:30:00.000Z"
 }`}</Code>
             <p className="text-sm text-ink2 mt-4">
-              Re-read from the provider at most every 30 seconds per sub-user; <span className="font-mono text-ink">usage_synced_at</span> says
+              Re-read from the network at most every 30 seconds per sub-user; <span className="font-mono text-ink">usage_synced_at</span> says
               when the number was last refreshed.
             </p>
           </Endpoint>
@@ -537,7 +537,7 @@ export default function ApiDocsPage() {
             <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{ "success": true, "gb_released": 3.8 }`}</Code>
             <p className="text-sm text-ink2 mt-4">
-              If the upstream provider can't be reached the delete fails with <span className="font-mono text-ink">502</span> and <em>nothing is changed</em> — retry it; a retry after a partial failure completes cleanly. A sub-user that a reseller allocated to you (rather than one you created yourself) can't be
+              If the proxy network can't be reached the delete fails with <span className="font-mono text-ink">502</span> and <em>nothing is changed</em> — retry it; a retry after a partial failure completes cleanly. A sub-user that a reseller allocated to you (rather than one you created yourself) can't be
               deleted through the API, same as in the dashboard — <span className="font-mono text-ink">403</span>{' '}
               if you try.
             </p>
@@ -1011,7 +1011,7 @@ export default function ApiDocsPage() {
             ['session_low', 'event', 'A sub-user has crossed a usage alert level of its allocation (80% and 95% by default; the account owner can change both in Settings) (sent once per tier; not sent while auto-topup is able to refill it). data: credential_id, label, threshold_pct, used_pct, gb_allocated, gb_used, gb_remaining.'],
             ['session_exhausted', 'event', 'A single sub-user used its entire allocation and has stopped connecting (sent once per exhaustion; not sent while auto-topup is able to refill it — it IS sent if auto-topup is on but your balance cannot fund it). data: credential_id, label, gb_allocated, gb_used.'],
             ['auto_topup_triggered', 'event', 'Auto-topup added bandwidth. data: credential_id, gb_added, gb_allocated, partial (true when your balance could only cover part of the configured amount).'],
-            ['auto_topup_failed', 'event', 'Auto-topup could not fully run (sent once until it recovers). reason is insufficient_balance, partial_funding or session_limit. data: credential_id, reason, gb_allocated, gb_used, amount_gb (and gb_added for partial_funding).'],
+            ['auto_topup_failed', 'event', 'Auto-topup could not fully run (sent once until it recovers). reason is insufficient_balance, partial_funding, session_limit or error (the session ran out and a temporary problem stopped the top-up; retried automatically). data: credential_id, reason, gb_allocated, gb_used, amount_gb (and gb_added for partial_funding).'],
             ['session_suspended', 'event', 'GlobProxy suspended a sub-user (abuse or policy action), the whole account was suspended, or you paused it. data: credential_id, label, source ("admin", "account" or "customer").'],
             ['session_resumed', 'event', 'A suspended sub-user was re-enabled (or the account reinstated). data: credential_id, label, source ("admin", "account" or "customer").'],
             ['auto_topup_updated', 'event', 'Auto-topup settings were turned on, off or changed on a sub-user. data: credential_id, enabled, threshold_gb, amount_gb (null when turned off), source ("api" or "dashboard").'],
