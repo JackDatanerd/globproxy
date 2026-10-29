@@ -204,10 +204,13 @@ export async function recordAutoRechargeFailure(
 async function rechargeOne(supabase: Admin, r: any): Promise<Outcome> {
   const userId: string = r.user_id
 
-  const { data: profile, error: pErr } = await supabase.from('profiles').select('is_deleted, is_suspended').eq('id', userId).maybeSingle()
+  const { data: profile, error: pErr } = await supabase.from('profiles').select('is_deleted, is_suspended, deletion_scheduled_at').eq('id', userId).maybeSingle()
   if (pErr) throw pErr
   if (!profile || profile.is_deleted) { await disable(supabase, userId, 'account_closed'); return 'skipped' }
   if (profile.is_suspended) { await defer(supabase, userId); return 'skipped' } // comes back by itself if the account does
+  // A deletion in its cool-off forfeits the balance when it runs, so never charge the saved card for
+  // bandwidth that is about to be erased. The rule stays as it is and resumes if the deletion is cancelled.
+  if (profile.deletion_scheduled_at) { await defer(supabase, userId); return 'skipped' }
   if (await purchaseBlock(supabase, userId)) { await defer(supabase, userId); return 'skipped' } // open dispute / payment hold
 
   const { data: card, error: cErr } = await supabase.from('saved_cards').select('authorization_code, email, last4, exp_month, exp_year').eq('user_id', userId).maybeSingle()

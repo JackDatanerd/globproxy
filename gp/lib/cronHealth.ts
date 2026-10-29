@@ -162,9 +162,16 @@ export async function checkUsageSyncFreshness(
 
   if (settings.usage_sync_stale_alerted_at) return { stale: true, already_alerted: true }
 
-  // Only mark the incident as reported once the provider ACCEPTED the message —
-  // otherwise a provider hiccup at that moment silenced this alert until the next
-  // successful sync cleared the flag.
+  // Claim the incident BEFORE mailing (an insert: the key is the primary key, so exactly one of two
+  // overlapping callers - the hourly 'stock' and the */5 'security' task both start at :00 - wins),
+  // and put the claim back if the provider did not ACCEPT the message, so the next run tries again.
+  const { error: claimErr } = await supabase.from('platform_settings')
+    .insert({ key: 'usage_sync_stale_alerted_at', value: new Date().toISOString() })
+  if (claimErr) {
+    if (claimErr.code === '23505') return { stale: true, already_alerted: true }
+    console.error('[cronHealth] could not claim the usage-sync alert', claimErr.message)
+    return { stale: true, already_alerted: false, alert_failed: true }
+  }
   const delivered = process.env.ADMIN_EMAIL ? await sendEmailSafe({
     to: process.env.ADMIN_EMAIL,
     subject: `[USAGE SYNC STALE] Last successful sync was ${Math.round(ageMs / 60000)} min ago`,
@@ -174,9 +181,10 @@ export async function checkUsageSyncFreshness(
            <p>gb_used and account balances are going stale until this recovers — check
            whether the cron trigger for the 'usage' task is still firing and whether the proxy provider is reachable.</p>`,
   }) : false
-  if (!delivered) return { stale: true, already_alerted: false, alert_failed: true }
-  await supabase.from('platform_settings')
-    .upsert({ key: 'usage_sync_stale_alerted_at', value: new Date().toISOString() }, { onConflict: 'key' })
+  if (!delivered) {
+    await supabase.from('platform_settings').delete().eq('key', 'usage_sync_stale_alerted_at')
+    return { stale: true, already_alerted: false, alert_failed: true }
+  }
   return { stale: true, already_alerted: false }
 }
 

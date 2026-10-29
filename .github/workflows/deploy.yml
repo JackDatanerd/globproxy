@@ -82,6 +82,8 @@ jobs:
 
   deploy:
     needs: check-schema
+    # A manual run can be started from any branch in the Actions UI; only main may reach production.
+    if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:

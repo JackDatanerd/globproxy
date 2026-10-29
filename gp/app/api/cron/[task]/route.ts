@@ -584,11 +584,11 @@ async function runCleanup() {
   // An automatic top-up is charged off-session, so the customer never "abandoned" it —
   // one still unresolved after 24h is a charge whose outcome was never confirmed. Say that
   // (the Billing page shows this reason), rather than blaming the customer.
-  const { error: abandonAutoErr } = await supabase.from('orders').update({
+  const { data: abandonedAuto, error: abandonAutoErr } = await supabase.from('orders').update({
     payment_status: 'failed',
     failure_reason: 'Automatic top-up was not confirmed within 24h',
     failed_at: new Date().toISOString(),
-  }).eq('payment_status', 'pending').eq('bandwidth_credited', false).eq('auto_recharge', true).lt('created_at', cutoff)
+  }).eq('payment_status', 'pending').eq('bandwidth_credited', false).eq('auto_recharge', true).lt('created_at', cutoff).select('id')
   if (abandonAutoErr) console.error('[cleanup] auto top-up sweep failed:', abandonAutoErr)
 
   // Expired MFA "verified this browser" tokens (migration 0020). Already
@@ -625,10 +625,10 @@ async function runCleanup() {
   // (lib/cronHealth.findReportedError) — they used to be logged and flagged as booleans
   // nothing ever read, so a table that stopped being pruned never showed as failing.
   const failedSteps = [
-    abandonErr && 'abandoned orders', mfaErr && 'MFA sessions', cspErr && 'CSP reports', sessErr && 'proxy sessions', usageErr && 'daily usage',
+    abandonErr && 'abandoned orders', abandonAutoErr && 'auto top-up orders', mfaErr && 'MFA sessions', cspErr && 'CSP reports', sessErr && 'proxy sessions', usageErr && 'daily usage',
   ].filter(Boolean) as string[]
   return {
-    cleaned: abandoned?.length ?? 0, mfa_sessions_swept: !mfaErr, csp_pruned: !cspErr, sessions_purged: !sessErr, usage_daily_pruned: !usageErr,
+    cleaned: (abandoned?.length ?? 0) + (abandonedAuto?.length ?? 0), mfa_sessions_swept: !mfaErr, csp_pruned: !cspErr, sessions_purged: !sessErr, usage_daily_pruned: !usageErr,
     ...(failedSteps.length ? { error: `cleanup step(s) failed: ${failedSteps.join(', ')}` } : {}),
   }
 }
@@ -711,9 +711,12 @@ async function runCanary() {
     return { skipped: true, reason: 'not_configured' }
   }
 
-  const { data: profile } = await supabase
-    .from('profiles').select('email').eq('id', cfg.canary_user_id).single()
-  if (!profile?.email) return { skipped: true, reason: 'canary_user_not_found' }
+  // Configured but unreadable is a broken monitor, not a skip: report it as an error so the heartbeat
+  // (and the 3-failures alert) shows it instead of the canary quietly never running.
+  const { data: profile, error: profileErr } = await supabase
+    .from('profiles').select('email').eq('id', cfg.canary_user_id).maybeSingle()
+  if (profileErr) return { error: `canary could not read its test account: ${profileErr.message}` }
+  if (!profile?.email || String(profile.email).startsWith('[')) return { error: 'canary_user_id is set but that account does not exist (or was deleted) — the daily payment test is NOT running' }
 
   // Once a day means once a day: a re-fired trigger or a manual GET used to charge the
   // test card again. 20h (not 24h) so tomorrow's scheduled run is never blocked by
