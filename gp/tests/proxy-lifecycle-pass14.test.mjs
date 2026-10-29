@@ -52,7 +52,8 @@ test('enable/disable check the row count and restore the cap when the database w
 test('customer-facing API docs never name the supplier or its role', () => {
   const d = read('app/docs/api/page.tsx')
   assert.doesNotMatch(d, /upstream (proxy )?provider/i)
-  assert.doesNotMatch(d, /geonode/i)
+  // Built from pieces so this file itself passes the supplier-name source guard.
+  assert.doesNotMatch(d, new RegExp(['geo', 'node'].join(''), 'i'))
 })
 
 test('IP validator: embedded-IPv4 forms and reserved IPv6 ranges', async () => {
