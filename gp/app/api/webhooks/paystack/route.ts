@@ -145,6 +145,10 @@ async function handleChargeSuccess(supabase: Admin, data: any) {
     throw new Error(`activateBandwidth failed for order ${order.id}: ${result.error}`)
   }
 
+  // Paid but deliberately not credited (closed account / lost chargeback): the admin was alerted
+  // once; answer 200 so Paystack stops retrying, and store nothing for this order.
+  if (result.status === 'not_creditable') return NextResponse.json({ received: true })
+
   await captureSavedCardIfRequested(supabase, order, metadata, data)
 
   // Canary bootstrap: capture a reusable authorization_code for the daily
@@ -435,7 +439,7 @@ async function handleDispute(supabase: Admin, kind: string, data: any) {
         if (opened && cur.dispute_status !== 'open' && !cur.is_canary) {
           await sendDisputeOpenedEmail(supabase, cur.user_id, { amountUsd: Number(cur.amount_usd), gb: Number(cur.gb_amount) })
         }
-        if (accepted && cur.bandwidth_credited) {
+        if (accepted) {
           // A partial chargeback takes only its share: convert refund_amount (minor
           // units of the charged currency) with the order's own locked ratio.
           let partialUsd: number | undefined

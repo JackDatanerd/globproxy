@@ -274,7 +274,7 @@ async function rechargeOne(supabase: Admin, r: any): Promise<Outcome> {
         const result = await activateBandwidth({
           order_id: order.id, user_id: userId, gb_amount: quote.gb, paystack_reference: reference, amount_usd: quote.total, is_canary: false,
         })
-        if (result.status !== 'error') {
+        if (result.status === 'credited' || result.status === 'already_credited') {
           await supabase.from('auto_recharge').update({ consecutive_failures: 0, disabled_reason: null, updated_at: new Date().toISOString() }).eq('user_id', userId)
           return 'credited'
         }

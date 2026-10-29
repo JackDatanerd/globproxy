@@ -9,7 +9,10 @@ import { sendScaleWelcomeEmail } from '@/lib/billingEmails'
 
 export type ActivateResult =
   | { status: 'credited' }
-  | { status: 'already_credited' } // nothing to do: credited earlier, refunded, or not claimable
+  | { status: 'already_credited' } // nothing to do: credited earlier, or refunded
+  // Paid, but deliberately NOT credited (account closed, or the order's chargeback was lost). Callers
+  // must never tell the customer it was credited; the admin has been alerted once.
+  | { status: 'not_creditable'; reason: 'account_deleted' | 'dispute_lost' }
   | { status: 'error'; error: string } // nothing committed — safe to retry
 
 // Callers must act on the result: 'error' means the order is still
@@ -30,14 +33,14 @@ export async function activateBandwidth(p: {
   // A payment that lands after the account was closed (webhook retry, reconcile, a
   // checkout left open in another tab) must not be credited to a dead account where
   // nobody can ever use it. Leave the order uncredited, tell the admin ONCE so it can
-  // be refunded by hand, and report "not claimable" so the webhook stops retrying.
+  // be refunded by hand, and report not_creditable so the webhook stops retrying.
   try {
     const { data: owner } = await supabase.from('profiles').select('is_deleted').eq('id', p.user_id).maybeSingle()
     if (owner?.is_deleted) {
       await alertMismatchOnce(supabase, p.order_id, 'Payment received for a DELETED account — NOT credited, refund it by hand', {
         order_id: p.order_id, user_id: p.user_id, reference: p.paystack_reference, amount_usd: p.amount_usd, gb: p.gb_amount,
       })
-      return { status: 'already_credited' }
+      return { status: 'not_creditable', reason: 'account_deleted' }
     }
   } catch (e) {
     console.error('[bandwidth] deleted-account check failed — continuing to credit', p.order_id, e)
@@ -53,7 +56,7 @@ export async function activateBandwidth(p: {
       await alertMismatchOnce(supabase, p.order_id, 'Payment for an order whose dispute was LOST — NOT credited', {
         order_id: p.order_id, user_id: p.user_id, reference: p.paystack_reference, amount_usd: p.amount_usd, gb: p.gb_amount,
       })
-      return { status: 'already_credited' }
+      return { status: 'not_creditable', reason: 'dispute_lost' }
     }
   } catch (e) {
     console.error('[bandwidth] lost-dispute check failed — continuing to credit', p.order_id, e)

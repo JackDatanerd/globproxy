@@ -160,6 +160,13 @@ export async function POST(req: Request) {
       }, { status: 503 })
     }
 
+    if (result.status === 'not_creditable') {
+      // Paid, but deliberately not credited (closed account / lost chargeback): never say "credited".
+      return NextResponse.json({
+        error: 'We received your payment but could not add the bandwidth automatically. Please contact support@globproxy.com and quote your payment reference.',
+      }, { status: 409 })
+    }
+
     // The customer asked to keep this card: when this call (not the webhook) is the one that
     // saw the payment, the webhook may never land, so store it here too. Best-effort.
     await captureSavedCardIfRequested(supabase, order, txn.metadata, txn)

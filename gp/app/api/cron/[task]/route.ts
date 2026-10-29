@@ -462,7 +462,7 @@ async function runReconcile() {
               paystack_reference: o.paystack_reference!, amount_usd: Number(o.amount_usd),
               is_canary: !!o.is_canary,
             })
-            if (result.status !== 'error') await captureSavedCardIfRequested(supabase, o, txn.metadata, txn)
+            if (result.status === 'credited' || result.status === 'already_credited') await captureSavedCardIfRequested(supabase, o, txn.metadata, txn)
             if (result.status === 'credited') {
               recovered++
               await alertAdminPayment('Reconcile recovered an uncredited payment', {

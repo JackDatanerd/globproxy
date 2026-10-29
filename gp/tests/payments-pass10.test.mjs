@@ -31,7 +31,7 @@ test('the automatic dispute path never overwrites an admin "won"', () => {
 
 test('an order whose dispute was lost is never credited afterwards', () => {
   const s = read('lib/bandwidth.ts')
-  assert.match(s, /ord\?\.dispute_status === 'lost'[\s\S]*?return \{ status: 'already_credited' \}/)
+  assert.match(s, /ord\?\.dispute_status === 'lost'[\s\S]*?return \{ status: 'not_creditable', reason: 'dispute_lost' \}/)
   // checked before the atomic claim
   assert.ok(s.indexOf("dispute_status === 'lost'") < s.indexOf("rpc('claim_and_credit_order'"))
 })

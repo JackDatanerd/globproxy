@@ -72,7 +72,7 @@ export async function payWithSavedCard(
         const result = await activateBandwidth({
           order_id: order.id, user_id: user.id, gb_amount: quote.gb, paystack_reference: reference, amount_usd: quote.total, is_canary: false,
         })
-        if (result.status !== 'error') return { outcome: 'credited', reference }
+        if (result.status === 'credited' || result.status === 'already_credited') return { outcome: 'credited', reference }
       }
     } catch (e) {
       console.error('[saved-card] could not confirm a successful charge — reconcile will', order.id, e)

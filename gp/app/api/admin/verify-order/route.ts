@@ -66,6 +66,14 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: `The credit did not commit (${result.error}). Nothing was changed — try again.` }, { status: 500 })
   }
 
+  if (result.status === 'not_creditable') {
+    return NextResponse.json({
+      error: result.reason === 'account_deleted'
+        ? 'The account was deleted, so the order was NOT credited. Refund it from Admin → Orders.'
+        : 'This order\'s chargeback was lost, so it was NOT credited.',
+    }, { status: 409 })
+  }
+
   await logAdminAction(supabase, {
     adminId, action: mismatch ? 'order.credit_override' : 'order.verified_and_credited', targetUserId: order.user_id, targetRef: order.id,
     details: { status: result.status, ...(mismatch ? { mismatch, reason } : {}) },
