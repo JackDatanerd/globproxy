@@ -3,7 +3,10 @@ import AdminStockPanel from '@/components/admin/AdminStockPanel'
 import AdminAccountSecurity from '@/components/admin/AdminAccountSecurity'
 import BenchmarkSettings from '@/components/admin/BenchmarkSettings'
 import MpesaSettings from '@/components/admin/MpesaSettings'
-import { loadMpesaConfig, getKesQuote } from '@/lib/fx'
+import MpesaPromoPanel from '@/components/admin/MpesaPromoPanel'
+import { loadMpesaConfig, getKesQuote, kesFor } from '@/lib/fx'
+import { PROMO_KEY, promoState } from '@/lib/promo'
+import { PLANS } from '@/lib/plans'
 import CronHealthPanel, { type CronRunRow } from '@/components/admin/CronHealthPanel'
 import CspReportsPanel, { type CspRow } from '@/components/admin/CspReportsPanel'
 import SecurityConfigPanel from '@/components/admin/SecurityConfigPanel'
@@ -11,6 +14,7 @@ import DeletionQueuePanel, { type DeletionQueueRow } from '@/components/admin/De
 import { loadSecurityChecks } from '@/lib/securityConfig'
 
 export default async function AdminSettingsPage() {
+  const samplePlan = PLANS.find(p => !p.custom && p.total >= 30) ?? PLANS[0]
   const session = await createClient()
   const { data: { user } } = await session.auth.getUser()
 
@@ -35,9 +39,13 @@ export default async function AdminSettingsPage() {
   // M-Pesa panel data. A settings/FX failure must not take the whole page down.
   let mpesa: Awaited<ReturnType<typeof loadMpesaConfig>> | null = null
   let mpesaLive: Awaited<ReturnType<typeof getKesQuote>> = null
+  let promoVersion: string | null = null
   try {
     mpesa = await loadMpesaConfig(admin)
     mpesaLive = await getKesQuote(admin)
+    // When the offer was last written — sent back with every edit so a stale page cannot overwrite a newer one.
+    const { data: pRow } = await admin.from('platform_settings').select('updated_at').eq('key', PROMO_KEY).maybeSingle()
+    promoVersion = pRow?.updated_at ?? null
   } catch (e) {
     console.error('[admin/settings] M-Pesa config load failed', e)
   }
@@ -103,6 +111,16 @@ export default async function AdminSettingsPage() {
           markupPct={mpesa.markupPct}
           manualRate={mpesa.manualRate}
           live={mpesaLive ? { rate: mpesaLive.rate, market: mpesaLive.market, source: mpesaLive.source, asOf: mpesaLive.asOf } : null}
+        />
+      )}
+
+      {mpesa && (
+        <MpesaPromoPanel
+          promo={mpesa.promo}
+          state={mpesa.promo ? promoState(mpesa.promo) : null}
+          version={promoVersion}
+          sampleUsd={samplePlan.total}
+          sampleKes={mpesaLive ? kesFor(samplePlan.total, mpesaLive.rate) : null}
         />
       )}
 

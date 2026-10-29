@@ -117,6 +117,11 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
   const planName = order.plan_slug && order.plan_slug !== 'custom' ? getPlan(order.plan_slug)?.name : undefined
   // The tax rate frozen onto the order when it was placed (none = no tax line).
   const tax = orderTax(order)
+  // An M-Pesa offer applied when the order was placed: amount_usd is the price actually charged, list_usd
+  // what it was before the offer. Both must be present and consistent to be printed.
+  const listUsd = Number(order.list_usd)
+  const discPct = Number(order.discount_pct)
+  const discount = listUsd > 0 && discPct > 0 && listUsd > Number(order.amount_usd) ? { listUsd, pct: discPct } : null
   const revised = Number(order.billing_details_revision ?? 0) > 0 && order.billing_details_updated_at
 
   return (
@@ -194,8 +199,14 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
                 {planName ? `${planName} plan — ` : ''}{order.gb_amount} GB residential proxy bandwidth
                 <div className="text-xs text-muted mt-0.5">Non-expiring — no subscription</div>
               </td>
-              <td className="py-4 text-sm text-ink text-right font-mono">${Number(order.amount_usd).toFixed(2)}</td>
+              <td className="py-4 text-sm text-ink text-right font-mono">${(discount ? discount.listUsd : Number(order.amount_usd)).toFixed(2)}</td>
             </tr>
+            {discount && (
+              <tr className="border-b border-border">
+                <td className="py-3 text-sm text-ink2">M-Pesa offer — {discount.pct}% off</td>
+                <td className="py-3 text-sm text-ink2 text-right font-mono">−${(discount.listUsd - Number(order.amount_usd)).toFixed(2)}</td>
+              </tr>
+            )}
           </tbody>
           <tfoot>
             <tr>

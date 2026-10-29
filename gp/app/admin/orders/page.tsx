@@ -153,6 +153,9 @@ export default async function AdminOrdersPage({ searchParams }: { searchParams: 
                   <td className="px-6 py-4 font-mono text-sm font-medium text-ink">{o.gb_amount} GB</td>
                   <td className="px-6 py-4 font-mono text-sm text-ink">
                     ${Number(o.amount_usd).toFixed(2)}
+                    {o.discount_pct != null && Number(o.discount_pct) > 0 && (
+                      <div className="text-[10px] text-accent2">list ${Number(o.list_usd).toFixed(2)} · −{Number(o.discount_pct)}% offer</div>
+                    )}
                     {o.pay_currency && o.pay_currency !== 'USD' && o.pay_amount != null && (
                       <div className="text-[10px] text-muted">{o.pay_currency} {Number(o.pay_amount).toLocaleString('en-KE')} · M-Pesa</div>
                     )}

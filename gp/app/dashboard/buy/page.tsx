@@ -3,6 +3,7 @@ import { Suspense, useEffect, useRef, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { PLANS, resolveOrder, CUSTOM_MIN_GB, CUSTOM_MAX_GB } from '@/lib/plans'
 import { kesFor } from '@/lib/fx'
+import { applyPercent, formatUtc, type PublicPromo } from '@/lib/promo'
 import { confirmPayment } from '@/lib/verifyPayment'
 import { formatUsd } from '@/lib/format'
 import toast from 'react-hot-toast'
@@ -30,6 +31,13 @@ type Method = 'card' | 'mpesa'
 
 const formatKes = (n: number) => `KES ${n.toLocaleString('en-KE')}`
 
+// A malformed offer from the server is no offer — never a half-drawn discount.
+function readPromo(p: any): PublicPromo | null {
+  const percent = Number(p?.percent)
+  if (!p || !(percent > 0) || typeof p.ends_at !== 'string' || Number.isNaN(Date.parse(p.ends_at))) return null
+  return { percent, ends_at: p.ends_at, label: typeof p.label === 'string' ? p.label : '' }
+}
+
 export default function BuyPage() {
   const router = useRouter()
   const [choice, setChoice] = useState<Choice>('starter')
@@ -37,6 +45,9 @@ export default function BuyPage() {
   const [method, setMethod] = useState<Method>('card')
   // KES per USD from /api/checkout/options; null = M-Pesa not offered right now.
   const [kesRate, setKesRate] = useState<number | null>(null)
+  // The M-Pesa offer while it is live (from /api/checkout/options or a price-changed answer from
+  // /api/checkout); null = no offer. The server decides — this only mirrors it for display.
+  const [promo, setPromo] = useState<PublicPromo | null>(null)
   const [saveCard, setSaveCard] = useState(false)
   // The card saved at an earlier checkout, for one-click pay (brand / last four / expiry only).
   const [savedCard, setSavedCard] = useState<{ brand: string | null; last4: string | null; expired: boolean; valid_through: string | null } | null>(null)
@@ -64,7 +75,10 @@ export default function BuyPage() {
   }, [])
 
   const quote = resolveOrder(choice, choice === 'custom' ? Number(customGb) : undefined)
-  const kesTotal = quote && kesRate ? kesFor(quote.total, kesRate) : null
+  // With an offer, M-Pesa is charged on the discounted USD total (the same applyPercent the server uses).
+  const mpesaUsd = quote ? (promo ? applyPercent(quote.total, promo.percent) : quote.total) : null
+  const kesTotal = mpesaUsd != null && kesRate ? kesFor(mpesaUsd, kesRate) : null
+  const kesList = quote && kesRate ? kesFor(quote.total, kesRate) : null
   const mpesaOn = method === 'mpesa' && kesRate != null
 
   // "Pay now" / "Try again" on an order (Billing) links here with
@@ -104,7 +118,7 @@ export default function BuyPage() {
           if (!res.ok) continue
           const d = await res.json()
           if (cancelled) return
-          if (d?.mpesa?.available && Number(d.mpesa.rate) > 0) { setKesRate(Number(d.mpesa.rate)); return }
+          if (d?.mpesa?.available && Number(d.mpesa.rate) > 0) { setKesRate(Number(d.mpesa.rate)); setPromo(readPromo(d.mpesa.promo)); return }
           break // a real answer: M-Pesa is not offered right now
         } catch { /* network blip: try again */ }
       }
@@ -207,8 +221,15 @@ export default function BuyPage() {
       if (res.status === 409 && data.rate_changed && Number(data.rate) > 0) {
         // The exchange rate refreshed since the page loaded: show the new price
         // and let the customer confirm it, rather than charging an unseen amount.
+        const next = readPromo(data.promo)
         setKesRate(Number(data.rate))
-        toast(`The exchange rate just updated — the price is now ${formatKes(Number(data.amount_kes))}. Review it and press pay again.`, { duration: 9000, icon: '💱' })
+        setPromo(next)
+        // Say WHY the price moved: an offer that ended or started is not an exchange-rate change.
+        const why = promo && !next ? 'The M-Pesa offer has ended'
+          : !promo && next ? `An M-Pesa offer just started (${next.percent}% off)`
+          : promo && next && promo.percent !== next.percent ? 'The M-Pesa offer changed'
+          : 'The exchange rate just updated'
+        toast(`${why} — the price is now ${formatKes(Number(data.amount_kes))}. Review it and press pay again.`, { duration: 9000, icon: '💱' })
         setLoading(false); setStatusText(null); return
       }
       if (!data.access_code && !data.url) { toast.error(data.error || 'Something went wrong'); setLoading(false); setStatusText(null); return }
@@ -344,7 +365,7 @@ export default function BuyPage() {
         <div className="bg-white border border-border rounded-xl p-6 mb-5">
           <h2 className="font-display font-bold text-base text-ink mb-4">Payment method</h2>
           <div className="grid grid-cols-2 gap-3">
-            {([['card', 'Card', 'Visa / Mastercard · charged in USD'], ['mpesa', 'M-Pesa', 'STK push to your phone · charged in KES']] as const).map(([m, label, sub]) => (
+            {([['card', 'Card', 'Visa / Mastercard · charged in USD'], ['mpesa', 'M-Pesa', promo ? `${promo.percent}% off · STK push · charged in KES` : 'STK push to your phone · charged in KES']] as const).map(([m, label, sub]) => (
               <button key={m} onClick={() => setMethod(m)}
                 className={clsx('text-left p-4 rounded-xl border-2 transition-all', method===m ? 'border-accent bg-accent-light' : 'border-border hover:border-accent/40 bg-white')}>
                 <div className="font-medium text-ink text-sm">{label}</div>
@@ -352,6 +373,11 @@ export default function BuyPage() {
               </button>
             ))}
           </div>
+          {promo && (
+            <p className="mt-3 text-xs text-accent2 bg-accent-light rounded-lg px-3 py-2">
+              {promo.label ? `${promo.label}: ` : ''}pay with M-Pesa and get <strong>{promo.percent}% off</strong> every order — ends {formatUtc(promo.ends_at)}.
+            </p>
+          )}
         </div>
       )}
 
@@ -364,6 +390,7 @@ export default function BuyPage() {
           ['Bandwidth expiry', 'Never'],
           ['Payment', mpesaOn ? 'M-Pesa via Paystack' : 'Card via Paystack (secure checkout)'],
           ...(mpesaOn && kesRate ? [['Exchange rate', `1 USD = ${kesRate.toFixed(2)} KES`]] : []),
+          ...(mpesaOn && promo ? [['M-Pesa offer', `−${promo.percent}% · ends ${formatUtc(promo.ends_at)}`]] : []),
         ].map(([l,v])=>(
           <div key={l} className="flex justify-between text-sm py-2 border-b border-border last:border-none">
             <span className="text-muted font-light">{l}</span>
@@ -373,8 +400,11 @@ export default function BuyPage() {
         <div className="flex justify-between items-baseline mt-4">
           <span className="font-medium text-ink">Total</span>
           <span className="text-right">
+            {mpesaOn && promo && kesList != null && kesTotal != null && kesList !== kesTotal && (
+              <span className="block text-xs font-mono text-muted line-through">{formatKes(kesList)}</span>
+            )}
             <span className="font-display font-bold text-xl text-ink">{quote ? (mpesaOn && kesTotal ? formatKes(kesTotal) : formatUsd(quote.total)) : '—'}</span>
-            {mpesaOn && quote && <span className="block text-[11px] font-mono text-muted">≈ {formatUsd(quote.total)} · invoiced in USD</span>}
+            {mpesaOn && quote && mpesaUsd != null && <span className="block text-[11px] font-mono text-muted">≈ {formatUsd(mpesaUsd)} · invoiced in USD</span>}
           </span>
         </div>
       </div>

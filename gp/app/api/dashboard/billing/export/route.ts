@@ -42,7 +42,7 @@ export async function GET(req: Request) {
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await supabase
       .from('orders')
-      .select('id, created_at, paid_at, invoice_number, plan_slug, gb_amount, amount_usd, refunded_usd, payment_status, paystack_reference, failure_reason, payment_method, pay_currency, pay_amount, tax_rate_pct, tax_label, dispute_status, billing_details, auto_recharge')
+      .select('id, created_at, paid_at, invoice_number, plan_slug, gb_amount, amount_usd, refunded_usd, payment_status, paystack_reference, failure_reason, payment_method, pay_currency, pay_amount, tax_rate_pct, tax_label, dispute_status, billing_details, auto_recharge, list_usd, discount_pct')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false })
       .order('id', { ascending: false })
@@ -108,6 +108,9 @@ export async function GET(req: Request) {
     { header: 'dispute', value: o => o.dispute_status ?? '' },
     { header: 'failure_reason', value: o => o.failure_reason ?? '' },
     { header: 'payment_reference', value: o => o.paystack_reference ?? '' },
+    // An M-Pesa offer: amount_usd above is what was charged; these are the price before it and the percent taken off.
+    { header: 'list_price_usd', value: o => o.list_usd != null ? Number(o.list_usd).toFixed(2) : '' },
+    { header: 'discount_pct', value: o => o.discount_pct ?? '' },
   ])
 
   return csvResponse(csv, 'globproxy-billing-history')

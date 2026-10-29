@@ -51,11 +51,15 @@ export async function startCheckout(
   kes: { amount: number; rate: number } | null = null,
   // saveCard: the customer ticked "save this card for auto-recharge". Card orders only;
   // the webhook stores the reusable authorization when this order is paid.
-  opts: { saveCard?: boolean } = {},
+  // promo: the M-Pesa offer applied to this order. `quote.total` is already the DISCOUNTED amount
+  // (the one charged, invoiced, refunded and commissioned on); listUsd / pct are kept beside it so the
+  // invoice can show what was taken off. M-Pesa orders only.
+  opts: { saveCard?: boolean; promo?: { listUsd: number; pct: number } } = {},
 ): Promise<CheckoutStart> {
   const reference = generateReference()
   const tax = currentTax() // frozen onto the order: a later rate change never rewrites its invoice
   const saveCard = !!opts.saveCard && !kes
+  const promo = kes ? opts.promo : undefined // the offer is M-Pesa-only: never record it on a card order
 
   const { data: order, error } = await supabase.from('orders').insert({
     user_id: user.id,
@@ -68,6 +72,7 @@ export async function startCheckout(
     // M-Pesa: the KES amount the customer is asked to pay, locked now, plus the rate it
     // came from. Verification expects exactly this, not the USD price.
     ...(kes ? { pay_currency: 'KES', pay_amount: kes.amount, fx_rate: kes.rate } : {}),
+    ...(promo ? { list_usd: promo.listUsd, discount_pct: promo.pct } : {}),
     ...(tax ? { tax_rate_pct: tax.rate, tax_label: tax.label } : {}),
   }).select().single()
   if (error || !order) throw error ?? new Error('order insert returned no row')
@@ -86,6 +91,7 @@ export async function startCheckout(
         plan: quote.slug,
         ...(saveCard ? { save_card: '1' } : {}),
         ...(kes ? { currency: 'KES', amount_kes: String(kes.amount) } : {}),
+        ...(promo ? { promo_pct: String(promo.pct) } : {}),
       },
       callback_url: `${appUrl()}/dashboard?payment=success&reference=${reference}`,
     })

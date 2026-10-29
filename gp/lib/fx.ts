@@ -1,4 +1,5 @@
 import type { createAdminClient } from '@/lib/supabase/server'
+import { PROMO_KEY, parsePromo, activePromo, type MpesaPromo } from '@/lib/promo'
 
 // USD → KES for M-Pesa checkout. Prices are in USD; M-Pesa can only settle in
 // shillings, so each M-Pesa order locks a KES amount at the moment it is
@@ -32,6 +33,9 @@ export interface KesQuote {
   markupPct: number
   source: 'live' | 'cache' | 'stale-cache' | 'manual'
   asOf: string | null   // ISO time the market rate was fetched (null for manual)
+  // The M-Pesa offer, only while it is live (lib/promo.ts). Read in the same query as the rate,
+  // so the price a customer is shown and the price charged come from one consistent snapshot.
+  promo: MpesaPromo | null
 }
 
 export interface MpesaConfig {
@@ -39,6 +43,7 @@ export interface MpesaConfig {
   markupPct: number
   manualRate: number | null
   cache: { mid: number; fetched_at: string } | null
+  promo: MpesaPromo | null   // as stored — may be off, scheduled or ended (the admin screen shows which)
 }
 
 const saneRate = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= MIN_RATE && n <= MAX_RATE
@@ -71,7 +76,7 @@ const SOURCES: Array<{ name: string; get: () => Promise<number> }> = [
 export async function loadMpesaConfig(supabase: Admin): Promise<MpesaConfig> {
   const { data, error } = await supabase
     .from('platform_settings').select('key, value')
-    .in('key', ['mpesa_enabled', 'kes_fx_markup_pct', 'kes_fx_manual', 'kes_fx_cache'])
+    .in('key', ['mpesa_enabled', 'kes_fx_markup_pct', 'kes_fx_manual', 'kes_fx_cache', PROMO_KEY])
   if (error) throw error
   const m = new Map((data ?? []).map(r => [r.key, r.value as string]))
 
@@ -91,6 +96,7 @@ export async function loadMpesaConfig(supabase: Admin): Promise<MpesaConfig> {
     markupPct,
     manualRate: saneRate(manual) ? manual : null,
     cache,
+    promo: parsePromo(m.get(PROMO_KEY)),
   }
 }
 
@@ -107,6 +113,7 @@ export async function getKesQuote(supabase: Admin): Promise<KesQuote | null> {
     rate: Math.round(market * (1 + cfg.markupPct / 100) * 10000) / 10000,
     source,
     asOf,
+    promo: activePromo(cfg.promo),
   })
 
   const ageMs = cfg.cache ? Date.now() - Date.parse(cfg.cache.fetched_at) : Infinity

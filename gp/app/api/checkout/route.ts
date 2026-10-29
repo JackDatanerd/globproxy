@@ -3,6 +3,7 @@ import { createAdminClient, createClient } from '@/lib/supabase/server'
 import { requireActiveUser } from '@/lib/apiAuth'
 import { startCheckout, purchaseBlock } from '@/lib/checkout'
 import { resolveOrder } from '@/lib/plans'
+import { applyPercent, publicPromo } from '@/lib/promo'
 import { getKesQuote, kesFor } from '@/lib/fx'
 import { isCrossSiteRequest } from '@/lib/appUrl'
 import { rateLimited, rateLimitedUser } from '@/lib/rateLimit'
@@ -69,23 +70,34 @@ export async function POST(req: Request) {
 
     const method: 'card' | 'mpesa' = body?.method === 'mpesa' ? 'mpesa' : 'card'
     let kes: { amount: number; rate: number } | null = null
+    // The M-Pesa offer, when one is live: the order is priced at the discounted total, so the KES
+    // the customer is asked for, the amount Paystack verifies, the invoice, refunds and affiliate
+    // commission all follow from the one figure stored as amount_usd.
+    let priced = planData
+    let promo: { listUsd: number; pct: number } | undefined
     if (method === 'mpesa') {
       const quote = await getKesQuote(supabase)
       if (!quote) {
         return NextResponse.json({ error: 'M-Pesa is temporarily unavailable. Please pay by card or try again later.' }, { status: 503 })
       }
-      const amount = kesFor(planData.total, quote.rate)
+      if (quote.promo) {
+        priced = { ...planData, total: applyPercent(planData.total, quote.promo.percent) }
+        promo = { listUsd: planData.total, pct: quote.promo.percent }
+      }
+      const amount = kesFor(priced.total, quote.rate)
       // The customer saw a KES price on the buy page. KES is charged in whole
       // shillings, so what they saw and what is charged must be the SAME number:
       // if the rate has refreshed since (or the caller did not say what it
       // displayed) make them re-confirm the amount rather than charging a figure
       // they did not see. This used to tolerate a 1% drift — up to 1% more or less
       // than the price on screen — and skipped the check when nothing was sent.
+      // The same check covers the offer starting, changing or ending between the page
+      // loading and the click: the answer carries the current offer so the page can say so.
       const expected = Number(body?.expected_kes)
       if (!Number.isFinite(expected) || expected <= 0 || amount !== Math.round(expected)) {
         return NextResponse.json({
-          error: 'The exchange rate just updated. Please review the new amount and try again.',
-          rate_changed: true, rate: quote.rate, amount_kes: amount,
+          error: 'The price just updated. Please review the new amount and try again.',
+          rate_changed: true, rate: quote.rate, amount_kes: amount, promo: publicPromo(quote.promo),
         }, { status: 409 })
       }
       kes = { amount, rate: quote.rate }
@@ -94,7 +106,7 @@ export async function POST(req: Request) {
     if (!user.email) {
       return NextResponse.json({ error: 'Your account has no email address. Add one before purchasing.' }, { status: 400 })
     }
-    const started = await startCheckout(supabase, { id: user.id, email: user.email }, planData, kes, { saveCard: body?.save_card === true })
+    const started = await startCheckout(supabase, { id: user.id, email: user.email }, priced, kes, { saveCard: body?.save_card === true, promo })
 
     return NextResponse.json({
       url: started.url,

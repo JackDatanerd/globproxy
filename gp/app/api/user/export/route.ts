@@ -56,7 +56,7 @@ export async function GET(req: Request) {
         'total_gb, used_gb, allocated_gb, available_gb, created_at, updated_at'
       ).eq('user_id', user.id).maybeSingle()),
       orders: await get('orders', admin.from('orders').select(
-        'id, gb_amount, amount_usd, payment_method, payment_status, paystack_reference, bandwidth_credited, invoice_number, refunded_usd, refunded_at, failure_reason, created_at, paid_at'
+        'id, gb_amount, amount_usd, payment_method, payment_status, paystack_reference, bandwidth_credited, invoice_number, refunded_usd, refunded_at, failure_reason, created_at, paid_at, list_usd, discount_pct'
       ).eq('user_id', user.id).eq('is_canary', false).order('created_at', { ascending: false }).limit(ROW_CAP)),
       proxy_sessions: await get('proxy_sessions', admin.from('proxy_credentials').select(
         'id, label, status, protocol, session_type, sticky_duration, country, state, city, asn, gb_allocated, gb_used, created_at, activated_at'
