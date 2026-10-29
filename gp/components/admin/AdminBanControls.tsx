@@ -24,7 +24,10 @@ export function AdminBanForm() {
     if (!ok) { toast.error(data.error ?? 'Could not ban that address'); return }
     const d = data as any
     const total: number = d.existing_total ?? 0
-    if (d.suspend_failures?.length) {
+    if (d.lookup_failed) {
+      toast.error(`Banned, but existing accounts could not be checked${suspendExisting && !isDomain ? ' — none were suspended' : ''}. Search Users for ${isDomain ? value : 'the address'} and review them by hand.`, { duration: 12000 })
+      setTimeout(() => window.location.reload(), 4500)
+    } else if (d.suspend_failures?.length) {
       toast.error(`Banned, but ${d.suspend_failures.length} account(s) could not be suspended — suspend them from the Users page.`, { duration: 9000 })
       setTimeout(() => window.location.reload(), 3500)
     } else if (d.suspended > 0) {

@@ -14,9 +14,17 @@ export async function POST(req: Request) {
   if (!removed?.length) return NextResponse.json({ error: 'That ban no longer exists.' }, { status: 409 })
 
   // Accounts suspended BY this ban stay suspended — lifting a ban is not a reinstatement. Say
-  // which ones, so the admin can decide, instead of leaving them silently locked out.
+  // which ones, so the admin can decide, instead of leaving them silently locked out. Only those
+  // the ban itself suspended (reason set by ban-email) — an account suspended for fraud or abuse
+  // is not something this unban left behind.
   const { data: rows } = await auth.supabase.rpc('profiles_matching_ban', { p_email: removed[0].email })
-  const still = ((rows ?? []) as { id: string; email: string; is_suspended: boolean }[]).filter(r => r.is_suspended)
+  const ids = ((rows ?? []) as { id: string }[]).map(r => r.id)
+  let still: { id: string; email: string }[] = []
+  if (ids.length) {
+    const { data: byBan } = await auth.supabase.from('profiles').select('id, email')
+      .in('id', ids).eq('is_suspended', true).like('suspension_reason', 'Email address banned%')
+    still = (byBan ?? []) as { id: string; email: string }[]
+  }
 
   await logAdminAction(auth.supabase, {
     adminId: auth.adminId, action: 'email.unban', targetRef: removed[0].email,

@@ -53,6 +53,8 @@ export async function POST(req: Request) {
   // Accounts already using this address / any alias of it / any address at the domain.
   const { data: matchRows, error: matchErr } = await supabase.rpc('profiles_matching_ban', { p_email: email })
   if (matchErr) console.error('[ban-email] matching accounts lookup failed', matchErr)
+  // A failed lookup must not read as "nobody matched" — the ban is in, but existing accounts were not checked or suspended.
+  const lookupFailed = !!matchErr
   const matches = ((matchRows ?? []) as { id: string; email: string; full_name: string | null; role: string; is_suspended: boolean }[])
 
   const suspended: string[] = []
@@ -78,6 +80,7 @@ export async function POST(req: Request) {
       ...(reason ? { reason } : {}),
       ...(isDomain ? { domain: true } : {}),
       matched_accounts: matches.length,
+      ...(lookupFailed ? { lookup_failed: true } : {}),
       ...(suspendExisting ? { suspended_accounts: suspended.length, suspend_failures: failed.length } : {}),
     },
   })
@@ -89,5 +92,6 @@ export async function POST(req: Request) {
     existing_total: matches.length,
     suspended: suspended.length,
     suspend_failures: failed,
+    lookup_failed: lookupFailed,
   })
 }

@@ -8,6 +8,7 @@ import { createAdminClient } from '@/lib/supabase/server'
 import { isUuid } from '@/lib/adminAuth'
 import { formatCycleLabel } from '@/lib/payoutCycle'
 import { AFFILIATE_HOLD_HOURS } from '@/lib/referrals'
+import { maskWallet, maskPhone, maskBank } from '@/lib/maskPayout'
 import { formatRatePct, DEFAULT_AFFILIATE_INTRO_RATE, DEFAULT_AFFILIATE_LIFETIME_RATE, VERIFIED_OPERATOR_REVIEW_DAYS, verifiedOperatorReviewDue } from '@/lib/rates'
 
 const usd = (n: unknown) => `$${Number(n ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -15,9 +16,10 @@ const day = (s: string | null) => s ? new Date(s).toLocaleDateString('en-GB', { 
 
 function maskedDestination(p: any): string {
   if (!p.payout_method) return 'Not set'
-  if (p.payout_method === 'usdt') return `USDT (TRC20) · ${String(p.payout_wallet_address ?? '').slice(0, 6)}…${String(p.payout_wallet_address ?? '').slice(-4)}`
-  if (p.payout_method === 'mpesa') return `M-Pesa · ${String(p.payout_mpesa_phone ?? '').slice(0, 6)}***${String(p.payout_mpesa_phone ?? '').slice(-2)}`
-  return `Bank · ${p.payout_bank_details?.bankName ?? ''} · ****${String(p.payout_bank_details?.accountNumber ?? '').slice(-4)}`
+  if (p.payout_method === 'usdt') return `USDT (TRC20) · ${maskWallet(p.payout_wallet_address) ?? '—'}`
+  if (p.payout_method === 'mpesa') return `M-Pesa · ${maskPhone(p.payout_mpesa_phone) ?? '—'}`
+  const b = maskBank(p.payout_bank_details)
+  return `Bank · ${b?.bankName ?? ''} · ${b?.accountLast4 ? `****${b.accountLast4}` : '—'}`
 }
 
 // One affiliate end to end — what they've earned, who they referred, what is
@@ -57,7 +59,9 @@ export default async function AdminAffiliateDetailPage({ params }: { params: Pro
   }
   const reviews = (reviewsRes.error ? [] : (reviewsRes.data ?? [])) as any[]
   const reviewDue = p.is_verified_operator ? verifiedOperatorReviewDue(p.verified_operator_since ?? null, reviews[0]?.reviewed_at ?? null) : null
-  const reviewOverdue = !!reviewDue && reviewDue.getTime() < Date.now()
+  // Reviews only apply while the affiliate is active — same rule as the Overview tile and the "due" filter.
+  const reviewPaused = p.is_verified_operator && p.affiliate_status !== 'approved'
+  const reviewOverdue = !reviewPaused && !!reviewDue && reviewDue.getTime() < Date.now()
 
   // Verified Operator grant / revoke history (who, when, which rates) from the
   // audit log — so a rate on this page can be traced to the decision behind it.
@@ -162,7 +166,9 @@ export default async function AdminAffiliateDetailPage({ params }: { params: Pro
               <div className="text-sm font-medium text-ink">{p.is_verified_operator ? 'Verified Operator review' : 'Verified Operator readiness'}</div>
               <div className="text-muted mt-0.5">
                 {p.is_verified_operator
-                  ? <>Review every {VERIFIED_OPERATOR_REVIEW_DAYS} days — {reviewOverdue
+                  ? <>Review every {VERIFIED_OPERATOR_REVIEW_DAYS} days — {reviewPaused
+                    ? <span>paused while this affiliate is not active</span>
+                    : reviewOverdue
                       ? <span className="text-amber-700 font-medium">{reviewDue!.getTime() === 0 ? 'review overdue — no grant date was recorded' : `review overdue since ${day(reviewDue!.toISOString())}`}</span>
                       : <>next due {day(reviewDue?.toISOString() ?? null)}</>}</>
                   : 'What this affiliate has actually delivered, to inform a grant.'}

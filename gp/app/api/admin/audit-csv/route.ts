@@ -26,7 +26,7 @@ export async function GET(req: Request) {
     }
     if (error) return NextResponse.json({ error: 'Export failed' }, { status: 500 })
 
-    await logAdminAction(auth.supabase, { adminId: auth.adminId, action: 'audit_log_exported', details: { rows: rows.length, ...f } })
+    await logAdminAction(auth.supabase, { adminId: auth.adminId, action: 'audit_log_exported', details: { rows: rows.length, filters: Object.entries(f).filter(([, v]) => v).map(([k]) => k) } })
 
     const csv = toCsv(rows as any[], [
       { header: 'When (UTC)', value: r => r.created_at },
