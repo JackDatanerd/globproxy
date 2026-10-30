@@ -37,10 +37,10 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
   if (!r.ok) return NextResponse.json({ error: r.message }, { status: r.status })
 
   await logSecurityEvent({ userId: user.id, event: 'api_key_rotated', req, admin, meta: { new_key_prefix: r.data.meta.key_prefix, old_key_valid_until: r.data.old_key_valid_until } })
-  await notifySecurityChange(user.id, 'An API key on your GlobProxy account was rotated', `an API key was rotated; the replacement starts ${r.data.meta.key_prefix}…. ${r.data.old_key_valid_until ? 'The old key keeps working until ' + r.data.old_key_valid_until.slice(0, 16).replace('T', ' ') + ' UTC.' : 'The old key was revoked immediately.'}`)
+  await notifySecurityChange(user.id, 'An API key on your GlobProxy account was rotated', `an API key was rotated; the replacement starts ${r.data.meta.key_prefix}…. ${r.data.old_key_expired ? 'The old key had already expired.' : r.data.old_key_valid_until ? 'The old key keeps working until ' + r.data.old_key_valid_until.slice(0, 16).replace('T', ' ') + ' UTC.' : 'The old key was revoked immediately.'}`)
   await notifyKeyEvent(user.id, 'api_key_created', r.data.meta, { rotated_from: r.data.old.id })
   // A key revoked on the spot (grace 0) is a revocation like any other — receivers
   // that mirror key state must hear about it. A graced old key simply lapses.
   if (r.data.old.revoked) await notifyKeyEvent(user.id, 'api_key_revoked', r.data.old, { reason: 'rotated', replaced_by: r.data.meta.id })
-  return NextResponse.json({ key: r.data.plaintext, meta: r.data.meta, old_key_valid_until: r.data.old_key_valid_until }, { status: 201 })
+  return NextResponse.json({ key: r.data.plaintext, meta: r.data.meta, old_key_valid_until: r.data.old_key_valid_until, old_key_expired: r.data.old_key_expired ?? false }, { status: 201 })
 }

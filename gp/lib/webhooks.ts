@@ -270,10 +270,17 @@ async function attemptDelivery(
     delete patch.next_attempt_at
     delete patch.attempts
   }
+  // A failed manual re-send of a delivery the receiver already ACCEPTED must not downgrade it: it used to
+  // flip to 'failed' (and lose its response status/body), so "redeliver failed" then sent the event again.
+  // The attempt still counts against the endpoint below.
+  const keepSucceeded = !!opts.manual && !ok && d.status === 'succeeded'
+  if (keepSucceeded) {
+    for (const k of Object.keys(patch)) delete patch[k]
+  }
   // supabase-js reports a failed write as { error }, it does not throw — so a bare
   // try/catch here recorded nothing and said nothing: a delivery that SUCCEEDED
   // stayed 'retrying' and was sent again. Checked, retried once, and logged.
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 2 && !keepSucceeded; attempt++) {
     try {
       const { error: recErr } = await supabase.from('webhook_deliveries').update(patch).eq('id', d.id)
       if (!recErr) break

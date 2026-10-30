@@ -277,7 +277,7 @@ export default function ApiKeysClient({ canAllocate = false }: { canAllocate?: b
     try {
       const data = await apiJson('POST', `/api/dashboard/api-keys/${id}/rotate`, { grace_hours: Number(rotateGrace) })
       setJustCreated(data.key)
-      setJustRotatedNote(data.old_key_valid_until ? `The old key keeps working until ${new Date(data.old_key_valid_until).toLocaleString()}.` : 'The old key was revoked.')
+      setJustRotatedNote(data.old_key_expired ? 'The old key had already expired.' : data.old_key_valid_until ? `The old key keeps working until ${new Date(data.old_key_valid_until).toLocaleString()}.` : 'The old key was revoked.')
       setRotatingId(null)
       loadKeys()
     } catch (err: any) {

@@ -197,6 +197,7 @@ export async function applyKeyUpdate(admin: Admin, userId: string, id: string, p
 //     is revoked again and the call fails, so nothing is left half-rotated.
 export type RotatedKey = {
   plaintext: string; meta: any; old_key_valid_until: string | null
+  old_key_expired?: boolean // the old key had already lapsed before the rotation
   old: { id: string; label: string | null; key_prefix: string; revoked: boolean }
 }
 
@@ -260,6 +261,11 @@ export async function rotateApiKey(
   // Old key: lapse after the grace window, never EXTEND an earlier expiry.
   const graceEnd = Date.now() + graceHours * 3_600_000
   const oldEnd = old.expires_at ? new Date(old.expires_at).getTime() : Infinity
+  // An already-expired key has no grace window to give: there is nothing to shorten, and reporting its past
+  // expiry as "keeps working until" was wrong.
+  if (oldEnd <= Date.now()) {
+    return { ok: true, data: { ...created.data, old_key_valid_until: null, old_key_expired: true, old: { ...oldInfo, revoked: false } } }
+  }
   const validUntil = new Date(Math.min(graceEnd, oldEnd)).toISOString()
   // expiry_warned_at: the user just rotated — the expiry warning must not
   // e-mail "your key expires tomorrow" about the key they are replacing.

@@ -19,6 +19,9 @@ const fail = (status: number, code: ServiceError['code'], message: string): Serv
 const VIEW_COLS =
   'id, url, description, event_types, enabled, created_at, last_success_at, last_failure_at, last_error, consecutive_failures, disabled_at, disabled_reason, previous_secret_expires_at'
 
+// Clears the failure streak bookkeeping (see record_webhook_attempt, migration 0089).
+const FRESH_STREAK = { consecutive_failures: 0, failing_since: null, last_error: null } as const
+
 function generateSecret(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(24))
   return `whsec_${Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('')}`
@@ -86,6 +89,10 @@ export async function updateEndpoint(admin: Admin, userId: string, id: string, b
     const urlError = await validateWebhookUrlFull(url)
     if (urlError) return fail(400, 'invalid_request', urlError)
     patch.url = url
+    // A new address is a fresh start, like re-enabling: the failure streak belongs to the OLD address.
+    // Left in place, one failed delivery to the corrected URL could complete a 50-failure / 24-hour
+    // streak and switch the endpoint off. `enabled` itself is never touched here.
+    Object.assign(patch, FRESH_STREAK)
   }
   if (body?.event_types !== undefined) {
     const events = parseEventTypes(body.event_types)
@@ -148,7 +155,8 @@ export async function rotateSecret(
   const expires = graceMinutes > 0 ? new Date(Date.now() + graceMinutes * 60_000).toISOString() : null
   const { data, error } = await admin
     .from('webhook_endpoints')
-    .update({ secret, previous_secret: graceMinutes > 0 ? current.secret : null, previous_secret_expires_at: expires })
+    // A rotation is the usual fix for signature failures, so it also starts the streak over.
+    .update({ secret, previous_secret: graceMinutes > 0 ? current.secret : null, previous_secret_expires_at: expires, ...FRESH_STREAK })
     // Compare-and-set on the secret we read: two concurrent rotations used to both succeed, and the
     // loser was handed a secret that was already replaced. The loser now gets a 409 and retries.
     .eq('id', id).eq('user_id', userId).eq('secret', current.secret).select('id').maybeSingle()
