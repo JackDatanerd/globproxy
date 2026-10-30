@@ -2,6 +2,7 @@ import { withApiAuth, failFrom, asApiRateLimited, readJsonBody } from '@/lib/api
 import { apiError } from '@/lib/apiAuth'
 import { rateLimited, rateLimitedUser } from '@/lib/rateLimit'
 import { cancelInvitation, reduceInvitation } from '@/lib/resellerAllocation'
+import { isUuid } from '@/lib/adminAuth'
 import { NextResponse } from 'next/server'
 
 // DELETE /api/v1/reseller/invitations/:id — withdraw an invitation nobody has claimed
@@ -32,12 +33,15 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
     const { id } = await context.params
     const limited = (await rateLimited(req, 'RESELLER_RATE_LIMITER', `invite-reduce:${user.id}`)) ?? (await rateLimitedUser('RESELLER_RATE_LIMITER', user.id, 'invite-reduce'))
     if (limited) return asApiRateLimited(limited)
+    // A malformed id can never match: 404 here, so the only 400s left from reduceInvitation are about `gb`
+    // (no message sniffing to tell them apart).
+    if (!isUuid(id)) return apiError(404, 'not_found', 'Invitation not found')
     const json = await readJsonBody(req)
     if (!json.ok) return json.response
     const { data: profile } = await supabase.from('profiles').select('email, full_name, role').eq('id', user.id).maybeSingle()
     if (!profile || !['reseller', 'admin'].includes(profile.role ?? '')) return apiError(403, 'reseller_required', 'Reseller access required.')
     const r = await reduceInvitation(supabase, { id: user.id, email: profile.email, full_name: profile.full_name }, id, (json.body as any)?.gb)
-    if (!r.ok) return r.status === 400 && !/smaller amount|Enter the new amount/.test(r.message) ? apiError(404, 'not_found', 'Invitation not found') : failFrom(r)
+    if (!r.ok) return failFrom(r)
     return NextResponse.json({ success: true, gb: r.data.gb, returned_gb: r.data.returned_gb })
   }, { scope: 'allocate' })
 }

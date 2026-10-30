@@ -178,6 +178,7 @@ export default function ApiDocsPage() {
             ['403', 'Forbidden', 'Account suspended, API access not enabled, read-only key used for a write, or an action not permitted on this resource.'],
             ['404', 'Not Found', "The resource doesn't exist, or doesn't belong to your account."],
             ['409', 'Conflict', "The sub-user is still being provisioned (whitelist, usage history), or an identical Idempotency-Key request is still in flight."],
+            ['413', 'Payload Too Large', 'The request body is over the 1 MiB limit.'],
             ['422', 'Unprocessable', 'Idempotency-Key reused with a different request body.'],
             ['429', 'Too Many Requests', 'Rate limit exceeded — wait for the Retry-After interval.'],
             ['500', 'Internal Server Error', "Something went wrong on our end — safe to retry once; open a support ticket if it persists."],

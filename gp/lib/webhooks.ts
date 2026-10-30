@@ -292,13 +292,16 @@ async function attemptDelivery(
   }
 
   try {
-    const { data: justDisabled } = await supabase.rpc('record_webhook_attempt', {
+    const { data: justDisabled, error: recAttemptErr } = await supabase.rpc('record_webhook_attempt', {
       p_endpoint_id: ep.id,
       p_ok: ok,
       p_error: error ?? '',
       p_disable_threshold: DISABLE_THRESHOLD,
       p_force_disable_reason: forceDisable,
     })
+    // supabase-js reports a failed RPC as { error }, it does not throw: unchecked, a failing
+    // function left the failure streak, auto-disable and last_success_at silently stale.
+    if (recAttemptErr) console.error('[webhooks] record_webhook_attempt failed', ep.id, recAttemptErr.message)
     if (justDisabled === true) {
       await failPendingDeliveries(supabase, ep.id, 'Endpoint was disabled after repeated failures')
       await notifyAutoDisabled(supabase, ep)
@@ -496,8 +499,12 @@ export async function redeliverWebhook(userId: string, deliveryId: string, endpo
 // otherwise hold the request for 8 seconds per delivery. Manual redeliveries count
 // towards the endpoint's failure streak exactly like single ones do.
 export async function redeliverFailedWebhooks(
-  userId: string, endpointId: string, max = 5
-): Promise<{ ok: true; attempted: number; succeeded: number; more_failed: boolean; stopped_early: boolean } | { ok: false; error: string }> {
+  userId: string, endpointId: string, max = 5,
+  // Called once the batch is known, with how many deliveries will be attempted. Returning false
+  // aborts before anything is sent (the API charges its per-key write budget here, so an
+  // endpoint with one failed delivery costs one write, not `limit`).
+  authorize?: (count: number) => Promise<boolean>
+): Promise<{ ok: true; attempted: number; succeeded: number; more_failed: boolean; stopped_early: boolean } | { ok: false; error: string; budgetExceeded?: boolean }> {
   const supabase = await createAdminClient()
   const { data: ep, error: epErr } = await supabase.from('webhook_endpoints').select(EP_COLS).eq('id', endpointId).eq('user_id', userId).maybeSingle()
   if (epErr && epErr.code !== '22P02') throw new Error(`webhook lookup failed: ${epErr.message}`)
@@ -517,6 +524,7 @@ export async function redeliverFailedWebhooks(
   if (error) { console.error('[webhooks] redeliver-failed lookup failed', error); return { ok: false, error: 'Could not load deliveries' } }
 
   const batch = ((rows ?? []) as Delivery[]).slice(0, cap)
+  if (batch.length && authorize && !(await authorize(batch.length))) return { ok: false, error: 'Write budget exceeded', budgetExceeded: true }
   let attempted = 0, succeeded = 0, streak = 0, stopped = false
   for (const d of batch) {
     const r = await attemptDelivery(supabase, ep as Endpoint, d, { retry: false, manual: true })
@@ -531,50 +539,82 @@ export async function redeliverFailedWebhooks(
 // deliveries per endpoint per tick (a customer whose endpoint is down cannot
 // starve everyone else), and different endpoints are worked in parallel so one
 // slow receiver does not serialise the whole batch behind its 8 s timeout.
+//
+// The budget (`limit`) is spent on ATTEMPTS, not on rows merely selected. A dead
+// endpoint's group stops after GROUP_STOP_AFTER_FAILURES failures and leaves the rest of
+// its rows due, so charging the budget at selection let five such endpoints (or one
+// customer with ten dead receivers) fill every slot with rows that were never tried and,
+// being the oldest, keep winning them every tick: nobody else's retries or deferred events
+// (usage alerts, key-revocation notices, ...) were ever selected. Work is therefore done in
+// passes: select up to the remaining budget, run the groups, drop the endpoints that
+// stopped on a failure streak, and select again with what is left of the budget.
+const MAX_RETRY_PASSES = 5
+
+type DueRow = Delivery & { next_attempt_at: string }
+
+async function selectDueGroups(
+  supabase: SupabaseAdmin, nowIso: string, budget: number,
+  handled: Map<string, number>, stopped: Set<string>
+): Promise<Delivery[][] | null> {
+  const PAGE = Math.max(budget, 1) * 4
+  const byEndpoint = new Map<string, Delivery[]>()
+  // Endpoints that already used their per-tick quota, or stopped on a failure streak.
+  const excluded = new Set(stopped)
+  for (const [ep, n] of handled) if (n >= PER_ENDPOINT_PER_RUN) excluded.add(ep)
+  const seen = new Set<string>()
+  let picked = 0
+  let cursor: { at: string; id: string } | null = null
+  for (let round = 0; round < 6 && picked < budget; round++) {
+    let q = supabase
+      .from('webhook_deliveries')
+      .select(`${DELIVERY_COLS}, next_attempt_at`)
+      .eq('status', 'retrying')
+      .lte('next_attempt_at', nowIso)
+      .order('next_attempt_at', { ascending: true })
+      .order('id', { ascending: true })
+      .limit(PAGE)
+    if (excluded.size) q = q.not('endpoint_id', 'in', `(${[...excluded].join(',')})`)
+    // Keyset paging: the next round continues AFTER the last row seen. Without it a later
+    // round re-read the rows already taken in this one (they are still due until claimed).
+    if (cursor) q = q.or(`next_attempt_at.gt."${cursor.at}",and(next_attempt_at.eq."${cursor.at}",id.gt.${cursor.id})`)
+    const { data: dueRows, error } = await q
+    if (error) {
+      console.error('[webhooks] failed to load due deliveries', error)
+      return picked === 0 ? null : [...byEndpoint.values()]
+    }
+    const rows = (dueRows ?? []) as DueRow[]
+    for (const d of rows) {
+      if (picked >= budget) break
+      if (seen.has(d.id)) continue
+      seen.add(d.id)
+      const used = handled.get(d.endpoint_id) ?? 0
+      if (used >= PER_ENDPOINT_PER_RUN || excluded.has(d.endpoint_id)) continue
+      const list = byEndpoint.get(d.endpoint_id) ?? []
+      list.push(d)
+      byEndpoint.set(d.endpoint_id, list)
+      handled.set(d.endpoint_id, used + 1)
+      picked++
+      if (used + 1 >= PER_ENDPOINT_PER_RUN) excluded.add(d.endpoint_id)
+    }
+    if (rows.length < PAGE) break
+    const last = rows[rows.length - 1]
+    cursor = { at: last.next_attempt_at, id: last.id }
+  }
+  return [...byEndpoint.values()]
+}
+
 export async function runWebhookRetries(limit = RETRIES_PER_RUN) {
   const supabase = await createAdminClient()
   const nowIso = new Date().toISOString()
 
-  // Fairness has to be applied while SELECTING, not after: a single window of
-  // the oldest rows can be entirely one dead endpoint's backlog, which used to
-  // push every other customer's due deliveries out of the window altogether.
-  // Each round excludes the endpoints that already hit their per-tick quota, so
-  // the next page reaches further down the queue.
-  const PAGE = limit * 4
-  const byEndpoint = new Map<string, Delivery[]>()
-  const saturated: string[] = []
-  let picked = 0
-  for (let round = 0; round < 6 && picked < limit; round++) {
-    let q = supabase
-      .from('webhook_deliveries')
-      .select(DELIVERY_COLS)
-      .eq('status', 'retrying')
-      .lte('next_attempt_at', nowIso)
-      .order('next_attempt_at', { ascending: true })
-      .limit(PAGE)
-    if (saturated.length) q = q.not('endpoint_id', 'in', `(${saturated.join(',')})`)
-    const { data: dueRows, error } = await q
-    if (error) {
-      console.error('[webhooks] failed to load due deliveries', error)
-      if (picked === 0) return { due: 0, retried: 0, succeeded: 0 }
-      break
-    }
-    const rows = (dueRows ?? []) as Delivery[]
-    for (const d of rows) {
-      if (picked >= limit) break
-      const list = byEndpoint.get(d.endpoint_id) ?? []
-      if (list.length >= PER_ENDPOINT_PER_RUN) continue
-      list.push(d)
-      byEndpoint.set(d.endpoint_id, list)
-      picked++
-      if (list.length >= PER_ENDPOINT_PER_RUN && !saturated.includes(d.endpoint_id)) saturated.push(d.endpoint_id)
-    }
-    if (rows.length < PAGE) break
-  }
-
+  let due = 0
   let retried = 0
   let succeeded = 0
-  const runGroup = async (group: Delivery[]) => {
+  const handled = new Map<string, number>()
+  const stopped = new Set<string>()
+
+  // Returns true when the group stopped on a failure streak (the endpoint is struggling).
+  const runGroup = async (group: Delivery[]): Promise<boolean> => {
     let failStreak = 0
     for (const d of group) {
       if (failStreak >= GROUP_STOP_AFTER_FAILURES) break
@@ -616,12 +656,21 @@ export async function runWebhookRetries(limit = RETRIES_PER_RUN) {
       retried++
       if (r.ok) { succeeded++; failStreak = 0 } else failStreak++
     }
+    return failStreak >= GROUP_STOP_AFTER_FAILURES
   }
-  const groups = [...byEndpoint.values()]
-  for (let i = 0; i < groups.length; i += ENDPOINT_PARALLELISM) {
-    await Promise.all(groups.slice(i, i + ENDPOINT_PARALLELISM).map((g) => runGroup(g).catch((e) => console.error('[webhooks] retry group failed', e))))
+
+  for (let pass = 0; pass < MAX_RETRY_PASSES && retried < limit; pass++) {
+    const groups = await selectDueGroups(supabase, nowIso, limit - retried, handled, stopped)
+    if (groups === null) return { due, retried, succeeded }
+    if (!groups.length) break
+    due += groups.reduce((n, g) => n + g.length, 0)
+    for (let i = 0; i < groups.length; i += ENDPOINT_PARALLELISM) {
+      const slice = groups.slice(i, i + ENDPOINT_PARALLELISM)
+      const results = await Promise.all(slice.map((g) => runGroup(g).catch((e) => { console.error('[webhooks] retry group failed', e); return false })))
+      results.forEach((hitStreak, k) => { if (hitStreak) stopped.add(slice[k][0].endpoint_id) })
+    }
   }
-  return { due: picked, retried, succeeded }
+  return { due, retried, succeeded }
 }
 
 // Cron (every 5 min): bandwidth-threshold webhooks. Previously fired from

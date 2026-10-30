@@ -15,7 +15,11 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
 
     const { data: profile } = await supabase.from('profiles').select('email, full_name').eq('id', user.id).maybeSingle()
     const r = await remindInvitation(supabase, { id: user.id, email: profile?.email, full_name: profile?.full_name }, id)
-    if (!r.ok) return r.status === 400 ? apiError(404, 'not_found', 'Invitation not found') : failFrom(r)
+    if (!r.ok) {
+      if (r.status === 400) return apiError(404, 'not_found', 'Invitation not found')
+      if (r.status === 429 && r.retryAfterSeconds) return apiError(429, 'rate_limited', r.message, { 'Retry-After': String(r.retryAfterSeconds) })
+      return failFrom(r)
+    }
     return NextResponse.json({ success: true, reminders_left: r.data.reminders_left, expires_at: r.data.expires_at })
   }, { scope: 'allocate' })
 }

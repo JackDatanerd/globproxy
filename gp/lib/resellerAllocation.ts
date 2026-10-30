@@ -28,7 +28,9 @@ const NEW_RECIPIENTS_MESSAGE = 'You have reached today\'s limit of 50 new recipi
 export type AllocFail = { ok: false; status: number; code: 'invalid_request' | 'not_found' | 'conflict' | 'insufficient_bandwidth' | 'rate_limited' | 'internal_error'; message: string
   /** True when the database call may have COMMITTED before the failure reached us (a dropped connection, a
    *  timeout). The caller must not free an Idempotency-Key for it: a retry could move the stock twice. */
-  outcomeUnknown?: boolean }
+  outcomeUnknown?: boolean
+  /** Seconds until a 429 may be retried; the API route sends it as Retry-After. */
+  retryAfterSeconds?: number }
 export type AllocResult<T> = { ok: true; data: T } | AllocFail
 const fail = (status: number, code: AllocFail['code'], message: string): AllocFail => ({ ok: false, status, code, message })
 
@@ -355,7 +357,8 @@ export async function remindInvitation(
   if (row.out_result === 'limit') return fail(409, 'conflict', `This invitation has already been re-sent ${INVITE_REMINDER_MAX} times. Cancel it and send a new one if they still haven't seen it.`)
   if (row.out_result === 'cooldown') {
     const when = row.out_retry_at ? new Date(row.out_retry_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + ' UTC' : 'later'
-    return fail(429, 'rate_limited', `A reminder can be sent once every 24 hours. Try again after ${when}.`)
+    const secs = row.out_retry_at ? Math.ceil((new Date(row.out_retry_at).getTime() - Date.now()) / 1000) : 0
+    return { ...fail(429, 'rate_limited', `A reminder can be sent once every 24 hours. Try again after ${when}.`), ...(secs > 0 ? { retryAfterSeconds: Math.min(secs, 86_400) } : {}) }
   }
 
   const gb = Number(row.out_gb)
