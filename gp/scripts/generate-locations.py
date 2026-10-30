@@ -17,6 +17,7 @@
 import json
 import re
 import sys
+import unicodedata
 
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
@@ -58,7 +59,17 @@ CURATED = {
 
 
 def norm(s: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", s.lower())
+    # Fold accents (NFKD, drop combining marks) BEFORE stripping non-alphanumerics. The old
+    # `[^a-z0-9]` strip deleted accented letters outright, so "Brasiléia" (a small town in Acre)
+    # normalised to "brasilia" and was picked over the real "Brasília" ("braslia"), which then
+    # never matched the candidate. Folding makes "Brasília" -> "brasilia" and "Brasiléia" -> "brasileia".
+    folded = "".join(ch for ch in unicodedata.normalize("NFKD", s) if not unicodedata.combining(ch))
+    return re.sub(r"[^a-z0-9]", "", folded.lower())
+
+
+# Countries whose source "cities" are the same city split across regions: Singapore lists one city,
+# "Singapore", under each of its 5 regions, which would otherwise read as "5 cities".
+CITY_COUNT_OVERRIDE = {"sg": 1}
 
 
 def main():
@@ -89,7 +100,9 @@ def main():
 
         if not verified:
             sys.exit(f"REFUSING: none of the curated cities for {code} exist in the source data — the export looks wrong. Nothing was written.")
-        total_cities = sum(len(s.get("cities", [])) for s in country.get("states", []))
+        total_cities = CITY_COUNT_OVERRIDE.get(
+            code, sum(len(s.get("cities", [])) for s in country.get("states", []))
+        )
         results.append(
             {
                 "code": code,

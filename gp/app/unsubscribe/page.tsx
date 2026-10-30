@@ -1,4 +1,5 @@
 import Navbar from '@/components/Navbar'
+import Footer from '@/components/Footer'
 import UnsubscribeButton from '@/components/UnsubscribeButton'
 import { verifyUnsubscribe } from '@/lib/unsubscribe'
 import { unsubscribeSecret } from '@/lib/broadcast'
@@ -13,7 +14,7 @@ export default async function UnsubscribePage({ searchParams }: { searchParams: 
   return (
     <>
       <Navbar />
-      <div className="max-w-xl mx-auto px-6 py-16">
+      <main id="main" className="max-w-xl mx-auto px-6 py-16">
         <h1 className="font-display font-bold text-3xl text-ink tracking-tight mb-4">Product news &amp; offers</h1>
         {valid ? (
           <>
@@ -23,7 +24,8 @@ export default async function UnsubscribePage({ searchParams }: { searchParams: 
         ) : (
           <p className="text-sm text-ink2">This unsubscribe link isn&apos;t valid. Sign in and turn off &ldquo;product news &amp; offers&rdquo; under Settings → E-mail notifications, or reply to the e-mail and we&apos;ll do it for you.</p>
         )}
-      </div>
+      </main>
+      <Footer />
     </>
   )
 }

@@ -8,16 +8,16 @@ function slugify(text: string): string {
 function Block({ block }: { block: ContentBlock }) {
   switch (block.type) {
     case 'p':
-      return <p className="text-ink2 text-[17px] font-light leading-relaxed mb-6">{block.text}</p>
+      return <p className="text-ink2 text-[17px] font-light leading-relaxed mb-6 [overflow-wrap:anywhere]">{block.text}</p>
     case 'h2':
       return (
-        <h2 id={block.id ?? slugify(block.text)} className="font-display font-bold text-2xl text-ink tracking-tight mt-12 mb-4 scroll-mt-24">
+        <h2 id={block.id ?? slugify(block.text)} className="font-display font-bold text-2xl text-ink tracking-tight mt-12 mb-4 scroll-mt-24 [overflow-wrap:anywhere]">
           {block.text}
         </h2>
       )
     case 'h3':
       return (
-        <h3 id={block.id ?? slugify(block.text)} className="font-display font-bold text-xl text-ink tracking-tight mt-8 mb-3 scroll-mt-24">
+        <h3 id={block.id ?? slugify(block.text)} className="font-display font-bold text-xl text-ink tracking-tight mt-8 mb-3 scroll-mt-24 [overflow-wrap:anywhere]">
           {block.text}
         </h3>
       )
@@ -25,7 +25,7 @@ function Block({ block }: { block: ContentBlock }) {
       return (
         <ul className="flex flex-col gap-2.5 mb-6">
           {block.items.map((item, i) => (
-            <li key={i} className="flex items-start gap-3 text-ink2 text-[15px] font-light leading-relaxed">
+            <li key={i} className="flex items-start gap-3 text-ink2 text-[15px] font-light leading-relaxed [overflow-wrap:anywhere]">
               <span className="text-accent font-bold flex-shrink-0 mt-0.5">→</span>
               {item}
             </li>
@@ -36,20 +36,20 @@ function Block({ block }: { block: ContentBlock }) {
       return (
         <ol className="flex flex-col gap-3 mb-6">
           {block.items.map((item, i) => (
-            <li key={i} className="flex items-start gap-3 text-ink2 text-[15px] font-light leading-relaxed">
+            <li key={i} className="flex items-start gap-3 text-ink2 text-[15px] font-light leading-relaxed [overflow-wrap:anywhere]">
               <span className="w-6 h-6 rounded-full bg-accent-light text-accent font-mono text-xs font-medium flex items-center justify-center flex-shrink-0">
                 {i + 1}
               </span>
-              <span className="pt-0.5">{item}</span>
+              <span className="pt-0.5 min-w-0">{item}</span>
             </li>
           ))}
         </ol>
       )
     case 'quote':
       return (
-        <blockquote className="border-l-2 border-accent pl-5 my-8 text-ink text-lg font-light italic leading-relaxed">
+        <blockquote className="border-l-2 border-accent pl-5 my-8 text-ink text-lg font-light italic leading-relaxed [overflow-wrap:anywhere]">
           {block.text}
-          {block.cite && <cite className="block not-italic text-xs font-mono text-muted mt-2">— {block.cite}</cite>}
+          {block.cite && <cite className="block not-italic text-xs font-mono text-subtle mt-2">— {block.cite}</cite>}
         </blockquote>
       )
     case 'callout':
@@ -59,10 +59,10 @@ function Block({ block }: { block: ContentBlock }) {
             block.tone === 'accent2' ? 'bg-accent2-light border-accent2/20' : 'bg-accent-light border-accent/20'
           }`}
         >
-          <div className={`font-display font-bold text-sm mb-1.5 ${block.tone === 'accent2' ? 'text-accent2' : 'text-accent'}`}>
+          <div className={`font-display font-bold text-sm mb-1.5 ${block.tone === 'accent2' ? 'text-accent2-dark' : 'text-accent'}`}>
             {block.title}
           </div>
-          <p className="text-ink2 text-sm font-light leading-relaxed">{block.text}</p>
+          <p className="text-ink2 text-sm font-light leading-relaxed [overflow-wrap:anywhere]">{block.text}</p>
         </div>
       )
     case 'table':
@@ -72,7 +72,7 @@ function Block({ block }: { block: ContentBlock }) {
             <thead>
               <tr className="bg-surface border-b border-border">
                 {block.headers.map((h) => (
-                  <th key={h} className="text-left px-4 py-3 text-[10px] font-mono text-muted uppercase tracking-wider whitespace-nowrap">
+                  <th key={h} className="text-left px-4 py-3 text-[10px] font-mono text-subtle uppercase tracking-wider whitespace-nowrap">
                     {h}
                   </th>
                 ))}
@@ -116,8 +116,8 @@ export function PostFaq({ items }: { items: FaqItem[] }) {
       <div className="flex flex-col gap-4">
         {items.map((item) => (
           <div key={item.q} className="border border-border rounded-xl p-5">
-            <div className="font-medium text-ink text-sm mb-2">{item.q}</div>
-            <div className="text-ink2 text-sm font-light leading-relaxed">{item.a}</div>
+            <div className="font-medium text-ink text-sm mb-2 [overflow-wrap:anywhere]">{item.q}</div>
+            <div className="text-ink2 text-sm font-light leading-relaxed [overflow-wrap:anywhere]">{item.a}</div>
           </div>
         ))}
       </div>

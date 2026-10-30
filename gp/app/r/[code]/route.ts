@@ -1,5 +1,6 @@
 import { createAdminClient } from '@/lib/supabase/server'
 import { rateLimited } from '@/lib/rateLimit'
+import { isAutomatedClient } from '@/lib/botUa'
 import { REF_COOKIE, REF_SUB_COOKIE, REF_COOKIE_MAX_AGE_S, cleanReferralCode, cleanSubId } from '@/lib/referralAttribution'
 import { NextResponse } from 'next/server'
 
@@ -31,9 +32,12 @@ export async function GET(req: Request, context: { params: Promise<{ code: strin
 
   // Click counting is best-effort and rate-limited per IP so it can't be
   // used to inflate an affiliate's numbers cheaply — and it must never
-  // delay or break the redirect.
+  // delay or break the redirect. Known crawlers and link-preview fetchers still get the redirect
+  // (and the cookie is harmless) but are not counted: robots.txt disallows /r/, yet link unfurlers
+  // (Slack, WhatsApp, Facebook, X) ignore it, and each shared affiliate link would otherwise log a
+  // click per preview.
   try {
-    const limited = await rateLimited(req, 'AUTH_RATE_LIMITER', 'ref-click')
+    const limited = isAutomatedClient(req.headers.get('user-agent')) || (await rateLimited(req, 'AUTH_RATE_LIMITER', 'ref-click'))
     if (!limited) {
       const admin = await createAdminClient()
       const { error } = await admin.rpc('record_referral_click', { p_code: code, p_sub_id: sub })

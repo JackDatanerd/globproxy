@@ -1,9 +1,11 @@
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
+import Footer from '@/components/Footer'
 import JsonLd from '@/components/JsonLd'
 import PostCard from '@/components/blog/PostCard'
 import PostBody, { PostFaq } from '@/components/blog/PostBody'
 import { getRelatedPosts, postPath, readingTime } from '@/lib/blog/utils'
+import { getPlan } from '@/lib/plans'
 import type { BlogPost } from '@/lib/blog/types'
 
 function formatDate(iso: string) {
@@ -60,8 +62,9 @@ export default function PostArticle({ post }: { post: BlogPost }) {
       <JsonLd data={breadcrumbSchema} />
       {faqSchema && <JsonLd data={faqSchema} />}
       <Navbar />
+      <main id="main">
       <article className="max-w-3xl mx-auto px-6 py-16">
-        <nav className="text-xs font-mono text-muted mb-8 flex items-center gap-2">
+        <nav aria-label="Breadcrumb" className="text-xs font-mono text-subtle mb-8 flex items-center gap-2">
           <Link href={rootHref} className="hover:text-ink transition-colors">{rootLabel}</Link>
           <span>/</span>
           <span className="text-ink2">{post.category}</span>
@@ -72,7 +75,7 @@ export default function PostArticle({ post }: { post: BlogPost }) {
         <h1 className="font-display text-4xl lg:text-5xl font-black tracking-tight text-ink leading-[1.1] mb-5">
           {post.title}
         </h1>
-        <div className="flex items-center gap-3 text-sm text-muted font-mono mb-12">
+        <div className="flex items-center gap-3 text-sm text-subtle font-mono mb-12">
           <time dateTime={post.publishedAt}>{formatDate(post.publishedAt)}</time>
           <span>·</span>
           <span>{readingTime(post)}</span>
@@ -98,7 +101,7 @@ export default function PostArticle({ post }: { post: BlogPost }) {
             <h2 className="font-display text-2xl font-bold text-white tracking-tight mb-2">
               Try it on 1 GB before you commit to more.
             </h2>
-            <p className="text-white/50 font-light text-sm mb-6">Non-expiring bandwidth, 195 countries, city-level targeting — from $4.50.</p>
+            <p className="text-white/60 font-light text-sm mb-6">Non-expiring bandwidth, 195 countries, city-level targeting — from ${getPlan('micro')!.total.toFixed(2)}.</p>
             <Link
               href="/auth/signup"
               className="inline-flex items-center gap-2 bg-white text-ink px-7 py-3 rounded-xl font-medium hover:-translate-y-0.5 transition-all"
@@ -121,6 +124,8 @@ export default function PostArticle({ post }: { post: BlogPost }) {
           </div>
         </div>
       )}
+      </main>
+      <Footer />
     </>
   )
 }

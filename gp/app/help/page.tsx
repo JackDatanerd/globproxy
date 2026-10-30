@@ -1,27 +1,22 @@
-import type { Metadata } from 'next'
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
+import Footer from '@/components/Footer'
 import { HELP_TOPICS } from '@/lib/blog/help'
 import { getHelpArticleBySlug, postPath, readingTime } from '@/lib/blog/utils'
+import { pageMetadata } from '@/lib/seo'
 
-export const metadata: Metadata = {
+export const metadata = pageMetadata({
   title: 'Help Centre — GlobProxy',
   description:
     'Step-by-step help for connecting to the proxy, targeting a country or city, managing sessions and bandwidth, payments, and account security.',
-  alternates: { canonical: '/help' },
-  openGraph: {
-    title: 'Help Centre — GlobProxy',
-    description: 'Step-by-step help for connecting, targeting, sessions, bandwidth, payments and account security.',
-    url: '/help',
-    type: 'website',
-  },
-}
+  path: '/help',
+})
 
 export default function HelpIndexPage() {
   return (
     <>
       <Navbar />
-      <div className="max-w-4xl mx-auto px-6 py-16">
+      <main id="main" className="max-w-4xl mx-auto px-6 py-16">
         <div className="mb-12">
           <div className="inline-block bg-accent-light text-accent text-xs font-mono tracking-widest uppercase px-4 py-1.5 rounded-full mb-4">
             Help centre
@@ -54,7 +49,7 @@ export default function HelpIndexPage() {
                         <h3 className="font-display font-bold text-ink tracking-tight group-hover:text-accent transition-colors">
                           {a!.title}
                         </h3>
-                        <span className="text-xs text-muted font-mono shrink-0">{readingTime(a!)}</span>
+                        <span className="text-xs text-subtle font-mono shrink-0">{readingTime(a!)}</span>
                       </div>
                       <p className="text-ink2 text-sm font-light leading-relaxed mt-1.5">{a!.excerpt}</p>
                     </Link>
@@ -74,7 +69,8 @@ export default function HelpIndexPage() {
             Contact support →
           </a>
         </div>
-      </div>
+      </main>
+      <Footer />
     </>
   )
 }

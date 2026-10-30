@@ -1,17 +1,23 @@
 import Navbar from '@/components/Navbar'
+import Footer from '@/components/Footer'
 import Link from 'next/link'
+import { pageMetadata } from '@/lib/seo'
 
-export const metadata = { title: 'API Documentation — GlobProxy' }
+export const metadata = pageMetadata({
+  title: 'API Documentation — GlobProxy',
+  description: 'REST API reference for GlobProxy resellers: create sub-users, allocate bandwidth, manage sessions and read usage programmatically.',
+  path: '/docs/api',
+})
 
 function Endpoint({ method, path, title, children }: { method: string; path: string; title: string; children: React.ReactNode }) {
   return (
     <div className="border border-border rounded-xl overflow-hidden mb-6">
-      <div className="flex items-center gap-3 px-5 py-3 bg-surface border-b border-border">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-5 py-3 bg-surface border-b border-border">
         <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded ${
-          method === 'GET' ? 'bg-accent-light text-accent' : 'bg-accent2-light text-accent2'
+          method === 'GET' ? 'bg-accent-light text-accent' : 'bg-accent2-light text-accent2-dark'
         }`}>{method}</span>
-        <span className="font-mono text-sm text-ink">{path}</span>
-        <span className="text-sm text-muted ml-auto">{title}</span>
+        <span className="font-mono text-sm text-ink break-all min-w-0">{path}</span>
+        <span className="text-sm text-subtle ml-auto">{title}</span>
       </div>
       <div className="p-5">{children}</div>
     </div>
@@ -20,11 +26,14 @@ function Endpoint({ method, path, title, children }: { method: string; path: str
 
 function Table({ rows }: { rows: [string, string, string][] }) {
   return (
-    <table className="w-full text-sm mb-4">
+    // overflow-x-auto: on a phone the three columns (nowrap field + type + description) are wider than
+    // the card, which used to widen the whole page and make it scroll sideways.
+    <div className="overflow-x-auto mb-4">
+    <table className="w-full text-sm">
       <thead>
         <tr className="border-b border-border">
           {['Field', 'Type', 'Description'].map(h => (
-            <th key={h} className="text-left py-2 pr-4 text-[10px] font-mono text-muted uppercase tracking-wider">{h}</th>
+            <th key={h} className="text-left py-2 pr-4 text-[10px] font-mono text-subtle uppercase tracking-wider">{h}</th>
           ))}
         </tr>
       </thead>
@@ -32,12 +41,13 @@ function Table({ rows }: { rows: [string, string, string][] }) {
         {rows.map(([f, t, d]) => (
           <tr key={f} className="border-b border-border last:border-0">
             <td className="py-2 pr-4 font-mono text-xs text-ink align-top whitespace-nowrap">{f}</td>
-            <td className="py-2 pr-4 font-mono text-xs text-muted align-top whitespace-nowrap">{t}</td>
+            <td className="py-2 pr-4 font-mono text-xs text-subtle align-top whitespace-nowrap">{t}</td>
             <td className="py-2 text-xs text-ink2 align-top">{d}</td>
           </tr>
         ))}
       </tbody>
     </table>
+    </div>
   )
 }
 
@@ -49,7 +59,7 @@ export default function ApiDocsPage() {
   return (
     <>
       <Navbar />
-      <div className="max-w-3xl mx-auto px-6 py-16">
+      <main id="main" className="max-w-3xl mx-auto px-6 py-16">
         <div className="mb-10">
           <div className="inline-block bg-accent-light text-accent text-xs font-mono tracking-widest uppercase px-4 py-1.5 rounded-full mb-4">Documentation</div>
           <h1 className="font-display font-bold text-4xl text-ink tracking-tight mb-3">API Reference</h1>
@@ -61,7 +71,7 @@ export default function ApiDocsPage() {
         </div>
 
         <div className="border border-border rounded-xl p-6 bg-surface mb-10 flex flex-wrap items-center gap-3">
-          <span className="text-xs font-mono text-muted uppercase tracking-widest">Guides</span>
+          <span className="text-xs font-mono text-subtle uppercase tracking-widest">Guides</span>
           {[
             ['/blog/how-white-label-proxy-reselling-works', 'How reselling works'],
             ['/blog/reseller-api-automating-sub-user-provisioning', 'Automating provisioning'],
@@ -116,14 +126,14 @@ export default function ApiDocsPage() {
             The API key list in your dashboard also shows when and from which IP each key was last used.
           </p>
 
-          <p className="text-xs font-mono text-muted uppercase tracking-wider mt-5 mb-1.5">Scopes</p>
+          <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-5 mb-1.5">Scopes</p>
           <Table rows={[
             ['read', 'scope', 'GET requests only.'],
             ['write', 'scope', 'Everything except allocation: create, change and delete sub-users, top-ups, whitelists, webhooks. Includes read.'],
             ['allocate', 'scope', 'Resellers only. Move bandwidth between accounts (the /reseller/allocations endpoints). Never implied by write. A key with this scope MUST have an IP allowlist of single addresses or blocks no wider than /24 (IPv4) or /48 (IPv6) — without one, or with a broader block such as a /8, every call is refused with 403 insufficient_scope — because API keys do not go through the 2FA step-up the dashboard applies to the same action. It can be granted without write ("Read + allocate only" in the dashboard) for a bot that should only move bandwidth.'],
           ]} />
 
-          <p className="text-xs font-mono text-muted uppercase tracking-wider mt-5 mb-1.5">IP allowlist</p>
+          <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-5 mb-1.5">IP allowlist</p>
           <p className="text-sm text-ink2 leading-relaxed">
             A key can be restricted to up to 20 source addresses: IPv4 or IPv6 addresses, or CIDR blocks
             (<span className="font-mono text-ink">203.0.113.0/24</span>, <span className="font-mono text-ink">2001:db8:1234::/48</span>; IPv4 prefixes /8 or longer, IPv6 /32 or longer).
@@ -131,7 +141,7 @@ export default function ApiDocsPage() {
             <span className="font-mono text-ink">403 ip_not_allowed</span>. An empty list means any address.
           </p>
 
-          <p className="text-xs font-mono text-muted uppercase tracking-wider mt-5 mb-1.5">Managing keys</p>
+          <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-5 mb-1.5">Managing keys</p>
           <p className="text-sm text-ink2 leading-relaxed">
             On the <span className="font-mono text-ink">API Keys</span> page you can <strong>edit</strong> a key's label, IP allowlist, access level and expiry in place
             (narrowing applies instantly; widening a key asks for 2FA or your password), <strong>rotate</strong> it (a replacement with the same settings is issued and the
@@ -160,7 +170,7 @@ export default function ApiDocsPage() {
             Match on <span className="font-mono text-ink">code</span> (stable) rather than the message, which may be reworded.
           </p>
           <Code>{`{ "error": "Insufficient bandwidth. Requested 50GB is more than you have available. Purchase more to continue.", "code": "insufficient_bandwidth" }`}</Code>
-          <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Status codes</p>
+          <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Status codes</p>
           <Table rows={[
             ['400', 'Bad Request', 'Missing or invalid parameters — see the error message for which one.'],
             ['401', 'Unauthorized', 'Missing, malformed, or revoked API key.'],
@@ -174,7 +184,7 @@ export default function ApiDocsPage() {
             ['502', 'Bad Gateway', 'The proxy network is temporarily unavailable. Nothing was changed — safe to retry.'],
             ['503', 'Service Unavailable', "We couldn't verify your account right now (a transient error on our side). The key is fine — retry after a few seconds; don't delete or re-issue it."],
           ]} />
-          <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Error codes</p>
+          <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Error codes</p>
           <Table rows={[
             ['unauthorized', '401', 'Missing, malformed, revoked, or expired key.'],
             ['insufficient_scope', '403', 'The key lacks the scope the endpoint needs (read-only key used for a write, or no "allocate" scope / no narrow IP allowlist on an allocation call).'],
@@ -268,7 +278,7 @@ export default function ApiDocsPage() {
             <p className="text-sm text-ink2 mb-4">Your account's overall bandwidth balance — not per sub-user, see the usage endpoint below for that. allocated_gb is what's already reserved into sub-users; available_gb is what you can still create or top up with.</p>
             <Code>{`curl https://globproxy.com/api/v1/account/bandwidth \\
   -H "Authorization: Bearer YOUR_KEY"`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{
   "total_gb": 500,
   "used_gb": 128.4,
@@ -282,7 +292,7 @@ export default function ApiDocsPage() {
             <p className="text-sm text-ink2 mb-4">Who this key belongs to and what it may do — scopes, allowed IPs and expiry — so an integration can check itself (and warn before the key lapses) instead of guessing from 403s.</p>
             <Code>{`curl https://globproxy.com/api/v1/account \\
   -H "Authorization: Bearer YOUR_KEY"`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{
   "account": { "id": "9c1e...", "email": "you@example.com", "role": "reseller" },
   "api_key": { "id": "b72d...", "key_prefix": "gp_live_a1b2c3", "label": "billing-bot", "scopes": ["read", "write"],
@@ -296,7 +306,7 @@ export default function ApiDocsPage() {
             <p className="text-sm text-ink2 mb-4">Account-wide data usage per UTC day for the last <span className="font-mono text-ink">days</span> days (1–365, default 30), oldest first, gaps filled with 0. Served from our own ledger, so it is cheap, includes deleted sub-users, and is not subject to the tighter <span className="font-mono text-ink">/usage/history</span> limit. The ledger is updated every few minutes; <span className="font-mono text-ink">first_recorded_day</span> is where it begins (earlier days read 0 because nothing was recorded).</p>
             <Code>{`curl "https://globproxy.com/api/v1/account/usage?days=7" \\
   -H "Authorization: Bearer YOUR_KEY"`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{
   "from": "2026-10-17", "to": "2026-10-23", "days": 7, "total_gb": 12.4081,
   "first_recorded_day": "2026-09-02",
@@ -308,7 +318,7 @@ export default function ApiDocsPage() {
             <p className="text-sm text-ink2 mb-4">Every change (POST / PATCH / DELETE) made with your account's keys in the last 30 days — which key, from which IP, which path, the status and the X-Request-Id. Read-only requests are not logged. Query: <span className="font-mono text-ink">key_id</span>, <span className="font-mono text-ink">limit</span> (max 200), <span className="font-mono text-ink">before</span> (cursor).</p>
             <Code>{`curl "https://globproxy.com/api/v1/account/activity?limit=20" \\
   -H "Authorization: Bearer YOUR_KEY"`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{
   "activity": [
     { "id": 812, "key_id": "b72d...", "key_prefix": "gp_live_a1b2c3", "key_label": "billing-bot", "method": "POST",
@@ -322,7 +332,7 @@ export default function ApiDocsPage() {
             <p className="text-sm text-ink2 mb-4">All proxy credentials (sub-users) on your account, newest first. Query parameters: <span className="font-mono text-ink">limit</span>, <span className="font-mono text-ink">offset</span> (see Pagination) and optional filters: <span className="font-mono text-ink">status</span> (<span className="font-mono text-ink">pending</span>, <span className="font-mono text-ink">active</span> or <span className="font-mono text-ink">suspended</span>), <span className="font-mono text-ink">label</span> (case-insensitive contains), <span className="font-mono text-ink">country</span> (2-letter code), <span className="font-mono text-ink">session_type</span> (<span className="font-mono text-ink">rotating</span> or <span className="font-mono text-ink">sticky</span>), <span className="font-mono text-ink">protocol</span> (<span className="font-mono text-ink">http</span> or <span className="font-mono text-ink">socks5</span>), <span className="font-mono text-ink">created_after</span> and <span className="font-mono text-ink">created_before</span> (ISO 8601).</p>
             <Code>{`curl https://globproxy.com/api/v1/sub-users \\
   -H "Authorization: Bearer YOUR_KEY"`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{
   "sub_users": [
     {
@@ -382,7 +392,7 @@ export default function ApiDocsPage() {
     "protocol": "http",
     "session_type": "rotating"
   }'`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Body parameters</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Body parameters</p>
             <Table rows={[
               ['gb_allocated', 'number', 'Required. Bandwidth to reserve for this sub-user: between 0.01 and 100000.'],
               ['label', 'string', 'Optional. Your own name for this credential, up to 100 characters.'],
@@ -396,7 +406,7 @@ export default function ApiDocsPage() {
               ['endpoint_count', 'integer', 'Informational — how many endpoints you intend to generate from this credential, 1–100. Default 1.'],
               ['auto_topup', 'object', 'Optional. Turn on auto-topup at creation: { "enabled": true, "threshold_gb": 1, "amount_gb": 5 } — same rules as PATCH /auto-topup.'],
             ]} />
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response — 201 Created</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response — 201 Created</p>
             <Code>{`{
   "id": "3f1a...",
   "label": "Client A",
@@ -446,7 +456,7 @@ export default function ApiDocsPage() {
   -H "Authorization: Bearer YOUR_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{ "label": "Client A (EU)", "country": "de", "city": "berlin" }'`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Body parameters</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Body parameters</p>
             <Table rows={[
               ['label', 'string | null', 'Up to 100 characters.'],
               ['country / state / city / asn', 'string | null', 'Same rules as creation; validated together with the values already on the sub-user. To move a session with an asn to a state or city, send asn: null in the same request (and the reverse: send state: null and city: null to add an asn).'],
@@ -462,7 +472,7 @@ export default function ApiDocsPage() {
             <p className="text-sm text-ink2 mb-4">Current usage for a single sub-user, synced live from the proxy network when the credential is active.</p>
             <Code>{`curl https://globproxy.com/api/v1/sub-users/SUB_USER_ID/usage \\
   -H "Authorization: Bearer YOUR_KEY"`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{
   "id": "3f1a...",
   "label": "Client A",
@@ -491,7 +501,7 @@ export default function ApiDocsPage() {
             <p className="text-sm text-ink2 mb-4">A ready-made proxy list, built the same way as the dashboard's export. A <strong>sticky</strong> sub-user returns <span className="font-mono text-ink">count</span> stable endpoints (default: its <span className="font-mono text-ink">endpoint_count</span>, max 1000), each with its own session id so each keeps its IP for the sub-user's sticky duration. A <strong>rotating</strong> sub-user returns one endpoint — every connection to it already gets a fresh IP. <span className="font-mono text-ink">format=txt</span> returns plain text, one <span className="font-mono text-ink">host:port:username:password</span> line per endpoint. <span className="font-mono text-ink">409</span> while the sub-user is pending or suspended.</p>
             <Code>{`curl "https://globproxy.com/api/v1/sub-users/SUB_USER_ID/endpoints?count=3" \\
   -H "Authorization: Bearer YOUR_KEY"`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{
   "sub_user_id": "3f1a...", "protocol": "http", "session_type": "sticky", "rotating": false, "count": 3,
   "endpoints": [
@@ -514,7 +524,7 @@ export default function ApiDocsPage() {
             </p>
             <Code>{`curl "https://globproxy.com/api/v1/sub-users/SUB_USER_ID/usage/history?days=7&granularity=day" \\
   -H "Authorization: Bearer YOUR_KEY"`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{
   "id": "3f1a...",
   "from": "2026-10-11T09:30:00.000Z",
@@ -534,7 +544,7 @@ export default function ApiDocsPage() {
             </p>
             <Code>{`curl -X DELETE https://globproxy.com/api/v1/sub-users/SUB_USER_ID \\
   -H "Authorization: Bearer YOUR_KEY"`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{ "success": true, "gb_released": 3.8 }`}</Code>
             <p className="text-sm text-ink2 mt-4">
               If the proxy network can't be reached the delete fails with <span className="font-mono text-ink">502</span> and <em>nothing is changed</em> — retry it; a retry after a partial failure completes cleanly. A sub-user that a reseller allocated to you (rather than one you created yourself) can't be
@@ -552,11 +562,11 @@ export default function ApiDocsPage() {
   -H "Authorization: Bearer YOUR_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{ "gb_amount": 5 }'`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Body parameters</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Body parameters</p>
             <Table rows={[
               ['gb_amount', 'number', 'Required. GB to add: between 0 (exclusive) and 100000.'],
             ]} />
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{ "success": true, "gb_allocated": 10, "gb_added": 5 }`}</Code>
             <p className="text-sm text-ink2 mt-4">
               <span className="font-mono text-ink">gb_allocated</span> is the sub-user's new total cap, not
@@ -575,7 +585,7 @@ export default function ApiDocsPage() {
   -H "Idempotency-Key: onboarding-batch-2026-10-18" \\
   -H "Content-Type: application/json" \\
   -d '{ "items": [ { "label": "Client A", "gb_allocated": 5 }, { "label": "Client B", "gb_allocated": 10, "country": "DE" } ] }'`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{
   "results": [
     { "index": 0, "status": 201, "sub_user": { "id": "3f1a...", "label": "Client A", "...": "..." } },
@@ -632,7 +642,7 @@ export default function ApiDocsPage() {
   -H "Idempotency-Key: monthly-topup-2026-10" \\
   -H "Content-Type: application/json" \\
   -d '{ "items": [ { "id": "SUB_USER_ID_1", "gb_amount": 5 }, { "id": "SUB_USER_ID_2", "gb_amount": 2.5 } ] }'`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{
   "results": [
     { "index": 0, "id": "SUB_USER_ID_1", "status": 200, "gb_allocated": 15, "gb_added": 5 },
@@ -652,7 +662,7 @@ export default function ApiDocsPage() {
   -H "Authorization: Bearer YOUR_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{ "gb_amount": 2 }'`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{ "success": true, "gb_allocated": 3, "gb_released": 2, "max_releasable_gb": 0.41 }`}</Code>
             <p className="text-sm text-ink2 mt-4">
               <span className="font-mono text-ink">400</span> with the releasable amount if you ask for more than is unused,{' '}
@@ -672,7 +682,7 @@ export default function ApiDocsPage() {
             </p>
             <Code>{`curl -X POST https://globproxy.com/api/v1/sub-users/SUB_USER_ID/rotate-password \\
   -H "Authorization: Bearer YOUR_KEY"`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{ "success": true, "password": "5d0c1e7a-..." }`}</Code>
           </Endpoint>
 
@@ -690,7 +700,7 @@ export default function ApiDocsPage() {
   -H "Authorization: Bearer YOUR_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{ "enabled": true, "threshold_gb": 1, "amount_gb": 5 }'`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Body parameters</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Body parameters</p>
             <Table rows={[
               ['enabled', 'boolean', 'Required. Turn auto-topup on or off.'],
               ['threshold_gb', 'number', 'Required when enabling. Remaining GB that triggers a top-up. Can be 0.'],
@@ -710,7 +720,7 @@ export default function ApiDocsPage() {
             </p>
             <Code>{`curl https://globproxy.com/api/v1/sub-users/SUB_USER_ID/sessions \\
   -H "Authorization: Bearer YOUR_KEY"`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{
   "sessions": [
     { "id": "9c2e...", "label": "scraper-1", "pinned": false, "collapsed": false,
@@ -761,7 +771,7 @@ export default function ApiDocsPage() {
             </p>
             <Code>{`curl https://globproxy.com/api/v1/orders?status=paid \\
   -H "Authorization: Bearer YOUR_KEY"`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{
   "orders": [
     { "id": "5d0b...", "gb_amount": 100, "amount_usd": 249, "status": "paid", "plan": "growth",
@@ -789,7 +799,7 @@ export default function ApiDocsPage() {
   -H "Idempotency-Key: restock-2026-10-24" \\
   -H "Content-Type: application/json" \\
   -d '{ "plan": "custom", "gb": 37 }'`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response (201)</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response (201)</p>
             <Code>{`{
   "order": { "id": "5d0b...", "gb_amount": 37, "amount_usd": 103.6, "status": "pending", "created_at": "2026-10-24T08:00:00.000Z" },
   "checkout_url": "https://checkout.paystack.com/..."
@@ -802,7 +812,7 @@ export default function ApiDocsPage() {
             </p>
             <Code>{`curl "https://globproxy.com/api/v1/pricing?gb=37" \\
   -H "Authorization: Bearer YOUR_KEY"`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{
   "currency": "USD",
   "plans": [ { "slug": "micro", "name": "Micro", "gb": 1, "price_per_gb": 4.5, "total_usd": 4.5 }, … ],
@@ -815,7 +825,7 @@ export default function ApiDocsPage() {
             <p className="text-sm text-ink2 mb-4">Your bandwidth transfers to clients, newest first — the same data as the dashboard's Transfers page. Query: <span className="font-mono text-ink">limit</span> (max 200), <span className="font-mono text-ink">before</span> (cursor). Needs a <span className="font-mono text-ink">read</span> key.</p>
             <Code>{`curl "https://globproxy.com/api/v1/reseller/allocations?limit=20" \\
   -H "Authorization: Bearer YOUR_KEY"`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{
   "transfers": [
     { "id": "e4a1...", "recipient_email": "client@example.com", "gb_amount": 25, "gb_reclaimed": 0, "gb_net": 25,
@@ -837,13 +847,13 @@ export default function ApiDocsPage() {
   -H "Idempotency-Key: alloc-client-42-2026-10" \\
   -H "Content-Type: application/json" \\
   -d '{ "recipient_email": "client@example.com", "gb_allocated": 25, "note": "October top-up" }'`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Body parameters</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Body parameters</p>
             <Table rows={[
               ['recipient_email', 'string', 'Required. The client\'s GlobProxy account e-mail. If that address has no confirmed account yet, an invitation is created instead (see below).'],
               ['gb_allocated', 'number', 'Required. At least 0.1, at most 3 decimal places.'],
               ['note', 'string', 'Optional, up to 200 characters.'],
             ]} />
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response (201)</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response (201)</p>
             <Code>{`{ "transfer_id": "e4a1...", "status": "active", "pending_id": null, "expires_at": null, "gb": 25, "recipient_email": "client@example.com" }`}</Code>
             <p className="text-sm text-ink2 mt-4">
               For an address with no confirmed account the call still succeeds: the GB is reserved out of your stock, the person is e-mailed an invitation, and you get
@@ -865,7 +875,7 @@ export default function ApiDocsPage() {
   -H "Idempotency-Key: reclaim-e4a1-001" \\
   -H "Content-Type: application/json" \\
   -d '{ "gb": 10 }'`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{ "transfer_id": "e4a1...", "reclaimed_gb": 10, "remaining_gb": 15 }`}</Code>
           </Endpoint>
 
@@ -873,7 +883,7 @@ export default function ApiDocsPage() {
             <p className="text-sm text-ink2 mb-4">Your stock position and the level that triggers your low-stock e-mail. <span className="font-mono text-ink">reserved_in_invitations_gb</span> is stock held for invitations nobody has claimed yet — it is already out of <span className="font-mono text-ink">available_gb</span>. Change the alert level with <span className="font-mono text-ink">PATCH /api/v1/reseller/settings</span> and a body of <span className="font-mono text-ink">{`{ "low_stock_gb": 50 }`}</span> (<span className="font-mono text-ink">null</span> or <span className="font-mono text-ink">0</span> turns it off; needs a key with the write scope).</p>
             <Code>{`curl https://globproxy.com/api/v1/reseller/settings \\
   -H "Authorization: Bearer YOUR_KEY"`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{ "total_gb": 500, "allocated_gb": 120, "available_gb": 380, "reserved_in_invitations_gb": 20, "low_stock_gb": 50 }`}</Code>
           </Endpoint>
 
@@ -881,7 +891,7 @@ export default function ApiDocsPage() {
             <p className="text-sm text-ink2 mb-4">One row per account you have sent bandwidth to — what they were sent, what you reclaimed, and how much of that they have used. The same data as the dashboard's Sub-users page and its CSV export. Query parameters: <span className="font-mono text-ink">q</span> (contains-match on email or name), <span className="font-mono text-ink">filter</span> (<span className="font-mono text-ink">all</span>, <span className="font-mono text-ink">unused</span> — nothing used yet, <span className="font-mono text-ink">exhausted</span> — everything you sent is used, or <span className="font-mono text-ink">idle</span> — no transfer in 30 days), <span className="font-mono text-ink">sort</span> (<span className="font-mono text-ink">recent</span>, <span className="font-mono text-ink">sent</span>, <span className="font-mono text-ink">used</span>, <span className="font-mono text-ink">remaining</span> or <span className="font-mono text-ink">name</span>), <span className="font-mono text-ink">limit</span> (max 100) and <span className="font-mono text-ink">offset</span>. Most recent activity first by default.</p>
             <Code>{`curl "https://globproxy.com/api/v1/reseller/clients?q=acme" \\
   -H "Authorization: Bearer YOUR_KEY"`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{
   "clients": [
     { "email": "ops@acme.example", "name": "Acme Ops", "account": "active", "transfers": 3,
@@ -896,7 +906,7 @@ export default function ApiDocsPage() {
             <p className="text-sm text-ink2 mb-4">Invitations created when you allocated to an address with no confirmed account yet. Optional <span className="font-mono text-ink">status</span> (pending | claimed | cancelled | expired); without it every state from the last 90 days is returned. <span className="font-mono text-ink">id</span> is the <span className="font-mono text-ink">pending_id</span> from the allocation response.</p>
             <Code>{`curl "https://globproxy.com/api/v1/reseller/invitations?status=pending" \\
   -H "Authorization: Bearer YOUR_KEY"`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{
   "invitations": [
     { "id": "9c2e...", "recipient_email": "new.client@example.com", "gb": 25, "note": null, "status": "pending",
@@ -912,7 +922,7 @@ export default function ApiDocsPage() {
   -H "Authorization: Bearer YOUR_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{"gb": 10}'`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{ "success": true, "gb": 10, "returned_gb": 15 }`}</Code>
           </Endpoint>
 
@@ -920,7 +930,7 @@ export default function ApiDocsPage() {
             <p className="text-sm text-ink2 mb-4">Withdraws an invitation nobody has claimed; the reserved stock returns to your available balance immediately. Needs the <span className="font-mono text-ink">allocate</span> scope. Answers <span className="font-mono text-ink">404</span> once the invitation was claimed, cancelled or expired — so repeating a call after a timeout can never return stock twice.</p>
             <Code>{`curl -X DELETE https://globproxy.com/api/v1/reseller/invitations/PENDING_ID \\
   -H "Authorization: Bearer YOUR_KEY"`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{ "success": true, "returned_gb": 25 }`}</Code>
           </Endpoint>
 
@@ -928,7 +938,7 @@ export default function ApiDocsPage() {
             <p className="text-sm text-ink2 mb-4">E-mails the invitee again about an invitation nobody has claimed. One reminder every 24 hours (<span className="font-mono text-ink">429</span> until then) and at most three per invitation (<span className="font-mono text-ink">409</span> after that). Only addresses without a usable account are mailed. If the e-mail provider rejects the message the call returns <span className="font-mono text-ink">502</span> and the reminder is not counted. Needs the <span className="font-mono text-ink">allocate</span> scope.</p>
             <Code>{`curl -X POST https://globproxy.com/api/v1/reseller/invitations/PENDING_ID/remind \\
   -H "Authorization: Bearer YOUR_KEY"`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{ "success": true, "reminders_left": 2, "expires_at": "2026-11-20T09:30:00.000Z" }`}</Code>
           </Endpoint>
 
@@ -936,7 +946,7 @@ export default function ApiDocsPage() {
             <p className="text-sm text-ink2 mb-4">IP addresses currently allowed to use this sub-user's credentials.</p>
             <Code>{`curl https://globproxy.com/api/v1/sub-users/SUB_USER_ID/whitelist \\
   -H "Authorization: Bearer YOUR_KEY"`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Response</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Response</p>
             <Code>{`{
   "ips": [
     { "ip": "203.0.113.4", "description": "Office IP" }
@@ -949,7 +959,7 @@ export default function ApiDocsPage() {
   -H "Authorization: Bearer YOUR_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{ "ip": "203.0.113.4", "description": "Office IP" }'`}</Code>
-            <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Body parameters</p>
+            <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Body parameters</p>
             <Table rows={[
               ['ip', 'string', 'Required. A single IPv4 or IPv6 address — no CIDR ranges.'],
               ['description', 'string', 'Required. 1–100 characters, e.g. "Office IP".'],
@@ -1001,7 +1011,7 @@ export default function ApiDocsPage() {
             destinations (including hostnames that resolve to them), GlobProxy's own domains and redirects are rejected.
           </p>
 
-          <p className="text-xs font-mono text-muted uppercase tracking-wider mt-4 mb-1.5">Events</p>
+          <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-4 mb-1.5">Events</p>
           <Table rows={[
             ['session_created', 'event', 'A sub-user was created (dashboard or API). data: credential_id, label, protocol, session_type, gb_allocated, country, state, city, asn, status, source.'],
             ['session_activated', 'event', 'A pending sub-user finished provisioning and is now live. data: credential_id, label, gb_allocated, status.'],
@@ -1039,7 +1049,7 @@ export default function ApiDocsPage() {
           <p className="text-sm text-ink2 leading-relaxed mt-3">Subscribe to <span className="font-mono text-ink">["*"]</span> to receive every event, including ones added later (choose “All events” in the dashboard); without it a new event reaches only the endpoints that name it.</p>
           <p className="text-sm text-ink2 leading-relaxed mt-3">The same catalog, with each event's data keys, is machine-readable at <span className="font-mono text-ink">GET /api/v1/webhooks/events</span>.</p>
 
-          <p className="text-xs font-mono text-muted uppercase tracking-wider mt-5 mb-1.5">Payload</p>
+          <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-5 mb-1.5">Payload</p>
           <Code>{`POST https://your-server.com/hooks/globproxy
 Content-Type: application/json
 X-GlobProxy-Event: session_created
@@ -1058,7 +1068,7 @@ X-GlobProxy-Signature-V2-Previous: t=...,v1=...   (only during a secret-rotation
   "data": { "credential_id": "3f1a...", "gb_allocated": 5, "status": "active", "source": "api" }
 }`}</Code>
 
-          <p className="text-xs font-mono text-muted uppercase tracking-wider mt-5 mb-1.5">Verifying the signature</p>
+          <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-5 mb-1.5">Verifying the signature</p>
           <p className="text-sm text-ink2 leading-relaxed mb-3">
             Compute HMAC-SHA256 with your endpoint's secret (<span className="font-mono text-ink">whsec_…</span>) over{' '}
             <span className="font-mono text-ink">{`\`${'${t}'}.${'${rawBody}'}\``}</span> using the <em>raw, unparsed</em> request body, compare it to{' '}
@@ -1122,7 +1132,7 @@ def verify(raw_body, header, secret)
   Rack::Utils.secure_compare(expected, parts['v1'].to_s)
 end`}</Code>
 
-          <p className="text-xs font-mono text-muted uppercase tracking-wider mt-5 mb-1.5">Delivery, retries and auto-disable</p>
+          <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-5 mb-1.5">Delivery, retries and auto-disable</p>
           <ul className="text-sm text-ink2 leading-relaxed space-y-1.5 list-disc list-inside">
             <li>Respond with any <span className="font-mono text-ink">2xx</span> within 8 seconds. Anything else (or a timeout) is a failed attempt.</li>
             <li>Failed deliveries are retried after about 1 minute, 5 minutes, 30 minutes, 2 hours and 6 hours (6 attempts total; retries are picked up by a task that runs every 5 minutes, so each can land a few minutes after its time), then marked failed. Delivery is at-least-once — de-duplicate on <span className="font-mono text-ink">id</span>.</li>
@@ -1132,7 +1142,7 @@ end`}</Code>
             <li><strong>Rotating the secret:</strong> by default the old secret stops working immediately (right if it leaked). Pass <span className="font-mono text-ink">grace_minutes</span> (up to 4320) and, until it elapses, each delivery also carries <span className="font-mono text-ink">X-GlobProxy-Signature-V2-Previous</span> — the same signature made with the <em>previous</em> secret — so receivers can be switched over without dropping events: accept either header's signature during the window.</li>
           </ul>
 
-          <p className="text-xs font-mono text-muted uppercase tracking-wider mt-5 mb-1.5">Managing webhooks over the API</p>
+          <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-5 mb-1.5">Managing webhooks over the API</p>
           <Table rows={[
             ['GET /api/v1/webhooks', 'read', 'List endpoints (the secret is never listed).'],
             ['POST /api/v1/webhooks', 'write', 'Body: url, event_types[] (or ["*"] for every event), description?. Returns the secret once.'],
@@ -1168,7 +1178,7 @@ end`}</Code>
             <span className="font-mono text-ink">400</span> at creation time rather than silently dropped or
             passed through.
           </p>
-          <p className="text-xs font-mono text-muted uppercase tracking-wider mt-5 mb-1.5">Ports by protocol / session type</p>
+          <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-5 mb-1.5">Ports by protocol / session type</p>
           <Table rows={[
             ['http, rotating', '9000', ''],
             ['http, sticky', '10000', ''],
@@ -1184,7 +1194,8 @@ end`}</Code>
             Questions not covered here — <a href="mailto:support@globproxy.com" className="text-accent hover:underline">support@globproxy.com</a>.
           </p>
         </div>
-      </div>
+      </main>
+      <Footer />
     </>
   )
 }

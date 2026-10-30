@@ -52,8 +52,8 @@ export function buildCsp(opts: { nonce?: string } = {}): string {
   return [
     `default-src 'self'`,
     scriptSrc,
-    `style-src 'self' 'unsafe-inline' https://fonts.googleapis.com`,
-    `font-src 'self' data: https://fonts.gstatic.com`,
+    `style-src 'self' 'unsafe-inline'`,
+    `font-src 'self' data:`,
     `img-src 'self' data: blob: https:`,
     `connect-src 'self' ${supabaseOrigins().join(' ')} https://api.paystack.co https://checkout.paystack.com https://challenges.cloudflare.com`,
     `frame-src https://challenges.cloudflare.com https://checkout.paystack.com https://js.paystack.co`,

@@ -1,14 +1,15 @@
-import type { Metadata } from 'next'
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
+import Footer from '@/components/Footer'
 import { LOCATION_COUNTRIES } from '@/lib/locations/data'
+import { pageMetadata } from '@/lib/seo'
 
-export const metadata: Metadata = {
+export const metadata = pageMetadata({
   title: 'Residential Proxy Locations — 195 Countries — GlobProxy',
   description:
     'Browse GlobProxy\'s residential proxy coverage by country — real network and city-level data, not a static list. Non-expiring bandwidth in every market.',
-  alternates: { canonical: '/locations' },
-}
+  path: '/locations',
+})
 
 export default function LocationsIndexPage() {
   const countries = [...LOCATION_COUNTRIES].sort((a, b) => a.name.localeCompare(b.name))
@@ -16,7 +17,7 @@ export default function LocationsIndexPage() {
   return (
     <>
       <Navbar />
-      <div className="max-w-6xl mx-auto px-6 py-16">
+      <main id="main" className="max-w-6xl mx-auto px-6 py-16">
         <div className="mb-12">
           <div className="inline-block bg-accent-light text-accent text-xs font-mono tracking-widest uppercase px-4 py-1.5 rounded-full mb-4">
             Locations
@@ -37,13 +38,14 @@ export default function LocationsIndexPage() {
             >
               <div>
                 <div className="font-display font-bold text-ink group-hover:text-accent transition-colors">{c.name}</div>
-                <div className="text-xs text-muted font-mono mt-1">{c.cityCount.toLocaleString()} cities · {c.asnCount.toLocaleString()} networks</div>
+                <div className="text-xs text-subtle font-mono mt-1">{c.cityCount.toLocaleString()} {c.cityCount === 1 ? 'city' : 'cities'} · {c.asnCount.toLocaleString()} {c.asnCount === 1 ? 'network' : 'networks'}</div>
               </div>
               <span className="text-accent opacity-0 group-hover:opacity-100 transition-opacity">→</span>
             </Link>
           ))}
         </div>
-      </div>
+      </main>
+      <Footer />
     </>
   )
 }

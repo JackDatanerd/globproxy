@@ -1,5 +1,6 @@
 import { authorizeAdmin, readJson, badRequest } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
+import { leaksSupplier } from '@/lib/supplierGuard'
 import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
@@ -22,6 +23,12 @@ export async function POST(req: Request) {
   }
   if (notes != null && (typeof notes !== 'string' || notes.length > 500)) {
     return badRequest('notes must be text of at most 500 characters')
+  }
+
+  // network_benchmarks is world-readable (RLS `using (true)`) and rendered verbatim on the public
+  // /status page, so free text typed here reaches anonymous visitors. It must never name the supplier.
+  if (leaksSupplier(targetLabel) || leaksSupplier(notes)) {
+    return badRequest('The label and notes are published on the public status page and must not name our upstream provider')
   }
 
   const { error } = await auth.supabase.from('network_benchmarks').insert({

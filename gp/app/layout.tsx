@@ -3,6 +3,7 @@ import './globals.css'
 import { Toaster } from 'react-hot-toast'
 import JsonLd from '@/components/JsonLd'
 import RefCapture from '@/components/RefCapture'
+import { fontSans, fontDisplay, fontMono } from './fonts'
 
 const organizationSchema = {
   '@context': 'https://schema.org',
@@ -25,7 +26,12 @@ export const metadata: Metadata = {
     images: [{ url: '/og-image.png', width: 1200, height: 630, alt: 'GlobProxy' }],
     type: 'website',
   },
-  twitter: { card: 'summary_large_image', title: 'GlobProxy', images: ['/og-image.png'] },
+  twitter: {
+    card: 'summary_large_image',
+    title: 'GlobProxy — Residential Proxies That Never Expire',
+    description: 'Buy once, use forever. 35M+ IPs, 195 countries, no subscriptions.',
+    images: ['/og-image.png'],
+  },
   icons: {
     icon: [
       { url: '/favicon.ico', sizes: 'any' },
@@ -40,12 +46,12 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" className={`${fontSans.variable} ${fontDisplay.variable} ${fontMono.variable}`}>
       <body className="antialiased">
         <JsonLd data={organizationSchema} />
         <RefCapture />
         {children}
-        <Toaster position="top-right" toastOptions={{ style: { fontFamily: 'DM Sans, sans-serif', fontSize: '14px' } }} />
+        <Toaster position="top-right" toastOptions={{ style: { fontFamily: 'var(--font-sans), system-ui, sans-serif', fontSize: '14px' } }} />
       </body>
     </html>
   )

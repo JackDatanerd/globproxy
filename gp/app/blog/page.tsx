@@ -1,20 +1,16 @@
-import type { Metadata } from 'next'
 import Navbar from '@/components/Navbar'
+import Footer from '@/components/Footer'
 import PostCard from '@/components/blog/PostCard'
 import { getAllPosts } from '@/lib/blog/utils'
+import { pageMetadata } from '@/lib/seo'
 
-export const metadata: Metadata = {
+export const metadata = pageMetadata({
   title: 'Blog — GlobProxy',
   description:
     'Guides on residential proxy bandwidth, city-level geo-targeting, session types, and honest provider comparisons — from the team building GlobProxy.',
-  alternates: { canonical: '/blog' },
-  openGraph: {
-    title: 'Blog — GlobProxy',
-    description: 'Guides on residential proxy bandwidth, geo-targeting, sessions, and honest provider comparisons.',
-    url: '/blog',
-    type: 'website',
-  },
-}
+  socialTitle: 'GlobProxy Blog — proxy bandwidth, geo-targeting and sessions',
+  path: '/blog',
+})
 
 export default function BlogIndexPage() {
   const posts = getAllPosts()
@@ -23,7 +19,7 @@ export default function BlogIndexPage() {
   return (
     <>
       <Navbar />
-      <div className="max-w-6xl mx-auto px-6 py-16">
+      <main id="main" className="max-w-6xl mx-auto px-6 py-16">
         <div className="mb-12">
           <div className="inline-block bg-accent-light text-accent text-xs font-mono tracking-widest uppercase px-4 py-1.5 rounded-full mb-4">
             Blog
@@ -39,13 +35,14 @@ export default function BlogIndexPage() {
           <p className="text-ink2 font-light">Nothing published yet — check back soon.</p>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            {latest && <PostCard post={latest} featured />}
+            {latest && <PostCard post={latest} featured headingLevel="h2" />}
             {rest.map((post) => (
-              <PostCard key={post.slug} post={post} />
+              <PostCard key={post.slug} post={post} headingLevel="h2" />
             ))}
           </div>
         )}
-      </div>
+      </main>
+      <Footer />
     </>
   )
 }

@@ -1,18 +1,25 @@
 import Navbar from '@/components/Navbar'
+import Footer from '@/components/Footer'
 import Link from 'next/link'
 import { REFERRAL_GB_BONUS, REFERRAL_MIN_ORDER_USD, AFFILIATE_MIN_PAYOUT_USD, AFFILIATE_HOLD_HOURS, AFFILIATE_INTRO_WINDOW_DAYS } from '@/lib/referrals'
 
-export const metadata = { title: 'Terms of Service — GlobProxy' }
+import { pageMetadata } from '@/lib/seo'
+
+export const metadata = pageMetadata({
+  title: 'Terms of Service — GlobProxy',
+  description: 'The terms for using GlobProxy: acceptable use, prepaid non-expiring bandwidth, resellers, referral and affiliate programs, and liability.',
+  path: '/terms',
+})
 
 export default function TermsPage() {
   return (
     <>
       <Navbar />
-      <div className="max-w-3xl mx-auto px-6 py-16">
+      <main id="main" className="max-w-3xl mx-auto px-6 py-16">
         <div className="mb-10">
           <div className="inline-block bg-accent-light text-accent text-xs font-mono tracking-widest uppercase px-4 py-1.5 rounded-full mb-4">Legal</div>
           <h1 className="font-display font-bold text-4xl text-ink tracking-tight mb-3">Terms of Service</h1>
-          <p className="text-muted text-sm font-mono">Last updated: October 2026 · Effective upon account creation</p>
+          <p className="text-subtle text-sm font-mono">Last updated: October 2026 · Effective upon account creation</p>
         </div>
         <div className="bg-amber-50 border border-amber-100 rounded-xl p-5 mb-10">
           <p className="text-sm text-amber-800 font-medium mb-1">Please read carefully</p>
@@ -58,21 +65,27 @@ export default function TermsPage() {
             <h2 className="font-display font-bold text-xl text-ink mb-3">7. Limitation of Liability</h2>
             <p className="text-sm">GlobProxy is provided &quot;as is&quot;. To the fullest extent permitted by law, Saltern Studio shall not be liable for indirect, incidental, or consequential damages. Our total liability shall not exceed the amount paid by you in the 30 days preceding the claim.</p>
           </section>
-          {/* <section>
-            <h2 className="font-display font-bold text-xl text-ink mb-3">8. Governing Law</h2>
+          <section>
+            <h2 className="font-display font-bold text-xl text-ink mb-3">8. Changes to These Terms</h2>
+            <p className="text-sm">We may update these terms from time to time. The &quot;Last updated&quot; date above shows the latest version. For material changes we will notify account holders by email or in the dashboard before they take effect, and your continued use of the service after that date means you accept the updated terms. Price changes follow the notice period in section 4.</p>
+          </section>
+          {/* TODO(legal): re-enable once confirmed, as section 9, and renumber Contact to 10.
+          <section>
+            <h2 className="font-display font-bold text-xl text-ink mb-3">9. Governing Law</h2>
             <p className="text-sm">These terms are governed by the laws of Kenya. Disputes shall be subject to the jurisdiction of the courts of Nairobi, Kenya.</p>
           </section> */}
           <section>
-            <h2 className="font-display font-bold text-xl text-ink mb-3">8. Contact</h2>
+            <h2 className="font-display font-bold text-xl text-ink mb-3">9. Contact</h2>
             <p className="text-sm">Questions: <a href="mailto:legal@globproxy.com" className="text-accent hover:underline">legal@globproxy.com</a></p>
           </section>
         </div>
         <div className="mt-12 pt-8 border-t border-border flex gap-6 text-sm">
           <Link href="/privacy" className="text-accent hover:underline">Privacy Policy</Link>
           <Link href="/refunds" className="text-accent hover:underline">Refund Policy</Link>
-          <Link href="/" className="text-muted hover:text-ink">← Home</Link>
+          <Link href="/" className="text-subtle hover:text-ink">← Home</Link>
         </div>
-      </div>
+      </main>
+      <Footer />
     </>
   )
 }

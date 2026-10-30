@@ -1,17 +1,24 @@
 import Navbar from '@/components/Navbar'
+import Footer from '@/components/Footer'
 import Link from 'next/link'
 
-export const metadata = { title: 'Refund Policy — GlobProxy' }
+import { pageMetadata } from '@/lib/seo'
+
+export const metadata = pageMetadata({
+  title: 'Refund Policy — GlobProxy',
+  description: 'When GlobProxy refunds a purchase: unused bandwidth within 72 hours, technical failures and duplicate charges — and how to request one.',
+  path: '/refunds',
+})
 
 export default function RefundsPage() {
   return (
     <>
       <Navbar />
-      <div className="max-w-3xl mx-auto px-6 py-16">
+      <main id="main" className="max-w-3xl mx-auto px-6 py-16">
         <div className="mb-10">
           <div className="inline-block bg-accent-light text-accent text-xs font-mono tracking-widest uppercase px-4 py-1.5 rounded-full mb-4">Legal</div>
           <h1 className="font-display font-bold text-4xl text-ink tracking-tight mb-3">Refund Policy</h1>
-          <p className="text-muted text-sm font-mono">Last updated: October 2026</p>
+          <p className="text-subtle text-sm font-mono">Last updated: October 2026</p>
         </div>
         <div className="space-y-8 text-ink2 leading-relaxed">
           <section>
@@ -23,7 +30,7 @@ export default function RefundsPage() {
             <div className="bg-accent2-light border border-accent2/20 rounded-xl p-5">
               <ul className="space-y-2 text-sm text-ink2">
                 {['You purchased bandwidth, have used 0 GB, and request a refund within 72 hours of purchase.','A technical failure on our side prevented access and we cannot resolve it within 48 hours.','You were charged more than once for the same order due to a payment error.'].map(i=>(
-                  <li key={i} className="flex items-start gap-2"><span className="text-accent2 font-bold flex-shrink-0">✓</span>{i}</li>
+                  <li key={i} className="flex items-start gap-2"><span className="text-accent2-dark font-bold flex-shrink-0">✓</span>{i}</li>
                 ))}
               </ul>
             </div>
@@ -65,9 +72,10 @@ export default function RefundsPage() {
         <div className="mt-12 pt-8 border-t border-border flex gap-6 text-sm">
           <Link href="/privacy" className="text-accent hover:underline">Privacy Policy</Link>
           <Link href="/terms" className="text-accent hover:underline">Terms of Service</Link>
-          <Link href="/" className="text-muted hover:text-ink">← Home</Link>
+          <Link href="/" className="text-subtle hover:text-ink">← Home</Link>
         </div>
-      </div>
+      </main>
+      <Footer />
     </>
   )
 }

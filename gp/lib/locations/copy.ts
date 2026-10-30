@@ -5,13 +5,16 @@ import type { LocationCountry } from './data'
 // differentiator between pages is the real per-country data (ASN count,
 // city count, verified major cities), but varying the sentence structure
 // too avoids the page reading as one template with find-and-replace.
+// "1 city", not "1 cities" (Singapore is a single city split into regions).
+const cityCount = (c: LocationCountry) => `${c.cityCount.toLocaleString()} ${c.cityCount === 1 ? 'city' : 'cities'}`
+
 const INTRO_TEMPLATES: ((c: LocationCountry) => string)[] = [
   (c) =>
     `Residential proxy coverage for ${c.name} spans ${c.asnCount.toLocaleString()} distinct network${c.asnCount === 1 ? '' : 's'} across ${c.stateCount} region${c.stateCount === 1 ? '' : 's'}, with city-level selection available in ${c.cityCount.toLocaleString()} location${c.cityCount === 1 ? '' : 's'} nationwide.`,
   (c) =>
-    `${c.name} is one of GlobProxy's supported markets: ${c.cityCount.toLocaleString()} cities across ${c.stateCount} region${c.stateCount === 1 ? '' : 's'}, backed by ${c.asnCount.toLocaleString()} carrier network${c.asnCount === 1 ? '' : 's'} of real residential IPs — not a single blanket "country" IP standing in for the whole territory.`,
+    `${c.name} is one of GlobProxy's supported markets: ${cityCount(c)} across ${c.stateCount} region${c.stateCount === 1 ? '' : 's'}, backed by ${c.asnCount.toLocaleString()} carrier network${c.asnCount === 1 ? '' : 's'} of real residential IPs — not a single blanket "country" IP standing in for the whole territory.`,
   (c) =>
-    `For tasks that need a genuine ${c.name} IP — not an approximation — GlobProxy's network covers ${c.stateCount} region${c.stateCount === 1 ? '' : 's'} and ${c.cityCount.toLocaleString()} cities in-country, drawing from ${c.asnCount.toLocaleString()} distinct residential network${c.asnCount === 1 ? '' : 's'}.`,
+    `For tasks that need a genuine ${c.name} IP — not an approximation — GlobProxy's network covers ${c.stateCount} region${c.stateCount === 1 ? '' : 's'} and ${cityCount(c)} in-country, drawing from ${c.asnCount.toLocaleString()} distinct residential network${c.asnCount === 1 ? '' : 's'}.`,
 ]
 
 export function locationIntro(country: LocationCountry): string {

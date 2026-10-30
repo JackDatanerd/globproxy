@@ -2,10 +2,12 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import Navbar from '@/components/Navbar'
+import Footer from '@/components/Footer'
 import JsonLd from '@/components/JsonLd'
 import { LOCATION_COUNTRIES } from '@/lib/locations/data'
 import { locationIntro, locationUseCases } from '@/lib/locations/copy'
 import { PLANS } from '@/lib/plans'
+import { pageMetadata } from '@/lib/seo'
 
 export function generateStaticParams() {
   return LOCATION_COUNTRIES.map((c) => ({ country: c.code }))
@@ -20,11 +22,15 @@ export async function generateMetadata({ params }: { params: Promise<{ country: 
   const country = getCountry(code)
   if (!country) return {}
 
-  return {
+  const entry = PLANS.find((p) => !p.custom) ?? PLANS[0]
+  const cities = `${country.cityCount.toLocaleString()} ${country.cityCount === 1 ? 'city' : 'cities'}`
+  const networks = `${country.asnCount.toLocaleString()} ${country.asnCount === 1 ? 'network' : 'networks'}`
+  return pageMetadata({
     title: `${country.name} Residential Proxies — City-Level Targeting — GlobProxy`,
-    description: `Residential proxies in ${country.name}: ${country.cityCount.toLocaleString()} cities, ${country.asnCount.toLocaleString()} networks, non-expiring bandwidth from $4.50.`,
-    alternates: { canonical: `/locations/${country.code}` },
-  }
+    socialTitle: `${country.name} Residential Proxies — GlobProxy`,
+    description: `Residential proxies in ${country.name}: ${cities}, ${networks}, non-expiring bandwidth from $${entry.total.toFixed(2)}.`,
+    path: `/locations/${country.code}`,
+  })
 }
 
 export default async function LocationCountryPage({ params }: { params: Promise<{ country: string }> }) {
@@ -58,8 +64,8 @@ export default async function LocationCountryPage({ params }: { params: Promise<
       <JsonLd data={breadcrumbSchema} />
       <JsonLd data={serviceSchema} />
       <Navbar />
-      <div className="max-w-4xl mx-auto px-6 py-16">
-        <nav className="text-xs font-mono text-muted mb-8 flex items-center gap-2">
+      <main id="main" className="max-w-4xl mx-auto px-6 py-16">
+        <nav aria-label="Breadcrumb" className="text-xs font-mono text-subtle mb-8 flex items-center gap-2">
           <Link href="/locations" className="hover:text-ink transition-colors">Locations</Link>
           <span>/</span>
           <span className="text-ink2">{country.name}</span>
@@ -72,13 +78,13 @@ export default async function LocationCountryPage({ params }: { params: Promise<
 
         <div className="grid grid-cols-3 gap-4 mb-12">
           {[
-            [country.cityCount.toLocaleString(), 'Cities covered'],
+            [country.cityCount.toLocaleString(), country.cityCount === 1 ? 'City covered' : 'Cities covered'],
             [country.stateCount.toLocaleString(), country.stateCount === 1 ? 'Region' : 'Regions'],
             [country.asnCount.toLocaleString(), country.asnCount === 1 ? 'Network' : 'Networks'],
           ].map(([n, l]) => (
             <div key={l} className="border border-border rounded-xl p-5 text-center bg-surface">
               <div className="font-display text-3xl font-bold text-ink tracking-tight">{n}</div>
-              <div className="text-[10px] text-muted uppercase tracking-widest font-mono mt-1">{l}</div>
+              <div className="text-[10px] text-subtle uppercase tracking-widest font-mono mt-1">{l}</div>
             </div>
           ))}
         </div>
@@ -104,7 +110,7 @@ export default async function LocationCountryPage({ params }: { params: Promise<
 
         <div className="border border-border rounded-2xl p-8 bg-ink text-center mb-4">
           <h2 className="font-display text-2xl font-bold text-white tracking-tight mb-2">Start in {country.name} from ${entry.total.toFixed(2)}</h2>
-          <p className="text-white/50 font-light text-sm mb-6">Non-expiring bandwidth, city-level targeting, rotating and sticky sessions — no subscription.</p>
+          <p className="text-white/60 font-light text-sm mb-6">Non-expiring bandwidth, city-level targeting, rotating and sticky sessions — no subscription.</p>
           <Link
             href="/auth/signup"
             className="inline-flex items-center gap-2 bg-white text-ink px-7 py-3 rounded-xl font-medium hover:-translate-y-0.5 transition-all"
@@ -112,10 +118,11 @@ export default async function LocationCountryPage({ params }: { params: Promise<
             Get started →
           </Link>
         </div>
-        <p className="text-center text-xs font-mono text-muted">
+        <p className="text-center text-xs font-mono text-subtle">
           Looking for another market? <Link href="/locations" className="text-accent hover:underline">Browse all locations →</Link>
         </p>
-      </div>
+      </main>
+      <Footer />
     </>
   )
 }

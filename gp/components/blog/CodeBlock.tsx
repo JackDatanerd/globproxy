@@ -41,10 +41,10 @@ export default function CodeBlock({ code, language, caption }: { code: string; l
 
   return (
     <figure className="my-6">
-      {caption && <figcaption className="text-xs font-mono text-muted mb-2">{caption}</figcaption>}
+      {caption && <figcaption className="text-xs font-mono text-subtle mb-2">{caption}</figcaption>}
       <div className="bg-ink rounded-xl overflow-hidden">
         <div className="flex items-center justify-between px-4 py-2 border-b border-white/10">
-          <span className="text-[10px] font-mono text-white/40 uppercase tracking-widest">{language ?? 'text'}</span>
+          <span className="text-[10px] font-mono text-white/60 uppercase tracking-widest">{language ?? 'text'}</span>
           <button
             type="button"
             onClick={onCopy}

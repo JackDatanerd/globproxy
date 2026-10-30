@@ -1,6 +1,8 @@
 import { REFERRAL_GB_BONUS, REFERRAL_MIN_ORDER_USD } from '@/lib/referrals'
+import type { Metadata } from 'next'
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
+import Footer from '@/components/Footer'
 import HeroCard from '@/components/HeroCard'
 import PricingPlans from '@/components/PricingPlans'
 import ResellerCalc from '@/components/ResellerCalc'
@@ -18,6 +20,10 @@ import { getPlan } from '@/lib/plans'
 const ENTRY_PLAN = getPlan('micro')!
 const SCALE_PLAN = getPlan('scale')!
 
+// Title, description and social card come from the root layout. The homepage had no canonical, so
+// ?ref= / ?sub= / utm variants competed with it.
+export const metadata: Metadata = { alternates: { canonical: '/' } }
+
 export default async function Home() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -27,6 +33,7 @@ export default async function Home() {
     <>
       <Navbar />
 
+      <main id="main">
       {/* HERO */}
       <section className="relative overflow-hidden pt-24 pb-20">
         <div className="absolute -top-48 -right-48 w-[600px] h-[600px] rounded-full bg-accent/5 blur-3xl pointer-events-none" />
@@ -48,11 +55,11 @@ export default async function Home() {
                 <Link href={buyHref} className="inline-flex items-center gap-2 bg-accent text-white px-7 py-3.5 rounded-xl font-medium shadow-[0_2px_12px_rgba(0,87,255,.3)] hover:-translate-y-0.5 transition-all">Start from ${ENTRY_PLAN.total.toFixed(2)} →</Link>
                 <Link href="#compare" className="inline-flex items-center gap-2 border border-border text-ink2 px-7 py-3.5 rounded-xl font-medium hover:border-ink2 transition-all">See comparison</Link>
               </div>
-              <div className="flex items-center gap-3 mt-6 text-xs text-muted">
+              <div className="flex items-center gap-3 mt-6 text-xs text-subtle">
                 <div className="flex gap-1">{[1,.6,.3].map((o,i)=><div key={i} className="w-2 h-2 rounded-full bg-accent2" style={{opacity:o}}/>)}</div>
                 Trusted by 1,400+ freelancers and agencies worldwide
               </div>
-              <p className="text-[11px] text-muted mt-2 font-mono">
+              <p className="text-[11px] text-subtle mt-2 font-mono">
                 ${ENTRY_PLAN.total.toFixed(2)} total to get started · as low as ${SCALE_PLAN.price.toFixed(2)}/GB at scale
               </p>
             </div>
@@ -68,7 +75,7 @@ export default async function Home() {
             {[['35M+','Residential IPs'],['195','Countries'],['99.9%','Uptime'],['∞','No expiry']].map(([n,l])=>(
               <div key={l} className="text-center px-6">
                 <div className="font-display text-4xl font-bold text-ink tracking-tight">{n}</div>
-                <div className="text-xs text-muted uppercase tracking-widest font-mono mt-1">{l}</div>
+                <div className="text-xs text-subtle uppercase tracking-widest font-mono mt-1">{l}</div>
               </div>
             ))}
           </div>
@@ -132,38 +139,38 @@ export default async function Home() {
             <div>
               <div className="inline-block bg-accent-light text-accent text-xs font-mono tracking-widest uppercase px-4 py-1.5 rounded-full mb-5">Honest comparison</div>
               <h2 className="font-display text-4xl font-bold tracking-tight text-ink leading-tight mb-4">Why operators are switching to GlobProxy</h2>
-              <p className="text-ink2 font-light leading-relaxed mb-8">Most providers lock you into monthly subscriptions where unused bandwidth disappears. We built GlobProxy differently — your GB is yours, forever.</p>
+              <p className="text-ink2 font-light leading-relaxed mb-8">Many providers lock you into monthly subscriptions where unused bandwidth disappears. We built GlobProxy differently — your GB is yours, forever.</p>
               <div className="flex flex-col gap-3">
                 {[
                   {icon:'$',title:'Up to 45% cheaper than competitors',sub:'Same residential quality, dramatically lower price at every volume tier'},
-                  {icon:'∞',title:'No expiry, ever',sub:"Competitors expire unused bandwidth monthly. Yours stays until every byte is used"},
+                  {icon:'∞',title:'No expiry, ever',sub:"Many providers expire unused bandwidth at the end of the billing period. Yours stays until every byte is used"},
                   {icon:'→',title:'No subscription traps',sub:'Buy what you need, stop when you want. No recurring charges or cancellation windows'},
                 ].map(p=>(
                   <div key={p.title} className="flex gap-3 items-start p-4 bg-surface border border-border rounded-xl">
                     <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center text-white font-mono text-xs flex-shrink-0">{p.icon}</div>
-                    <div><div className="font-medium text-sm text-ink">{p.title}</div><div className="text-xs text-muted mt-0.5 font-light">{p.sub}</div></div>
+                    <div><div className="font-medium text-sm text-ink">{p.title}</div><div className="text-xs text-subtle mt-0.5 font-light">{p.sub}</div></div>
                   </div>
                 ))}
               </div>
             </div>
             <div className="border border-border rounded-2xl overflow-hidden shadow-lg">
               <div className="grid grid-cols-3 bg-surface border-b border-border">
-                <div className="px-5 py-3 text-xs font-mono text-muted tracking-wider uppercase">Feature</div>
+                <div className="px-5 py-3 text-xs font-mono text-subtle tracking-wider uppercase">Feature</div>
                 <div className="px-5 py-3 text-xs font-mono text-accent tracking-wider uppercase bg-accent-light text-center">GlobProxy</div>
-                <div className="px-5 py-3 text-xs font-mono text-muted tracking-wider uppercase text-center">Others</div>
+                <div className="px-5 py-3 text-xs font-mono text-subtle tracking-wider uppercase text-center">Others</div>
               </div>
               {[
-                ['Bandwidth expiry','Never ✓','Monthly ✗'],
-                ['Subscriptions','None ✓','Required ✗'],
+                ['Bandwidth expiry','Never ✓','Often monthly'],
+                ['Subscriptions','None ✓','Often required'],
                 ['195 countries','✓','100–195'],
                 ['City targeting','✓','Varies'],
-                ['White-label API','✓','Extra cost'],
+                ['White-label API','✓','Often extra'],
                 ['100 GB price','$2.80/GB','$6.40+/GB'],
               ].map((r,i)=>(
                 <div key={i} className="grid grid-cols-3 border-b border-border last:border-none">
-                  <div className="px-5 py-3.5 text-xs font-mono text-muted">{r[0]}</div>
+                  <div className="px-5 py-3.5 text-xs font-mono text-subtle">{r[0]}</div>
                   <div className="px-5 py-3.5 text-sm text-ink font-medium bg-accent/[.02] text-center">{r[1]}</div>
-                  <div className="px-5 py-3.5 text-sm text-muted text-center">{r[2]}</div>
+                  <div className="px-5 py-3.5 text-sm text-subtle text-center">{r[2]}</div>
                 </div>
               ))}
             </div>
@@ -180,7 +187,10 @@ export default async function Home() {
             <p className="text-ink2 font-light max-w-lg mx-auto leading-relaxed">No subscriptions. No monthly bills. Every GB stays on your account indefinitely.</p>
           </div>
           <PricingPlans buyHref={buyHref} />
-          <p className="text-center text-xs font-mono text-muted mt-6">All plans include non-expiring bandwidth · No hidden fees · No contracts</p>
+          <p className="text-center text-xs font-mono text-subtle mt-6">All plans include non-expiring bandwidth · No hidden fees · No contracts</p>
+          <p className="text-center text-sm text-ink2 font-light mt-3">
+            Haven&apos;t used any of it? Ask for a refund within 72 hours of purchase. <Link href="/refunds" className="text-accent hover:underline">See the refund policy</Link>
+          </p>
         </div>
       </section>
 
@@ -189,7 +199,7 @@ export default async function Home() {
         <div className="max-w-6xl mx-auto px-6">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-20 items-center">
             <div>
-              <div className="inline-block bg-accent2-light text-accent2 text-xs font-mono tracking-widest uppercase px-4 py-1.5 rounded-full mb-5">Reseller Program</div>
+              <div className="inline-block bg-accent2-light text-accent2-dark text-xs font-mono tracking-widest uppercase px-4 py-1.5 rounded-full mb-5">Reseller Program</div>
               <h2 className="font-display text-4xl font-bold tracking-tight text-ink leading-tight mb-4">Resell GlobProxy.<br />Keep the difference.</h2>
               <p className="text-ink2 font-light leading-relaxed mb-7">Buy wholesale bandwidth and resell at your own price under your own brand. Our white-label API handles credentials, sub-users, and usage tracking — invisibly.</p>
               <div className="flex flex-col gap-2.5 mb-8">
@@ -201,7 +211,7 @@ export default async function Home() {
               </div>
               <Link href="/auth/signup?role=reseller" className="inline-flex items-center gap-2 bg-ink text-white px-7 py-3.5 rounded-xl font-medium hover:-translate-y-0.5 transition-all">Apply to resell →</Link>
               <div className="mt-3">
-                <Link href="/docs/api" className="text-sm text-accent2 hover:underline">
+                <Link href="/docs/api" className="text-sm text-accent2-dark hover:underline">
                   API access is available to approved resellers — view the docs →
                 </Link>
               </div>
@@ -239,7 +249,7 @@ export default async function Home() {
                   ['Payout schedule', 'Biweekly — earn 1st–15th, paid by the 20th; earn 16th–end, paid by the 5th'],
                 ].map(([label, val]) => (
                   <div key={label} className="px-6 py-4">
-                    <div className="text-xs font-mono text-muted uppercase tracking-wider mb-1">{label}</div>
+                    <div className="text-xs font-mono text-subtle uppercase tracking-wider mb-1">{label}</div>
                     <div className="text-sm text-ink">{val}</div>
                   </div>
                 ))}
@@ -255,43 +265,20 @@ export default async function Home() {
         <div className="absolute -bottom-36 -left-24 w-[400px] h-[400px] rounded-full bg-accent2/8 blur-3xl" />
         <div className="max-w-6xl mx-auto px-6 text-center relative z-10">
           <h2 className="font-display text-5xl font-black text-white tracking-tight leading-tight mb-4">Your bandwidth.<br />Your pace. <em className="not-italic text-accent2/80">Forever.</em></h2>
-          <p className="text-white/40 font-light mb-10">Join 1,400+ operators who stopped paying for bandwidth they don&apos;t use.</p>
+          <p className="text-white/60 font-light mb-10">Join 1,400+ operators who stopped paying for bandwidth they don&apos;t use.</p>
           <div className="flex gap-3 justify-center flex-wrap">
             <Link href={buyHref} className="inline-flex items-center gap-2 bg-white text-ink px-7 py-3.5 rounded-xl font-medium hover:-translate-y-0.5 transition-all">Start from ${ENTRY_PLAN.total.toFixed(2)} →</Link>
             <Link href="#reseller" className="inline-flex items-center gap-2 border border-white/20 text-white px-7 py-3.5 rounded-xl font-medium hover:border-white/50 transition-all">Become a reseller</Link>
           </div>
-          <p className="text-[11px] text-white/30 mt-4 font-mono">
+          <p className="text-[11px] text-white/50 mt-4 font-mono">
             ${ENTRY_PLAN.total.toFixed(2)} total to get started · as low as ${SCALE_PLAN.price.toFixed(2)}/GB at scale
           </p>
         </div>
       </section>
 
-      {/* FOOTER */}
-      <footer className="bg-ink border-t border-white/5 pt-14 pb-8">
-        <div className="max-w-6xl mx-auto px-6">
-          <div className="grid grid-cols-2 lg:grid-cols-5 gap-10 mb-12">
-            <div className="col-span-2 lg:col-span-1">
-              <div className="font-display font-black text-2xl text-white mb-3">Glob<span className="text-accent">Proxy</span></div>
-              <p className="text-white/30 text-sm font-light leading-relaxed max-w-xs">Residential proxies that never expire. Buy once, use forever. No subscriptions.</p>
-            </div>
-            {[
-              {title:'Product',links:[['/#features','Features'],['/#pricing','Pricing'],['/#reseller','Resellers'],['/#compare','Compare'],['/docs/api','API Docs']]},
-              {title:'Resources',links:[['/blog','Blog'],['/help','Help centre'],['/locations','Locations'],['/status','Network status']]},
-              {title:'Support',links:[['mailto:support@globproxy.com','Contact us'],['mailto:sales@globproxy.com','Sales']]},
-              {title:'Legal',links:[['/terms','Terms of Service'],['/privacy','Privacy Policy'],['/refunds','Refund Policy']]},
-            ].map(col=>(
-              <div key={col.title}>
-                <div className="text-white/30 text-xs font-mono tracking-widest uppercase mb-4">{col.title}</div>
-                {col.links.map(([h,l])=><a key={h} href={h} className="block text-white/50 text-sm mb-2.5 hover:text-white/80 transition-colors">{l}</a>)}
-              </div>
-            ))}
-          </div>
-          <div className="border-t border-white/5 pt-6 flex justify-between items-center">
-            <p className="text-white/25 text-xs">© {new Date().getFullYear()} GlobProxy · Saltern Studio. All rights reserved.</p>
-            <p className="text-white/25 text-xs font-mono">globproxy.com</p>
-          </div>
-        </div>
-      </footer>
+      </main>
+
+      <Footer />
     </>
   )
 }

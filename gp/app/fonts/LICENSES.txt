@@ -1,0 +1,3 @@
+Fraunces (Undercase Type), DM Sans and DM Mono (Colophon Foundry) are licensed under the
+SIL Open Font License, Version 1.1 (https://openfontlicense.org). The Latin-subset woff2 files
+here come from the @fontsource packages for those families.

@@ -2,7 +2,9 @@ import Link from 'next/link'
 import type { BlogPost } from '@/lib/blog/types'
 import { postPath, readingTime } from '@/lib/blog/utils'
 
-export default function PostCard({ post, featured = false }: { post: BlogPost; featured?: boolean }) {
+export default function PostCard({ post, featured = false, headingLevel = 'h3' }: { post: BlogPost; featured?: boolean; headingLevel?: 'h2' | 'h3' }) {
+  // The blog index sits directly under the page <h1>, so its cards use h2 (h1 -> h3 skipped a level).
+  const Heading = headingLevel
   return (
     <Link
       href={postPath(post)}
@@ -14,11 +16,11 @@ export default function PostCard({ post, featured = false }: { post: BlogPost; f
         <span className="text-[10px] font-mono tracking-widest uppercase text-accent bg-accent-light px-3 py-1 rounded-full">
           {post.category}
         </span>
-        <span className="text-xs text-muted font-mono">{readingTime(post)}</span>
+        <span className="text-xs text-subtle font-mono">{readingTime(post)}</span>
       </div>
-      <h3 className={`font-display font-bold text-ink tracking-tight mb-3 group-hover:text-accent transition-colors ${featured ? 'text-2xl' : 'text-lg'}`}>
+      <Heading className={`font-display font-bold text-ink tracking-tight mb-3 group-hover:text-accent transition-colors ${featured ? 'text-2xl' : 'text-lg'}`}>
         {post.title}
-      </h3>
+      </Heading>
       <p className="text-ink2 text-sm font-light leading-relaxed mb-4">{post.excerpt}</p>
       <div className="mt-auto text-sm text-accent font-medium">Read more →</div>
     </Link>
