@@ -2,6 +2,7 @@ import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { formatGb, formatPct } from '@/lib/format'
+import { leaksSupplier } from '@/lib/supplierGuard'
 import UsageHistoryChart from '@/components/dashboard/UsageHistoryChart'
 
 export default async function UsagePage() {
@@ -14,6 +15,7 @@ export default async function UsagePage() {
     supabase.from('proxy_credentials').select('id, label, country, gb_used, gb_allocated, status').eq('user_id', user.id).in('status', ['active', 'suspended']).order('gb_used',{ascending:false}),
   ])
   const bw = bwRes.data, creds = credsRes.data
+  const safeLabel = (l?: string | null) => (l && !leaksSupplier(l) ? l : '')
   // The customer's own alert levels (Settings). Tolerant: 80 / 95 if unset or unreadable.
   let warnPct = 80, urgentPct = 95
   try {
@@ -61,7 +63,7 @@ export default async function UsagePage() {
           </>
         )}
       </div>
-      <UsageHistoryChart sessions={(creds ?? []).map(c => ({ id: c.id, label: (c.label || c.country || 'Unnamed') + (c.status === 'suspended' ? ' (paused)' : '') }))} />
+      <UsageHistoryChart sessions={(creds ?? []).map(c => ({ id: c.id, label: (safeLabel(c.label) || c.country || 'Unnamed') + (c.status === 'suspended' ? ' (paused)' : '') }))} />
 
       <div className="bg-white border border-border rounded-xl overflow-hidden">
         <div className="px-6 py-4 border-b border-border">
@@ -77,7 +79,7 @@ export default async function UsagePage() {
                 <div key={c.id} className="px-6 py-5">
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-3">
-                      <span className="font-medium text-sm text-ink truncate max-w-[16rem]">{c.label||'Unnamed'}</span>
+                      <span className="font-medium text-sm text-ink truncate max-w-[16rem]">{safeLabel(c.label)||'Unnamed'}</span>
                       {c.country && <span className="text-[11px] font-mono bg-accent-light text-accent px-2 py-0.5 rounded">{c.country}</span>}
                       {c.status === 'suspended' && <span className="text-[10px] font-mono bg-surface border border-border text-muted px-2 py-0.5 rounded-full">paused</span>}
                     </div>

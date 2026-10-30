@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import toast from 'react-hot-toast'
 import TrustedBrowsers from '@/components/dashboard/TrustedBrowsers'
-import { saveTextFile } from '@/lib/clientApi'
+import { saveTextFile, copyText } from '@/lib/clientApi'
 
 interface Status {
   enrolled: boolean
@@ -76,7 +76,7 @@ export default function TwoFactorSettings({ role }: { role?: string } = {}) {
     try {
       const res = await authedFetch('/api/auth/mfa/recovery', { action: 'cancel_mine' })
       const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error)
+      if (!res.ok) throw new Error(data.error || 'Something went wrong. Please try again.')
       setPending(null)
       toast.success('Two-factor removal cancelled. If you didn’t start it, change your password too.')
     } catch (e: any) {
@@ -94,13 +94,13 @@ export default function TwoFactorSettings({ role }: { role?: string } = {}) {
     try {
       const res = await authedFetch('/api/auth/mfa/disable', { code })
       const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error)
+      if (!res.ok) throw new Error(data.error || 'Something went wrong. Please try again.')
       toast.success('Two-factor authentication disabled. We recommend turning it back on.')
       setMode('idle'); setCode('')
       await loadStatus()
       router.refresh()
     } catch (e: any) {
-      toast.error(e.message ?? 'Could not disable.')
+      toast.error(e.message || 'Could not disable.')
     } finally {
       setSubmitting(false)
     }
@@ -112,12 +112,12 @@ export default function TwoFactorSettings({ role }: { role?: string } = {}) {
     try {
       const res = await authedFetch('/api/auth/mfa/regenerate-backup-codes', { code })
       const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error)
+      if (!res.ok) throw new Error(data.error || 'Something went wrong. Please try again.')
       setNewCodes(data.backup_codes)
       setMode('idle'); setCode('')
       await loadStatus()
     } catch (e: any) {
-      toast.error(e.message ?? 'Could not regenerate codes.')
+      toast.error(e.message || 'Could not regenerate codes.')
     } finally {
       setSubmitting(false)
     }
@@ -129,11 +129,11 @@ export default function TwoFactorSettings({ role }: { role?: string } = {}) {
     try {
       const res = await authedFetch('/api/auth/mfa/rekey', { action: 'start', code })
       const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error)
+      if (!res.ok) throw new Error(data.error || 'Something went wrong. Please try again.')
       setRekey({ secret: data.secret, qr_svg: data.qr_svg })
       setCode(''); setNewCode('')
     } catch (e: any) {
-      toast.error(e.message ?? 'Could not start the change.')
+      toast.error(e.message || 'Could not start the change.')
     } finally {
       setSubmitting(false)
     }
@@ -145,12 +145,12 @@ export default function TwoFactorSettings({ role }: { role?: string } = {}) {
     try {
       const res = await authedFetch('/api/auth/mfa/rekey', { action: 'confirm', code: newCode })
       const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error)
+      if (!res.ok) throw new Error(data.error || 'Something went wrong. Please try again.')
       toast.success('Authenticator changed. Other trusted browsers will ask for a code again.')
       cancelRekey()
       await loadStatus()
     } catch (e: any) {
-      toast.error(e.message ?? 'Could not change the authenticator.')
+      toast.error(e.message || 'Could not change the authenticator.')
     } finally {
       setSubmitting(false)
     }
@@ -161,8 +161,8 @@ export default function TwoFactorSettings({ role }: { role?: string } = {}) {
   }
 
   async function copyCodes(codes: string[]) {
-    try { await navigator.clipboard.writeText(codes.join('\n')); toast.success('Backup codes copied') }
-    catch { toast.error('Couldn’t copy — use Download instead.') }
+    if (await copyText(codes.join('\n'))) toast.success('Backup codes copied')
+    else toast.error('Couldn’t copy — use Download instead.')
   }
 
   function downloadCodes(codes: string[]) {

@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import toast from 'react-hot-toast'
 import { apiJson, toastApiError } from '@/lib/clientApi'
@@ -28,6 +28,8 @@ export default function PayoutMethodForm({ currentMethod, currentWalletAddress, 
   const [swift, setSwift] = useState('')
   const [loading, setLoading] = useState(false)
   const [editing, setEditing] = useState(!currentMethod)
+  // If the method is removed elsewhere (another tab) the server props change to null; reopen the form.
+  useEffect(() => { if (!currentMethod) setEditing(true) }, [currentMethod])
 
   async function handle(e: React.FormEvent) {
     e.preventDefault()
