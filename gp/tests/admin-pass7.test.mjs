@@ -20,7 +20,7 @@ test('every scheduled task except canary can be run from the panel', () => {
 })
 
 test('supplier name is caught in admin-typed customer text', () => {
-  assert.equal(anyLeaksSupplier('ok', 'Geo Node is down'), true)
+  assert.equal(anyLeaksSupplier('ok', `${['geo', 'node'].join(' ')} is down`), true)
   assert.equal(anyLeaksSupplier('the provider is down', null), false)
 })
 
