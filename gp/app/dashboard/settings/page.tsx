@@ -275,7 +275,7 @@ function SettingsPageInner() {
       toast.success('Deletion cancelled — your account stays as it is')
       router.refresh() // drop the layout's red banner, which would otherwise stay until a reload
     } catch (err: any) {
-      toast.error(err?.message ?? 'Could not cancel the deletion')
+      toastApiError(err, 'Could not cancel the deletion')
     }
     setCancellingDeletion(false)
   }
@@ -294,7 +294,7 @@ function SettingsPageInner() {
       saveBlob(await res.blob(), `globproxy-my-data-${new Date().toISOString().slice(0, 10)}.json`)
       toast.success('Your data was downloaded')
     } catch (err: any) {
-      toast.error(err?.message ?? 'Could not export your data')
+      toastApiError(err, 'Could not export your data')
     } finally {
       // finally: the early returns above used to skip this and leave the button on "Preparing…".
       setExporting(false)
@@ -328,7 +328,7 @@ function SettingsPageInner() {
       })
       toast.success(defaultAuto.enabled ? 'Default auto-allocate saved' : 'Default auto-allocate turned off')
     } catch (err: any) {
-      toast.error(err.message ?? 'Failed to save default')
+      toastApiError(err, 'Failed to save default')
     }
     setDefaultAutoLoading(false)
   }
@@ -408,7 +408,7 @@ function SettingsPageInner() {
       await apiJson('POST', `/api/dashboard/webhooks/${id}/test`)
       toast.success('Test event delivered')
     } catch (err: any) {
-      toast.error(err.message ?? 'Test delivery failed — check the endpoint is reachable')
+      toastApiError(err, 'Test delivery failed — check the endpoint is reachable')
     }
     setTestingId(null)
   }
@@ -458,7 +458,7 @@ function SettingsPageInner() {
       if (req !== logReqRef.current || logIdRef.current !== id) return
       // Keep what is already on screen (a failed "load more" must not wipe the loaded pages).
       if (!cursor) setLogRows([])
-      toast.error(err.message ?? 'Failed to load deliveries')
+      toastApiError(err, 'Failed to load deliveries')
     }
     if (req === logReqRef.current) setLogLoading(false)
   }
@@ -479,7 +479,7 @@ function SettingsPageInner() {
       if (req === detailReqRef.current) setDetail(d)
     } catch (err: any) {
       if (req !== detailReqRef.current) return // a newer click owns the panel now
-      toast.error(err.message ?? 'Failed to load delivery')
+      toastApiError(err, 'Failed to load delivery')
       setDetailId(null)
     }
   }
@@ -489,7 +489,7 @@ function SettingsPageInner() {
       await apiJson('POST', `/api/dashboard/webhooks/${endpointId}/deliveries/${deliveryId}/redeliver`)
       toast.success('Event redelivered')
     } catch (err: any) {
-      toast.error(err.message ?? 'Redelivery failed')
+      toastApiError(err, 'Redelivery failed')
     }
     if (logIdRef.current === endpointId) await loadDeliveries(endpointId, null, logRows.length)
   }
@@ -523,7 +523,7 @@ function SettingsPageInner() {
       setProfile({ ...profile, reseller_status: 'pending' })
       setShowForm(false)
     } catch (err: any) {
-      toast.error(err.message)
+      toastApiError(err, "Application failed")
     }
     setApplying(false)
   }

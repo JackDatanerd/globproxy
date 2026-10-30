@@ -117,6 +117,7 @@ export default function ProxyCard({ cred, index, availableGb, expanded, onToggle
   const [nowMs, setNowMs] = useState(() => Date.now())
   const warmEndsAt = cred.activated_at ? new Date(cred.activated_at).getTime() + 10 * 60 * 1000 : 0
   useEffect(() => {
+    setNowMs(Date.now()) // resync: the mount-time value goes stale on cached/long-open pages
     if (!warmEndsAt || Date.now() >= warmEndsAt) return
     const t = setInterval(() => {
       const n = Date.now()

@@ -2,7 +2,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import toast from 'react-hot-toast'
-import { apiJson } from '@/lib/clientApi'
+import { apiJson, toastApiError } from '@/lib/clientApi'
 
 // "Add to this report" under one report on /dashboard/support (POST /api/support/report
 // with { report_id }): the message is kept with the report, which reopens if it was resolved.
@@ -21,7 +21,7 @@ export default function SupportFollowUp({ reportId, resolved }: { reportId: stri
       setMessage(''); setOpen(false)
       router.refresh()
     } catch (err: any) {
-      toast.error(err?.message ?? 'Could not send your message')
+      toastApiError(err, 'Could not send your message')
     } finally {
       setLoading(false)
     }

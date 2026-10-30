@@ -1,7 +1,7 @@
 'use client'
 import { useState } from 'react'
 import toast from 'react-hot-toast'
-import { apiJson } from '@/lib/clientApi'
+import { apiJson, toastApiError } from '@/lib/clientApi'
 
 export default function AffiliateApplyForm() {
   const [channel, setChannel] = useState('')
@@ -21,7 +21,7 @@ export default function AffiliateApplyForm() {
       await apiJson('POST', '/api/auth/apply-affiliate', { channel: channel.trim(), audience: audience.trim(), plan: plan.trim() })
       setSubmitted(true)
     } catch (err: any) {
-      toast.error(err.message ?? 'Application failed')
+      toastApiError(err, 'Application failed')
     } finally {
       setLoading(false)
     }

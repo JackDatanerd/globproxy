@@ -306,7 +306,7 @@ export default function ApiKeysClient({ canAllocate = false }: { canAllocate?: b
       if (req === activityReqRef.current) setActivity(d.activity ?? [])
     } catch (err: any) {
       if (req !== activityReqRef.current) return // a newer click owns the panel now
-      toast.error(err.message ?? 'Could not load activity')
+      toastApiError(err, 'Could not load activity')
       setActivityFor(null)
     }
   }

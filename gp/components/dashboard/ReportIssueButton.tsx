@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import toast from 'react-hot-toast'
-import { apiJson } from '@/lib/clientApi'
+import { apiJson, toastApiError } from '@/lib/clientApi'
 
 // Sits in DashTopbar next to Sign out. Backend: app/api/support/report/route.ts
 // (writes to support_reports, migration 0036) and files the report in the shared
@@ -38,7 +38,7 @@ export default function ReportIssueButton({ variant = 'topbar', context }: { var
     } catch (err: any) {
       // A network failure used to throw out of submit() and leave the button
       // stuck on "Sending…" with the report unsent.
-      toast.error(err.message ?? 'Failed to send report')
+      toastApiError(err, 'Failed to send report')
     } finally {
       setLoading(false)
     }

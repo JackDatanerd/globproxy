@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
-import { apiFetch, apiJson } from '@/lib/clientApi'
+import { apiFetch, apiJson, toastApiError } from '@/lib/clientApi'
 import { shortUa } from '@/lib/userAgent'
 
 interface Browser {
@@ -38,7 +38,7 @@ export default function TrustedBrowsers() {
       toast.success('Browser removed.')
       await load()
     } catch (e: any) {
-      toast.error(e.message ?? 'Could not remove that browser.')
+      toastApiError(e, 'Could not remove that browser.')
     }
     setBusyId(null)
   }
