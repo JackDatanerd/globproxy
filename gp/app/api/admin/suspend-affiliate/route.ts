@@ -2,6 +2,7 @@ import { authorizeAdmin, readJson, badRequest, isUuid } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
 import { adminNoticeHtml } from '@/lib/adminEmail'
 import { sendEmailSafe, escapeHtml } from '@/lib/email'
+import { anyLeaksSupplier, SUPPLIER_TEXT_ERROR } from '@/lib/supplierGuard'
 import { NextResponse } from 'next/server'
 
 // Suspend / reinstate an APPROVED affiliate. 'suspended' has always been a
@@ -21,6 +22,8 @@ export async function POST(req: Request) {
   if (body.action !== 'suspend' && body.action !== 'reinstate') return badRequest("action must be 'suspend' or 'reinstate'")
   const suspending = body.action === 'suspend'
   const reason = typeof body.reason === 'string' ? body.reason.trim().slice(0, 300) : ''
+  // The reason is quoted to the affiliate in the suspension email.
+  if (suspending && anyLeaksSupplier(reason)) return badRequest(SUPPLIER_TEXT_ERROR)
 
   const { data: updated, error } = await supabase
     .from('profiles')

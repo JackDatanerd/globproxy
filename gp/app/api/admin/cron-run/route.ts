@@ -27,6 +27,8 @@ export async function POST(req: Request) {
     res = await fetch(`${appUrl()}/api/cron/${body.task}`, { method: 'POST', headers: { 'x-cron-secret': secret }, signal: AbortSignal.timeout(25_000) })
   } catch (e: any) {
     console.error('[admin/cron-run] could not reach the cron route', body.task, e)
+    // The run may well have started (a timeout does not cancel it), so the action is on record either way.
+    await logAdminAction(supabase, { adminId, action: 'cron.run_now', targetRef: body.task, details: { status: 'no_answer' } })
     return NextResponse.json({ error: 'The task did not answer in time. Check the Scheduled tasks panel in a minute — it may still be running.' }, { status: 504 })
   }
   const json: any = await res.json().catch(() => ({}))

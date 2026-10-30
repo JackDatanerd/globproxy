@@ -44,14 +44,20 @@ export async function POST(req: Request) {
       if (!fresh || fresh.status !== 'active') {
         return NextResponse.json({ error: `This credential changed while its usage was being synced (status: ${fresh?.status ?? 'gone'}). Refresh and check it.` }, { status: 409 })
       }
-      await disableCredential(supabase, fresh, 'admin')
+      // false = no row moved (a concurrent action already changed it): say so rather than audit and
+      // webhook an action that never happened.
+      if (!(await disableCredential(supabase, fresh, 'admin'))) {
+        return NextResponse.json({ error: 'This credential was changed by someone else just now. Refresh and check it.' }, { status: 409 })
+      }
     } else {
       if (cred.status !== 'suspended') return NextResponse.json({ error: `Only a suspended credential can be re-enabled (status: ${cred.status})` }, { status: 409 })
       // A customer's own pause is theirs to lift (POST /api/v1/sub-users/:id/pause);
       // an admin enabling it would silently override a deliberate choice.
       if ((cred as any).suspended_reason === 'customer') return NextResponse.json({ error: 'The customer paused this credential themselves — only they can resume it.' }, { status: 409 })
       if (owner?.is_suspended) return NextResponse.json({ error: 'The owner account is suspended — reinstate the account instead.' }, { status: 409 })
-      await enableCredential(supabase, cred)
+      if (!(await enableCredential(supabase, cred as any))) {
+        return NextResponse.json({ error: 'This credential was changed by someone else just now. Refresh and check it.' }, { status: 409 })
+      }
     }
   } catch (err: any) {
     if (err instanceof SessionLimitError) return NextResponse.json({ error: 'The owner already has 100 live sessions — they must delete one before this can be re-enabled.' }, { status: 409 })

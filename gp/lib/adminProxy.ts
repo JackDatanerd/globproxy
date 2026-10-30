@@ -108,11 +108,18 @@ export async function disableUserCredentials(supabase: AdminSupabase, userId: st
   // 'active' (the usage sync only walks active credentials).
   await syncUserUsage(userId).catch((e) => console.error('[admin-proxy] pre-suspend usage sync failed', userId, e))
 
-  const { data: creds } = await supabase
+  const { data: creds, error: credsErr } = await supabase
     .from('proxy_credentials')
     .select('id, upstream_sub_user_id, gb_allocated, status, label')
     .eq('user_id', userId)
     .eq('status', 'active')
+  // A failed read is NOT "this user has no sessions": reporting an empty, successful result would
+  // tell the admin the account's proxies were stopped while every live session kept carrying traffic.
+  // Surface it as a failure so the caller reports it (the account flag is already set, so a retry is safe).
+  if (credsErr) {
+    console.error('[admin-proxy] could not list the account\'s sessions to disable', userId, credsErr)
+    return { changed: 0, failed: [{ id: 'all', error: `Could not list this account's sessions: ${credsErr.message}` }] }
+  }
 
   const result: ProxyToggleResult = { changed: 0, failed: [] }
   for (const cred of creds ?? []) {
@@ -131,22 +138,28 @@ export async function disableUserCredentials(supabase: AdminSupabase, userId: st
 }
 
 export async function enableUserCredentials(supabase: AdminSupabase, userId: string): Promise<ProxyToggleResult> {
-  const { data: creds } = await supabase
+  const { data: creds, error: credsErr } = await supabase
     .from('proxy_credentials')
     .select('id, upstream_sub_user_id, gb_allocated, status, label, suspended_reason')
     .eq('user_id', userId)
     .eq('status', 'suspended')
     .or('suspended_reason.is.null,suspended_reason.eq.account')
+  // Same as disableUserCredentials: an unreadable list must not look like "nothing to resume".
+  if (credsErr) {
+    console.error('[admin-proxy] could not list the account\'s sessions to re-enable', userId, credsErr)
+    return { changed: 0, failed: [{ id: 'all', error: `Could not list this account's sessions: ${credsErr.message}` }] }
+  }
 
   // Credentials an admin disabled one by one stay disabled — reported so the
   // admin knows they have to be re-enabled deliberately.
-  const { count: keptDisabled } = await supabase
+  const { count: keptDisabled, error: keptErr } = await supabase
     .from('proxy_credentials')
     .select('id', { count: 'exact', head: true })
     .eq('user_id', userId)
     .eq('status', 'suspended')
     .eq('suspended_reason', 'admin')
 
+  if (keptErr) console.error('[admin-proxy] could not count the admin-disabled sessions', userId, keptErr)
   const result: ProxyToggleResult = { changed: 0, failed: [], kept_disabled: keptDisabled ?? 0 }
   for (const cred of creds ?? []) {
     try {

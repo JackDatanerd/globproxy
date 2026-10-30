@@ -91,7 +91,7 @@ export default async function AdminCredentialsPage({ searchParams }: { searchPar
       )}
       {(missingRows ?? []).length > 0 && (
         <div className="mb-4 text-xs bg-red-50 border border-red-200 text-red-800 rounded-lg px-4 py-3">
-          <strong>{(missingRows ?? []).length} active session(s) have no live proxy behind them.</strong> Their customers cannot connect.
+          <strong>{(missingRows ?? []).length} session(s) (active or paused) have no live proxy behind them.</strong> Their customers cannot connect or resume.
           Use Re-provision or Refund on the flagged rows below (reseller-allocated ones must be handled with the reseller).
           <ul className="mt-1 font-mono text-[11px]">
             {(missingRows ?? []).slice(0, 10).map((m: any) => (
@@ -166,7 +166,7 @@ export default async function AdminCredentialsPage({ searchParams }: { searchPar
                 <td className="px-5 py-3 text-xs font-mono text-muted">
                   {new Date(c.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}
                 </td>
-                <td className="px-5 py-3">{c.suspended_reason === 'deleted' ? null : c.suspended_reason === 'customer' ? <span className="text-[10px] font-mono text-muted">only the customer can resume</span> : <><AdminCredentialAction credentialId={c.id} status={c.status} />{missingMap.has(c.id) && !c.created_by && <AdminCredentialRemediate credentialId={c.id} />}</>}</td>
+                <td className="px-5 py-3">{c.suspended_reason === 'deleted' ? null : c.suspended_reason === 'customer' ? <><span className="text-[10px] font-mono text-muted">only the customer can resume</span>{missingMap.has(c.id) && !c.created_by && <AdminCredentialRemediate credentialId={c.id} />}</> : <><AdminCredentialAction credentialId={c.id} status={c.status} />{missingMap.has(c.id) && !c.created_by && <AdminCredentialRemediate credentialId={c.id} />}</>}</td>
               </tr>
             ))}
           </tbody>

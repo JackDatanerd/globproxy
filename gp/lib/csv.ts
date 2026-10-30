@@ -14,10 +14,14 @@ import { NextResponse } from 'next/server'
 // not a CSV-format one), so it's applied here rather than folded into the
 // quote-wrapping logic below.
 const FORMULA_TRIGGER_RE = /^[=+\-@\t\r]/
+// A plain signed number ("-12.50", "+3") is data, not a formula: neutralising it would turn a refund or
+// a clawback in an export into the text "'-12.50" that no sum or sort can read. Anything with more than
+// digits after the sign (`-1+2`, `-cmd|...`) still gets the guard.
+const PLAIN_NUMBER_RE = /^[+-]?\d+(\.\d+)?$/
 
 function escapeCsvCell(value: unknown): string {
   let s = value === null || value === undefined ? '' : String(value)
-  if (FORMULA_TRIGGER_RE.test(s)) {
+  if (FORMULA_TRIGGER_RE.test(s) && !(typeof value === 'number' && Number.isFinite(value)) && !PLAIN_NUMBER_RE.test(s)) {
     s = `'${s}`
   }
   if (/[",\r\n]/.test(s)) {

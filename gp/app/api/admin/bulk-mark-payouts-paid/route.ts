@@ -1,5 +1,6 @@
 import { authorizeAdmin, readJson, badRequest, isUuid } from '@/lib/adminAuth'
 import { markPayoutPaid } from '@/lib/markPayoutPaid'
+import { anyLeaksSupplier, SUPPLIER_TEXT_ERROR } from '@/lib/supplierGuard'
 import { NextResponse } from 'next/server'
 
 const MAX_BATCH = 100
@@ -20,6 +21,8 @@ export async function POST(req: Request) {
   if (!ids.every(isUuid)) return badRequest('payoutIds must all be valid payout IDs')
   if (body.reference != null && typeof body.reference !== 'string') return badRequest('reference must be text')
   const reference = (body.reference ?? '').toString().trim().slice(0, 200)
+  // The reference is printed in the affiliate's "payout sent" email.
+  if (anyLeaksSupplier(reference)) return badRequest(SUPPLIER_TEXT_ERROR)
 
   // Optional { payoutId: amountSeenByTheAdmin } — a payout whose amount changed since
   // the admin looked at it (a refund shrank it) is refused, not paid at the new figure.

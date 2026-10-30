@@ -30,19 +30,19 @@ export async function POST(req: Request) {
   if (!thread) return NextResponse.json({ error: 'This conversation no longer exists.' }, { status: 404 })
 
   let patch: Record<string, unknown> = {}
-  let from: string | null = null  // required current status for a status change
+  let from: string[] | null = null  // required current status for a status change
   switch (action) {
     case 'close':   patch = { status: 'closed', unread: false }; break
-    case 'reopen':  patch = { status: 'open' }; from = 'closed'; break
-    case 'pending': patch = { status: 'pending' }; break
+    case 'reopen':  patch = { status: 'open' }; from = ['closed']; break
+    case 'pending': patch = { status: 'pending' }; from = ['open']; break  // a stale tab must not turn a closed conversation into a pending one
     case 'mark_read':   patch = { unread: false }; break
     case 'mark_unread': patch = { unread: true }; break
     case 'unassign': patch = { assigned_to: null }; break
     case 'assign': {
       const target = body.assignTo === 'me' ? adminId : body.assignTo
       if (!isUuid(target)) return badRequest('Choose an administrator to assign this to.')
-      const { data: who } = await supabase.from('profiles').select('role').eq('id', target).maybeSingle()
-      if (who?.role !== 'admin') return badRequest('Conversations can only be assigned to administrators.')
+      const { data: who } = await supabase.from('profiles').select('role, is_deleted, is_suspended').eq('id', target).maybeSingle()
+      if (who?.role !== 'admin' || who.is_deleted || who.is_suspended) return badRequest('Conversations can only be assigned to active administrators.')
       patch = { assigned_to: target }
       break
     }
@@ -50,10 +50,10 @@ export async function POST(req: Request) {
   if (action === 'close' && thread.status === 'closed') return NextResponse.json({ error: 'This conversation is already closed.' }, { status: 409 })
 
   let q = supabase.from('inbox_threads').update(patch).eq('id', thread.id)
-  if (from) q = q.eq('status', from)
+  if (from) q = q.in('status', from)
   const { data: updated, error } = await q.select('id')
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  if (!updated?.length) return NextResponse.json({ error: 'This conversation is not closed (someone may have just changed it).' }, { status: 409 })
+  if (!updated?.length) return NextResponse.json({ error: from ? `This conversation is no longer ${from[0] === 'closed' ? 'closed' : 'open'} (someone may have just changed it).` : 'This conversation was just changed — refresh and try again.' }, { status: 409 })
 
   if (action !== 'mark_read' && action !== 'mark_unread') {
     await logAdminAction(supabase, {

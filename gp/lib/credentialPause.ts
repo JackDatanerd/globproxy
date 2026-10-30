@@ -38,7 +38,11 @@ export async function pauseCredential(admin: Admin, userId: string, id: string, 
   const fresh = await getOwnedCredential(admin, userId, id, 'id, label, status, upstream_sub_user_id, gb_allocated')
   if (!fresh || fresh.status !== 'active') return fail(409, 'conflict', `This sub-user changed while it was being paused (status: ${fresh?.status ?? 'gone'}). Check it and retry.`)
   try {
-    await disableCredential(admin, fresh, 'customer')
+    // false = the row no longer matched (changed by someone else in between): no pause happened, so no
+    // success and no webhook. A retry is idempotent and reports the real state.
+    if (!(await disableCredential(admin, fresh, 'customer'))) {
+      return fail(409, 'conflict', 'This sub-user changed while it was being paused. Check it and retry.')
+    }
   } catch (e) {
     console.error('[pause] disable failed', id, e)
     return fail(502, 'upstream_unavailable', 'Could not pause the sub-user right now. Nothing was changed — retry shortly.')
@@ -58,7 +62,9 @@ export async function resumeCredential(admin: Admin, userId: string, id: string)
   const owner = await ownerState(admin, userId)
   if (owner?.is_deleted || owner?.is_suspended) return fail(403, 'forbidden', 'Your account is suspended. Contact support.')
   try {
-    await enableCredential(admin, cred)
+    if (!(await enableCredential(admin, cred))) {
+      return fail(409, 'conflict', 'This sub-user changed while it was being resumed. Check it and retry.')
+    }
   } catch (e) {
     if (e instanceof SessionLimitError) return fail(409, 'conflict', 'You already have 100 live sessions, so this one can\u2019t be resumed. Delete an unused session first, then resume it.')
     // The supplier no longer has this session's proxy (404). "Retry shortly" would be false forever, and a

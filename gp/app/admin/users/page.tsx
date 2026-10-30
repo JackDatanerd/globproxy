@@ -39,10 +39,16 @@ export default async function AdminUsersPage({ searchParams }: { searchParams: P
   else if (status === 'pending') query = query.or('reseller_status.eq.pending,affiliate_status.eq.pending,api_access_status.eq.pending')
   else if (status === 'no2fa') query = query.in('role', ['admin', 'reseller']).eq('mfa_enabled', false)
   if (q) query = query.or(`email.ilike.%${q}%,full_name.ilike.%${q}%`)
+  let holdListFailed = false
+  let holdListCapped = false
   if (status === 'hold') {
-    // Holds are rare (a lost dispute or a manual hold), so the id list stays short.
-    const { data: holdRows } = await supabase.from('payment_holds').select('user_id').limit(200)
-    const ids = (holdRows ?? []).map(h => h.user_id)
+    // Holds are rare (a lost dispute or a manual hold), so the id list stays short. The id list goes back
+    // into the query as ?in.(…), so it is capped; past the cap the page says so instead of silently
+    // showing an incomplete list, and a failed read is reported rather than shown as "no holds".
+    const { data: holdRows, error: holdErr } = await supabase.from('payment_holds').select('user_id').limit(201)
+    if (holdErr) { holdListFailed = true; console.error('[admin/users] payment_holds list failed', holdErr) }
+    if ((holdRows?.length ?? 0) > 200) holdListCapped = true
+    const ids = (holdRows ?? []).slice(0, 200).map(h => h.user_id)
     query = query.in('id', ids.length ? ids : ['00000000-0000-0000-0000-000000000000'])
   }
   const from = (page - 1) * PAGE_SIZE
@@ -60,7 +66,12 @@ export default async function AdminUsersPage({ searchParams }: { searchParams: P
 
   return (
     <div className="max-w-6xl">
-      {listErr && <AdminQueryError what="the user list" />}
+      {(listErr || holdListFailed) && <AdminQueryError what="the user list" />}
+      {holdListCapped && (
+        <div className="mb-4 text-xs bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-4 py-2">
+          More than 200 accounts are on payment hold, so only 200 are listed here.
+        </div>
+      )}
       <div className="mb-6 flex items-start justify-between">
         <div>
           <h1 className="font-display font-bold text-2xl text-ink">All Users</h1>
