@@ -157,6 +157,68 @@ for (const [label, db] of [['schema.sql', A], ['migrations', B]]) {
   if (!(await rows(db, `select has_column_privilege('authenticated','public.profiles','marketing_emails','select') x`))[0].x) bad('authenticated cannot read profiles.marketing_emails (the settings toggle needs it)')
 }
 
+// ── write privileges must be backed by RLS policies (0114) ───────────────────────────────────────
+// A client role holding INSERT / UPDATE / DELETE with no policy for that command is protected only by
+// "RLS has no policy" — one careless policy away from a hole. TRUNCATE ignores RLS entirely.
+for (const [label, db] of [['schema.sql', A], ['migrations', B]]) {
+  const bad = (m) => problems.push(`[invariant:${label}] ${m}`)
+  for (const role of ['anon', 'authenticated']) {
+    for (const r of await rows(db, `select c.relname n, p.priv, (select count(*) from pg_policy x where x.polrelid=c.oid and x.polcmd = any (case p.priv when 'insert' then array['a','*'] when 'update' then array['w','*'] else array['d','*'] end::"char"[]) and (0 = any (x.polroles) or '${role}'::regrole::oid = any (x.polroles)))::int pol from pg_class c cross join (values ('insert'),('update'),('delete')) p(priv) where c.relnamespace='public'::regnamespace and c.relkind in ('r','p') and has_table_privilege('${role}', c.oid, p.priv)`)) {
+      if (r.pol === 0) bad(`${role} has ${r.priv.toUpperCase()} on ${r.n} but no RLS policy covers it (revoke it)`)
+    }
+    for (const r of await rows(db, `select c.relname n, p.priv from pg_class c cross join (values ('truncate'),('references'),('trigger')) p(priv) where c.relnamespace='public'::regnamespace and c.relkind in ('r','p') and has_table_privilege('${role}', c.oid, p.priv)`)) {
+      bad(`${role} has ${r.priv.toUpperCase()} on ${r.n}`)
+    }
+    for (const r of await rows(db, `select c.relname n from pg_class c where c.relnamespace='public'::regnamespace and c.relkind='S' and (has_sequence_privilege('${role}', c.oid, 'usage') or has_sequence_privilege('${role}', c.oid, 'update'))`)) {
+      bad(`${role} has privileges on sequence ${r.n}`)
+    }
+  }
+  // protect_order_columns must restore every orders column except payment_status (the one a customer may set, to 'cancelled').
+  const prot = (await rows(db, `select pg_get_functiondef(oid) d from pg_proc where proname='protect_order_columns' and pronamespace='public'::regnamespace`))[0]?.d ?? ''
+  for (const r of await rows(db, `select attname n from pg_attribute where attrelid='public.orders'::regclass and attnum>0 and not attisdropped and attname <> 'payment_status'`)) {
+    if (!new RegExp(`new\\.${r.n}\\s*:=\\s*old\\.${r.n}\\b`).test(prot)) bad(`protect_order_columns does not restore orders.${r.n} — a customer cancelling their own order could rewrite it`)
+  }
+}
+
+// ── behaviour as a real customer (the browser's role), on both databases ─────────────────────────
+for (const [label, db] of [['schema.sql', A], ['migrations', B]]) {
+  const bad = (m) => problems.push(`[behaviour:${label}] ${m}`)
+  const U = '0d0d0d0d-0000-4000-8000-000000000001', V = '0d0d0d0d-0000-4000-8000-000000000002'
+  await db.exec(`insert into auth.users (id, email, email_confirmed_at) values ('${U}','parity-a@example.test', now()), ('${V}','parity-b@example.test', now())`)
+  const cred = (await rows(db, `insert into public.proxy_credentials (user_id, label, status, session_type, gb_allocated) values ('${U}','s','active','sticky',1) returning id`))[0].id
+  const rot = (await rows(db, `insert into public.proxy_credentials (user_id, label, status, session_type, gb_allocated) values ('${U}','r','active','rotating',1) returning id`))[0].id
+  const order = (await rows(db, `insert into public.orders (user_id, gb_amount, amount_usd, payment_status) values ('${U}',10,35,'pending') returning id`))[0].id
+  const asUser = async (uid, sql) => {
+    await db.exec(`select set_config('request.jwt.claim.sub','${uid}',false); set role authenticated`)
+    try { const r = await db.query(sql); return { ok: true, rows: r.rows, n: r.affectedRows ?? r.rows.length } }
+    catch (e) { return { ok: false, err: e.message } }
+    finally { await db.exec(`reset role; select set_config('request.jwt.claim.sub','',false)`) }
+  }
+  const mustFail = async (what, uid, sql) => { const r = await asUser(uid, sql); if (r.ok) bad(`${what} was allowed`) }
+  const mustHold = async (what, uid, sql, col, want) => { const r = await asUser(uid, sql); if (!r.ok) return bad(`${what} errored: ${r.err}`); if (String(r.rows[0]?.[col]) !== String(want)) bad(`${what} changed ${col} to ${r.rows[0]?.[col]} (expected it to stay ${want})`) }
+
+  await mustFail('a 5 MB session label', U, `insert into public.proxy_sessions (credential_id,user_id,session_token,label) values ('${cred}','${U}','abcdef',repeat('x',5000000))`)
+  await mustFail('a 1 MB company_name', U, `update public.profiles set company_name = repeat('y',1000000) where id='${U}'`)
+  await mustFail('a 1 MB full_name', U, `update public.profiles set full_name = repeat('y',1000000) where id='${U}'`)
+  await db.exec(`insert into public.proxy_sessions (credential_id,user_id,session_token,label) values ('${cred}','${U}','abcdef','keep'), ('${cred}','${U}','abcdeg','gone')`)
+  await db.exec(`update public.proxy_sessions set terminated_at = now() where session_token = 'abcdeg'`)
+  await mustHold('re-parenting a session onto another credential', U, `update public.proxy_sessions set credential_id='${rot}' where session_token='abcdef' returning credential_id`, 'credential_id', cred)
+  await mustHold('rewriting a session token', U, `update public.proxy_sessions set session_token='zzzzzz' where session_token='abcdef' returning session_token`, 'session_token', 'abcdef')
+  const rev = await asUser(U, `update public.proxy_sessions set terminated_at = null where session_token='abcdeg' returning terminated_at`)
+  if (!rev.ok || rev.rows[0]?.terminated_at == null) bad('un-terminating a terminated session was allowed')
+  await mustHold('renaming an own session', U, `update public.proxy_sessions set label='renamed' where session_token='abcdef' returning label`, 'label', 'renamed')
+  await mustHold('rewriting orders.id when cancelling an own order', U, `update public.orders set id='0d0d0d0d-0000-4000-8000-0000000000ff', payment_status='cancelled' where id='${order}' returning id`, 'id', order)
+  await db.exec(`update public.profiles set is_suspended = true where id='${U}'`)
+  await mustFail('a suspended account editing its session', U, `update public.proxy_sessions set label='x' where session_token='abcdef' returning 1`)
+  const del = await asUser(U, `delete from public.proxy_sessions where session_token='abcdef' returning 1`)
+  if (del.ok && del.rows.length) bad('a suspended account deleting its session was allowed')
+  await db.exec(`update public.profiles set is_suspended = false where id='${U}'`)
+  const own = await asUser(U, `delete from public.proxy_sessions where session_token='abcdef' returning 1`)
+  if (!own.ok || own.rows.length !== 1) bad('an active customer can no longer delete their own session')
+  const other = await asUser(V, `select count(*)::int c from public.proxy_sessions`)
+  if (!other.ok || other.rows[0].c !== 0) bad("another customer can see someone else's sessions")
+}
+
 if (problems.length) {
   console.error(`[check-db-parity] FAILED — ${problems.length} problem(s):\n`)
   for (const p of problems) console.error('  - ' + p)
