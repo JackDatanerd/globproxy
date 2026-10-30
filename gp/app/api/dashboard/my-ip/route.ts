@@ -24,5 +24,8 @@ export async function GET(req: Request) {
   if (!ip || !isValidIp(ip)) {
     return NextResponse.json({ error: 'Couldn\u2019t determine your IP address.' }, { status: 404 })
   }
-  return NextResponse.json({ ip }, { headers: { 'Cache-Control': 'no-store' } })
+  // An IPv6 address is the one this browser reached us over; proxy clients often connect over IPv4, in
+  // which case the whitelisted address would never match. The page warns on `family: 'ipv6'`.
+  const family = ip.includes(':') ? 'ipv6' : 'ipv4'
+  return NextResponse.json({ ip, family }, { headers: { 'Cache-Control': 'no-store' } })
 }

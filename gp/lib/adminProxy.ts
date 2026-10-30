@@ -35,7 +35,7 @@ export async function disableCredential(supabase: AdminSupabase, cred: CredRow, 
   let loweredCap = false
   if (cred.upstream_sub_user_id) {
     const usedGb = await getSubUserUsage(cred.upstream_sub_user_id)
-    await updateSubUserTrafficLimit(cred.upstream_sub_user_id, Math.max(1, Math.ceil(usedGb * 1024)))
+    await updateSubUserTrafficLimit(cred.upstream_sub_user_id, Math.max(1, Math.ceil(usedGb * 1024) + 1))
     loweredCap = true
   }
   let q = supabase.from('proxy_credentials').update({ status: 'suspended', suspended_reason: reason }).eq('id', cred.id)

@@ -340,7 +340,7 @@ export function classifyUpstreamError(e: unknown): UpstreamReason {
     // Not the bare words "traffic" / "bandwidth": the request field is trafficLimitMB, so a plain
     // validation error naming it used to read as "no capacity" and promised the customer
     // an activation that would never come.
-    if (e.status === 402 || /insufficient|not enough|allocat|balance|quota|capacity|stock|exceed|available/.test(msg)) {
+    if (e.status === 402 || /insufficient|not enough|quota|capacity|out of stock|no stock|balance|(exceed\w*|more than)[^.]{0,40}(available|remaining|allocat|stock)|(available|remaining)[^.]{0,20}(traffic|bandwidth|balance|stock|mb)/.test(msg)) {
       return 'capacity'
     }
     return 'error'

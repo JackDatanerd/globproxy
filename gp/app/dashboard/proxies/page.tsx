@@ -63,7 +63,7 @@ export default async function ProxiesPage() {
   try {
     const { data: lv } = await supabase.from('profiles').select('usage_warn_pct, usage_urgent_pct').eq('id', user.id).maybeSingle()
     const w = Number((lv as any)?.usage_warn_pct), u = Number((lv as any)?.usage_urgent_pct)
-    if (Number.isFinite(w) && Number.isFinite(u) && w < u) { warnPct = w; urgentPct = u }
+    if (Number.isFinite(w) && Number.isFinite(u) && w >= 50 && u <= 99 && w < u) { warnPct = w; urgentPct = u }
   } catch { /* defaults */ }
 
   const total     = bw?.total_gb     ?? 0

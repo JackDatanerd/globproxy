@@ -63,6 +63,7 @@ export default function IpWhitelist({ credentialId }: Props) {
     try {
       const data = await apiFetch('/api/dashboard/my-ip')
       setIp(data.ip)
+      if (data.family === 'ipv6') toast('This is your IPv6 address. If the app or device that will use the proxy connects over IPv4, whitelist its IPv4 address instead.')
       if (!description.trim()) setDescription(`My IP (${new Date().toLocaleDateString()})`)
     } catch (err: any) {
       toastApiError(err)

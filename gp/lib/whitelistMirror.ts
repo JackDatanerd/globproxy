@@ -35,13 +35,21 @@ export async function mirrorWhitelist(admin: Admin, credentialId: string, userId
       try {
         const claim = await claimIdempotencyKey(admin, userId, lockKey, '', 'whitelist-mirror')
         if (claim.kind === 'proceed') { claimed = true; break }
-      } catch (e) { console.error('[whitelist-mirror] lock unavailable — writing without it', credentialId, e); break }
+      } catch (e) { console.error('[whitelist-mirror] lock unavailable — reading fresh without it', credentialId, e); break }
       await new Promise((r) => setTimeout(r, 200))
     }
-    if (claimed) {
-      try { ips = await listWhitelistedIps(upstreamSubUserId) } catch (e) {
-        console.error('[whitelist-mirror] fresh read failed — mirroring the list from the change', credentialId, e)
+    // Always re-read the supplier's CURRENT list when we can (locked or not): the list passed in is only
+    // as fresh as the caller's own response and may predate a removal that finished since. If the re-read
+    // fails, the passed list is NOT written (it could re-introduce a removed IP, which a later
+    // re-provision would put back): the mirror is marked stale and the backfill rebuilds it.
+    try { ips = await listWhitelistedIps(upstreamSubUserId) } catch (e) {
+      console.error('[whitelist-mirror] fresh read failed — marking the mirror stale for the backfill', credentialId, e)
+      try {
+        await admin.from('proxy_credentials').update({ whitelist_mirrored_at: null }).eq('id', credentialId)
+      } finally {
+        if (claimed) await releaseIdempotencyKey(admin, userId, lockKey)
       }
+      return
     }
   }
   try {

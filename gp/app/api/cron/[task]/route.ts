@@ -6,6 +6,7 @@ import { computeStockStatus } from '@/lib/stockStatus'
 import { sendEmail, sendEmailSafe, escapeHtml } from '@/lib/email'
 import { runWebhookRetries, runBandwidthThresholdWebhooks, runIntegrationHousekeeping } from '@/lib/webhooks'
 import { warnExpiringApiKeys } from '@/lib/apiKeyExpiry'
+import { reportAllocationDrift } from '@/lib/allocationDrift'
 import { provisionPendingCredentials, reconcileLimitSync, flagStalledPending, alertStuckLimitSync } from '@/lib/credentials'
 import { runConfiguredBenchmark } from '@/lib/networkProbe'
 import { chargeAuthorization, generateReference, verifyTransaction, paymentMismatchReason } from '@/lib/paystack'
@@ -627,7 +628,10 @@ async function runCleanup() {
   const failedSteps = [
     abandonErr && 'abandoned orders', abandonAutoErr && 'auto top-up orders', mfaErr && 'MFA sessions', cspErr && 'CSP reports', sessErr && 'proxy sessions', usageErr && 'daily usage',
   ].filter(Boolean) as string[]
+  // Reserved GB that no session explains (an interrupted create). Never throws; alert-only.
+  const allocationDrift = await reportAllocationDrift()
   return {
+    allocation_drift: allocationDrift,
     cleaned: (abandoned?.length ?? 0) + (abandonedAuto?.length ?? 0), mfa_sessions_swept: !mfaErr, csp_pruned: !cspErr, sessions_purged: !sessErr, usage_daily_pruned: !usageErr,
     ...(failedSteps.length ? { error: `cleanup step(s) failed: ${failedSteps.join(', ')}` } : {}),
   }

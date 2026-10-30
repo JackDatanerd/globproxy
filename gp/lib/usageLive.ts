@@ -14,6 +14,7 @@ export const LIVE_REFRESH_MIN_INTERVAL_MS = 30_000
 export async function refreshLiveUsage(
   admin: Admin, userId: string, cred: any
 ): Promise<{ usedGb: number; syncedAt: string | null; refreshed: boolean }> {
+  const storedNull = cred.gb_used === null || cred.gb_used === undefined
   let usedGb = Number(cred.gb_used ?? 0)
   let syncedAt: string | null = cred.usage_synced_at ?? null
   const fresh = !!syncedAt && Date.now() - new Date(syncedAt).getTime() < LIVE_REFRESH_MIN_INTERVAL_MS
@@ -28,9 +29,11 @@ export async function refreshLiveUsage(
       // Compare-and-swap on the value we read: if the usage sync (or another refresh) moved
       // gb_used in the meantime, writing here would credit the same slice to the daily ledger
       // twice. A lost race just returns whatever is stored.
-      const { data: won, error } = await admin.from('proxy_credentials')
+      // `.eq` never matches NULL, so a NULL counter is compared with `.is`.
+      const cas = admin.from('proxy_credentials')
         .update({ gb_used: live, usage_synced_at: now })
-        .eq('id', cred.id).eq('gb_used', prevGb).select('id')
+        .eq('id', cred.id)
+      const { data: won, error } = await (storedNull ? cas.is('gb_used', null) : cas.eq('gb_used', prevGb)).select('id')
       if (error) throw error
       if (won?.length) {
         usedGb = live
@@ -45,7 +48,8 @@ export async function refreshLiveUsage(
       // stored value stays, but the read itself succeeded, so the freshness stamp moves —
       // otherwise every poll re-fetches upstream because the row never looks fresh.
       const now = new Date().toISOString()
-      const { error } = await admin.from('proxy_credentials').update({ usage_synced_at: now }).eq('id', cred.id).eq('gb_used', prevGb)
+      const stamp = admin.from('proxy_credentials').update({ usage_synced_at: now }).eq('id', cred.id)
+      const { error } = await (storedNull ? stamp.is('gb_used', null) : stamp.eq('gb_used', prevGb))
       if (!error) syncedAt = now
     }
   } catch (e) {

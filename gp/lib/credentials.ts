@@ -418,6 +418,11 @@ async function deleteCredentialLocked(
   if (cred.created_by) {
     return fail(403, 'forbidden', 'This allocation was made by your reseller and cannot be deleted. Contact them directly.')
   }
+  // A session GlobProxy suspended (admin or account level) is held for review: deleting it would hand the
+  // unused GB back to the customer behind the hold. Only the owner's own pause can be deleted.
+  if (cred.status === 'suspended' && (cred.suspended_reason === 'admin' || cred.suspended_reason === 'account')) {
+    return fail(403, 'forbidden', 'This session is suspended by GlobProxy and cannot be deleted right now. Contact support.')
+  }
 
   // Live usage BEFORE deleting upstream — it may not be queryable afterward. The session
   // is FROZEN at what it has used first (cap = usage), then read again: traffic that
@@ -441,7 +446,7 @@ async function deleteCredentialLocked(
 
     if (liveUsedGb !== null) {
       try {
-        await updateSubUserTrafficLimit(cred.upstream_sub_user_id, Math.max(1, Math.ceil(liveUsedGb * 1024)))
+        await updateSubUserTrafficLimit(cred.upstream_sub_user_id, suspendedCapMb(liveUsedGb * 1024))
         frozen = true
         const settled = await getSubUserUsage(cred.upstream_sub_user_id).catch(() => null)
         if (settled !== null && settled > liveUsedGb) liveUsedGb = settled
@@ -615,10 +620,10 @@ export async function topupCredential(
   })
   if (topupErr) {
     const msg = topupErr.message ?? 'Top-up failed'
-    if (msg.includes('Insufficient')) return fail(402, 'insufficient_bandwidth', msg)
+    if (msg.includes('Insufficient')) return fail(402, 'insufficient_bandwidth', 'Insufficient bandwidth in your account. Purchase more to continue.')
     if (topupErr.code === '23514') return fail(400, 'invalid_request', 'A single sub-user can hold at most 100000 GB; this top-up would exceed that.')
     if (topupErr.code === 'P0002' || msg.includes('not found')) return fail(404, 'not_found', 'Sub-user not found')
-    if (msg.includes('reseller')) return fail(403, 'forbidden', msg)
+    if (topupErr.code === '42501' || msg.includes('reseller')) return fail(403, 'forbidden', 'This allocation was made by your reseller and cannot be changed directly. Contact them.')
     // Only our own RAISE EXCEPTION texts (P0001) are written for customers; any
     // other database error is logged and replaced with a generic message.
     if (topupErr.code !== 'P0001') {
@@ -734,7 +739,7 @@ export async function provisionPendingCredentials(
       // adopted sub-user may also carry an older limit; the reconciler heals that.)
       const nowAllocated = Number(updated[0].gb_allocated)
       if (nowAllocated !== Number(cred.gb_allocated) || gcred.adopted) {
-        try { await updateSubUserTrafficLimit(gcred.upstream_sub_user_id, nowAllocated * 1024) }
+        try { await updateSubUserTrafficLimit(gcred.upstream_sub_user_id, expectedLimitMb(nowAllocated)) }
         catch { await markLimitSyncNeeded(admin, cred.id) }
       }
 
