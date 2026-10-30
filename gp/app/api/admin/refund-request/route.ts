@@ -1,3 +1,4 @@
+import { anyLeaksSupplier, SUPPLIER_TEXT_ERROR } from '@/lib/supplierGuard'
 import { NextResponse } from 'next/server'
 import { authorizeAdmin, readJson, isUuid, badRequest } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
@@ -15,6 +16,7 @@ export async function POST(req: Request) {
   const body = await readJson<{ requestId?: unknown; note?: unknown }>(req)
   if (!body || !isUuid(body.requestId)) return badRequest('Request ID missing or invalid')
   const note = typeof body.note === 'string' ? body.note.trim().slice(0, 300) : ''
+  if (anyLeaksSupplier(note)) return badRequest(SUPPLIER_TEXT_ERROR)
 
   // Conditional on still being open: two admins, or a decline racing the refund.
   const { data: rows, error } = await supabase.from('refund_requests')

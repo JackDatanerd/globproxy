@@ -12,7 +12,10 @@ type Action = typeof ACTIONS[number]
 //   unassign
 //   mark_read / mark_unread    the unread flag (opening a thread marks it read)
 export async function POST(req: Request) {
-  const auth = await authorizeAdmin(req)
+  // Marking a conversation read/unread happens just by opening it; it must not demand a fresh 2FA code.
+  const peek = await req.clone().json().catch(() => null) as { action?: unknown } | null
+  const light = peek?.action === 'mark_read' || peek?.action === 'mark_unread'
+  const auth = await authorizeAdmin(req, { mfaOnly: light })
   if (!auth.ok) return auth.response
   const { supabase, adminId } = auth
 

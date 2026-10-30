@@ -10,7 +10,7 @@ import { findReportedError } from '@/lib/cronReport'
 // Replaces "curl with the secret" as the only way to re-run a task after fixing its cause.
 //
 // Not offered: 'canary' (makes a real card charge; it has its own once-a-day rule).
-const RUNNABLE = ['stock', 'usage', 'alerts', 'summary', 'cleanup', 'reconcile', 'security', 'provision', 'webhooks', 'benchmark', 'invites', 'resellers', 'deletions', 'recharge']
+const RUNNABLE = ['stock', 'usage', 'alerts', 'summary', 'cleanup', 'reconcile', 'security', 'provision', 'webhooks', 'benchmark', 'invites', 'resellers', 'deletions', 'recharge', 'broadcasts']
 
 export async function POST(req: Request) {
   const auth = await authorizeAdmin(req)

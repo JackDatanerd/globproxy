@@ -1,3 +1,4 @@
+import { anyLeaksSupplier, SUPPLIER_TEXT_ERROR } from '@/lib/supplierGuard'
 import { NextResponse } from 'next/server'
 import { authorizeAdmin, readJson, isUuid, badRequest } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
@@ -22,6 +23,7 @@ export async function POST(req: Request) {
   const text = body.body.replace(/\r\n/g, '\n').trim()
   if (text.length < 2) return badRequest('Write the reply first.')
   if (text.length > MAX_REPLY_CHARS) return badRequest(`Replies are limited to ${MAX_REPLY_CHARS.toLocaleString()} characters.`)
+  if (anyLeaksSupplier(text)) return badRequest(SUPPLIER_TEXT_ERROR)
 
   const { data: thread, error: tErr } = await supabase.from('inbox_threads')
     .select('id, ticket_no, subject, customer_email, customer_user_id, assigned_to').eq('id', body.threadId).maybeSingle()

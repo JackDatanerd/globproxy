@@ -1,4 +1,4 @@
-import { authorizeAdmin, readJson, badRequest } from '@/lib/adminAuth'
+import { authorizeAdmin, readJson, badRequest, isUuid } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
 import { appUrl } from '@/lib/appUrl'
 import { leaksSupplier } from '@/lib/supplierGuard'
@@ -106,7 +106,7 @@ export async function POST(req: Request) {
     }
 
     case 'cancel': {
-      if (typeof body.id !== 'string') return badRequest('Missing broadcast id')
+      if (!isUuid(body.id)) return badRequest('Missing or invalid broadcast id')
       const now = new Date().toISOString()
       const { data, error } = await supabase.from('broadcasts')
         .update({ status: 'cancelled', cancelled_at: now, finished_at: now })
@@ -118,7 +118,7 @@ export async function POST(req: Request) {
     }
 
     case 'retry': {
-      if (typeof body.id !== 'string') return badRequest('Missing broadcast id')
+      if (!isUuid(body.id)) return badRequest('Missing or invalid broadcast id')
       const { data: b } = await supabase.from('broadcasts').select('id, status').eq('id', body.id).maybeSingle()
       if (!b) return badRequest('Broadcast not found')
       if (b.status === 'cancelled') return badRequest('A stopped broadcast cannot be retried')
@@ -131,9 +131,11 @@ export async function POST(req: Request) {
     }
 
     case 'kick': {
-      if (typeof body.id !== 'string') return badRequest('Missing broadcast id')
+      if (!isUuid(body.id)) return badRequest('Missing or invalid broadcast id')
       const result = await runBroadcasts({ onlyId: body.id, maxBatches: 3 })
-      return NextResponse.json({ success: !('error' in result), result })
+      // A failed run must not look like a success to the button (adminPost only reads a top-level `error`).
+      if ('error' in result && result.error) return NextResponse.json({ error: String(result.error), result }, { status: 502 })
+      return NextResponse.json({ success: true, result })
     }
 
     default:

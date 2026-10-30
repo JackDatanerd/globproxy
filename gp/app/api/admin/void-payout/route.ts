@@ -1,3 +1,4 @@
+import { anyLeaksSupplier, SUPPLIER_TEXT_ERROR } from '@/lib/supplierGuard'
 import { NextResponse } from 'next/server'
 import { authorizeAdmin, readJson, isUuid, badRequest } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
@@ -18,6 +19,7 @@ export async function POST(req: Request) {
     if (!isUuid(body?.payoutId)) return badRequest('Payout ID missing')
     const reason = typeof body?.reason === 'string' ? body.reason.trim().slice(0, 300) : ''
     if (reason.length < 3) return badRequest('A reason (at least 3 characters) is required')
+    if (anyLeaksSupplier(reason)) return badRequest(SUPPLIER_TEXT_ERROR)
 
     const { data, error } = await auth.supabase.rpc('void_affiliate_payout', { p_payout_id: body!.payoutId })
     if (error) {

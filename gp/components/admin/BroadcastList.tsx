@@ -23,7 +23,12 @@ export default function BroadcastList({ items }: { items: BroadcastItem[] }) {
     setBusy(id + action)
     const { ok, data } = await adminPost('/api/admin/broadcasts', { action, id })
     setBusy(null)
-    if (!ok) { toast.error(data.error ?? (data as any).result?.error ?? 'Failed'); return }
+    if (!ok) {
+      toast.error(data.error ?? (data as any).result?.error ?? 'Failed', { duration: 9000 })
+      // A run that partly worked still changed the counts.
+      if (action === 'kick') setTimeout(() => window.location.reload(), 4000)
+      return
+    }
     const r = (data as any).result
     toast.success(action === 'kick' && r ? `Sent ${r.sent}${r.failed ? `, ${r.failed} failed` : ''}` : done)
     window.location.reload()

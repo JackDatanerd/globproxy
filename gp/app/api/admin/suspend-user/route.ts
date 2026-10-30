@@ -1,3 +1,4 @@
+import { anyLeaksSupplier, SUPPLIER_TEXT_ERROR } from '@/lib/supplierGuard'
 import { sendEmail, escapeHtml } from '@/lib/email'
 import { authorizeAdmin, readJson, badRequest, isUuid } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
@@ -19,6 +20,7 @@ export async function POST(req: Request) {
   // missing field on a future caller) silently fell through to UNSUSPEND.
   if (action !== 'suspend' && action !== 'unsuspend') return badRequest("action must be 'suspend' or 'unsuspend'")
   const reason = typeof body.reason === 'string' ? body.reason.trim().slice(0, 300) : ''
+  if (anyLeaksSupplier(reason)) return badRequest(SUPPLIER_TEXT_ERROR)
 
   const { data: tp } = await supabase
     .from('profiles')

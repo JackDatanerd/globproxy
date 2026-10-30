@@ -17,6 +17,16 @@ export default function MpesaSettings({
   const [manual, setManual] = useState(manualRate != null ? String(manualRate) : '')
   const [saving, setSaving] = useState(false)
 
+  async function refreshRate() {
+    // Only clears the cached rate: unsaved edits in the form are not committed by this button.
+    setSaving(true)
+    const { ok, data } = await adminPost('/api/admin/mpesa-settings', { refresh: true })
+    setSaving(false)
+    if (!ok) { toast.error(data.error ?? 'Failed to refresh'); return }
+    toast.success('Rate cache cleared — the next checkout fetches a fresh rate')
+    window.location.reload()
+  }
+
   async function save(extra: Record<string, unknown> = {}) {
     // Number('129 KES') is NaN, and JSON turns NaN into null — which the server reads as "clear
     // the manual rate". Reject unreadable input here instead of silently wiping a setting.
@@ -86,7 +96,7 @@ export default function MpesaSettings({
         <div className="flex gap-3">
           <button onClick={() => save()} disabled={saving}
             className="bg-accent text-white px-5 py-2.5 rounded-xl text-sm font-medium disabled:opacity-60">{saving ? 'Saving…' : 'Save'}</button>
-          <button onClick={() => save({ refresh: true })} disabled={saving}
+          <button onClick={refreshRate} disabled={saving}
             className="border border-border px-5 py-2.5 rounded-xl text-sm text-ink disabled:opacity-60">Refresh rate now</button>
         </div>
       </div>

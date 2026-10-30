@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { authorizeAdmin } from '@/lib/adminAuth'
+import { authorizeAdmin, isIsoDate } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
 import { toCsv, csvResponse } from '@/lib/csv'
 import { fetchAllRows } from '@/lib/dbPaging'
@@ -25,7 +25,7 @@ export async function GET(req: Request) {
     if (status && !(STATUSES as readonly string[]).includes(status)) return NextResponse.json({ error: 'Invalid status' }, { status: 400 })
     const from = url.searchParams.get('from') ?? ''
     const to = url.searchParams.get('to') ?? ''
-    if ((from && !DAY.test(from)) || (to && !DAY.test(to))) return NextResponse.json({ error: 'Dates must be YYYY-MM-DD' }, { status: 400 })
+    if ((from && !(DAY.test(from) && isIsoDate(from))) || (to && !(DAY.test(to) && isIsoDate(to)))) return NextResponse.json({ error: 'Dates must be YYYY-MM-DD' }, { status: 400 })
     const q = cleanSearch(url.searchParams.get('q') ?? undefined)
     const includeCanary = url.searchParams.get('canary') === '1'
 

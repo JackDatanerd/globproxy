@@ -1,3 +1,4 @@
+import { anyLeaksSupplier, SUPPLIER_TEXT_ERROR } from '@/lib/supplierGuard'
 import { authorizeAdmin, readJson, badRequest, isUuid } from '@/lib/adminAuth'
 import { resolvePendingApplication, cleanReason } from '@/lib/adminApplications'
 import { NextResponse } from 'next/server'
@@ -9,6 +10,7 @@ export async function POST(req: Request) {
   if (!body || !isUuid(body.userId)) return badRequest('User ID missing or invalid')
   const reason = cleanReason(body.reason)
   if (reason === undefined) return badRequest('reason must be text')
+  if (anyLeaksSupplier(reason)) return badRequest(SUPPLIER_TEXT_ERROR)
 
   // Only reseller_status changes. The old version also hard-set
   // role: 'user', which would strip the role from any account that wasn't

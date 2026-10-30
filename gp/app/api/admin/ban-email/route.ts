@@ -1,3 +1,4 @@
+import { anyLeaksSupplier, SUPPLIER_TEXT_ERROR } from '@/lib/supplierGuard'
 import { NextResponse } from 'next/server'
 import { authorizeAdmin, readJson, badRequest } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
@@ -37,6 +38,7 @@ export async function POST(req: Request) {
   if (isDomain && PROTECTED_DOMAINS.has(email.slice(1))) return badRequest('That domain is used by too many real customers to ban as a whole. Ban individual addresses instead.')
   if (body.reason != null && typeof body.reason !== 'string') return badRequest('reason must be text')
   const reason = (body.reason ?? '').toString().trim().slice(0, 300)
+  if (anyLeaksSupplier(reason)) return badRequest(SUPPLIER_TEXT_ERROR)
   const suspendExisting = body.suspendExisting === true
   if (suspendExisting && isDomain) return badRequest('Existing accounts are not suspended automatically for a domain ban — review them first.')
 

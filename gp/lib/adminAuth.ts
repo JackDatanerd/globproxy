@@ -18,7 +18,7 @@ export type AdminAuthResult =
 // hand over bulk sensitive data (CSV exports of payout destinations / the audit
 // log): a plain read only needs the verified 2FA cookie; the full step-up asks for a
 // fresh code on top, so a stolen session alone can't export them.
-export async function authorizeAdmin(req: Request, opts: { stepUp?: boolean } = {}): Promise<AdminAuthResult> {
+export async function authorizeAdmin(req: Request, opts: { stepUp?: boolean; mfaOnly?: boolean } = {}): Promise<AdminAuthResult> {
   const token = req.headers.get('authorization')?.replace('Bearer ', '')
   if (!token) return { ok: false, response: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) }
 
@@ -26,8 +26,13 @@ export async function authorizeAdmin(req: Request, opts: { stepUp?: boolean } = 
   const { data: { user } } = await supabase.auth.getUser(token)
   if (!user) return { ok: false, response: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) }
 
-  const { data: profile } = await supabase
-    .from('profiles').select('role, is_deleted, is_suspended').eq('id', user.id).single()
+  const { data: profile, error: profileErr } = await supabase
+    .from('profiles').select('role, is_deleted, is_suspended').eq('id', user.id).maybeSingle()
+  // A failed read is not "not an admin": answer 503 so a database blip doesn't look like a revoked admin.
+  if (profileErr) {
+    console.error('[adminAuth] profile lookup failed', user.id, profileErr)
+    return { ok: false, response: NextResponse.json({ error: 'Could not verify your account right now. Please try again in a moment.' }, { status: 503 }) }
+  }
   if (profile?.role !== 'admin') return { ok: false, response: NextResponse.json({ error: 'Forbidden' }, { status: 403 }) }
   // The page middleware already refuses a suspended / deleted admin; the API
   // used to accept their still-valid JWT until it expired.
@@ -55,7 +60,9 @@ export async function authorizeAdmin(req: Request, opts: { stepUp?: boolean } = 
   // admin is enrolled, see above) — otherwise a stolen admin session alone could
   // change roles, mark payouts paid or reset someone's 2FA with no further proof.
   const isRead = req.method === 'GET' || req.method === 'HEAD'
-  const mfaCheck = isRead && !opts.stepUp ? await requireMfaVerified(req, user.id) : await requireStepUp(req, user.id)
+  // `mfaOnly`: a write that is not sensitive (marking a conversation read) needs the verified second factor,
+  // not a fresh code — otherwise merely opening a page prompts for one.
+  const mfaCheck = (isRead || opts.mfaOnly) && !opts.stepUp ? await requireMfaVerified(req, user.id) : await requireStepUp(req, user.id)
   if (mfaCheck) return { ok: false, response: mfaCheck }
 
   return { ok: true, supabase, adminId: user.id }
@@ -82,10 +89,4 @@ export function isUuid(v: unknown): v is string {
   return typeof v === 'string' && UUID_RE.test(v)
 }
 
-// Real calendar-date check for YYYY-MM-DD strings (the regex alone lets
-// 2026-13-45 through).
-export function isIsoDate(v: unknown): v is string {
-  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false
-  const d = new Date(v + 'T00:00:00Z')
-  return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v
-}
+export { isIsoDate } from '@/lib/isoDate'

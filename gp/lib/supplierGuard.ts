@@ -23,3 +23,10 @@ const SUPPLIER_NAME_GLOBAL = /geo[\s_.\-]*node/gi
 export function scrubSupplier(text: string): string {
   return text.replace(SUPPLIER_NAME_GLOBAL, 'upstream')
 }
+
+/** True when any of the values names the supplier. For free text an admin types that a customer will read. */
+export function anyLeaksSupplier(...values: unknown[]): boolean {
+  return values.some(leaksSupplier)
+}
+
+export const SUPPLIER_TEXT_ERROR = 'This text names our upstream provider. Remove it before sending.'

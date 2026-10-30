@@ -1,5 +1,5 @@
 import type { AdminSupabase } from '@/lib/adminAuth'
-import { isUuid } from '@/lib/adminAuth'
+import { isUuid, isIsoDate } from '@/lib/adminAuth'
 
 // Shared by the audit-log page and its CSV export so both always show the
 // same rows for the same filters.
@@ -14,7 +14,7 @@ export type AuditFilters = {
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 
 export function parseAuditFilters(get: (key: string) => string | undefined, clean: (v: string | undefined) => string): AuditFilters {
-  const date = (k: string) => { const v = get(k) ?? ''; return DATE_RE.test(v) && !Number.isNaN(Date.parse(v)) ? v : '' }
+  const date = (k: string) => { const v = get(k) ?? ''; return isIsoDate(v) ? v : '' }
   const user = get('user') ?? ''
   return { action: clean(get('q')), user: isUuid(user) ? user : '', who: clean(get('who')), from: date('from'), to: date('to') }
 }

@@ -1,3 +1,4 @@
+import { anyLeaksSupplier, SUPPLIER_TEXT_ERROR } from '@/lib/supplierGuard'
 import { NextResponse } from 'next/server'
 import { authorizeAdmin, readJson, isUuid, badRequest } from '@/lib/adminAuth'
 import { logAdminAction } from '@/lib/adminAudit'
@@ -33,6 +34,7 @@ export async function POST(req: Request) {
   const note = (body.note ?? '').toString().trim().slice(0, 500)
   const reply = (body.reply ?? '').toString().trim().slice(0, 2000)
   if (action === 'reply' && reply.length < 2) return badRequest('Write the message to send to the customer.')
+  if (anyLeaksSupplier(reply)) return badRequest(SUPPLIER_TEXT_ERROR)
 
   type Row = { id: string; user_id: string | null; email: string | null; message: string | null }
   let row: Row | null = null
