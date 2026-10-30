@@ -290,11 +290,11 @@ export default function ProxyList({ creds, availableGb, rotationEnabled, warnPct
     const size = kind === 'topup' ? 10 : 20
     for (let i = 0; i < targets.length && !stop; i += size) {
       const chunk = targets.slice(i, i + size)
+      let sig = ''
       try {
         // Top-ups carry an Idempotency-Key that stays the same for the same sessions + amount until a
         // response arrives, so retrying after a timeout cannot add the GB twice.
         let headers: Record<string, string> | undefined
-        let sig = ''
         if (kind === 'topup') {
           sig = `${chunk.map(c => c.id).sort().join(',')}|${JSON.stringify(extra)}`
           let k = bulkTopupKeys.get(sig)
@@ -308,6 +308,9 @@ export default function ProxyList({ creds, availableGb, rotationEnabled, warnPct
           else { failed.push(labelOf.get(r.id) ?? String(r.id).slice(0, 8)); leftIds.add(String(r.id)) }
         }
       } catch (err: any) {
+        // A definite client-side rejection (not a timeout/5xx/429, where the outcome is unknown) will
+        // not be replayed under the same key: the next attempt is a fresh request.
+        if (sig && err?.status >= 400 && err?.status < 500 && err.status !== 409 && err.status !== 429) bulkTopupKeys.delete(sig)
         if (err?.code === 'mfa_required') { stop = true; break }   // redirected to verify
         if (err?.code === 'reauth_required') {
           // The customer cancelled the confirmation: that is a choice, not a failure. Stop here

@@ -59,17 +59,18 @@ export default function BillingPage() {
       // Credit notes and refund requests ride along; a failed read just omits
       // them (the order history above is what matters).
       const [{ data: refunds }, { data: reqs }, { data: holdRow }] = await Promise.all([
-        sb.from('order_refunds').select('order_id, credit_note_number, amount_usd').order('created_at', { ascending: true }).limit(1000),
-        sb.from('refund_requests').select('order_id, status, decline_note, created_at').order('created_at', { ascending: true }).limit(1000),
+        sb.from('order_refunds').select('order_id, credit_note_number, amount_usd').order('created_at', { ascending: false }).limit(1000),
+        sb.from('refund_requests').select('order_id, status, decline_note, created_at').order('created_at', { ascending: false }).limit(1000),
         sb.from('payment_holds').select('user_id').eq('user_id', user.id).maybeSingle(),
       ])
       setHold(!!holdRow)
       const n: Record<string, { number: string; amount: number }[]> = {}
-      for (const r of refunds ?? []) (n[r.order_id] ??= []).push({ number: r.credit_note_number, amount: Number(r.amount_usd) })
+      // Fetched newest-first so a cap drops the OLDEST rows; flip back to chronological here.
+      for (const r of [...(refunds ?? [])].reverse()) (n[r.order_id] ??= []).push({ number: r.credit_note_number, amount: Number(r.amount_usd) })
       setNotes(n)
-      // Ascending, so the latest request per order wins.
+      // Chronological after the flip, so the latest request per order wins.
       const q: Record<string, { status: string; note: string | null }> = {}
-      for (const r of reqs ?? []) q[r.order_id] = { status: r.status, note: r.decline_note ?? null }
+      for (const r of [...(reqs ?? [])].reverse()) q[r.order_id] = { status: r.status, note: r.decline_note ?? null }
       setRequests(q)
     } catch (e) {
       console.error('[billing] failed to load orders', e)

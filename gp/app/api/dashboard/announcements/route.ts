@@ -12,19 +12,25 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const admin = await createAdminClient()
-  const { data: mine, error } = await admin.from('broadcast_recipients').select('broadcast_id').eq('user_id', user.id).limit(200)
-  if (error) return NextResponse.json({ userId: user.id, items: [] }) // cosmetic: never break the dashboard over a banner
-  const ids = (mine ?? []).map(r => r.broadcast_id)
-  if (!ids.length) return NextResponse.json({ userId: user.id, items: [] }, { headers: { 'Cache-Control': 'no-store' } })
-
-  const { data: rows } = await admin.from('broadcasts')
+  // Start from the (few) live banner broadcasts, newest first, then keep the ones addressed to this
+  // account. Reading the account's recipient rows first and capping them was unordered, so an account
+  // with many past broadcasts could lose its newest banner to the cap.
+  const { data: live, error } = await admin.from('broadcasts')
     .select('id, kind, subject, body, cta_label, cta_url, banner_ends_at')
-    .in('id', ids).eq('show_banner', true).neq('status', 'cancelled').gt('banner_ends_at', new Date().toISOString())
-    .order('created_at', { ascending: false }).limit(3)
+    .eq('show_banner', true).neq('status', 'cancelled').gt('banner_ends_at', new Date().toISOString())
+    .order('created_at', { ascending: false }).limit(50)
+  if (error) return NextResponse.json({ userId: user.id, items: [] }) // cosmetic: never break the dashboard over a banner
+  const liveIds = (live ?? []).map(b => b.id)
+  if (!liveIds.length) return NextResponse.json({ userId: user.id, items: [] }, { headers: { 'Cache-Control': 'no-store' } })
+
+  const { data: mine, error: mineErr } = await admin.from('broadcast_recipients').select('broadcast_id').eq('user_id', user.id).in('broadcast_id', liveIds)
+  if (mineErr) return NextResponse.json({ userId: user.id, items: [] })
+  const addressed = new Set((mine ?? []).map(r => r.broadcast_id))
+  const rows = (live ?? []).filter(b => addressed.has(b.id)).slice(0, 3)
 
   return NextResponse.json({
     userId: user.id,
-    items: (rows ?? []).map(b => ({
+    items: rows.map(b => ({
       id: b.id, kind: b.kind, title: b.subject, text: bannerSummary(b.body),
       cta_label: b.cta_label, cta_url: b.cta_url, ends_at: b.banner_ends_at,
     })),

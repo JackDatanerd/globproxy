@@ -57,7 +57,7 @@ function TrendChart({ points }: { points: SeriesPoint[] }) {
     )
   }
 
-  const maxGb = Math.max(...points.map(p => p.gb), 0.01)
+  const maxGb = Math.max(...points.map(p => p.gb), 1 / 1024)
   const innerW = width - padL - padR
   const innerH = height - padT - padB
 
