@@ -9,6 +9,10 @@ name: Schema drift check
 # before merge — a manual `wrangler deploy` or a merge without CI
 # shouldn't be the only way this ever gets checked.
 #
+# The second step builds two real databases (schema.sql, and the pre-0001 baseline plus every
+# migration) and diffs their catalogs, grants and function bodies — the name-only check above
+# cannot see a dropped GRANT or a changed function. See scripts/check-db-parity.mjs.
+#
 # Must live at .github/workflows/ at the repo root, not inside gp/ —
 # same as deploy.yml and the cron workflows.
 
@@ -18,10 +22,12 @@ on:
     paths:
       - 'gp/supabase/**'
       - 'gp/scripts/check-schema-sync.mjs'
+      - 'gp/scripts/check-db-parity.mjs'
   pull_request:
     paths:
       - 'gp/supabase/**'
       - 'gp/scripts/check-schema-sync.mjs'
+      - 'gp/scripts/check-db-parity.mjs'
   workflow_dispatch: {}
 
 permissions:
@@ -43,3 +49,9 @@ jobs:
 
       - name: Check schema.sql is in sync with migrations
         run: node scripts/check-schema-sync.mjs
+
+      - name: Install the in-process Postgres used by the parity check
+        run: npm install --prefix scripts --no-save --no-package-lock --ignore-scripts --no-audit --no-fund @electric-sql/pglite@0.5.10
+
+      - name: Check schema.sql and the migrations build the same database
+        run: node scripts/check-db-parity.mjs

@@ -18,6 +18,7 @@
     "preview": "opennextjs-cloudflare preview",
     "deploy:manual-DANGER": "opennextjs-cloudflare build && npx wrangler deploy",
     "check:schema": "node scripts/check-schema-sync.mjs",
+    "check:db": "node scripts/check-db-parity.mjs",
     "indexnow": "node scripts/indexnow-submit.mjs",
     "fold:migration": "node scripts/fold-migration.mjs",
     "pull:targeting": "node scripts/pull-targeting.mjs",
