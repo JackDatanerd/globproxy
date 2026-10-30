@@ -160,9 +160,11 @@ export async function purgeAccountSecrets(supabase: AdminSupabase, userId: strin
   // GoTrue merges metadata and removes a key set to null, so null every key.
   // The sign-in email itself stays on the banned record on purpose (it blocks
   // re-registration — the deletion email says so).
+  let signInEmail: string | null = null
   try {
     const { data: au, error: getErr } = await supabase.auth.admin.getUserById(userId)
     if (getErr) throw getErr
+    signInEmail = au?.user?.email ? String(au.user.email).trim().toLowerCase() : null
     const meta = (au?.user?.user_metadata ?? {}) as Record<string, unknown>
     const keys = Object.keys(meta)
     if (keys.length) {
@@ -214,6 +216,11 @@ export async function purgeAccountSecrets(supabase: AdminSupabase, userId: strin
   // Mail the customer exchanged with support@ (admin inbox, migration 0091): the addresses and
   // free text are theirs, so the conversations go with the account (messages cascade).
   check('inbox_threads', (await supabase.from('inbox_threads').delete().eq('customer_user_id', userId)).error)
+  // Threads are linked to an account only when they are created from the account's CURRENT
+  // address. Mail sent before signing up, from another address, or before an e-mail change has
+  // no customer_user_id and used to stay forever. The sign-in address survives on the banned
+  // auth record, so match on it too (and on every retry of this purge).
+  if (signInEmail) check('inbox_threads_by_email', (await supabase.from('inbox_threads').delete().eq('customer_email', signInEmail)).error)
   // What no foreign-key cascade reaches (the profile row is kept): whitelist mirror (the
   // customer's IPs), free text on refund requests, labels, a reseller's open invitations
   // (their reserved stock is handed back) and third-party invitee addresses — one database

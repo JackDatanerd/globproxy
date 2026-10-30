@@ -22,6 +22,10 @@ export async function POST(req: Request) {
     if (throttled) return throttled
 
     const admin = await createAdminClient()
+    // A scheduled run that stopped part-way has already removed some sessions (see
+    // performAccountDeletion); read that BEFORE the update clears it, so the customer is told.
+    const { data: prior } = await admin.from('profiles').select('deletion_last_error').eq('id', user.id).maybeSingle()
+    const sessionsReleased = String(prior?.deletion_last_error ?? '').startsWith('release:')
     const { data: cleared, error } = await admin.from('profiles').update({
       deletion_requested_at: null,
       deletion_scheduled_at: null,
@@ -39,11 +43,11 @@ export async function POST(req: Request) {
     await logSecurityEvent({ userId: user.id, event: 'account_delete_cancelled', req, admin })
     const p = cleared[0]
     if (p.email && !String(p.email).startsWith('[')) {
-      const mail = deletionCancelledEmail(p.full_name)
+      const mail = deletionCancelledEmail(p.full_name, { sessionsReleased })
       const sent = await sendEmailSafe({ to: p.email, ...mail })
       if (!sent) console.error('delete-account/cancel: e-mail was not delivered', user.id)
     }
-    return NextResponse.json({ success: true, cancelled: true })
+    return NextResponse.json({ success: true, cancelled: true, ...(sessionsReleased ? { sessions_released: true } : {}) })
   } catch (err: any) {
     console.error('delete-account/cancel unexpected error:', err)
     return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })

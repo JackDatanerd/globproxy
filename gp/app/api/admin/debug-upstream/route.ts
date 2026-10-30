@@ -33,8 +33,8 @@ export async function GET(req: Request) {
   const auth = await authorizeAdmin(req)
   if (!auth.ok) return auth.response
 
-  const apiKey = (process.env.UPSTREAM_API_KEY ?? process.env.GEONODE_API_KEY)
-  const resellerId = (process.env.UPSTREAM_RESELLER_ID ?? process.env.GEONODE_RESELLER_ID)
+  const apiKey = process.env.UPSTREAM_API_KEY
+  const resellerId = process.env.UPSTREAM_RESELLER_ID
 
   const env = {
     api_key_present: !!apiKey,

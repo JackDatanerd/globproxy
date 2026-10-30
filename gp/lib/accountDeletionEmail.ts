@@ -33,12 +33,12 @@ export function deletionReminderEmail(fullName: string | null | undefined, when:
   }
 }
 
-export function deletionCancelledEmail(fullName: string | null | undefined) {
+export function deletionCancelledEmail(fullName: string | null | undefined, opts?: { sessionsReleased?: boolean }) {
   return {
     subject: 'Your GlobProxy account deletion was cancelled',
     html: adminNoticeHtml({
       heading: 'Deletion cancelled',
-      bodyHtml: `Hi ${escapeHtml(fullName) || 'there'}, the scheduled deletion of your GlobProxy account was cancelled and your account stays as it is. If you did not do this, contact support and change your password.`,
+      bodyHtml: `Hi ${escapeHtml(fullName) || 'there'}, the scheduled deletion of your GlobProxy account was cancelled and your account stays as it is.${opts?.sessionsReleased ? ' Some of your proxy sessions had already been removed while the deletion was being carried out and cannot be restored; your unused bandwidth was returned to your balance, so you can create new sessions.' : ''} If you did not do this, contact support and change your password.`,
       cta: { href: 'mailto:support@globproxy.com', label: 'Contact support →' },
     }),
   }

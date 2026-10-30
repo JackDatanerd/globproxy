@@ -270,9 +270,10 @@ function SettingsPageInner() {
   async function cancelDeletion() {
     setCancellingDeletion(true)
     try {
-      await apiJson('POST', '/api/user/delete-account/cancel')
+      const res: any = await apiJson('POST', '/api/user/delete-account/cancel')
       setDeletionScheduledAt(null)
-      toast.success('Deletion cancelled — your account stays as it is')
+      if (res?.sessions_released) toast('Deletion cancelled. Some proxy sessions were already removed and cannot be restored — your unused bandwidth is back in your balance.', { duration: 9000 })
+      else toast.success('Deletion cancelled — your account stays as it is')
       router.refresh() // drop the layout's red banner, which would otherwise stay until a reload
     } catch (err: any) {
       toastApiError(err, 'Could not cancel the deletion')

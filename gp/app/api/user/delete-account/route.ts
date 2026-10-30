@@ -52,6 +52,12 @@ export async function DELETE(req: Request) {
       return NextResponse.json({ error: 'Account already deleted.' }, { status: 400 })
     }
 
+    // A suspended account cannot erase itself: the purge removes the sign-in records
+    // (IP / user-agent) that a fraud or dispute review relies on. Urgent erasure goes through support.
+    if (profile.is_suspended) {
+      return NextResponse.json({ error: 'This account is suspended. Contact support@globproxy.com to request deletion.' }, { status: 403 })
+    }
+
     // ── Schedule it ───────────────────────────────────────────────────
     if (profile.deletion_scheduled_at) {
       return NextResponse.json({ success: true, scheduled: true, already: true, scheduled_at: profile.deletion_scheduled_at, cool_off_days: DELETION_COOL_OFF_DAYS })

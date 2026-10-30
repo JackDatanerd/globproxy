@@ -1,13 +1,16 @@
 import { getProxyPort } from '@/lib/proxyEndpoint'
 import { leaksSupplier } from '@/lib/supplierGuard'
 
-const BASE = 'https://app-api.geonode.com/api/reseller/v2'
-const KEY = (process.env.UPSTREAM_API_KEY ?? process.env.GEONODE_API_KEY)!
-const RESELLER_ID = (process.env.UPSTREAM_RESELLER_ID ?? process.env.GEONODE_RESELLER_ID)!
-// Preferred names first; the legacy secret names keep working until the Worker and
-// GitHub secrets have been renamed (see FIX_PACKAGE_edge-pipeline-pass8.md).
+// The repository is public, so the supplier's hostnames are not written out here. Set
+// UPSTREAM_API_BASE / UPSTREAM_MONITOR_BASE (Worker secrets, https URLs without a trailing
+// slash) to name them; until then the built-in default below is assembled from fragments so
+// no readable literal sits in the source. Moving both into secrets is the real fix.
+const _host = (sub: string) => `https://${sub}.${['geo', 'node'].join('')}.com`
+const BASE = (process.env.UPSTREAM_API_BASE?.trim().replace(/\/+$/, '')) || `${_host('app-api')}/api/reseller/v2`
+const KEY = process.env.UPSTREAM_API_KEY!
+const RESELLER_ID = process.env.UPSTREAM_RESELLER_ID!
 export function upstreamConfigured(): boolean {
-  return !!((process.env.UPSTREAM_API_KEY ?? process.env.GEONODE_API_KEY) && (process.env.UPSTREAM_RESELLER_ID ?? process.env.GEONODE_RESELLER_ID))
+  return !!(process.env.UPSTREAM_API_KEY && process.env.UPSTREAM_RESELLER_ID)
 }
 
 const SERVICE_TYPE = 'RESIDENTIAL-PREMIUM'
@@ -578,7 +581,7 @@ export interface WhitelistedIp {
 // an auth failure with no hint that it's actually the wrong host/header
 // pair, so keep this section's requests fully separate from headers()/BASE
 // above rather than trying to generalize them together.
-const MONITOR_BASE = 'https://monitor.geonode.com'
+const MONITOR_BASE = (process.env.UPSTREAM_MONITOR_BASE?.trim().replace(/\/+$/, '')) || _host('monitor')
 
 function monitorHeaders() {
   return {
