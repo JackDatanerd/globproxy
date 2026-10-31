@@ -2,7 +2,7 @@ import { createAdminClient } from '@/lib/supabase/server'
 import { internalLockKey } from '@/lib/lockKeys'
 import { leaksSupplier } from '@/lib/supplierGuard'
 import {
-  createSubUser, createOrAdoptSubUser, findSubUserByUsername, memoizedSubUserLookup, newUpstreamIdentity, deleteSubUser, getSubUserUsage, updateSubUserTrafficLimit, updateSubUserPassword,
+  createSubUser, createOrAdoptSubUser, findSubUserByUsername, memoizedSubUserLookup, newUpstreamIdentity, deleteSubUser, getSubUserUsage, updateSubUserTrafficLimit, updateSubUserPassword, getSubUserPassword,
   classifyUpstreamError, UpstreamApiError, upstreamConfigured, subUserExists, type UpstreamReason, type UpstreamIdentity, PROXY_HOST,
 } from '@/lib/upstream'
 import { sendEmail, escapeHtml } from '@/lib/email'
@@ -1135,7 +1135,22 @@ async function rotateCredentialPasswordLocked(
   }
 
   if (cred.upstream_username && cred.upstream_password) {
-    const verdict = await verifyRotation(cred.host || PROXY_HOST, cred.upstream_username, cred.upstream_password, newPassword)
+    let verdict = await verifyRotation(cred.host || PROXY_HOST, cred.upstream_username, cred.upstream_password, newPassword)
+    if (verdict === 'ignored') {
+      // The provider can be slow to apply a change: the old password still working a moment after the
+      // PATCH is not proof it was dropped. Look once more before rolling back a good rotation.
+      await new Promise((r) => setTimeout(r, 2000))
+      verdict = await verifyRotation(cred.host || PROXY_HOST, cred.upstream_username, cred.upstream_password, newPassword)
+    }
+    if (verdict === 'unknown' && !confirmedByEcho) {
+      // A session with an IP whitelist refuses our probe for both passwords, so the probe can never
+      // answer. Ask the provider what it holds instead.
+      try {
+        confirmedByEcho = (await getSubUserPassword(cred.upstream_sub_user_id)) === newPassword
+      } catch (e) {
+        console.error('[credentials] rotate: password read-back failed', id, e)
+      }
+    }
     if (verdict === 'ignored') {
       console.error('[credentials] rotate: provider ignored the password change — not committing', id)
       // The provider may only be slow to apply it: left alone, the new password could take

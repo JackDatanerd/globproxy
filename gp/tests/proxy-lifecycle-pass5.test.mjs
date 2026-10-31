@@ -42,5 +42,5 @@ test('the stalled-pending clock starts when a session last became pending', () =
 })
 
 test('the cron usage sync stamps usage_synced_at', () => {
-  assert.match(read('lib/usageSync.ts'), /update\(\{ usage_synced_at: nowIso \}\)/)
+  assert.match(read('lib/usageSync.ts'), /update\(\{ usage_synced_at: readAt \}\)/)
 })

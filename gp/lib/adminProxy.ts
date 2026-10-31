@@ -2,6 +2,7 @@ import type { AdminSupabase } from '@/lib/adminAuth'
 import { getSubUserUsage, updateSubUserTrafficLimit } from '@/lib/upstream'
 import { syncUserUsage } from '@/lib/usageSync'
 import { dispatchWebhook } from '@/lib/webhooks'
+import { recordUsageDeltas } from '@/lib/usageLedger'
 
 // Suspending an account used to block the dashboard and the API but leave
 // every live upstream sub-user working — a suspended abuser kept proxying
@@ -33,8 +34,10 @@ export type SuspendReason = 'account' | 'admin' | 'customer'
 // still reads 'active' here is never left unable to carry traffic.
 export async function disableCredential(supabase: AdminSupabase, cred: CredRow, reason: SuspendReason = 'admin'): Promise<boolean> {
   let loweredCap = false
+  let liveUsedGb: number | null = null
   if (cred.upstream_sub_user_id) {
     const usedGb = await getSubUserUsage(cred.upstream_sub_user_id)
+    liveUsedGb = usedGb
     await updateSubUserTrafficLimit(cred.upstream_sub_user_id, Math.max(1, Math.ceil(usedGb * 1024) + 1))
     loweredCap = true
   }
@@ -59,7 +62,25 @@ export async function disableCredential(supabase: AdminSupabase, cred: CredRow, 
     if (!still) throw new Error('This session no longer exists.')
     return false
   }
+  // Paused sessions are not walked by the usage sync, so the reading taken above would otherwise be lost
+  // until a resume. Best effort: it only ever moves the stored counter forward, and compare-and-swaps so
+  // the same slice is never credited to the daily ledger twice.
+  if (liveUsedGb !== null) await persistPausedUsage(supabase, cred.id, liveUsedGb)
   return true
+}
+
+async function persistPausedUsage(supabase: AdminSupabase, id: string, liveGb: number): Promise<void> {
+  try {
+    const { data: row } = await supabase.from('proxy_credentials').select('user_id, gb_used').eq('id', id).maybeSingle()
+    if (!row) return
+    const prev = Number(row.gb_used ?? 0)
+    if (!(liveGb > prev)) return
+    const cas = supabase.from('proxy_credentials').update({ gb_used: liveGb, usage_synced_at: new Date().toISOString() }).eq('id', id)
+    const { data: won } = await (row.gb_used === null || row.gb_used === undefined ? cas.is('gb_used', null) : cas.eq('gb_used', prev)).select('id')
+    if (won?.length) await recordUsageDeltas(supabase as any, [{ user_id: row.user_id, gb: liveGb - prev }])
+  } catch (e) {
+    console.error('[admin-proxy] could not record the usage read while pausing', id, e)
+  }
 }
 
 // Thrown when re-activating would push the account past its live-session cap (the

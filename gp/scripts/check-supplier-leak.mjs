@@ -27,7 +27,8 @@ const here = dirname(fileURLToPath(import.meta.url))
 const gpRoot = resolve(here, '..')
 const baselinePath = resolve(here, 'supplier-leak-baseline.json')
 // `*` is in the class so a glob such as a .gitignore pattern spelling the name is caught too.
-const NAME = /geo[\s_.\-*]*node/gi
+const part = (...codes) => String.fromCharCode(...codes)
+const NAME = new RegExp(part(103, 101, 111) + '[\\s_.\\-*]*' + part(110, 111, 100, 101), 'gi')
 const SKIP = [/package-lock\.json$/, /supplier-leak-baseline\.json$/, /scripts\/check-supplier-leak\.mjs$/, /\.(png|jpe?g|gif|webp|ico|woff2?|ttf|pdf|gz)$/i]
 
 // The whole repository, not just gp/: the workflows, hooks and README at the root are as

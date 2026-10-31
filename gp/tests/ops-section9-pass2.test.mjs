@@ -40,7 +40,10 @@ test('deploy.yml: the pre-flight names every required secret and the stock thres
 })
 
 test('the supplier ratchet sees a glob spelling of the name', () => {
-  assert.match(read('scripts/check-supplier-leak.mjs'), /const NAME = \/geo\[\\s_\.\\-\*\]\*node\/gi/)
+  // The pattern is built from character codes (the name must not sit in this public source) and still
+  // allows `*` between the two halves, so a glob spelling is caught.
+  const src = read('scripts/check-supplier-leak.mjs')
+  assert.match(src, /const NAME = new RegExp\(part\(103, 101, 111\) \+ '\[\\\\s_\.\\\\-\*\]\*' \+ part\(110, 111, 100, 101\), 'gi'\)/)
   assert.ok(!/geo\*node/i.test(read('.gitignore')))
 })
 

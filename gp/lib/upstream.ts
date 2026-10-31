@@ -5,7 +5,7 @@ import { leaksSupplier } from '@/lib/supplierGuard'
 // UPSTREAM_API_BASE / UPSTREAM_MONITOR_BASE (Worker secrets, https URLs without a trailing
 // slash) to name them; until then the built-in default below is assembled from fragments so
 // no readable literal sits in the source. Moving both into secrets is the real fix.
-const _host = (sub: string) => `https://${sub}.${['geo', 'node'].join('')}.com`
+const _host = (sub: string) => `https://${sub}.${String.fromCharCode(103, 101, 111, 110, 111, 100, 101)}.com`
 const BASE = (process.env.UPSTREAM_API_BASE?.trim().replace(/\/+$/, '')) || `${_host('app-api')}/api/reseller/v2`
 const KEY = process.env.UPSTREAM_API_KEY!
 const RESELLER_ID = process.env.UPSTREAM_RESELLER_ID!
@@ -395,6 +395,23 @@ export async function getSubUserUsage(upstreamSubUserId: string): Promise<number
     throw new Error('Upstream getSubUserUsage returned no usable trafficUsedMB')
   }
   return mbToGb(usedMb)
+}
+
+// The password the provider currently holds for a sub-user, or null when the read-back does not
+// carry one. Rotation uses it to confirm a change for sessions whose proxy connections cannot be
+// probed from here (an IP whitelist refuses the probe for the old AND the new password).
+export async function getSubUserPassword(upstreamSubUserId: string): Promise<string | null> {
+  const res = await gfetch(
+    `${BASE}/${RESELLER_ID}/services/${SERVICE_TYPE}/sub-users/${upstreamSubUserId}`,
+    { headers: headers() }
+  )
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new UpstreamApiError(`Upstream getSubUserPassword failed: ${res.status} ${JSON.stringify(err)}`, res.status, err)
+  }
+  const d = await res.json().catch(() => ({}))
+  const result = d?.result ?? d?.data ?? d
+  return typeof result?.password === 'string' ? result.password : null
 }
 
 // Does this sub-user still exist upstream? true / false (404) — anything else THROWS, so

@@ -143,7 +143,7 @@ export async function syncAllUsage(admin?: AdminClient) {
 
   if (complete) {
     const suspendedUsers = await loadSuspendedUserIds(supabase)
-    limitsReconciled = await reconcileLimits(supabase, active, subUsers, suspendedUsers)
+    limitsReconciled = await reconcileLimits(supabase, active, subUsers, suspendedUsers, creds.filter(c => c.status === 'suspended'))
     // Customer-paused sessions too: they are not walked for usage, but resuming one whose proxy has
     // vanished fails, and nobody would otherwise ever hear about it.
     const trackable = creds.filter(c => c.status === 'active' || (c.status === 'suspended' && c.suspended_reason === 'customer'))
@@ -164,10 +164,12 @@ export async function syncAllUsage(admin?: AdminClient) {
       // refreshed. Stamped for sessions whose figure was actually read this run; best effort
       // and bounded (200 ids per write, at most 10 writes) so it can't eat the subrequest budget.
       try {
-        const nowIso = new Date().toISOString()
+        // The figure is as of the supplier read (readAt), not as of the end of this run — and a row a live
+        // refresh moved since (its stamp is later than readAt) keeps the newer stamp it already has.
         const ids = active.filter(c => usageMap.has(String(c.upstream_sub_user_id))).map(c => c.id)
         for (let i = 0, n = 0; i < ids.length && n < 10; i += 200, n++) {
-          const { error } = await supabase.from('proxy_credentials').update({ usage_synced_at: nowIso }).in('id', ids.slice(i, i + 200))
+          const { error } = await supabase.from('proxy_credentials').update({ usage_synced_at: readAt }).in('id', ids.slice(i, i + 200))
+            .or(`usage_synced_at.is.null,usage_synced_at.lt.${readAt}`)
           if (error) { console.error('[usage-sync] could not stamp usage_synced_at', error); break }
         }
       } catch (e) { console.error('[usage-sync] usage_synced_at stamp failed', e) }
@@ -221,7 +223,8 @@ async function reconcileLimits(
   supabase: AdminClient,
   active: any[],
   subUsers: Map<string, SubUserSnapshot>,
-  suspendedUsers: Set<string>
+  suspendedUsers: Set<string>,
+  pausedCreds: any[] = []
 ): Promise<number> {
   let patched = 0
   let attempts = 0
@@ -233,7 +236,7 @@ async function reconcileLimits(
   // pass each tick, so every credential after it — including suspended owners' caps — was never
   // reached. Suspended-owner caps go first (they cut traffic off); the rest start from a
   // rotating offset so each tick works a different slice of the drifted set.
-  type Drift = { c: any; kind: 'suspended' | 'limit'; cap?: number }
+  type Drift = { c: any; kind: 'suspended' | 'limit'; cap?: number; paused?: boolean }
   const suspendedDrift: Drift[] = []
   const limitDrift: Drift[] = []
   for (const c of active) {
@@ -249,6 +252,15 @@ async function reconcileLimits(
     // ±1 MB tolerates rounding between GB (4dp) and whole MB.
     if (Math.abs(snap.limitMb - expected) > 1) limitDrift.push({ c, kind: 'limit' })
   }
+  // A paused / held session is held at its usage figure on purpose. A pause that raced a limit write
+  // (a top-up, an auto top-up, a release) can leave the cap raised again, and no usage sync walks a
+  // suspended session, so that traffic would go uncounted. Cut those back as well.
+  for (const c of pausedCreds) {
+    const snap = subUsers.get(String(c.upstream_sub_user_id))
+    if (!snap || snap.limitMb === null || snap.usedMb === null) continue
+    const cap = suspendedCapMb(snap.usedMb)
+    if (snap.limitMb > cap + 1) suspendedDrift.push({ c, kind: 'suspended', cap, paused: true })
+  }
   const rotate = <T,>(arr: T[]): T[] => {
     if (arr.length < 2) return arr
     const off = Math.floor(Date.now() / 300_000) % arr.length
@@ -262,6 +274,11 @@ async function reconcileLimits(
     try {
       attempts++
       if (d.kind === 'suspended') {
+        if (d.paused) {
+          // Re-check right before cutting: a resume that finished since this run's snapshot must not be re-capped.
+          const { data: fresh } = await supabase.from('proxy_credentials').select('status').eq('id', c.id).maybeSingle()
+          if (fresh?.status !== 'suspended') continue
+        }
         await updateSubUserTrafficLimit(c.upstream_sub_user_id, d.cap as number)
         patched++
         consecutiveFailures = 0
