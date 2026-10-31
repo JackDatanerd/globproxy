@@ -19,7 +19,32 @@ export function isIsoTimestamp(v: string): boolean {
   if (t.getUTCFullYear() !== y || t.getUTCMonth() !== mo - 1 || t.getUTCDate() !== d) return false
   const time = /[T ](\d{2}):(\d{2})(?::(\d{2}))?/.exec(v)
   if (time && (Number(time[1]) > 23 || Number(time[2]) > 59 || Number(time[3] ?? 0) > 59)) return false
+  // A UTC offset must be a real one. Postgres refuses a displacement beyond +/-15:59 ("time zone
+  // displacement out of range"), which used to surface as a 500 for e.g. "...T10:00:00+25:00".
+  // Real offsets stop at +14:00 / -12:00, so +/-14:00 is the ceiling here. (Searching only the part
+  // after the time keeps the "-23" of a date-only value from being read as an offset.)
+  const off = /[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?([+-])(\d{2})(?::?(\d{2}))?$/.exec(v)
+  if (off) {
+    const h = Number(off[2]), m = Number(off[3] ?? 0)
+    if (m > 59 || h > 14 || (h === 14 && m > 0)) return false
+  }
   return true
+}
+
+// A validated ISO 8601 value as a canonical UTC ISO string, or null when it is not a real ISO date.
+// Date.parse alone reads "1" as 2001-01-01, "2026" as 1 Jan 2026 and "2026-02-30" as 2 March, and
+// treats an offset-less date-time as server-local time. Here a value without an offset is UTC.
+export function isoToUtcString(v: string): string | null {
+  if (!isIsoTimestamp(v)) return null
+  let s = v.replace(' ', 'T')
+  const hasTime = s.includes('T')
+  if (hasTime) {
+    // "+0100" -> "+01:00" so every engine parses it the same way
+    s = s.replace(/([+-]\d{2})(\d{2})$/, '$1:$2').replace(/([+-]\d{2})$/, '$1:00')
+    if (!/(Z|[+-]\d{2}:\d{2})$/.test(s)) s += 'Z'
+  }
+  const t = Date.parse(s)
+  return Number.isNaN(t) ? null : new Date(t).toISOString()
 }
 
 export const isUuidString = (v: unknown): v is string => typeof v === 'string' && UUID_RE.test(v)

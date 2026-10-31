@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { apiError, requireApiAccess, rateLimitHeaders, API_RATE_LIMIT_PER_MIN, API_WRITE_RATE_LIMIT_PER_MIN, type ApiAuthResult, type ApiErrorCode, type ApiScope } from '@/lib/apiAuth'
 import { allowApiRequest } from '@/lib/rateLimit'
+import { isoToUtcString } from '@/lib/cursor'
 
 export type ApiAuthOk = Extract<ApiAuthResult, { ok: true }> & {
   requestId: string
@@ -149,12 +150,17 @@ export function parsePage(url: URL, defaults = { limit: 100, max: 500 }) {
 export function parseDateParam(url: URL, name: string): string | null | undefined {
   const raw = url.searchParams.get(name)
   if (raw === null || raw === '') return null
-  const t = Date.parse(raw)
-  return Number.isNaN(t) ? undefined : new Date(t).toISOString()
+  // Strict ISO 8601 only (see isoToUtcString): Date.parse accepted "1", "2026" and "2026-02-30" and
+  // silently filtered on a date the caller never meant, instead of answering 400.
+  return isoToUtcString(raw) ?? undefined
 }
 
 // Escapes LIKE wildcards so a user-supplied search string matches literally.
-export const likeEscape = (v: string) => v.replace(/[\\%_]/g, (c) => `\\${c}`)
+// PostgREST rewrites EVERY "*" in a like/ilike value to "%" before Postgres sees it (even one that
+// is backslash-escaped, which would then match a literal "%"), so a literal asterisk cannot be
+// expressed. It becomes the single-character wildcard "_" instead: a search for "a*b" still finds
+// "a*b", rather than "a*b" turning into "a%b" and a lone "*" matching every label.
+export const likeEscape = (v: string) => v.replace(/[\\%_]/g, (c) => `\\${c}`).replace(/\*/g, '_')
 
 // Runs an offset-paged, counted query. PostgREST answers an offset past the end of the result with
 // 416 (PGRST103) instead of an empty page, which the list routes turned into a 500 for a request

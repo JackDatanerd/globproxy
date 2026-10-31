@@ -11,12 +11,17 @@ import { escapeHtml } from '@/lib/email'
 // e-mails the owner; the API (which cannot do a step-up) did neither, so the
 // change left no trace beyond the api_request_log. Every route now calls this.
 //
-// The e-mail is throttled to one per event type per account per 10 minutes, so
-// a key looping on the endpoint can't turn the owner's inbox into a cannon; the
-// security_events row is written every time.
+// The e-mail is throttled so a key looping on the endpoint can't turn the owner's
+// inbox into a cannon; the security_events row is written every time. The throttle
+// is per event type AND per origin (dashboard vs. which API key, and which host):
+// a flat per-event window let a legitimate edit made a minute earlier silence the
+// notice for a different actor's change, which is the one the owner needs to see.
+// Repeats of the SAME origin are held to one notice per window, and one origin
+// pair can't exceed MAX_NOTICES_PER_WINDOW notices however many hosts it cycles.
 type WebhookAuditEvent = Extract<SecurityEventType, 'webhook_created' | 'webhook_updated' | 'webhook_deleted' | 'webhook_secret_rotated'>
 
 const NOTICE_WINDOW_MS = 10 * 60_000
+const MAX_NOTICES_PER_WINDOW = 5
 
 const COPY: Record<WebhookAuditEvent, { heading: string; detail: (via: string, host: string | null) => string }> = {
   webhook_created: {
@@ -54,14 +59,21 @@ export async function auditWebhookChange(p: {
   try {
     const admin = await createAdminClient()
     const since = new Date(Date.now() - NOTICE_WINDOW_MS).toISOString()
-    const { count } = await admin.from('security_events')
-      .select('id', { count: 'exact', head: true })
+    const { data: recent, error: recentErr } = await admin.from('security_events')
+      .select('meta')
       .eq('user_id', p.userId).eq('event', p.event).gte('created_at', since)
+      .order('created_at', { ascending: false }).limit(50)
+    // Reading the window failed: err on the side of telling the owner rather than staying silent.
+    const rows = recentErr ? [] : (recent ?? [])
+    const sameVia = rows.filter((r: any) => r?.meta?.via === p.via)
+    const sameOrigin = sameVia.some((r: any) =>
+      (r?.meta?.key_id ?? null) === (p.keyId ?? null) && (r?.meta?.host ?? null) === (p.host ?? null))
+    const throttled = sameOrigin || sameVia.length >= MAX_NOTICES_PER_WINDOW
     await logSecurityEvent({
       userId: p.userId, event: p.event, req: p.req, admin,
       meta: { via: p.via, webhook_id: p.webhookId ?? null, host: p.host ?? null, key_id: p.keyId ?? null, ...(p.changed ? { changed: p.changed } : {}) },
     })
-    if ((count ?? 0) > 0) return
+    if (throttled) return
     const copy = COPY[p.event]
     await notifySecurityChange(p.userId, copy.heading, copy.detail(p.via === 'api' ? 'with an API key' : 'from your dashboard', p.host ?? null))
   } catch (e) {

@@ -1050,6 +1050,13 @@ export default function ApiDocsPage() {
           <p className="text-sm text-ink2 leading-relaxed mt-3">Subscribe to <span className="font-mono text-ink">["*"]</span> to receive every event, including ones added later (choose “All events” in the dashboard); without it a new event reaches only the endpoints that name it.</p>
           <p className="text-sm text-ink2 leading-relaxed mt-3">The same catalog, with each event's data keys, is machine-readable at <span className="font-mono text-ink">GET /api/v1/webhooks/events</span>.</p>
 
+          <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-5 mb-1.5">Endpoint address rules</p>
+          <p className="text-sm text-ink2 leading-relaxed">
+            An endpoint URL must be <span className="font-mono text-ink">https</span> on port 443 or 8443, without embedded credentials, and must resolve to a public address
+            (private, loopback and link-local addresses are refused, and so is a hostname that resolves to one). Addresses on <span className="font-mono text-ink">globproxy.com</span> and on{' '}
+            <span className="font-mono text-ink">workers.dev</span> are refused too, so a receiver running as a Cloudflare Worker needs a custom domain attached to it — use that domain as the endpoint URL.
+          </p>
+
           <p className="text-xs font-mono text-subtle uppercase tracking-wider mt-5 mb-1.5">Payload</p>
           <Code>{`POST https://your-server.com/hooks/globproxy
 Content-Type: application/json

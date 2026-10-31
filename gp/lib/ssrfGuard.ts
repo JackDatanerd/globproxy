@@ -152,6 +152,13 @@ export function validateWebhookUrl(raw: string): string | null {
   if (isBlockedHostLiteral(u.hostname)) {
     return 'Webhook URL cannot point to a private, loopback, or link-local address'
   }
+  // A customer's own Worker lives on workers.dev too, so "GlobProxy itself" was the wrong thing to
+  // tell them. The whole suffix stays refused (we cannot tell our Workers from theirs by name), but
+  // the message now says what to do about it.
+  const h = u.hostname.toLowerCase().replace(/\.+$/, '')
+  if (h === 'workers.dev' || h.endsWith('.workers.dev')) {
+    return 'Webhook URL cannot use a workers.dev address — attach your own domain to the Worker and use that instead'
+  }
   if (isOwnHost(u.hostname)) {
     return 'Webhook URL cannot point to GlobProxy itself'
   }

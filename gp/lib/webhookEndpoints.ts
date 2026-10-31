@@ -84,15 +84,29 @@ export async function updateEndpoint(admin: Admin, userId: string, id: string, b
   if (!isUuidString(id)) return fail(404, 'not_found', 'Webhook not found')
   const patch: Record<string, unknown> = {}
 
+  // The dashboard edit form (and many API clients) send the whole object, so `url` arrives on every
+  // save even when only the description or the events changed. Only a DIFFERENT address is a new
+  // address: re-sending the stored one must not wipe the failure streak of an endpoint that is still
+  // failing (it would never reach the auto-disable threshold while its owner kept editing it), nor
+  // be refused because a DNS lookup of an address nobody changed hiccupped.
+  let urlUnchanged = false
   if (body?.url !== undefined) {
     const url = typeof body.url === 'string' ? body.url.trim() : ''
-    const urlError = await validateWebhookUrlFull(url)
-    if (urlError) return fail(400, 'invalid_request', urlError)
-    patch.url = url
-    // A new address is a fresh start, like re-enabling: the failure streak belongs to the OLD address.
-    // Left in place, one failed delivery to the corrected URL could complete a 50-failure / 24-hour
-    // streak and switch the endpoint off. `enabled` itself is never touched here.
-    Object.assign(patch, FRESH_STREAK)
+    const { data: cur, error: curErr } = await admin
+      .from('webhook_endpoints').select('url').eq('id', id).eq('user_id', userId).maybeSingle()
+    if (curErr) { console.error('[webhooks] update lookup failed', curErr); return fail(500, 'internal_error', 'Could not update the webhook.') }
+    if (!cur) return fail(404, 'not_found', 'Webhook not found')
+    if (url !== '' && cur.url === url) {
+      urlUnchanged = true
+    } else {
+      const urlError = await validateWebhookUrlFull(url)
+      if (urlError) return fail(400, 'invalid_request', urlError)
+      patch.url = url
+      // A new address is a fresh start, like re-enabling: the failure streak belongs to the OLD address.
+      // Left in place, one failed delivery to the corrected URL could complete a 50-failure / 24-hour
+      // streak and switch the endpoint off. `enabled` itself is never touched here.
+      Object.assign(patch, FRESH_STREAK)
+    }
   }
   if (body?.event_types !== undefined) {
     const events = parseEventTypes(body.event_types)
@@ -116,7 +130,11 @@ export async function updateEndpoint(admin: Admin, userId: string, id: string, b
       patch.disabled_reason = null
     }
   }
-  if (Object.keys(patch).length === 0) return fail(400, 'invalid_request', 'No fields to update')
+  if (Object.keys(patch).length === 0) {
+    // Only the stored address was re-sent: nothing to change, and not an error for the caller.
+    if (urlUnchanged) return getEndpoint(admin, userId, id)
+    return fail(400, 'invalid_request', 'No fields to update')
+  }
 
   const { data, error } = await admin
     .from('webhook_endpoints').update(patch).eq('id', id).eq('user_id', userId).select(VIEW_COLS).maybeSingle()
