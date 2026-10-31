@@ -24,7 +24,7 @@ export async function POST(req: Request) {
     const { data, error } = await supabase.from('profiles').update({
       deletion_requested_at: null, deletion_scheduled_at: null, deletion_reminder_sent_at: null,
       deletion_attempts: 0, deletion_last_error: null, deletion_last_attempt_at: null,
-    }).eq('id', body.userId).eq('is_deleted', false).not('deletion_scheduled_at', 'is', null).select('id')
+    }).eq('id', body.userId).or('is_deleted.is.null,is_deleted.eq.false').not('deletion_scheduled_at', 'is', null).select('id')
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
     if (!data?.length) return NextResponse.json({ error: 'No deletion is scheduled for this account (it may already have run).' }, { status: 409 })
     await logAdminAction(supabase, { adminId, action: 'account_deletion.cancel_scheduled', targetUserId: body.userId, targetRef: body.userId, details: {} })

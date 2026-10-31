@@ -9,11 +9,11 @@
 -- be re-run without erroring if partially applied already.
 
 alter table public.proxy_credentials
-  add column if not exists geonode_sub_user_id text,
+  add column if not exists upstream_sub_user_id text,
   add column if not exists protocol           text default 'http' check (protocol in ('http','socks5')),
   add column if not exists sticky_duration     integer,
   add column if not exists endpoint_count      integer default 1,
   add column if not exists asn                 text;
 
 comment on column public.proxy_credentials.asn is
-  'Geonode ASN/ISP targeting number (e.g. 13868) — appended to username after city, before lifetime/session. Free text since we don''t have Geonode''s full ASN-to-ISP-name mapping.';
+  'Upstream ASN/ISP targeting number (e.g. 13868) — appended to username after city, before lifetime/session. Free text since we don''t have the upstream''s full ASN-to-ISP-name mapping.';

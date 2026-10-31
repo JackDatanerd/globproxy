@@ -14,7 +14,9 @@
  *                                                  # only after REMOVING mentions
  *
  * The baseline can only ever shrink: --update refuses to raise any count.
- * SQL is excluded (historic migrations are immutable and never shipped to browsers).
+ * SQL is scanned too: the repository can be read by more people than the app's users, and a
+ * migration is as readable as source. Migrations that must still touch a legacy identifier build
+ * it at run time (chr(103) || 'eonode_…'), as 0050 does.
  */
 import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
@@ -26,7 +28,7 @@ const gpRoot = resolve(here, '..')
 const baselinePath = resolve(here, 'supplier-leak-baseline.json')
 // `*` is in the class so a glob such as a .gitignore pattern spelling the name is caught too.
 const NAME = /geo[\s_.\-*]*node/gi
-const SKIP = [/\.sql$/i, /package-lock\.json$/, /supplier-leak-baseline\.json$/, /scripts\/check-supplier-leak\.mjs$/, /\.(png|jpe?g|gif|webp|ico|woff2?|ttf|pdf|gz)$/i]
+const SKIP = [/package-lock\.json$/, /supplier-leak-baseline\.json$/, /scripts\/check-supplier-leak\.mjs$/, /\.(png|jpe?g|gif|webp|ico|woff2?|ttf|pdf|gz)$/i]
 
 // The whole repository, not just gp/: the workflows, hooks and README at the root are as
 // readable as the source. Keys stay relative to gp/ for files inside it (the baseline's

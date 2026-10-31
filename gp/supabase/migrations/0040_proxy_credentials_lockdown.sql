@@ -12,7 +12,7 @@
 -- 2. proxy_credentials had an INSERT policy (and a DELETE policy) with no
 --    column limits and no trigger, reachable via PostgREST with the public
 --    anon key. A user could insert rows with any gb_allocated /
---    geonode_sub_user_id / gb_used / status, skipping the reservation
+--    upstream_sub_user_id / gb_used / status, skipping the reservation
 --    entirely; the next order's activation then provisioned those rows at
 --    upstream with the forged cap, and forged sub-user ids pointed the
 --    delete / top-up / whitelist routes at other customers' sub-users.
@@ -45,13 +45,13 @@
 --   having coalesce(sum(pc.gb_allocated),0) > ba.total_gb;
 --
 --   -- implausible rows:
---   select id, user_id, gb_allocated, gb_used, geonode_sub_user_id
+--   select id, user_id, gb_allocated, gb_used, upstream_sub_user_id
 --   from public.proxy_credentials
 --   where gb_allocated < 0 or gb_used < 0 or gb_allocated > 100000;
 --
 --   -- the same upstream sub-user referenced by more than one row:
---   select geonode_sub_user_id, count(*) from public.proxy_credentials
---   where geonode_sub_user_id is not null
+--   select upstream_sub_user_id, count(*) from public.proxy_credentials
+--   where upstream_sub_user_id is not null
 --   group by 1 having count(*) > 1;
 
 -- 1. Reservation RPCs: service_role only ------------------------------
@@ -70,9 +70,9 @@ revoke insert, update, delete on public.proxy_credentials from anon, authenticat
 -- A upstream sub-user belongs to exactly one credential row. Partial unique
 -- index so the many NULL (pending) rows are unaffected. If this fails, the
 -- audit query above found duplicates: resolve those rows first.
-create unique index if not exists proxy_credentials_geonode_sub_user_key
-  on public.proxy_credentials (geonode_sub_user_id)
-  where geonode_sub_user_id is not null;
+create unique index if not exists proxy_credentials_upstream_sub_user_key
+  on public.proxy_credentials (upstream_sub_user_id)
+  where upstream_sub_user_id is not null;
 
 alter table public.proxy_credentials
   drop constraint if exists proxy_credentials_gb_allocated_sane;

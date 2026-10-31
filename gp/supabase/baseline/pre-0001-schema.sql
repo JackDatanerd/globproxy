@@ -98,9 +98,9 @@ create table public.proxy_credentials (
   user_id           uuid references public.profiles(id) on delete cascade not null,
   created_by        uuid references public.profiles(id),
   label             text,
-  geonode_username  text,
-  geonode_password  text,
-  host              text default 'residential.geonode.com',
+  upstream_username text,
+  upstream_password text,
+  host              text default 'proxy.globproxy.com',
   port              integer default 9000,
   status            text not null default 'pending' check (status in ('pending','active','suspended')),
   gb_allocated      numeric not null default 0,
@@ -136,7 +136,7 @@ insert into public.platform_settings (key, value) values
   ('auto_reload_enabled',    'false'),
   ('auto_reload_threshold_gb','10'),
   ('auto_reload_amount_gb',  '500'),
-  ('geonode_stock',          '{"available_gb":0,"total_gb":0,"last_synced":null}')
+  ('upstream_stock',         '{"available_gb":0,"total_gb":0,"last_synced":null}')
 on conflict (key) do nothing;
 
 -- ── HELPER FUNCTIONS ──────────────────────────────────────────

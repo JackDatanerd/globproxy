@@ -73,12 +73,20 @@ export async function DELETE(req: Request) {
       deletion_attempts: 0,
       deletion_last_error: null,
       deletion_last_attempt_at: null,
-    }).eq('id', user.id).eq('is_deleted', false).is('deletion_scheduled_at', null).select('deletion_scheduled_at')
+    }).eq('id', user.id).or('is_deleted.is.null,is_deleted.eq.false').is('deletion_scheduled_at', null).select('deletion_scheduled_at')
     if (setErr) {
       console.error('delete-account: could not schedule', setErr)
       return NextResponse.json({ error: 'Could not schedule the deletion. Please try again.' }, { status: 500 })
     }
-    const scheduledAt = set?.[0]?.deletion_scheduled_at ?? when.toISOString()
+    // Zero rows means a concurrent request scheduled it first (answer with THEIR date) or nothing
+    // matched. Never invent a date the database does not hold: it used to answer success, and
+    // send no e-mail, for a deletion that was never recorded.
+    let scheduledAt = set?.[0]?.deletion_scheduled_at as string | undefined
+    if (!scheduledAt) {
+      const { data: now } = await adminSupabase.from('profiles').select('deletion_scheduled_at').eq('id', user.id).maybeSingle()
+      scheduledAt = now?.deletion_scheduled_at ?? undefined
+      if (!scheduledAt) return NextResponse.json({ error: 'Could not schedule the deletion. Please try again.' }, { status: 500 })
+    }
     if (set?.length) {
       await logSecurityEvent({ userId: user.id, event: 'account_delete_scheduled', req, meta: { scheduled_at: scheduledAt }, admin: adminSupabase })
       if (profile.email && !String(profile.email).startsWith('[')) {

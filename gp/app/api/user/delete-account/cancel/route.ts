@@ -33,7 +33,7 @@ export async function POST(req: Request) {
       deletion_attempts: 0,
       deletion_last_error: null,
       deletion_last_attempt_at: null,
-    }).eq('id', user.id).eq('is_deleted', false).not('deletion_scheduled_at', 'is', null).select('email, full_name')
+    }).eq('id', user.id).or('is_deleted.is.null,is_deleted.eq.false').not('deletion_scheduled_at', 'is', null).select('email, full_name')
     if (error) {
       console.error('delete-account/cancel failed', error)
       return NextResponse.json({ error: 'Could not cancel the deletion. Please try again.' }, { status: 500 })

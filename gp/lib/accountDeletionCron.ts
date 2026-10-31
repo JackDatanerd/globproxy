@@ -60,7 +60,8 @@ export async function runAccountDeletions() {
 
     // ── 1. Due deletions ──────────────────────────────────────────────
     const { data: due, error: dueErr } = await supabase.from('profiles')
-      .select('id').eq('is_deleted', false).not('deletion_scheduled_at', 'is', null)
+      
+      .select('id').or('is_deleted.is.null,is_deleted.eq.false').not('deletion_scheduled_at', 'is', null)
       .lte('deletion_scheduled_at', nowIso)
       // Accounts not yet tried this cycle first, then the ones that failed longest ago: a
       // deletion that keeps failing (a payment stuck in flight, a supplier error) used to sit
@@ -94,6 +95,10 @@ export async function runAccountDeletions() {
           }
         }
 
+        // Held while suspended (see performAccountDeletion): reported on the admin deletion queue
+        // through deletion_last_error, and the admin is told once after DELETION_ALERT_AFTER_ATTEMPTS.
+        if (before.is_suspended) { out.postponed = Number(out.postponed) + 1; await recordFailure('the account is suspended — deletion on hold until it is unsuspended or deleted by an admin'); continue }
+
         const flight = await countInFlightPayments(supabase, id)
         if (flight.error) { out.postponed = Number(out.postponed) + 1; await recordFailure(`payment check failed: ${flight.error}`); continue }
         if (flight.count > 0) { out.postponed = Number(out.postponed) + 1; await recordFailure('a payment is still being processed'); continue }
@@ -101,6 +106,7 @@ export async function runAccountDeletions() {
         const result = await performAccountDeletion(supabase, id, { before, onlyIfDue: true })
         if (!result.ok) {
           if (result.stage === 'already_deleted' || result.stage === 'not_due') continue
+          if (result.stage === 'suspended') { out.postponed = Number(out.postponed) + 1; await recordFailure('the account is suspended — deletion on hold until it is unsuspended or deleted by an admin'); continue }
           out.failed = Number(out.failed) + 1
           problems.push(scrubSupplier(`scheduled deletion of ${id} failed at ${result.stage}: ${result.error}`))
           await recordFailure(`${result.stage}: ${result.error}`)
@@ -123,9 +129,9 @@ export async function runAccountDeletions() {
     // ── 2. Reminders (claim first so two overlapping runs cannot both e-mail) ──
     const windowEnd = new Date(Date.now() + DELETION_REMINDER_HOURS * 3600_000).toISOString()
     const { data: toRemind, error: remindErr } = await supabase.from('profiles')
-      .select('id, email, full_name, deletion_scheduled_at').eq('is_deleted', false)
+      .select('id, email, full_name, deletion_scheduled_at').or('is_deleted.is.null,is_deleted.eq.false')
       .not('deletion_scheduled_at', 'is', null).gt('deletion_scheduled_at', nowIso).lte('deletion_scheduled_at', windowEnd)
-      .is('deletion_reminder_sent_at', null).limit(MAX_REMINDERS_PER_RUN)
+      .is('deletion_reminder_sent_at', null).or('is_suspended.is.null,is_suspended.eq.false').limit(MAX_REMINDERS_PER_RUN)
     if (remindErr) problems.push(`could not read reminders: ${remindErr.message}`)
     for (const p of toRemind ?? []) {
       try {
@@ -134,7 +140,7 @@ export async function runAccountDeletions() {
         // with an earlier account must not get a "deleted tomorrow" e-mail for a deletion that
         // no longer exists.
         const { data: claimed } = await supabase.from('profiles')
-          .update({ deletion_reminder_sent_at: nowIso }).eq('id', p.id).eq('is_deleted', false)
+          .update({ deletion_reminder_sent_at: nowIso }).eq('id', p.id).or('is_deleted.is.null,is_deleted.eq.false')
           .eq('deletion_scheduled_at', p.deletion_scheduled_at).is('deletion_reminder_sent_at', null).select('id')
         if (!claimed?.length || !p.email || String(p.email).startsWith('[')) continue
         const mail = deletionReminderEmail(p.full_name, p.deletion_scheduled_at)

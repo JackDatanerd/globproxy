@@ -230,6 +230,11 @@ export async function purgeAccountSecrets(supabase: AdminSupabase, userId: strin
     .update({ revoked_at: new Date().toISOString() })
     .eq('user_id', userId)
     .is('revoked_at', null)).error)
+  // Revoking keeps the row; its last source IP, the customer's allowed-IP list and the label they
+  // typed are personal data with no accounting value (migration 0115 back-fills older deletions).
+  check('api_keys_scrub', (await supabase.from('api_keys')
+    .update({ last_used_ip: null, allowed_ips: [], label: 'Revoked' })
+    .eq('user_id', userId)).error)
 
   // Affiliate side (migrations 0044 / 0051 / 0052): suspend the affiliate status so
   // nothing new accrues to a deleted account, void its still-pending payouts
@@ -270,7 +275,7 @@ export type DeletionOutcome =
   | { ok: true; released: number; purge: PurgeResult; cleanupPending: boolean }
   | {
       ok: false
-      stage: 'claim' | 'already_deleted' | 'not_due' | 'ban' | 'list' | 'release'
+      stage: 'claim' | 'already_deleted' | 'not_due' | 'suspended' | 'ban' | 'list' | 'release'
       error: string
       released?: number
       total?: number
@@ -294,13 +299,20 @@ export async function performAccountDeletion(
     .update(anonymisedProfilePatch())
     .eq('id', userId)
     .or('is_deleted.is.null,is_deleted.eq.false') // nullable column
-  if (opts.onlyIfDue) claimQuery = claimQuery.not('deletion_scheduled_at', 'is', null).lte('deletion_scheduled_at', new Date().toISOString())
+  // A suspended account is held, never erased on schedule: the purge removes the sign-in records a
+  // fraud / dispute review relies on (the self-service route refuses suspended accounts for the same
+  // reason, but an admin can suspend AFTER the deletion was scheduled, and the ban stops the owner
+  // cancelling). An admin can still delete it by hand, or release the hold by unsuspending.
+  if (opts.onlyIfDue) claimQuery = claimQuery.not('deletion_scheduled_at', 'is', null).lte('deletion_scheduled_at', new Date().toISOString()).or('is_suspended.is.null,is_suspended.eq.false')
   const { data: claimed, error: claimError } = await claimQuery.select('id')
   if (claimError) return { ok: false, stage: 'claim', error: claimError.message }
   if (!claimed?.length) {
     if (opts.onlyIfDue) {
-      const { data: now } = await supabase.from('profiles').select('is_deleted').eq('id', userId).maybeSingle()
-      if (now && !now.is_deleted) return { ok: false, stage: 'not_due', error: 'The deletion was cancelled or is no longer scheduled.' }
+      const { data: now } = await supabase.from('profiles').select('is_deleted, is_suspended').eq('id', userId).maybeSingle()
+      if (now && !now.is_deleted) {
+        if (now.is_suspended) return { ok: false, stage: 'suspended', error: 'The account is suspended — the scheduled deletion is on hold.' }
+        return { ok: false, stage: 'not_due', error: 'The deletion was cancelled or is no longer scheduled.' }
+      }
     }
     return { ok: false, stage: 'already_deleted', error: 'Account already deleted.' }
   }

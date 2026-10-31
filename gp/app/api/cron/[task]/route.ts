@@ -268,9 +268,19 @@ async function runBandwidthAlerts() {
         .from('profiles').select('email, full_name, referral_code, affiliate_status').eq('id', acc.user_id).maybeSingle() as any)
     }
     if (profErr) throw profErr
-    // Deleted accounts keep their balance row with the email scrubbed to '[deleted]'.
-    if (!profile?.email || profile.email.startsWith('[')) continue
-    if ((profile as any).low_bandwidth_emails === false) continue
+    // Nobody to mail: a deleted account (balance row kept, email scrubbed to '[deleted]'), a
+    // missing profile, or a customer who opted out. Stamp the flags as handled instead of just
+    // skipping: an unstamped account stayed "due" and cost a profile read on EVERY daily run,
+    // forever — thousands of those exhaust the Worker's subrequest budget. The flags clear
+    // again when the account drops below 80%, like any other.
+    if (!profile?.email || profile.email.startsWith('[') || (profile as any).low_bandwidth_emails === false) {
+      const stampSkip = new Date().toISOString()
+      const { error: skipErr } = await supabase.from('bandwidth_accounts')
+        .update(due95 ? { alerted_95_at: stampSkip, alerted_80_at: acc.alerted_80_at ?? stampSkip } : { alerted_80_at: stampSkip })
+        .eq('user_id', acc.user_id)
+      if (skipErr) throw skipErr
+      continue
+    }
 
     const firstName = escapeHtml(profile.full_name?.split(' ')[0]) || 'there'
     const avail = acc.available_gb

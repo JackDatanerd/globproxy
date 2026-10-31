@@ -48,7 +48,7 @@ test('deletion reminder claim requires the deletion to still be scheduled for th
   const src = read('lib/accountDeletionCron.ts')
   const claim = src.slice(src.indexOf('deletion_reminder_sent_at: nowIso'), src.indexOf('deletion_reminder_sent_at: nowIso') + 400)
   assert.match(claim, /eq\('deletion_scheduled_at', p\.deletion_scheduled_at\)/)
-  assert.match(claim, /eq\('is_deleted', false\)/)
+  assert.match(claim, /or\('is_deleted\.is\.null,is_deleted\.eq\.false'\)/) // NULL counts as not deleted (pass 6)
 })
 
 test('ASN generator checks for a truncated export before writing any file', () => {

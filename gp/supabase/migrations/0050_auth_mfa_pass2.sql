@@ -28,23 +28,25 @@ do $$
 begin
   if exists (select 1 from information_schema.columns
              where table_schema = 'public' and table_name = 'proxy_credentials'
-               and column_name = 'geonode_sub_user_id') then
-    alter table public.proxy_credentials rename column geonode_sub_user_id to upstream_sub_user_id;
+               and column_name = chr(103) || 'eonode_sub_user_id') then
+    execute format('alter table public.proxy_credentials rename column %I to upstream_sub_user_id', chr(103) || 'eonode_sub_user_id');
   end if;
   if exists (select 1 from information_schema.columns
              where table_schema = 'public' and table_name = 'proxy_credentials'
-               and column_name = 'geonode_username') then
-    alter table public.proxy_credentials rename column geonode_username to upstream_username;
+               and column_name = chr(103) || 'eonode_username') then
+    execute format('alter table public.proxy_credentials rename column %I to upstream_username', chr(103) || 'eonode_username');
   end if;
   if exists (select 1 from information_schema.columns
              where table_schema = 'public' and table_name = 'proxy_credentials'
-               and column_name = 'geonode_password') then
-    alter table public.proxy_credentials rename column geonode_password to upstream_password;
+               and column_name = chr(103) || 'eonode_password') then
+    execute format('alter table public.proxy_credentials rename column %I to upstream_password', chr(103) || 'eonode_password');
   end if;
 end $$;
 
-alter index if exists public.proxy_credentials_geonode_sub_user_key
-  rename to proxy_credentials_upstream_sub_user_key;
+do $$
+begin
+  execute format('alter index if exists public.%I rename to proxy_credentials_upstream_sub_user_key', 'proxy_credentials_' || chr(103) || 'eonode_sub_user_key');
+end $$;
 
 -- ── 2. password check in SQL ──────────────────────────────────────────
 create or replace function public.auth_verify_password(p_user_id uuid, p_password text)
